@@ -2396,7 +2396,13 @@ func (s *Server) createRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid metadata")
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start repo sync asset transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		INSERT INTO repo_sync_assets(
 			project_id, project_git_repository_id, name, source_remote_id, target_remote_id,
 			trigger_mode, sync_mode, transport, driver, refs, enabled, metadata
@@ -2416,7 +2422,18 @@ func (s *Server) createRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 		enabled,
 		metadata,
 	)
-	s.writeCreatedOneAndRefreshAssets(w, r, item, err, "repo_sync_asset.create")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not create resource")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.create") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit repo sync asset")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func (s *Server) getRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
@@ -2749,7 +2766,13 @@ func (s *Server) updateRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid metadata")
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start repo sync asset transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE repo_sync_assets
 		SET name=COALESCE(NULLIF($2,''), name),
 			trigger_mode=COALESCE(NULLIF($3,''), trigger_mode),
@@ -2772,7 +2795,22 @@ func (s *Server) updateRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 		nullableBool(req.Enabled),
 		metadata,
 	)
-	s.writeUpdatedOneAndRefreshAssets(w, r, item, err, "repo_sync_asset.update")
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.update") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit repo sync asset")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) archiveRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
@@ -2786,14 +2824,35 @@ func (s *Server) archiveRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_asset", ID: assetID, ProjectID: projectID}, "update") {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start repo sync asset transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE repo_sync_assets
 		SET enabled=false,
 			archived_at=COALESCE(archived_at, now()),
 			updated_at=now()
 		WHERE id=$1
 		RETURNING *`, assetID)
-	s.writeUpdatedOneAndRefreshAssets(w, r, item, err, "repo_sync_asset.archive")
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.archive") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit repo sync asset")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) restoreRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
@@ -2807,14 +2866,35 @@ func (s *Server) restoreRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_asset", ID: assetID, ProjectID: projectID}, "update") {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start repo sync asset transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE repo_sync_assets
 		SET archived_at=NULL,
 			enabled=true,
 			updated_at=now()
 		WHERE id=$1
 		RETURNING *`, assetID)
-	s.writeUpdatedOneAndRefreshAssets(w, r, item, err, "repo_sync_asset.restore")
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.restore") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit repo sync asset")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) runRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
@@ -9228,6 +9308,18 @@ func (s *Server) refreshCanonicalAssetsAfterWrite(ctx context.Context, reason st
 	if s.log != nil {
 		s.log.Debug("canonical assets refreshed", "reason", reason, "synced_assets", result.SyncedAssets, "inserted_relations", result.InsertedRelations)
 	}
+}
+
+func (s *Server) syncCanonicalAssetsInTransaction(w http.ResponseWriter, r *http.Request, tx *sqlx.Tx, reason string) bool {
+	result, err := SyncCanonicalAssetsWith(r.Context(), tx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync canonical assets")
+		return false
+	}
+	if s.log != nil {
+		s.log.Debug("canonical assets synced in transaction", "reason", reason, "synced_assets", result.SyncedAssets, "inserted_relations", result.InsertedRelations, "inserted_status_snapshots", result.InsertedStatusSnapshots)
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

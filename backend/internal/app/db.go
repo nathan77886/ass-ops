@@ -149,8 +149,12 @@ func (s *Store) ListMigrations(ctx context.Context) ([]MigrationRecord, error) {
 }
 
 func (s *Store) SyncCanonicalAssets(ctx context.Context) (AssetSyncResult, error) {
+	return SyncCanonicalAssetsWith(ctx, s.DB)
+}
+
+func SyncCanonicalAssetsWith(ctx context.Context, db sqlx.QueryerContext) (AssetSyncResult, error) {
 	var result AssetSyncResult
-	if err := s.DB.GetContext(ctx, &result, canonicalAssetSyncSQL()); err != nil {
+	if err := sqlx.GetContext(ctx, db, &result, canonicalAssetSyncSQL()); err != nil {
 		return result, fmt.Errorf("syncing canonical assets: %w", err)
 	}
 	return result, nil

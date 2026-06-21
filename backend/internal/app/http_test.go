@@ -1361,16 +1361,29 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`writeUpdatedOneAndRefreshAssets(w, r, item, err, "git_repository.update")`,
 		`writeCreatedOneAndRefreshAssets(w, r, item, err, "git_remote.create")`,
 		`writeUpdatedOneAndRefreshAssets(w, r, item, err, "git_remote.update")`,
-		`writeCreatedOneAndRefreshAssets(w, r, item, err, "repo_sync_asset.create")`,
-		`writeUpdatedOneAndRefreshAssets(w, r, item, err, "repo_sync_asset.update")`,
-		`writeUpdatedOneAndRefreshAssets(w, r, item, err, "repo_sync_asset.archive")`,
-		`writeUpdatedOneAndRefreshAssets(w, r, item, err, "repo_sync_asset.restore")`,
 		`writeCreatedOneAndRefreshAssets(w, r, item, err, "argo_connection.create")`,
 		`writeCreatedOneAndRefreshAssets(w, r, item, err, "ssh_machine.create")`,
 	} {
 		if !strings.Contains(string(httpSource), token) {
 			t.Fatalf("http.go missing canonical asset refresh hook %q", token)
 		}
+	}
+	for _, reason := range []string{
+		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.update")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.archive")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.restore")`,
+		`SyncCanonicalAssetsWith(r.Context(), tx)`,
+	} {
+		if !strings.Contains(string(httpSource), reason) {
+			t.Fatalf("http.go missing transactional canonical sync hook %q", reason)
+		}
+	}
+	if got := strings.Count(string(httpSource), `if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}`); got < 3 {
+		t.Fatalf("repo sync asset update paths should preserve ErrNotFound -> 404 handling, found %d branches", got)
 	}
 
 	workerSource, err := os.ReadFile("worker.go")
