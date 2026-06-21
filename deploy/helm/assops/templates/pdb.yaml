@@ -1,0 +1,17 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- range $component := list "gateway" "worker" "node-worker" "web" }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "assops.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "assops.labels" $ | nindent 4 }}
+spec:
+  minAvailable: {{ $.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "assops.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $component | quote }}
+---
+{{- end }}
+{{- end }}

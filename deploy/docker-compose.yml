@@ -11,6 +11,17 @@ services:
     volumes:
       - assops_pg:/var/lib/postgresql/data
       - ../backend/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      - ../backend/migrations/002_git_first_version.sql:/docker-entrypoint-initdb.d/002_git_first_version.sql:ro
+      - ../backend/migrations/003_provider_accounts.sql:/docker-entrypoint-initdb.d/003_provider_accounts.sql:ro
+      - ../backend/migrations/004_approval_saved_views.sql:/docker-entrypoint-initdb.d/004_approval_saved_views.sql:ro
+      - ../backend/migrations/005_agent_tool_call_audit.sql:/docker-entrypoint-initdb.d/005_agent_tool_call_audit.sql:ro
+      - ../backend/migrations/006_asset_graph_saved_views.sql:/docker-entrypoint-initdb.d/006_asset_graph_saved_views.sql:ro
+      - ../backend/migrations/007_multi_approver_approvals.sql:/docker-entrypoint-initdb.d/007_multi_approver_approvals.sql:ro
+      - ../backend/migrations/008_asset_status_snapshots.sql:/docker-entrypoint-initdb.d/008_asset_status_snapshots.sql:ro
+      - ../backend/migrations/009_approval_reminders.sql:/docker-entrypoint-initdb.d/009_approval_reminders.sql:ro
+      - ../backend/migrations/010_approval_rule_audit.sql:/docker-entrypoint-initdb.d/010_approval_rule_audit.sql:ro
+      - ../backend/migrations/011_approval_escalations.sql:/docker-entrypoint-initdb.d/011_approval_escalations.sql:ro
+      - ../backend/migrations/012_approval_delegations.sql:/docker-entrypoint-initdb.d/012_approval_delegations.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U assops -d assops"]
       interval: 5s

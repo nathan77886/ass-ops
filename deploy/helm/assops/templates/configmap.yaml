@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "assops.fullname" . }}-config
+  labels:
+    {{- include "assops.labels" . | nindent 4 }}
+data:
+  ASSOPS_ADDR: ":8080"
+  ASSOPS_GATEWAY_URL: {{ .Values.gatewayURL | quote }}
+  ASSOPS_CONTEXT_DIR: /var/lib/assops/context
+  ASSOPS_LOCAL_BARE_BASE_DIRS: {{ .Values.env.localBareBaseDirs | quote }}
+  ASSOPS_APPROVAL_WEBHOOK_URL: {{ .Values.env.approvalWebhookURL | quote }}
+  ASSOPS_WORKER_INTERVAL_SECONDS: {{ .Values.env.workerIntervalSeconds | quote }}
+  ASSOPS_WORKER_HEALTH_ADDR: ":8081"
+  ASSOPS_NODE_WORKER_HEALTH_ADDR: ":8082"
+  ASSOPS_SSH_KEY_DIR: /etc/assops/ssh/keys
+  ASSOPS_SSH_KNOWN_HOSTS_DIR: /etc/assops/ssh/known_hosts
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "assops.fullname" . }}-nginx
+  labels:
+    {{- include "assops.labels" . | nindent 4 }}
+data:
+  default.conf: |
+    server {
+      listen 80;
+      server_name _;
+      root /usr/share/nginx/html;
+      index index.html;
+
+      location /api/ {
+        proxy_pass http://{{ include "assops.fullname" . }}-gateway:8080;
+        proxy_http_version 1.1;
+        proxy_read_timeout 300s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+      }
+
+      location /healthz {
+        proxy_pass http://{{ include "assops.fullname" . }}-gateway:8080;
+        proxy_http_version 1.1;
+      }
+
+      location / {
+        try_files $uri $uri/ /index.html;
+      }
+    }

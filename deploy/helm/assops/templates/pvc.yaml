@@ -1,0 +1,55 @@
+{{- if .Values.persistence.context.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "assops.fullname" . }}-context
+  labels:
+    {{- include "assops.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.context.size }}
+---
+{{- end }}
+{{- if .Values.persistence.bareRepos.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "assops.fullname" . }}-bare-repos
+  labels:
+    {{- include "assops.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.bareRepos.size }}
+---
+{{- end }}
+{{- if .Values.persistence.ssh.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "assops.fullname" . }}-ssh
+  labels:
+    {{- include "assops.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.ssh.size }}
+---
+{{- end }}
+{{- if .Values.persistence.backups.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "assops.fullname" . }}-backups
+  labels:
+    {{- include "assops.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.backups.size }}
+{{- end }}

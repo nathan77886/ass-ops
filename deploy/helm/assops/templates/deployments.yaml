@@ -1,0 +1,304 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "assops.fullname" . }}-gateway
+  labels:
+    {{- include "assops.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "assops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        {{- include "assops.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+    spec:
+      serviceAccountName: {{ include "assops.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.securityContext.pod }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ include "assops.image" (list . .Values.image.gateway) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext.containers.default }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: {{ include "assops.fullname" . }}-config
+            - secretRef:
+                name: {{ include "assops.secretName" . }}
+          volumeMounts:
+            - name: context
+              mountPath: /var/lib/assops/context
+            - name: bare-repos
+              mountPath: /var/lib/assops/bare-repos
+            - name: ssh
+              mountPath: /etc/assops/ssh
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: context
+          {{- if .Values.persistence.context.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "assops.fullname" . }}-context
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: bare-repos
+          {{- if .Values.persistence.bareRepos.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "assops.fullname" . }}-bare-repos
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: ssh
+          {{- if .Values.persistence.ssh.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "assops.fullname" . }}-ssh
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "assops.fullname" . }}-worker
+  labels:
+    {{- include "assops.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "assops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "assops.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "assops.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.securityContext.pod }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ include "assops.image" (list . .Values.image.worker) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext.containers.default }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: health
+              containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: {{ include "assops.fullname" . }}-config
+            - secretRef:
+                name: {{ include "assops.secretName" . }}
+          volumeMounts:
+            - name: context
+              mountPath: /var/lib/assops/context
+            - name: bare-repos
+              mountPath: /var/lib/assops/bare-repos
+            - name: ssh
+              mountPath: /etc/assops/ssh
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 30
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: context
+          {{- if .Values.persistence.context.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "assops.fullname" . }}-context
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: bare-repos
+          {{- if .Values.persistence.bareRepos.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "assops.fullname" . }}-bare-repos
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: ssh
+          {{- if .Values.persistence.ssh.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "assops.fullname" . }}-ssh
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "assops.fullname" . }}-node-worker
+  labels:
+    {{- include "assops.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "assops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: node-worker
+  template:
+    metadata:
+      labels:
+        {{- include "assops.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: node-worker
+    spec:
+      serviceAccountName: {{ include "assops.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.securityContext.pod }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: node-worker
+          image: {{ include "assops.image" (list . .Values.image.nodeWorker) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext.containers.default }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args:
+            - -name
+            - {{ .Values.nodeWorker.name | quote }}
+            - -kind
+            - {{ .Values.nodeWorker.kind | quote }}
+            - -capabilities
+            - {{ .Values.nodeWorker.capabilities | quote }}
+          ports:
+            - name: health
+              containerPort: 8082
+          envFrom:
+            - configMapRef:
+                name: {{ include "assops.fullname" . }}-config
+            - secretRef:
+                name: {{ include "assops.secretName" . }}
+          env:
+            - name: ASSOPS_GATEWAY_URL
+              value: http://{{ include "assops.fullname" . }}-gateway:8080
+          volumeMounts:
+            - name: ssh
+              mountPath: /etc/assops/ssh
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 30
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: ssh
+          {{- if .Values.persistence.ssh.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "assops.fullname" . }}-ssh
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "assops.fullname" . }}-web
+  labels:
+    {{- include "assops.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "assops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        {{- include "assops.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      serviceAccountName: {{ include "assops.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.securityContext.pod }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: web
+          image: {{ include "assops.image" (list . .Values.image.web) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext.containers.web }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 80
+          volumeMounts:
+            - name: nginx
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: nginx
+          configMap:
+            name: {{ include "assops.fullname" . }}-nginx

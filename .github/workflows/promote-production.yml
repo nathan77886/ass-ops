@@ -1,0 +1,183 @@
+name: Promote Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to promote, for example v0.1.0
+        required: true
+        type: string
+      ghcr_owner:
+        description: GHCR owner or organization that owns assops-* images
+        required: true
+        type: string
+      helm_release:
+        description: Helm release name
+        required: true
+        default: assops
+        type: string
+      namespace:
+        description: Kubernetes namespace for Helm rollout
+        required: true
+        default: assops
+        type: string
+      environment_values:
+        description: Optional environment values file committed in the repository
+        required: true
+        default: deploy/helm/assops/values.production.example.yaml
+        type: string
+      deploy:
+        description: Run helm upgrade after preflight succeeds
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  attestations: read
+  contents: read
+  id-token: write
+  packages: read
+
+jobs:
+  preflight:
+    name: Promotion Preflight
+    runs-on: ubuntu-latest
+    outputs:
+      helm_values: ${{ steps.paths.outputs.helm_values }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.4
+
+      - name: Resolve promotion paths
+        id: paths
+        run: |
+          mkdir -p dist/promotion
+          echo "helm_values=dist/promotion/helm-values-${{ inputs.version }}.yaml" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Helm values overlay
+        run: |
+          test -f "${{ inputs.environment_values }}" || (echo "environment_values file not found: ${{ inputs.environment_values }}" && exit 1)
+          go run ./backend/cmd/assops-tool release helm-values \
+            "${{ inputs.ghcr_owner }}" \
+            "${{ inputs.version }}" \
+            "${{ steps.paths.outputs.helm_values }}"
+
+      - name: Verify image attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_OWNER: ${{ inputs.ghcr_owner }}
+          VERSION: ${{ inputs.version }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          owner_lower="$(printf '%s' "$GHCR_OWNER" | tr '[:upper:]' '[:lower:]')"
+          for image in gateway worker node-worker web; do
+            gh attestation verify \
+              "oci://ghcr.io/${owner_lower}/assops-${image}:${VERSION}" \
+              --repo "$GH_REPO"
+          done
+
+      - name: Lint Helm chart with release images
+        run: |
+          helm lint deploy/helm/assops \
+            -f "${{ inputs.environment_values }}" \
+            -f "${{ steps.paths.outputs.helm_values }}"
+
+      - name: Render Helm chart with release images
+        run: |
+          helm template "${{ inputs.helm_release }}" deploy/helm/assops \
+            --namespace "${{ inputs.namespace }}" \
+            -f deploy/helm/assops/values.yaml \
+            -f "${{ inputs.environment_values }}" \
+            -f "${{ steps.paths.outputs.helm_values }}" \
+            > dist/promotion/rendered.yaml
+
+      - name: Upload promotion preflight bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: promotion-preflight-${{ inputs.version }}
+          path: |
+            dist/promotion/*.yaml
+          if-no-files-found: error
+
+  deploy:
+    name: Production Helm Rollout
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: ${{ inputs.deploy }}
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      - name: Configure kubeconfig
+        env:
+          KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
+        run: |
+          test -n "$KUBE_CONFIG_B64" || (echo "KUBE_CONFIG_B64 secret is required for deploy=true" && exit 1)
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG_B64" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Generate Helm values overlay
+        run: |
+          mkdir -p dist/promotion
+          test -f "${{ inputs.environment_values }}" || (echo "environment_values file not found: ${{ inputs.environment_values }}" && exit 1)
+          go run ./backend/cmd/assops-tool release helm-values \
+            "${{ inputs.ghcr_owner }}" \
+            "${{ inputs.version }}" \
+            "${{ needs.preflight.outputs.helm_values }}"
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install "${{ inputs.helm_release }}" deploy/helm/assops \
+            --namespace "${{ inputs.namespace }}" \
+            --create-namespace \
+            -f deploy/helm/assops/values.yaml \
+            -f "${{ inputs.environment_values }}" \
+            -f "${{ needs.preflight.outputs.helm_values }}"
+
+      - name: Verify rollout
+        env:
+          HELM_RELEASE: ${{ inputs.helm_release }}
+          NAMESPACE: ${{ inputs.namespace }}
+        run: |
+          fullname="$HELM_RELEASE"
+          case "$HELM_RELEASE" in
+            *assops*) ;;
+            *) fullname="${HELM_RELEASE}-assops" ;;
+          esac
+          for component in gateway worker node-worker web; do
+            kubectl rollout status "deployment/${fullname}-${component}" \
+              --namespace "$NAMESPACE" \
+              --timeout=180s
+          done
+          kubectl get deployments,pods \
+            --namespace "$NAMESPACE" \
+            -l "app.kubernetes.io/instance=${HELM_RELEASE}"

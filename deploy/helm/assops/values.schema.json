@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "gatewayURL": {
+      "type": "string",
+      "minLength": 1
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "registry": { "type": "string" },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        },
+        "gateway": { "$ref": "#/definitions/imageRef" },
+        "worker": { "$ref": "#/definitions/imageRef" },
+        "nodeWorker": { "$ref": "#/definitions/imageRef" },
+        "web": { "$ref": "#/definitions/imageRef" }
+      }
+    },
+    "secret": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "databaseURL": {
+          "type": "string",
+          "pattern": "^postgres(ql)?://"
+        },
+        "jwtSecret": { "type": "string", "minLength": 1 },
+        "webhookSecretKey": { "type": "string", "minLength": 1 },
+        "adminEmail": { "type": "string", "minLength": 1 },
+        "adminPassword": { "type": "string", "minLength": 1 },
+        "approvalWebhookToken": { "type": "string" },
+        "githubActionsReadToken": { "type": "string" },
+        "argoReadToken": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "create": { "const": false }
+            },
+            "required": ["create"]
+          },
+          "then": {
+            "required": ["name"],
+            "properties": {
+              "name": { "minLength": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "env": {
+      "type": "object",
+      "properties": {
+        "approvalWebhookURL": { "type": "string" },
+        "workerIntervalSeconds": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "localBareBaseDirs": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "context": { "$ref": "#/definitions/persistenceVolume" },
+        "bareRepos": { "$ref": "#/definitions/persistenceVolume" },
+        "ssh": { "$ref": "#/definitions/persistenceVolume" },
+        "backups": { "$ref": "#/definitions/persistenceVolume" }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "type": "string", "minLength": 1 },
+        "storageSize": { "type": "string", "minLength": 1 },
+        "password": { "type": "string", "minLength": 1 }
+      }
+    },
+    "web": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "host": { "type": "string", "minLength": 1 },
+        "tlsSecretName": { "type": "string" }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "automountServiceAccountToken": { "type": "boolean" }
+      }
+    },
+    "nodeWorker": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "capabilities": { "type": "string" }
+      }
+    },
+    "resources": {
+      "type": "object"
+    },
+    "securityContext": {
+      "type": "object",
+      "properties": {
+        "pod": { "type": "object" },
+        "containers": {
+          "type": "object",
+          "properties": {
+            "default": { "type": "object" },
+            "migrate": { "type": "object" },
+            "web": { "type": "object" }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "web": {
+          "type": "object",
+          "properties": {
+            "ingressCIDRs": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "gateway": {
+          "type": "object",
+          "properties": {
+            "allowedComponents": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "postgres": {
+          "type": "object",
+          "properties": {
+            "allowedComponents": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "string", "minLength": 1 }
+          ]
+        }
+      }
+    }
+  },
+  "definitions": {
+    "imageRef": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string", "minLength": 1 }
+      }
+    },
+    "persistenceVolume": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "size": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

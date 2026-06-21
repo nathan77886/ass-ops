@@ -1,0 +1,12 @@
+.git
+.github
+.assops
+deploy/docker-compose.yml
+deploy/compose.prod.yml
+docs
+node_modules
+web/dist
+web/node_modules
+tmp
+*.log
+*.md

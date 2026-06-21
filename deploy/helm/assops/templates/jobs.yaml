@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "assops.fullname" . }}-migrate
+  labels:
+    {{- include "assops.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        {{- include "assops.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      serviceAccountName: {{ include "assops.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      restartPolicy: Never
+      {{- with .Values.securityContext.pod }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ .Values.postgres.image | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -d "$DATABASE_URL"; do
+                sleep 2
+              done
+          envFrom:
+            - secretRef:
+                name: {{ include "assops.secretName" . }}
+      containers:
+        - name: migrate
+          image: {{ include "assops.image" (list . .Values.image.gateway) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext.containers.migrate }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command: ["assops-tool", "db", "migrate"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "assops.fullname" . }}-config
+            - secretRef:
+                name: {{ include "assops.secretName" . }}
+          volumeMounts:
+            - name: backups
+              mountPath: /backups
+      volumes:
+        - name: backups
+          {{- if .Values.persistence.backups.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "assops.fullname" . }}-backups
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

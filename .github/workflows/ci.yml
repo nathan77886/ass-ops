@@ -1,0 +1,405 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  workflows:
+    name: Workflow Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+      - name: Run actionlint
+        run: actionlint
+
+  secrets:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -shuffle=on -coverprofile=coverage.out ./...
+
+      - name: Check module tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm -C web install --frozen-lockfile
+
+      - name: Build
+        run: pnpm -C web build
+
+  compose:
+    name: Compose Config
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate local compose
+        run: docker compose -f deploy/docker-compose.yml config
+
+      - name: Validate production compose
+        env:
+          ASSOPS_POSTGRES_PASSWORD: ci-postgres-password
+          ASSOPS_GATEWAY_URL: http://localhost:8080
+          ASSOPS_JWT_SECRET: ci-jwt-secret-change-me
+          ASSOPS_WEBHOOK_SECRET_KEY: ci-webhook-secret-change-me
+          ASSOPS_ADMIN_EMAIL: admin@example.test
+          ASSOPS_ADMIN_PASSWORD: ci-admin-password
+        run: docker compose -f deploy/compose.prod.yml config
+
+  db-rehearsal:
+    name: DB Rehearsal
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: assops
+          POSTGRES_PASSWORD: assops
+          POSTGRES_DB: assops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U assops -d assops"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://assops:assops@localhost:5432/assops?sslmode=disable
+      TARGET_DATABASE_URL: postgres://assops:assops@localhost:5432/assops_restore_test?sslmode=disable
+      ASSOPS_ADMIN_EMAIL: admin@assops.local
+      ASSOPS_ADMIN_PASSWORD: admin1234
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Prepare disposable restore database
+        env:
+          PGPASSWORD: assops
+        run: |
+          psql -h localhost -U assops -d postgres -v ON_ERROR_STOP=1 \
+            -c "DROP DATABASE IF EXISTS assops_restore_test;" \
+            -c "CREATE DATABASE assops_restore_test OWNER assops;"
+
+      - name: Migrate and seed source database
+        run: |
+          go run ./backend/cmd/assops-tool db migrate
+          go run ./backend/cmd/assops-tool db seed-demo
+
+      - name: Backup and rehearse restore
+        run: |
+          mkdir -p .assops/backups .assops/release-notes
+          go run ./backend/cmd/assops-tool db backup-retain .assops/backups 3
+          BACKUP="$(ls -t .assops/backups/assops-*.dump | head -n 1)"
+          test -n "$BACKUP"
+          go run ./backend/cmd/assops-tool db rehearse-restore "$BACKUP" "$TARGET_DATABASE_URL" .assops/release-notes/restore-rehearsal-ci.json
+
+      - name: Validate rehearsal report
+        run: |
+          cat > /tmp/validate-rehearsal-report.py <<'PY'
+          import datetime
+          import json
+
+          with open(".assops/release-notes/restore-rehearsal-ci.json", encoding="utf-8") as handle:
+              report = json.load(handle)
+          required = [
+              "backup",
+              "target_database",
+              "inspect_line_count",
+              "backup_object_counts",
+              "restore_output_lines",
+              "migrations",
+              "rehearsed_at",
+          ]
+          missing = [key for key in required if key not in report]
+          if missing:
+              raise SystemExit(f"missing report fields: {missing}")
+          if not report["backup_object_counts"]:
+              raise SystemExit("backup_object_counts is empty")
+          if not report["migrations"]:
+              raise SystemExit("migrations is empty")
+          if "assops:" in report["target_database"]:
+              raise SystemExit("target_database must not include a password")
+          datetime.datetime.fromisoformat(report["rehearsed_at"].replace("Z", "+00:00"))
+          PY
+          python3 /tmp/validate-rehearsal-report.py
+
+      - name: Upload rehearsal report
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-rehearsal-report
+          path: .assops/release-notes/restore-rehearsal-ci.json
+
+  helm:
+    name: Helm Chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.4
+
+      - name: Lint chart defaults
+        run: helm lint deploy/helm/assops
+
+      - name: Render chart defaults
+        run: helm template assops deploy/helm/assops >/tmp/assops-rendered.yaml
+
+      - name: Lint production values example
+        run: helm lint deploy/helm/assops -f deploy/helm/assops/values.production.example.yaml
+
+      - name: Render production values example
+        run: |
+          helm template assops deploy/helm/assops \
+            -f deploy/helm/assops/values.production.example.yaml \
+            >/tmp/assops-production-rendered.yaml
+
+  helm-smoke:
+    name: Helm Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install kind
+        run: |
+          go install sigs.k8s.io/kind@v0.24.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build smoke images
+        run: |
+          docker buildx build --load --target gateway -t assops/gateway:ci \
+            --cache-from type=gha,scope=assops-gateway \
+            --cache-to type=gha,mode=max,scope=assops-gateway .
+          docker buildx build --load --target worker -t assops/worker:ci \
+            --cache-from type=gha,scope=assops-worker \
+            --cache-to type=gha,mode=max,scope=assops-worker .
+          docker buildx build --load --target node-worker -t assops/node-worker:ci \
+            --cache-from type=gha,scope=assops-node-worker \
+            --cache-to type=gha,mode=max,scope=assops-node-worker .
+          docker buildx build --load --target web -t assops/web:ci \
+            --cache-from type=gha,scope=assops-web \
+            --cache-to type=gha,mode=max,scope=assops-web .
+
+      - name: Create disposable kind cluster
+        run: kind create cluster --name assops-smoke --wait 120s
+
+      - name: Load images into kind
+        run: |
+          kind load docker-image --name assops-smoke assops/gateway:ci
+          kind load docker-image --name assops-smoke assops/worker:ci
+          kind load docker-image --name assops-smoke assops/node-worker:ci
+          kind load docker-image --name assops-smoke assops/web:ci
+
+      - name: Install chart and wait for workloads
+        run: |
+          helm upgrade --install assops deploy/helm/assops \
+            --namespace assops-smoke \
+            --create-namespace \
+            --wait \
+            --wait-for-jobs \
+            --timeout 10m \
+            --set image.registry= \
+            --set image.pullPolicy=IfNotPresent \
+            --set image.gateway.tag=ci \
+            --set image.worker.tag=ci \
+            --set image.nodeWorker.tag=ci \
+            --set image.web.tag=ci \
+            --set persistence.context.enabled=false \
+            --set persistence.bareRepos.enabled=false \
+            --set persistence.ssh.enabled=false \
+            --set persistence.backups.enabled=false \
+            --set postgres.storageSize=1Gi \
+            --set secret.jwtSecret=ci-jwt-secret \
+            --set secret.webhookSecretKey=ci-webhook-secret \
+            --set secret.adminEmail=admin@assops.local \
+            --set secret.adminPassword=ci-admin-password
+
+          kubectl -n assops-smoke rollout status deployment/assops-gateway --timeout=120s
+          kubectl -n assops-smoke rollout status deployment/assops-worker --timeout=120s
+          kubectl -n assops-smoke rollout status deployment/assops-node-worker --timeout=120s
+          kubectl -n assops-smoke rollout status deployment/assops-web --timeout=120s
+          kubectl -n assops-smoke get endpoints assops-web -o jsonpath='{.subsets[*].addresses[*].ip}' | grep -q .
+
+      - name: Probe chart web service
+        run: |
+          kubectl -n assops-smoke port-forward svc/assops-web 18080:80 >/tmp/assops-web-port-forward.log 2>&1 &
+          pf_pid=$!
+          trap 'kill "$pf_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/assops-web-port-forward.log
+          exit 1
+
+  docker:
+    name: Docker Build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - gateway
+          - worker
+          - node-worker
+          - web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.target }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          push: false
+          tags: assops/${{ matrix.target }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  govulncheck:
+    name: Go Vulnerability Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.4.0
+
+      - name: Run govulncheck
+        run: govulncheck ./...

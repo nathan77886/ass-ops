@@ -1,0 +1,114 @@
+replicaCount: 1
+
+gatewayURL: https://assops.example.com
+
+secret:
+  create: false
+  name: assops-production-secret
+
+postgres:
+  enabled: false
+
+ingress:
+  enabled: true
+  className: nginx
+  host: assops.example.com
+  tlsSecretName: assops-production-tls
+
+serviceAccount:
+  create: true
+  name: ""
+  automountServiceAccountToken: false
+
+image:
+  registry: ghcr.io
+  pullPolicy: IfNotPresent
+  gateway:
+    repository: nathan77886/assops-gateway
+    tag: v0.1.0
+  worker:
+    repository: nathan77886/assops-worker
+    tag: v0.1.0
+  nodeWorker:
+    repository: nathan77886/assops-node-worker
+    tag: v0.1.0
+  web:
+    repository: nathan77886/assops-web
+    tag: v0.1.0
+
+env:
+  approvalWebhookURL: ""
+  workerIntervalSeconds: "3"
+  localBareBaseDirs: /var/lib/assops/bare-repos
+
+persistence:
+  context:
+    enabled: true
+    size: 5Gi
+  bareRepos:
+    enabled: true
+    size: 10Gi
+  ssh:
+    enabled: true
+    size: 1Gi
+  backups:
+    enabled: true
+    size: 20Gi
+
+web:
+  service:
+    type: ClusterIP
+    port: 80
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+securityContext:
+  pod:
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    default:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65532
+      runAsGroup: 65532
+      capabilities:
+        drop:
+          - ALL
+    migrate:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65532
+      runAsGroup: 65532
+      capabilities:
+        drop:
+          - ALL
+    web:
+      allowPrivilegeEscalation: false
+
+networkPolicy:
+  enabled: true
+  web:
+    ingressCIDRs:
+      - 0.0.0.0/0
+  gateway:
+    allowedComponents:
+      - web
+      - node-worker
+  postgres:
+    allowedComponents:
+      - gateway
+      - worker
+      - migrate
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

@@ -1,0 +1,105 @@
+replicaCount: 1
+
+image:
+  registry: ""
+  pullPolicy: IfNotPresent
+  gateway:
+    repository: assops/gateway
+    tag: local
+  worker:
+    repository: assops/worker
+    tag: local
+  nodeWorker:
+    repository: assops/node-worker
+    tag: local
+  web:
+    repository: assops/web
+    tag: local
+
+gatewayURL: https://assops.example.com
+
+secret:
+  create: true
+  name: ""
+  databaseURL: postgres://assops:change-me-postgres@assops-postgres:5432/assops?sslmode=disable
+  jwtSecret: change-me-jwt
+  webhookSecretKey: change-me-webhook-secret
+  adminEmail: admin@example.com
+  adminPassword: change-me-admin
+  approvalWebhookToken: ""
+  githubActionsReadToken: ""
+  argoReadToken: ""
+
+env:
+  approvalWebhookURL: ""
+  workerIntervalSeconds: "3"
+  localBareBaseDirs: /var/lib/assops/bare-repos
+
+persistence:
+  context:
+    enabled: true
+    size: 1Gi
+  bareRepos:
+    enabled: true
+    size: 5Gi
+  ssh:
+    enabled: true
+    size: 1Gi
+  backups:
+    enabled: true
+    size: 5Gi
+
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  storageSize: 10Gi
+  password: change-me-postgres
+
+web:
+  service:
+    type: ClusterIP
+    port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  host: assops.example.com
+  tlsSecretName: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  automountServiceAccountToken: true
+
+nodeWorker:
+  name: prod-node
+  kind: control-worker
+  capabilities: echo,git,ssh,ai
+
+resources: {}
+
+securityContext:
+  pod: {}
+  containers:
+    default: {}
+    migrate: {}
+    web: {}
+
+networkPolicy:
+  enabled: false
+  web:
+    ingressCIDRs:
+      - 0.0.0.0/0
+  gateway:
+    allowedComponents:
+      - web
+      - node-worker
+  postgres:
+    allowedComponents:
+      - gateway
+      - worker
+      - migrate
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1

@@ -1,0 +1,139 @@
+x-assops-env: &assops-env
+  DATABASE_URL: postgres://assops:${ASSOPS_POSTGRES_PASSWORD:?set ASSOPS_POSTGRES_PASSWORD}@postgres:5432/assops?sslmode=disable
+  ASSOPS_ADDR: :8080
+  ASSOPS_GATEWAY_URL: ${ASSOPS_GATEWAY_URL:?set ASSOPS_GATEWAY_URL}
+  ASSOPS_CONTEXT_DIR: /var/lib/assops/context
+  ASSOPS_LOCAL_BARE_BASE_DIRS: /var/lib/assops/bare-repos
+  ASSOPS_JWT_SECRET: ${ASSOPS_JWT_SECRET:?set ASSOPS_JWT_SECRET}
+  ASSOPS_WEBHOOK_SECRET_KEY: ${ASSOPS_WEBHOOK_SECRET_KEY:?set ASSOPS_WEBHOOK_SECRET_KEY}
+  ASSOPS_APPROVAL_WEBHOOK_URL: ${ASSOPS_APPROVAL_WEBHOOK_URL:-}
+  ASSOPS_APPROVAL_WEBHOOK_TOKEN: ${ASSOPS_APPROVAL_WEBHOOK_TOKEN:-}
+  ASSOPS_ADMIN_EMAIL: ${ASSOPS_ADMIN_EMAIL:?set ASSOPS_ADMIN_EMAIL}
+  ASSOPS_ADMIN_PASSWORD: ${ASSOPS_ADMIN_PASSWORD:?set ASSOPS_ADMIN_PASSWORD}
+  ASSOPS_GITHUB_ACTIONS_READ_TOKEN: ${ASSOPS_GITHUB_ACTIONS_READ_TOKEN:-}
+  ASSOPS_ARGO_READ_TOKEN: ${ASSOPS_ARGO_READ_TOKEN:-}
+  ASSOPS_SSH_KEY_DIR: /etc/assops/ssh/keys
+  ASSOPS_SSH_KNOWN_HOSTS_DIR: /etc/assops/ssh/known_hosts
+  ASSOPS_WORKER_INTERVAL_SECONDS: ${ASSOPS_WORKER_INTERVAL_SECONDS:-3}
+  ASSOPS_WORKER_HEALTH_ADDR: ${ASSOPS_WORKER_HEALTH_ADDR:-:8081}
+  ASSOPS_NODE_WORKER_HEALTH_ADDR: ${ASSOPS_NODE_WORKER_HEALTH_ADDR:-:8082}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: assops
+      POSTGRES_PASSWORD: ${ASSOPS_POSTGRES_PASSWORD:?set ASSOPS_POSTGRES_PASSWORD}
+      POSTGRES_DB: assops
+    volumes:
+      - assops_pg:/var/lib/postgresql/data
+      - ../backend/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      - ../backend/migrations/002_git_first_version.sql:/docker-entrypoint-initdb.d/002_git_first_version.sql:ro
+      - ../backend/migrations/003_provider_accounts.sql:/docker-entrypoint-initdb.d/003_provider_accounts.sql:ro
+      - ../backend/migrations/004_approval_saved_views.sql:/docker-entrypoint-initdb.d/004_approval_saved_views.sql:ro
+      - ../backend/migrations/005_agent_tool_call_audit.sql:/docker-entrypoint-initdb.d/005_agent_tool_call_audit.sql:ro
+      - ../backend/migrations/006_asset_graph_saved_views.sql:/docker-entrypoint-initdb.d/006_asset_graph_saved_views.sql:ro
+      - ../backend/migrations/007_multi_approver_approvals.sql:/docker-entrypoint-initdb.d/007_multi_approver_approvals.sql:ro
+      - ../backend/migrations/008_asset_status_snapshots.sql:/docker-entrypoint-initdb.d/008_asset_status_snapshots.sql:ro
+      - ../backend/migrations/009_approval_reminders.sql:/docker-entrypoint-initdb.d/009_approval_reminders.sql:ro
+      - ../backend/migrations/010_approval_rule_audit.sql:/docker-entrypoint-initdb.d/010_approval_rule_audit.sql:ro
+      - ../backend/migrations/011_approval_escalations.sql:/docker-entrypoint-initdb.d/011_approval_escalations.sql:ro
+      - ../backend/migrations/012_approval_delegations.sql:/docker-entrypoint-initdb.d/012_approval_delegations.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U assops -d assops"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  gateway:
+    build:
+      context: ..
+      target: gateway
+    restart: unless-stopped
+    environment:
+      <<: *assops-env
+    volumes:
+      - assops_context:/var/lib/assops/context
+      - assops_bare_repos:/var/lib/assops/bare-repos
+      - assops_ssh:/etc/assops/ssh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost$${ASSOPS_ADDR}/healthz >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  worker:
+    build:
+      context: ..
+      target: worker
+    restart: unless-stopped
+    environment:
+      <<: *assops-env
+    volumes:
+      - assops_context:/var/lib/assops/context
+      - assops_bare_repos:/var/lib/assops/bare-repos
+      - assops_ssh:/etc/assops/ssh:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost$${ASSOPS_WORKER_HEALTH_ADDR}/healthz >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  node-worker:
+    build:
+      context: ..
+      target: node-worker
+    restart: unless-stopped
+    command: ["-name", "prod-node", "-kind", "control-worker", "-capabilities", "echo,git,ssh,ai"]
+    environment:
+      <<: *assops-env
+      ASSOPS_GATEWAY_URL: http://gateway:8080
+    volumes:
+      - assops_ssh:/etc/assops/ssh:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost$${ASSOPS_NODE_WORKER_HEALTH_ADDR}/healthz >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  db-tool:
+    profiles: ["tools"]
+    build:
+      context: ..
+      target: go-runtime
+    environment:
+      <<: *assops-env
+    command: ["assops-tool", "db", "migrate"]
+    volumes:
+      - assops_backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      target: web
+    restart: unless-stopped
+    ports:
+      - "${ASSOPS_WEB_PORT:-8080}:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+volumes:
+  assops_pg:
+  assops_context:
+  assops_bare_repos:
+  assops_ssh:
+  assops_backups:

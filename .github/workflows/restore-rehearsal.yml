@@ -1,0 +1,120 @@
+name: Scheduled Restore Rehearsal
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+  actions: write
+
+# These credentials are only for ephemeral GitHub Actions service containers.
+# Do not reuse this workflow shape with production database credentials.
+concurrency:
+  group: scheduled-restore-rehearsal
+  cancel-in-progress: false
+
+jobs:
+  rehearse:
+    name: Scheduled Restore Rehearsal
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: assops
+          POSTGRES_PASSWORD: assops
+          POSTGRES_DB: assops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U assops -d assops"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://assops@localhost:5432/assops?sslmode=disable
+      TARGET_DATABASE_URL: postgres://assops@localhost:5432/assops_scheduled_restore_test?sslmode=disable
+      PGPASSWORD: assops
+      ASSOPS_ADMIN_EMAIL: admin@assops.local
+      ASSOPS_ADMIN_PASSWORD: admin1234
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 || sudo apt-get install -y postgresql-client
+          pg_dump --version
+
+      - name: Build assops-tool
+        run: |
+          mkdir -p bin
+          go build -trimpath -o bin/assops-tool ./backend/cmd/assops-tool
+
+      - name: Prepare disposable restore database
+        run: |
+          psql -h localhost -U assops -d postgres -v ON_ERROR_STOP=1 \
+            -c "DROP DATABASE IF EXISTS assops_scheduled_restore_test;" \
+            -c "CREATE DATABASE assops_scheduled_restore_test OWNER assops;"
+
+      - name: Migrate and seed source database
+        run: |
+          bin/assops-tool db migrate
+          bin/assops-tool db seed-demo
+
+      - name: Backup and rehearse restore
+        run: |
+          mkdir -p .assops/backups .assops/release-notes
+          bin/assops-tool db backup-retain .assops/backups 3
+          BACKUP="$(ls -t .assops/backups/assops-*.dump | head -n 1)"
+          test -n "$BACKUP"
+          bin/assops-tool db rehearse-restore "$BACKUP" "$TARGET_DATABASE_URL" .assops/release-notes/restore-rehearsal-scheduled.json
+
+      - name: Validate rehearsal report
+        run: |
+          cat > /tmp/validate-rehearsal-report.py <<'PY'
+          import datetime
+          import json
+
+          with open(".assops/release-notes/restore-rehearsal-scheduled.json", encoding="utf-8") as handle:
+              report = json.load(handle)
+          required = [
+              "backup",
+              "target_database",
+              "inspect_line_count",
+              "backup_object_counts",
+              "restore_output_lines",
+              "migrations",
+              "rehearsed_at",
+          ]
+          missing = [key for key in required if key not in report]
+          if missing:
+              raise SystemExit(f"missing report fields: {missing}")
+          if not report["backup_object_counts"]:
+              raise SystemExit("backup_object_counts is empty")
+          if not report["migrations"]:
+              raise SystemExit("migrations is empty")
+          if "assops:" in report["target_database"]:
+              raise SystemExit("target_database must not include a password")
+          if "scheduled_restore_test" not in report["target_database"]:
+              raise SystemExit("target_database must identify the scheduled disposable target")
+          datetime.datetime.fromisoformat(report["rehearsed_at"].replace("Z", "+00:00"))
+          PY
+          python3 /tmp/validate-rehearsal-report.py
+
+      - name: Upload rehearsal artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: scheduled-restore-rehearsal
+          retention-days: 30
+          path: .assops/release-notes/restore-rehearsal-scheduled.json

@@ -1,0 +1,19 @@
+# Default owner for first-version ASSOPS changes.
+* @nathan77886
+
+# Backend services, workers, migrations, and CLI.
+/backend/ @nathan77886
+/go.mod @nathan77886
+/go.sum @nathan77886
+
+# Frontend console.
+/web/ @nathan77886
+
+# Deployment, release, and repository governance.
+/.github/ @nathan77886
+/deploy/ @nathan77886
+/docs/deploy-production.md @nathan77886
+/docs/deploy-helm.md @nathan77886
+/docs/github-branch-protection.md @nathan77886
+/Dockerfile @nathan77886
+/Makefile @nathan77886

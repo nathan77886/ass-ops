@@ -23,6 +23,10 @@ func main() {
 	cfg := app.LoadConfig()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if err := app.StartHealthServer(ctx, cfg.NodeWorkerHealthAddr, "node-worker", log); err != nil {
+		log.Error("start health server failed", "error", err)
+		os.Exit(1)
+	}
 	worker := app.NewNodeWorker(cfg, *name, *kind, splitCSV(*caps), log)
 	if err := worker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("node worker stopped", "error", err)

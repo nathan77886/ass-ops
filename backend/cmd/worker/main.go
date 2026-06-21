@@ -22,8 +22,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer store.Close()
+	if err := app.StartHealthServer(ctx, cfg.WorkerHealthAddr, "control-worker", log); err != nil {
+		log.Error("start health server failed", "error", err)
+		os.Exit(1)
+	}
 	log.Info("control worker started")
-	if err := app.NewControlWorker(store, cfg.WorkerInterval, log).Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	if err := app.NewControlWorker(store, cfg, log).Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("worker stopped", "error", err)
 		os.Exit(1)
 	}
