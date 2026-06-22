@@ -1519,6 +1519,17 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 	if len(reconcileOperations) != 3 || reconcileOperations[0]["endpoint_key"] != "github.create_branch_ref" {
 		t.Fatalf("provider review reconciliation operations = %#v", reconcileOperations)
 	}
+	adapterRehearsal := mapFromAny(reconciliation["adapter_rehearsal"])
+	if adapterRehearsal["status"] != "ready" ||
+		adapterRehearsal["adapter_status"] != "planned" ||
+		adapterRehearsal["operation_count"] != 3 ||
+		adapterRehearsal["ready_operation_count"] != 3 ||
+		adapterRehearsal["blocked_operation_count"] != 0 ||
+		adapterRehearsal["mutation_arming_candidate"] != true ||
+		adapterRehearsal["provider_api_call_made"] != false ||
+		adapterRehearsal["provider_api_mutation"] != "disabled" {
+		t.Fatalf("provider review adapter rehearsal = %#v", adapterRehearsal)
+	}
 	targetSummary := mapFromAny(payload["provider_review_target_summary"])
 	if targetSummary["status"] != "mutation_blocked" ||
 		targetSummary["mode"] != "redacted_execution_target_summary" ||
@@ -1947,6 +1958,43 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 						},
 					},
 				},
+				"adapter_rehearsal": map[string]any{
+					"status":                    "ready",
+					"mode":                      "raw_adapter_rehearsal",
+					"provider_type":             "github",
+					"review_kind":               "pull_request",
+					"adapter_status":            "ready",
+					"operation_count":           99,
+					"ready_operation_count":     98,
+					"blocked_operation_count":   97,
+					"blocked_reasons":           []any{"provider_review_mutation_armed", "<script>alert(1)</script>"},
+					"mutation_arming_candidate": true,
+					"external_call_made":        true,
+					"provider_api_call_made":    true,
+					"provider_api_mutation":     "enabled",
+					"payload_redacted":          false,
+					"contains_token":            true,
+					"contains_provider_url":     true,
+					"contains_repository_ref":   true,
+					"contains_file_content":     true,
+					"token":                     "secret-token",
+					"url":                       "https://api.github.example.test/repos/acme/secret-repo/pulls",
+					"content":                   "do-not-include",
+					"operations": []map[string]any{
+						{
+							"name":                   "open_review_request",
+							"endpoint_key":           "github.open_review",
+							"status":                 "ready",
+							"blocked_reasons":        []any{"provider_review_mutation_armed", "raw_block"},
+							"external_call_made":     true,
+							"provider_api_call_made": true,
+							"provider_api_mutation":  "enabled",
+							"token":                  "secret-token",
+							"url":                    "https://api.github.example.test/repos/acme/secret-repo/pulls",
+							"content":                "do-not-include",
+						},
+					},
+				},
 				"response_diagnostics": map[string]any{
 					"status":                 "ready",
 					"mode":                   "raw_response_diagnostics",
@@ -2295,6 +2343,29 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 	if len(requestReadiness) != 1 || requestReadiness[0]["evidence"] != "provider_api_request_plan_ready" {
 		t.Fatalf("request envelope readiness should preserve safe evidence only: %#v", requestReadiness)
 	}
+	adapterRehearsal := mapFromAny(reconciliation["adapter_rehearsal"])
+	if adapterRehearsal["mode"] != "redacted_adapter_rehearsal" ||
+		adapterRehearsal["status"] != "ready" ||
+		adapterRehearsal["operation_count"] != 1 ||
+		adapterRehearsal["ready_operation_count"] != 1 ||
+		adapterRehearsal["blocked_operation_count"] != 0 ||
+		adapterRehearsal["external_call_made"] != false ||
+		adapterRehearsal["provider_api_call_made"] != false ||
+		adapterRehearsal["provider_api_mutation"] != "disabled" ||
+		adapterRehearsal["contains_token"] != false ||
+		adapterRehearsal["contains_provider_url"] != false ||
+		adapterRehearsal["contains_repository_ref"] != false ||
+		adapterRehearsal["contains_file_content"] != false ||
+		adapterRehearsal["adapter_mutation_currently_off"] != true {
+		t.Fatalf("adapter rehearsal should be sanitized: %#v", adapterRehearsal)
+	}
+	adapterRehearsalOperations := sliceOfMapsFromAny(adapterRehearsal["operations"])
+	if len(adapterRehearsalOperations) != 1 ||
+		adapterRehearsalOperations[0]["external_call_made"] != false ||
+		adapterRehearsalOperations[0]["provider_api_call_made"] != false ||
+		adapterRehearsalOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("adapter rehearsal operations should be sanitized: %#v", adapterRehearsalOperations)
+	}
 	responseDiagnostics := mapFromAny(reconciliation["response_diagnostics"])
 	if responseDiagnostics["external_call_made"] != false ||
 		responseDiagnostics["mode"] != "redacted_response_diagnostics" ||
@@ -2430,7 +2501,7 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		}
 	}
 	encoded, _ := json.Marshal(audit)
-	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_attempt_ledger", "raw_attempt_orchestration", "raw_key"} {
+	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_adapter_rehearsal", "raw_attempt_ledger", "raw_attempt_orchestration", "raw_key"} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
 		}
@@ -2848,6 +2919,38 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 			t.Fatalf("conflicting dependency orchestration summary = %#v", summary)
 		}
 	})
+}
+
+func TestProviderReviewAdapterRehearsalSanitizerRecomputesStatus(t *testing.T) {
+	summary := sanitizedProviderReviewAdapterRehearsal(map[string]any{
+		"status":                    "ready",
+		"operation_count":           99,
+		"ready_operation_count":     98,
+		"blocked_operation_count":   97,
+		"mutation_arming_candidate": true,
+		"operations": []map[string]any{
+			{
+				"name":               "commit_starter_files",
+				"endpoint_key":       "github.commit_files",
+				"status":             "blocked",
+				"blocked_reasons":    []any{"starter_file_payload_staged"},
+				"external_call_made": true,
+			},
+		},
+	})
+	if summary["status"] != "blocked" ||
+		summary["operation_count"] != 1 ||
+		summary["ready_operation_count"] != 0 ||
+		summary["blocked_operation_count"] != 1 ||
+		summary["mutation_arming_candidate"] != false ||
+		summary["external_call_made"] != false ||
+		summary["provider_api_mutation"] != "disabled" {
+		t.Fatalf("sanitized rehearsal should recompute status and counts: %#v", summary)
+	}
+	empty := sanitizedProviderReviewAdapterRehearsal(map[string]any{"status": "ready"})
+	if empty["status"] != "not_recorded" || empty["mutation_arming_candidate"] != false {
+		t.Fatalf("empty rehearsal should be not recorded: %#v", empty)
+	}
 }
 
 func TestRepoSyncRunFiltersFromRequest(t *testing.T) {

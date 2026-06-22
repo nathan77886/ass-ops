@@ -512,6 +512,25 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	if len(requestReadiness) != 3 || requestReadiness[2]["evidence"] != "starter_file_payload_staged" {
 		t.Fatalf("github provider review request envelope readiness = %#v", requestReadiness)
 	}
+	adapterRehearsal := mapFromAny(reconciliation["adapter_rehearsal"])
+	if adapterRehearsal["status"] != "blocked" ||
+		adapterRehearsal["adapter_status"] != "planned" ||
+		adapterRehearsal["operation_count"] != 3 ||
+		adapterRehearsal["ready_operation_count"] != 0 ||
+		adapterRehearsal["blocked_operation_count"] != 3 ||
+		adapterRehearsal["mutation_arming_candidate"] != false ||
+		adapterRehearsal["provider_api_mutation"] != "disabled" ||
+		adapterRehearsal["provider_api_call_made"] != false {
+		t.Fatalf("github provider review adapter rehearsal = %#v", adapterRehearsal)
+	}
+	rehearsalReasons := stringSliceFromAny(adapterRehearsal["blocked_reasons"])
+	if !containsString(rehearsalReasons, "starter_file_payload_staged") ||
+		!containsString(rehearsalReasons, "provider_api_request_plan_ready") ||
+		!containsString(rehearsalReasons, "provider_credential_configured") ||
+		!containsString(rehearsalReasons, "provider_token_env_present") ||
+		containsString(rehearsalReasons, "provider_review_mutation_armed") {
+		t.Fatalf("github provider review adapter rehearsal reasons = %#v", rehearsalReasons)
+	}
 	responseDiagnostics := mapFromAny(reconciliation["response_diagnostics"])
 	if responseDiagnostics["status"] != "pending" ||
 		responseDiagnostics["mode"] != "redacted_response_diagnostics" ||
@@ -608,6 +627,61 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 			t.Fatalf("provider review execution plan leaked %q: %s", leak, encoded)
 		}
 	}
+}
+
+func TestProviderReviewAdapterRehearsalReadinessVariants(t *testing.T) {
+	t.Run("mixed operation readiness", func(t *testing.T) {
+		apiPlan := map[string]any{
+			"status":        "ready",
+			"source_branch": "assops/template/demo-main",
+			"target_branch": "main",
+			"file_count":    0,
+		}
+		envelopes := providerReviewAdapterRequestEnvelopes("github", "pull_request", apiPlan, map[string]any{})
+		rehearsal := providerReviewAdapterRehearsal("github", "pull_request", "planned", map[string]any{
+			"token_env_configured": true,
+			"token_env_present":    true,
+		}, envelopes)
+		if rehearsal["status"] != "blocked" ||
+			rehearsal["operation_count"] != 3 ||
+			rehearsal["ready_operation_count"] != 2 ||
+			rehearsal["blocked_operation_count"] != 1 ||
+			rehearsal["mutation_arming_candidate"] != false {
+			t.Fatalf("mixed readiness rehearsal = %#v", rehearsal)
+		}
+		reasons := stringSliceFromAny(rehearsal["blocked_reasons"])
+		if !containsString(reasons, "starter_file_payload_staged") ||
+			containsString(reasons, "provider_credential_configured") ||
+			containsString(reasons, "provider_token_env_present") {
+			t.Fatalf("mixed readiness reasons = %#v", reasons)
+		}
+	})
+	t.Run("credential only blocking", func(t *testing.T) {
+		apiPlan := templateProviderReviewAPIRequestPlan("github", "pull_request", "assops/template/demo-main", "main", map[string]any{
+			"status":           "ready",
+			"file_count":       1,
+			"content_included": false,
+		})
+		envelopes := providerReviewAdapterRequestEnvelopes("github", "pull_request", apiPlan, map[string]any{
+			"status":           "ready",
+			"file_count":       1,
+			"content_included": false,
+		})
+		rehearsal := providerReviewAdapterRehearsal("github", "pull_request", "planned", map[string]any{}, envelopes)
+		if rehearsal["status"] != "blocked" ||
+			rehearsal["operation_count"] != 3 ||
+			rehearsal["ready_operation_count"] != 3 ||
+			rehearsal["blocked_operation_count"] != 0 ||
+			rehearsal["mutation_arming_candidate"] != false {
+			t.Fatalf("credential-only blocking rehearsal = %#v", rehearsal)
+		}
+		reasons := stringSliceFromAny(rehearsal["blocked_reasons"])
+		if !containsString(reasons, "provider_credential_configured") ||
+			!containsString(reasons, "provider_token_env_present") ||
+			containsString(reasons, "starter_file_payload_staged") {
+			t.Fatalf("credential-only reasons = %#v", reasons)
+		}
+	})
 }
 
 func TestTemplateProtectedBranchStrategyRejectsUnsafeProposedBranch(t *testing.T) {

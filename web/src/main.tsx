@@ -1049,6 +1049,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
     targetSummary.contains_file_content !== true;
   const reconciliationGates = Array.isArray(reconciliation.gates) ? reconciliation.gates : [];
   const reconciliationOperations = Array.isArray(reconciliation.operations) ? reconciliation.operations : [];
+  const adapterRehearsal = reconciliation.adapter_rehearsal || {};
+  const adapterRehearsalOperations = Array.isArray(adapterRehearsal.operations) ? adapterRehearsal.operations : [];
   const adapterOperations = Array.isArray(adapterContract.operations) ? adapterContract.operations : [];
   const requestEnvelopes = Array.isArray(reconciliation.request_envelopes)
     ? reconciliation.request_envelopes
@@ -1147,6 +1149,26 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>adapter {String(reconciliation.adapter_status || 'unknown')}</Tag>
           <Tag color={reconciliation.external_call_made === true ? 'red' : 'default'}>{reconciliation.external_call_made === true ? 'external call made' : 'no external call'}</Tag>
           <Tag>{String(reconciliation.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {adapterRehearsal.status ? (
+        <Space size={4} wrap>
+          <Tag color={adapterRehearsal.status === 'ready' ? 'green' : 'gold'}>rehearsal {String(adapterRehearsal.status)}</Tag>
+          <Tag>ready {Number(adapterRehearsal.ready_operation_count || 0)}</Tag>
+          <Tag>blocked {Number(adapterRehearsal.blocked_operation_count || 0)}</Tag>
+          <Tag color={adapterRehearsal.mutation_arming_candidate === true ? 'green' : 'blue'}>
+            {adapterRehearsal.mutation_arming_candidate === true ? 'arming candidate' : 'arming blocked'}
+          </Tag>
+          <Tag>{adapterRehearsal.provider_api_call_made === true ? 'api called' : 'no api call'}</Tag>
+        </Space>
+      ) : null}
+      {adapterRehearsalOperations.length ? (
+        <Space size={4} wrap>
+          {adapterRehearsalOperations.map((operation: AnyRow, index: number) => (
+            <Tag key={String(operation.endpoint_key || operation.name || `rehearsal-operation-${index}`)} color={operation.status === 'ready' ? 'green' : 'gold'}>
+              {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.status || 'blocked')}
+            </Tag>
+          ))}
         </Space>
       ) : null}
       {adapterContract.status ? (

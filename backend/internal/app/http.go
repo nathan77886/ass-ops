@@ -8980,6 +8980,7 @@ func sanitizedProviderReviewReconciliation(value map[string]any) map[string]any 
 		"credential_strategy":    sanitizedProviderReviewCredentialStrategy(mapFromAny(value["credential_strategy"])),
 		"adapter_contract":       sanitizedProviderReviewAdapterContract(mapFromAny(value["adapter_contract"])),
 		"request_envelopes":      sanitizedProviderReviewAdapterRequestEnvelopes(mapSliceFromAny(value["request_envelopes"])),
+		"adapter_rehearsal":      sanitizedProviderReviewAdapterRehearsal(mapFromAny(value["adapter_rehearsal"])),
 		"response_diagnostics":   sanitizedProviderReviewAdapterResponseDiagnostics(mapFromAny(value["response_diagnostics"])),
 		"idempotency_plan":       sanitizedProviderReviewAdapterIdempotencyPlan(mapFromAny(value["idempotency_plan"])),
 		"adapter_status":         cleanOptionalText(stringFromMap(value, "adapter_status")),
@@ -8990,6 +8991,78 @@ func sanitizedProviderReviewReconciliation(value map[string]any) map[string]any 
 		"gates":                  sanitizedProviderReviewGates(mapSliceFromAny(value["gates"])),
 		"operations":             sanitizedProviderReviewReconciliationOperations(mapSliceFromAny(value["operations"])),
 		"next_step":              cleanOptionalText(stringFromMap(value, "next_step")),
+	}
+}
+
+func sanitizedProviderReviewAdapterRehearsal(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	operations := sanitizedProviderReviewAdapterRehearsalOperations(mapSliceFromAny(value["operations"]))
+	readyCount := 0
+	blockedCount := 0
+	for _, operation := range operations {
+		if operation["status"] == "ready" {
+			readyCount++
+		} else {
+			blockedCount++
+		}
+	}
+	status := "not_recorded"
+	if len(operations) > 0 {
+		status = "ready"
+	}
+	if blockedCount > 0 {
+		status = "blocked"
+	}
+	return map[string]any{
+		"status":                         status,
+		"mode":                           "redacted_adapter_rehearsal",
+		"provider_type":                  cleanOptionalText(stringFromMap(value, "provider_type")),
+		"review_kind":                    cleanOptionalText(stringFromMap(value, "review_kind")),
+		"adapter_status":                 safeProviderReviewAdapterStatus(stringFromMap(value, "adapter_status")),
+		"operation_count":                len(operations),
+		"ready_operation_count":          readyCount,
+		"blocked_operation_count":        blockedCount,
+		"blocked_reasons":                safeProviderReviewBlockedReasons(stringSliceFromAny(value["blocked_reasons"])),
+		"operations":                     operations,
+		"mutation_arming_candidate":      status == "ready" && blockedCount == 0 && len(operations) > 0,
+		"external_call_made":             false,
+		"provider_api_call_made":         false,
+		"provider_api_mutation":          "disabled",
+		"payload_redacted":               true,
+		"contains_token":                 false,
+		"contains_provider_url":          false,
+		"contains_repository_ref":        false,
+		"contains_file_content":          false,
+		"requires_operator_review":       true,
+		"requires_mutation_arming":       true,
+		"adapter_mutation_currently_off": true,
+	}
+}
+
+func sanitizedProviderReviewAdapterRehearsalOperations(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"name":                   cleanOptionalText(stringFromMap(item, "name")),
+			"endpoint_key":           cleanOptionalText(stringFromMap(item, "endpoint_key")),
+			"status":                 safeProviderReviewRehearsalStatus(stringFromMap(item, "status")),
+			"blocked_reasons":        safeProviderReviewBlockedReasons(stringSliceFromAny(item["blocked_reasons"])),
+			"external_call_made":     false,
+			"provider_api_call_made": false,
+			"provider_api_mutation":  "disabled",
+		})
+	}
+	return out
+}
+
+func safeProviderReviewRehearsalStatus(value string) string {
+	switch cleanOptionalText(value) {
+	case "ready", "blocked", "not_recorded":
+		return cleanOptionalText(value)
+	default:
+		return "blocked"
 	}
 }
 

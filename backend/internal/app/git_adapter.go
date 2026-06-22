@@ -834,6 +834,8 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 	adapterReady := adapterStatus == "planned"
 	mutationArmed := false
 	executionEnabledConfig := boolValueFromAny(guardrail["execution_enabled_config"])
+	requestEnvelopes := providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload)
+	adapterRehearsal := providerReviewAdapterRehearsal(provider, reviewKind, adapterStatus, credentialStrategy, requestEnvelopes)
 	gates := []map[string]any{
 		{
 			"gate":              "provider_supported",
@@ -906,7 +908,8 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		"review_kind":            reviewKind,
 		"credential_strategy":    sanitizedProviderReviewCredentialStrategy(credentialStrategy),
 		"adapter_contract":       adapterContract,
-		"request_envelopes":      providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload),
+		"request_envelopes":      requestEnvelopes,
+		"adapter_rehearsal":      adapterRehearsal,
 		"response_diagnostics":   providerReviewAdapterResponseDiagnostics(provider, reviewKind),
 		"idempotency_plan":       providerReviewAdapterIdempotencyPlan(provider, reviewKind),
 		"adapter_status":         adapterStatus,
@@ -939,6 +942,114 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 			},
 		},
 		"next_step": "Rehearse and arm the provider review execution adapter before enabling provider API mutation.",
+	}
+}
+
+func providerReviewAdapterRehearsal(provider, reviewKind, adapterStatus string, credentialStrategy map[string]any, requestEnvelopes []map[string]any) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	credentialConfigured := boolValueFromAny(credentialStrategy["token_env_configured"])
+	credentialPresent := boolValueFromAny(credentialStrategy["token_env_present"])
+	readyCount := 0
+	blockedCount := 0
+	blockedReasons := []string{}
+	seenBlockedReasons := map[string]bool{}
+	addBlockedReason := func(reason string) {
+		reason = providerReviewRehearsalBlockedReason(reason)
+		if reason == "" || seenBlockedReasons[reason] {
+			return
+		}
+		seenBlockedReasons[reason] = true
+		blockedReasons = append(blockedReasons, reason)
+	}
+	if adapterStatus != "planned" {
+		addBlockedReason("provider_review_api_adapter")
+	}
+	if !credentialConfigured {
+		addBlockedReason("provider_credential_configured")
+	}
+	if !credentialPresent {
+		addBlockedReason("provider_token_env_present")
+	}
+	operations := make([]map[string]any, 0, len(requestEnvelopes))
+	for _, envelope := range requestEnvelopes {
+		status := "ready"
+		operationBlockedReasons := []string{}
+		operationSeen := map[string]bool{}
+		for _, readiness := range mapSliceFromAny(envelope["readiness"]) {
+			if stringFromMap(readiness, "status") == "ready" {
+				continue
+			}
+			reason := providerReviewRehearsalBlockedReason(stringFromMap(readiness, "evidence"))
+			if reason == "" || operationSeen[reason] {
+				continue
+			}
+			operationSeen[reason] = true
+			operationBlockedReasons = append(operationBlockedReasons, reason)
+			addBlockedReason(reason)
+		}
+		if len(operationBlockedReasons) > 0 {
+			status = "blocked"
+			blockedCount++
+		} else {
+			readyCount++
+		}
+		operations = append(operations, map[string]any{
+			"name":                   cleanOptionalText(stringFromMap(envelope, "name")),
+			"endpoint_key":           cleanOptionalText(stringFromMap(envelope, "endpoint_key")),
+			"status":                 status,
+			"blocked_reasons":        operationBlockedReasons,
+			"external_call_made":     false,
+			"provider_api_call_made": false,
+			"provider_api_mutation":  "disabled",
+		})
+	}
+	status := "blocked"
+	if adapterStatus == "planned" && credentialConfigured && credentialPresent && blockedCount == 0 && len(requestEnvelopes) > 0 {
+		status = "ready"
+	}
+	return map[string]any{
+		"status":                         status,
+		"mode":                           "redacted_adapter_rehearsal",
+		"provider_type":                  provider,
+		"review_kind":                    reviewKind,
+		"adapter_status":                 adapterStatus,
+		"operation_count":                len(operations),
+		"ready_operation_count":          readyCount,
+		"blocked_operation_count":        blockedCount,
+		"blocked_reasons":                blockedReasons,
+		"operations":                     operations,
+		"mutation_arming_candidate":      status == "ready",
+		"external_call_made":             false,
+		"provider_api_call_made":         false,
+		"provider_api_mutation":          "disabled",
+		"payload_redacted":               true,
+		"contains_token":                 false,
+		"contains_provider_url":          false,
+		"contains_repository_ref":        false,
+		"contains_file_content":          false,
+		"requires_operator_review":       true,
+		"requires_mutation_arming":       true,
+		"adapter_mutation_currently_off": true,
+	}
+}
+
+func providerReviewRehearsalBlockedReason(value string) string {
+	switch strings.TrimSpace(value) {
+	case "provider_review_api_adapter":
+		return "provider_review_api_adapter"
+	case "provider_credential_configured":
+		return "provider_credential_configured"
+	case "provider_token_env_present":
+		return "provider_token_env_present"
+	case "provider_api_request_plan_ready":
+		return "provider_api_request_plan_ready"
+	case "review_branch_refs_valid", "review_branches_valid":
+		return "review_branches_valid"
+	case "starter_file_payload_staged":
+		return "starter_file_payload_staged"
+	default:
+		return ""
 	}
 }
 
