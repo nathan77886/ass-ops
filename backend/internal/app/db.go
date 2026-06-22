@@ -39,6 +39,21 @@ type AssetSyncResult struct {
 	InsertedStatusSnapshots int `db:"inserted_status_snapshots" json:"inserted_status_snapshots"`
 }
 
+type AssetGraphRepairReport struct {
+	TotalRelations           int    `db:"total_relations" json:"total_relations"`
+	DerivedRelations         int    `db:"derived_relations" json:"derived_relations"`
+	ManualRelations          int    `db:"manual_relations" json:"manual_relations"`
+	DanglingRelations        int    `db:"dangling_relations" json:"dangling_relations"`
+	DanglingDerivedRelations int    `db:"dangling_derived_relations" json:"dangling_derived_relations"`
+	DanglingManualRelations  int    `db:"dangling_manual_relations" json:"dangling_manual_relations"`
+	ReportError              string `db:"-" json:"report_error,omitempty"`
+}
+
+type AssetSyncReport struct {
+	AssetSyncResult
+	GraphRepair AssetGraphRepairReport `json:"graph_repair"`
+}
+
 type JSONValue struct {
 	Data any
 }
@@ -153,12 +168,33 @@ func (s *Store) SyncCanonicalAssets(ctx context.Context) (AssetSyncResult, error
 	return SyncCanonicalAssetsWith(ctx, s.DB)
 }
 
+func (s *Store) SyncCanonicalAssetsReport(ctx context.Context) (AssetSyncReport, error) {
+	result, err := s.SyncCanonicalAssets(ctx)
+	if err != nil {
+		return AssetSyncReport{AssetSyncResult: result}, err
+	}
+	graphRepair, err := AssetGraphRepairReportWith(ctx, s.DB)
+	if err != nil {
+		graphRepair.ReportError = err.Error()
+		return AssetSyncReport{AssetSyncResult: result, GraphRepair: graphRepair}, nil
+	}
+	return AssetSyncReport{AssetSyncResult: result, GraphRepair: graphRepair}, nil
+}
+
 func SyncCanonicalAssetsWith(ctx context.Context, db sqlx.QueryerContext) (AssetSyncResult, error) {
 	var result AssetSyncResult
 	if err := sqlx.GetContext(ctx, db, &result, canonicalAssetSyncSQL()); err != nil {
 		return result, fmt.Errorf("syncing canonical assets: %w", err)
 	}
 	return result, nil
+}
+
+func AssetGraphRepairReportWith(ctx context.Context, db sqlx.QueryerContext) (AssetGraphRepairReport, error) {
+	var report AssetGraphRepairReport
+	if err := sqlx.GetContext(ctx, db, &report, assetGraphRepairReportSQL()); err != nil {
+		return report, fmt.Errorf("loading asset graph repair report: %w", err)
+	}
+	return report, nil
 }
 
 func SyncWorkerNodeCanonicalAssetWith(ctx context.Context, db sqlx.QueryerContext, workerNodeID any) (AssetSyncResult, error) {
@@ -573,6 +609,26 @@ func canonicalAssetSyncSQL() string {
 		(SELECT count(*) FROM relation_inserts) AS inserted_relations,
 		(SELECT count(*) FROM relation_prunes) AS pruned_relations,
 		(SELECT count(*) FROM status_snapshot_inserts) AS inserted_status_snapshots`
+}
+
+func assetGraphRepairReportSQL() string {
+	return `
+	SELECT
+		count(*)::int AS total_relations,
+		count(*) FILTER (WHERE COALESCE(ar.metadata->>'source', '') <> 'manual')::int AS derived_relations,
+		count(*) FILTER (WHERE COALESCE(ar.metadata->>'source', '') = 'manual')::int AS manual_relations,
+		count(*) FILTER (WHERE from_asset.id IS NULL OR to_asset.id IS NULL)::int AS dangling_relations,
+		count(*) FILTER (
+			WHERE COALESCE(ar.metadata->>'source', '') <> 'manual'
+				AND (from_asset.id IS NULL OR to_asset.id IS NULL)
+		)::int AS dangling_derived_relations,
+		count(*) FILTER (
+			WHERE COALESCE(ar.metadata->>'source', '') = 'manual'
+				AND (from_asset.id IS NULL OR to_asset.id IS NULL)
+		)::int AS dangling_manual_relations
+	FROM asset_relations ar
+	LEFT JOIN assets from_asset ON from_asset.id=ar.from_asset_id
+	LEFT JOIN assets to_asset ON to_asset.id=ar.to_asset_id`
 }
 
 func workerNodeCanonicalAssetSyncSQL() string {

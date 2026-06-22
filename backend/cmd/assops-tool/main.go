@@ -156,7 +156,7 @@ func runDBCommand(cfg app.Config, args []string) error {
 		if err := store.ApplyMigrations(ctx, "backend/migrations"); err != nil {
 			return err
 		}
-		result, err := store.SyncCanonicalAssets(ctx)
+		result, err := store.SyncCanonicalAssetsReport(ctx)
 		if err != nil {
 			return err
 		}

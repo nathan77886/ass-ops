@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -129,6 +130,27 @@ func TestCanonicalAssetSyncSQLIncludesUpsertAndRelationDedupe(t *testing.T) {
 	}
 }
 
+func TestAssetGraphRepairReportSQLCountsDanglingManualAndDerivedRelations(t *testing.T) {
+	sql := assetGraphRepairReportSQL()
+	for _, token := range []string{
+		"FROM asset_relations ar",
+		"LEFT JOIN assets from_asset ON from_asset.id=ar.from_asset_id",
+		"LEFT JOIN assets to_asset ON to_asset.id=ar.to_asset_id",
+		"total_relations",
+		"derived_relations",
+		"manual_relations",
+		"dangling_relations",
+		"dangling_derived_relations",
+		"dangling_manual_relations",
+		"COALESCE(ar.metadata->>'source', '') <> 'manual'",
+		"COALESCE(ar.metadata->>'source', '') = 'manual'",
+	} {
+		if !strings.Contains(sql, token) {
+			t.Fatalf("assetGraphRepairReportSQL missing %s", token)
+		}
+	}
+}
+
 func TestWorkerNodeCanonicalAssetSyncSQLIsNarrow(t *testing.T) {
 	sql := workerNodeCanonicalAssetSyncSQL()
 	for _, token := range []string{
@@ -158,6 +180,35 @@ func TestWorkerNodeCanonicalAssetSyncSQLIsNarrow(t *testing.T) {
 	}
 }
 
+func TestAssetGraphRepairReportWithScansCounts(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	sqlDB := sqlx.NewDb(db, "sqlmock")
+	rows := sqlmock.NewRows([]string{
+		"total_relations",
+		"derived_relations",
+		"manual_relations",
+		"dangling_relations",
+		"dangling_derived_relations",
+		"dangling_manual_relations",
+	}).AddRow(8, 6, 2, 3, 1, 2)
+	mock.ExpectQuery(regexp.QuoteMeta(assetGraphRepairReportSQL())).WillReturnRows(rows)
+	report, err := AssetGraphRepairReportWith(t.Context(), sqlDB)
+	if err != nil {
+		t.Fatalf("AssetGraphRepairReportWith: %v", err)
+	}
+	if report.TotalRelations != 8 || report.DerivedRelations != 6 || report.ManualRelations != 2 ||
+		report.DanglingRelations != 3 || report.DanglingDerivedRelations != 1 || report.DanglingManualRelations != 2 {
+		t.Fatalf("report = %+v", report)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestSyncCanonicalAssetsWithScansPrunedRelations(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -178,6 +229,97 @@ func TestSyncCanonicalAssetsWithScansPrunedRelations(t *testing.T) {
 	}
 	if result.SyncedAssets != 3 || result.InsertedRelations != 2 || result.PrunedRelations != 1 || result.InsertedStatusSnapshots != 4 {
 		t.Fatalf("result = %+v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestStoreSyncCanonicalAssetsReportIncludesRepairReport(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	syncRows := sqlmock.NewRows([]string{
+		"synced_assets",
+		"inserted_relations",
+		"pruned_relations",
+		"inserted_status_snapshots",
+	}).AddRow(3, 2, 1, 4)
+	reportRows := sqlmock.NewRows([]string{
+		"total_relations",
+		"derived_relations",
+		"manual_relations",
+		"dangling_relations",
+		"dangling_derived_relations",
+		"dangling_manual_relations",
+	}).AddRow(9, 7, 2, 1, 0, 1)
+	mock.ExpectQuery(regexp.QuoteMeta(canonicalAssetSyncSQL())).WillReturnRows(syncRows)
+	mock.ExpectQuery(regexp.QuoteMeta(assetGraphRepairReportSQL())).WillReturnRows(reportRows)
+
+	report, err := store.SyncCanonicalAssetsReport(t.Context())
+	if err != nil {
+		t.Fatalf("SyncCanonicalAssetsReport: %v", err)
+	}
+	if report.SyncedAssets != 3 || report.InsertedRelations != 2 || report.PrunedRelations != 1 ||
+		report.InsertedStatusSnapshots != 4 || report.GraphRepair.TotalRelations != 9 ||
+		report.GraphRepair.DanglingManualRelations != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestStoreSyncCanonicalAssetsReportKeepsSyncResultWhenRepairReportFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	syncRows := sqlmock.NewRows([]string{
+		"synced_assets",
+		"inserted_relations",
+		"pruned_relations",
+		"inserted_status_snapshots",
+	}).AddRow(3, 2, 1, 4)
+	mock.ExpectQuery(regexp.QuoteMeta(canonicalAssetSyncSQL())).WillReturnRows(syncRows)
+	mock.ExpectQuery(regexp.QuoteMeta(assetGraphRepairReportSQL())).WillReturnError(errors.New("report query failed"))
+
+	report, err := store.SyncCanonicalAssetsReport(t.Context())
+	if err != nil {
+		t.Fatalf("SyncCanonicalAssetsReport returned error after sync succeeded: %v", err)
+	}
+	if report.SyncedAssets != 3 || report.InsertedRelations != 2 || report.PrunedRelations != 1 ||
+		report.InsertedStatusSnapshots != 4 {
+		t.Fatalf("sync result = %+v", report.AssetSyncResult)
+	}
+	if !strings.Contains(report.GraphRepair.ReportError, "report query failed") {
+		t.Fatalf("report error = %q", report.GraphRepair.ReportError)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestStoreSyncCanonicalAssetsReportStopsWhenSyncFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	mock.ExpectQuery(regexp.QuoteMeta(canonicalAssetSyncSQL())).WillReturnError(errors.New("sync failed"))
+
+	_, err = store.SyncCanonicalAssetsReport(t.Context())
+	if err == nil {
+		t.Fatal("SyncCanonicalAssetsReport should return sync error")
+	}
+	if !strings.Contains(err.Error(), "sync failed") {
+		t.Fatalf("error = %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
