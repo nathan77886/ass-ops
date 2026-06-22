@@ -2828,6 +2828,17 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		resultAttemptOrchestration["requires_adapter_execution"] != true {
 		t.Fatalf("approval result attempt orchestration should be sanitized: %#v", resultAttemptOrchestration)
 	}
+	resultAttemptCandidate := mapFromAny(resultAttemptOrchestration["execution_candidate"])
+	if resultAttemptCandidate["mode"] != "redacted_attempt_execution_candidate" ||
+		resultAttemptCandidate["status"] != "blocked" ||
+		resultAttemptCandidate["next_operation"] != "open_review_request" ||
+		resultAttemptCandidate["endpoint_key"] != "github.open_review" ||
+		resultAttemptCandidate["provider_api_call_made"] != false ||
+		resultAttemptCandidate["provider_api_mutation"] != "disabled" ||
+		resultAttemptCandidate["mutation_armed"] != false ||
+		resultAttemptCandidate["adapter_implemented"] != false {
+		t.Fatalf("approval result attempt candidate should be blocked/redacted: %#v", resultAttemptCandidate)
+	}
 	resultAttemptOperations := sliceOfMapsFromAny(resultAttemptLedger["operations"])
 	if len(resultAttemptOperations) != 1 ||
 		resultAttemptOperations[0]["idempotency_key_included"] != false ||
@@ -3039,6 +3050,36 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		orchestration["provider_api_mutation"] != "disabled" {
 		t.Fatalf("attempt orchestration summary = %#v", orchestration)
 	}
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	if candidate["mode"] != "redacted_attempt_execution_candidate" ||
+		candidate["status"] != "blocked" ||
+		candidate["next_operation"] != "create_branch_ref" ||
+		candidate["endpoint_key"] != "github.create_branch_ref" ||
+		candidate["operation_order"] != 10 ||
+		candidate["provider_api_call_made"] != false ||
+		candidate["provider_api_mutation"] != "disabled" ||
+		candidate["idempotency_key_included"] != false ||
+		candidate["contains_token"] != false ||
+		candidate["contains_provider_url"] != false {
+		t.Fatalf("attempt execution candidate = %#v", candidate)
+	}
+	candidateGates := sliceOfMapsFromAny(candidate["gates"])
+	if len(candidateGates) != 5 ||
+		candidateGates[0]["gate"] != "attempt_operation_ready" ||
+		candidateGates[0]["category"] != "data_integrity" ||
+		candidateGates[0]["status"] != "ready" ||
+		candidateGates[1]["gate"] != "idempotency_metadata" ||
+		candidateGates[1]["category"] != "data_integrity" ||
+		candidateGates[1]["status"] != "ready" ||
+		candidateGates[2]["gate"] != "response_diagnostics_metadata" ||
+		candidateGates[2]["category"] != "data_integrity" ||
+		candidateGates[2]["status"] != "ready" ||
+		candidateGates[3]["category"] != "execution_blocker" ||
+		candidateGates[3]["status"] != "blocked" ||
+		candidateGates[4]["category"] != "execution_blocker" ||
+		candidateGates[4]["status"] != "blocked" {
+		t.Fatalf("attempt execution candidate gates = %#v", candidateGates)
+	}
 	operations := sliceOfMapsFromAny(summary["operations"])
 	if len(operations) != 3 ||
 		operations[0]["endpoint_key"] != "github.create_branch_ref" ||
@@ -3146,6 +3187,17 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 		orchestration["next_operation"] != "" ||
 		orchestration["provider_api_call_made"] != false {
 		t.Fatalf("persisted attempt orchestration summary = %#v", orchestration)
+	}
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	if candidate["mode"] != "redacted_attempt_execution_candidate" ||
+		candidate["status"] != "blocked" ||
+		candidate["next_operation"] != "" ||
+		candidate["provider_api_mutation"] != "disabled" {
+		t.Fatalf("persisted attempt execution candidate = %#v", candidate)
+	}
+	blockedReasons := stringSliceFromAny(candidate["blocked_reasons"])
+	if len(blockedReasons) != 1 || blockedReasons[0] != "provider_review_attempt_not_ready" {
+		t.Fatalf("persisted attempt execution candidate blocked reasons = %#v", blockedReasons)
 	}
 	operations := sliceOfMapsFromAny(summary["operations"])
 	if len(operations) != 1 ||
@@ -3396,6 +3448,10 @@ func TestProviderReviewAttemptOrchestrationSummaryBlocksUnknownStatus(t *testing
 		summary["dependency_chain_status"] != "blocked" {
 		t.Fatalf("unknown status orchestration summary = %#v", summary)
 	}
+	candidate := mapFromAny(summary["execution_candidate"])
+	if candidate["next_operation"] != "" || candidate["status"] != "blocked" {
+		t.Fatalf("unknown status execution candidate = %#v", candidate)
+	}
 }
 
 func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T) {
@@ -3414,6 +3470,10 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 		})
 		if summary["ready_count"] != 2 || summary["next_operation"] != "commit_starter_files" || summary["dependency_chain_status"] != "ready" {
 			t.Fatalf("mixed operation name orchestration summary = %#v", summary)
+		}
+		candidate := mapFromAny(summary["execution_candidate"])
+		if candidate["next_operation"] != "commit_starter_files" || candidate["endpoint_key"] != "" {
+			t.Fatalf("mixed operation name execution candidate = %#v", candidate)
 		}
 	})
 	t.Run("dependency failure wins over completed status", func(t *testing.T) {

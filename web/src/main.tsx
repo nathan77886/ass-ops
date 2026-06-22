@@ -1064,6 +1064,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const idempotencyOperations = Array.isArray(idempotencyPlan.operations) ? idempotencyPlan.operations : [];
   const attemptLedger = result.provider_review_attempt_ledger?.status ? result.provider_review_attempt_ledger : (persistedAttemptLedger || {});
   const attemptOrchestration = attemptLedger.orchestration || {};
+  const attemptExecutionCandidate = attemptOrchestration.execution_candidate || {};
+  const attemptExecutionCandidateGates = Array.isArray(attemptExecutionCandidate.gates) ? attemptExecutionCandidate.gates : [];
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
   return (
     <Space direction="vertical" size={8} className="full">
@@ -1319,6 +1321,23 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>waiting {Number(attemptOrchestration.waiting_count || 0)}</Tag>
           <Tag>blocked {Number(attemptOrchestration.blocked_count || 0)}</Tag>
           <Tag>completed {Number(attemptOrchestration.completed_count || 0)}</Tag>
+        </Space>
+      ) : null}
+      {attemptExecutionCandidate.mode ? (
+        <Space size={4} wrap>
+          <Tag color={attemptExecutionCandidate.status === 'ready' ? 'green' : attemptExecutionCandidate.status === 'blocked' ? 'red' : 'gold'}>candidate {String(attemptExecutionCandidate.status || 'blocked')}</Tag>
+          <Tag>next {String(attemptExecutionCandidate.next_operation || '-')}</Tag>
+          <Tag>{String(attemptExecutionCandidate.endpoint_key || 'provider.api')}</Tag>
+          <Tag>{String(attemptExecutionCandidate.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {attemptExecutionCandidateGates.length ? (
+        <Space size={4} wrap>
+          {attemptExecutionCandidateGates.map((gate: AnyRow, index: number) => (
+            <Tag key={String(gate.gate || `attempt-candidate-gate-${index}`)} color={gate.status === 'ready' ? 'green' : gate.status === 'blocked' ? 'red' : 'gold'}>
+              {String(gate.category || 'gate').replaceAll('_', ' ')} / {String(gate.gate || 'gate').replaceAll('_', ' ')}: {String(gate.status || 'unknown')}
+            </Tag>
+          ))}
         </Space>
       ) : null}
       {attemptOperations.length ? (

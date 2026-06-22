@@ -10907,6 +10907,7 @@ func providerReviewAttemptOrchestrationSummary(operations []map[string]any) map[
 		"idempotency_key_included":   false,
 		"requires_operator_review":   true,
 		"requires_adapter_execution": true,
+		"execution_candidate":        providerReviewAttemptExecutionCandidate(nil, ""),
 	}
 	if len(operations) == 0 {
 		return summary
@@ -10956,7 +10957,91 @@ func providerReviewAttemptOrchestrationSummary(operations []map[string]any) map[
 	summary["blocked_count"] = blockedCount
 	summary["completed_count"] = completedCount
 	summary["dependency_chain_status"] = chainStatus
+	summary["execution_candidate"] = providerReviewAttemptExecutionCandidate(operations, nextOperation)
 	return summary
+}
+
+func providerReviewAttemptExecutionCandidate(operations []map[string]any, nextOperation string) map[string]any {
+	candidate := map[string]any{
+		"mode":                          "redacted_attempt_execution_candidate",
+		"status":                        "blocked",
+		"next_operation":                "",
+		"endpoint_key":                  "",
+		"operation_order":               0,
+		"requires_provider_client":      true,
+		"requires_idempotency_ledger":   true,
+		"requires_response_diagnostics": true,
+		"requires_mutation_arming":      true,
+		"adapter_implemented":           false,
+		"mutation_armed":                false,
+		"external_call_made":            false,
+		"provider_api_call_made":        false,
+		"provider_api_mutation":         "disabled",
+		"idempotency_key_included":      false,
+		"contains_token":                false,
+		"contains_provider_url":         false,
+		"contains_repository_ref":       false,
+		"contains_branch_name":          false,
+		"contains_file_content":         false,
+		"blocked_reasons": []string{
+			"provider_review_adapter_not_implemented",
+			"provider_review_mutation_not_armed",
+		},
+		"gates": providerReviewAttemptExecutionCandidateGates(false, false, false),
+	}
+	nextOperation = safeProviderReviewAttemptOperationName(nextOperation)
+	if nextOperation == "" {
+		candidate["blocked_reasons"] = []string{"provider_review_attempt_not_ready"}
+		return candidate
+	}
+	for _, operation := range operations {
+		if safeProviderReviewAttemptOperationName(stringFromMap(operation, "name")) != nextOperation {
+			continue
+		}
+		requestSummary := mapFromAny(operation["request_summary"])
+		responseDiagnostics := mapFromAny(operation["response_diagnostics"])
+		endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+		idempotencyReady := boolOnlyFromAny(requestSummary["requires_idempotency_ledger"])
+		responseReady := mapFromAny(responseDiagnostics)["mode"] == "redacted_attempt_response_diagnostics"
+		candidate["next_operation"] = nextOperation
+		candidate["endpoint_key"] = endpointKey
+		candidate["operation_order"] = intFromAny(operation["operation_order"], 0)
+		candidate["status"] = "blocked"
+		candidate["gates"] = providerReviewAttemptExecutionCandidateGates(true, idempotencyReady, responseReady)
+		return candidate
+	}
+	candidate["blocked_reasons"] = []string{"provider_review_attempt_not_found"}
+	return candidate
+}
+
+func providerReviewAttemptExecutionCandidateGates(candidateReady, idempotencyReady, responseDiagnosticsReady bool) []map[string]any {
+	return []map[string]any{
+		{
+			"gate":     "attempt_operation_ready",
+			"category": "data_integrity",
+			"status":   readinessStatus(candidateReady),
+		},
+		{
+			"gate":     "idempotency_metadata",
+			"category": "data_integrity",
+			"status":   readinessStatus(idempotencyReady),
+		},
+		{
+			"gate":     "response_diagnostics_metadata",
+			"category": "data_integrity",
+			"status":   readinessStatus(responseDiagnosticsReady),
+		},
+		{
+			"gate":     "provider_api_adapter",
+			"category": "execution_blocker",
+			"status":   "blocked",
+		},
+		{
+			"gate":     "provider_review_mutation_armed",
+			"category": "execution_blocker",
+			"status":   "blocked",
+		},
+	}
 }
 
 func safeProviderReviewAttemptOperationName(value string) string {
