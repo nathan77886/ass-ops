@@ -510,6 +510,7 @@ func templateRepositoryReconciliation(kind string, repo, remote map[string]any, 
 		stringFromMap(remote, "provider_type"),
 		stringFromMap(remote, "kind"),
 	)))
+	branchStrategy := templateProtectedBranchStrategy(repo, remote, defaultBranch)
 	summary := map[string]any{
 		"kind":               kind,
 		"provider_type":      provider,
@@ -532,6 +533,13 @@ func templateRepositoryReconciliation(kind string, repo, remote map[string]any, 
 		summary["guardrail"] = "protected_branch_push_blocked"
 		summary["action_required"] = "Review provider branch protection and choose a provider-specific reconciliation path."
 		summary["retry_after"] = "Configure a branch strategy or set allow_protected_branch_push only after branch protection is approved."
+		if stringFromMap(branchStrategy, "strategy_status") == "planned" {
+			summary["branch_strategy"] = branchStrategy
+			summary["action_required"] = templateBranchStrategyActionRequired(branchStrategy, defaultBranch)
+			summary["retry_after"] = "Retry after the proposed branch is reviewed and merged, or enable allow_protected_branch_push after approval."
+		} else if len(branchStrategy) > 0 {
+			summary["branch_strategy"] = branchStrategy
+		}
 	case "missing_token":
 		summary["guardrail"] = "provider_token_missing"
 		summary["action_required"] = "Rotate the provider account to a configured token environment and run the provider health check."
@@ -542,6 +550,114 @@ func templateRepositoryReconciliation(kind string, repo, remote map[string]any, 
 		summary["retry_after"] = "Retry after the missing provider condition is fixed."
 	}
 	return summary
+}
+
+func templateBranchStrategyActionRequired(strategy map[string]any, defaultBranch string) string {
+	proposed := strings.TrimSpace(fmt.Sprint(strategy["proposed_branch"]))
+	mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(strategy["mode"])))
+	provider := strings.ToLower(strings.TrimSpace(fmt.Sprint(strategy["provider_type"])))
+	switch mode {
+	case "pull_request":
+		if provider == "github" {
+			return fmt.Sprintf("Create branch %s from starter files, then open a GitHub pull request into %s.", proposed, defaultBranch)
+		}
+		return fmt.Sprintf("Create branch %s from starter files, then open a provider pull request into %s.", proposed, defaultBranch)
+	case "merge_request":
+		if provider == "gitea" {
+			return fmt.Sprintf("Create branch %s from starter files, then open a Gitea pull request into %s.", proposed, defaultBranch)
+		}
+		return fmt.Sprintf("Create branch %s from starter files, then open a merge request into %s.", proposed, defaultBranch)
+	default:
+		return fmt.Sprintf("Create branch %s from starter files, then open provider review before merging into %s.", proposed, defaultBranch)
+	}
+}
+
+func templateProtectedBranchStrategy(repo, remote map[string]any, defaultBranch string) map[string]any {
+	metadata := mapFromAny(remote["metadata"])
+	mode := strings.ToLower(strings.TrimSpace(firstNonEmptyString(
+		stringFromMap(metadata, "branch_strategy"),
+		stringFromMap(metadata, "protected_branch_strategy"),
+	)))
+	if mode == "" || mode == "none" || mode == "direct" || mode == "allow_direct" {
+		return nil
+	}
+	if mode != "proposed_branch" && mode != "pull_request" && mode != "merge_request" {
+		return map[string]any{
+			"mode":            mode,
+			"strategy_status": "unsupported",
+			"message":         "Unsupported protected branch strategy; use proposed_branch, pull_request, or merge_request.",
+		}
+	}
+	prefix := strings.TrimSpace(firstNonEmptyString(stringFromMap(metadata, "branch_prefix"), "assops/template"))
+	repoKey := strings.TrimSpace(firstNonEmptyString(stringFromMap(repo, "repo_key"), stringFromMap(repo, "name"), "project"))
+	proposed := strings.TrimSpace(firstNonEmptyString(
+		stringFromMap(metadata, "proposed_branch"),
+		stringFromMap(metadata, "branch_name"),
+	))
+	if proposed == "" {
+		proposed = safeTemplateBranchName(prefix, repoKey, defaultBranch)
+	} else if !isSafeGitRefPart(proposed) {
+		proposed = safeTemplateBranchName(prefix, repoKey, defaultBranch)
+	}
+	strategy := map[string]any{
+		"mode":                 mode,
+		"strategy_status":      "planned",
+		"proposed_branch":      proposed,
+		"target_branch":        defaultBranch,
+		"provider_next_action": "open_review",
+		"message":              "Starter files should be pushed to a reviewed branch before protected default branch changes.",
+	}
+	if provider := strings.TrimSpace(firstNonEmptyString(stringFromMap(remote, "provider_type"), stringFromMap(remote, "kind"))); provider != "" {
+		strategy["provider_type"] = strings.ToLower(provider)
+	}
+	return strategy
+}
+
+func safeTemplateBranchName(prefix, repoKey, defaultBranch string) string {
+	clean := func(value string) string {
+		value = strings.ToLower(strings.TrimSpace(value))
+		var b strings.Builder
+		prevDash := false
+		for _, r := range value {
+			allowed := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+			if allowed {
+				b.WriteRune(r)
+				prevDash = false
+				continue
+			}
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+		return strings.Trim(b.String(), "-")
+	}
+	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
+	cleanPrefixParts := make([]string, 0)
+	for _, part := range strings.Split(prefix, "/") {
+		if cleaned := clean(part); cleaned != "" {
+			cleanPrefixParts = append(cleanPrefixParts, cleaned)
+		}
+	}
+	prefix = strings.Join(cleanPrefixParts, "/")
+	if prefix == "" {
+		prefix = "assops/template"
+	}
+	repoPart := clean(repoKey)
+	if repoPart == "" {
+		repoPart = "project"
+	}
+	targetPart := clean(defaultBranch)
+	if targetPart == "" {
+		targetPart = "main"
+	}
+	branch := prefix + "/" + repoPart + "-" + targetPart
+	branch = strings.ReplaceAll(branch, "//", "/")
+	branch = strings.Trim(branch, "/.")
+	if !isSafeGitRefPart(branch) {
+		return "assops/template/" + repoPart + "-" + targetPart
+	}
+	return branch
 }
 
 func templateProviderAlreadyExists(status int, body []byte) bool {

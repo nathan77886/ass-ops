@@ -328,16 +328,18 @@ function templateProvisionGuidance(row: AnyRow) {
     };
   }
   if (reconciliation.kind) {
+    const branchStrategy = reconciliation.branch_strategy || {};
+    const branchStrategyReady = reconciliation.kind === 'protected_branch' && branchStrategy.strategy_status === 'planned';
     const titles: Record<string, string> = {
       existing_repository: 'Existing repository needs reconciliation',
-      protected_branch: 'Protected branch guard is active',
+      protected_branch: branchStrategyReady ? 'Protected branch strategy ready' : 'Protected branch guard is active',
       missing_token: 'Provider token is not configured'
     };
     return {
-      status: reconciliation.kind === 'missing_token' ? 'token' : 'manual reconcile',
+      status: reconciliation.kind === 'missing_token' ? 'token' : branchStrategyReady ? 'branch strategy' : 'manual reconcile',
       color: reconciliation.kind === 'missing_token' ? 'red' : 'gold',
       title: titles[String(reconciliation.kind)] || 'Repository needs reconciliation',
-      detail: String(reconciliation.action_required || details.reason || row.result?.repository_provision_reason || 'Repository provisioning needs operator review.'),
+      detail: String((branchStrategyReady ? reconciliation.action_required : branchStrategy.message) || reconciliation.action_required || details.reason || row.result?.repository_provision_reason || 'Repository provisioning needs operator review.'),
       next: String(reconciliation.retry_after || 'Retry after the missing provider condition is fixed.')
     };
   }

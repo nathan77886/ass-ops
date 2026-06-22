@@ -284,6 +284,93 @@ func TestProvisionTemplateRepositorySkipsStarterPushForProtectedExternalRemote(t
 	}
 }
 
+func TestProvisionTemplateRepositoryReportsProtectedBranchStrategy(t *testing.T) {
+	t.Setenv("ASSOPS_ALLOW_LOCAL_TEMPLATE_PROVIDER_API", "true")
+	t.Setenv("ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_TEST", "secret-token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ssh_url":"git@github.com:acme/protected-service.git","html_url":"https://github.com/acme/protected-service"}`))
+	}))
+	defer server.Close()
+
+	result, err := (&GitExecutor{HTTPClient: server.Client()}).ProvisionTemplateRepository(context.Background(),
+		map[string]any{"id": "repo-1", "repo_key": "Protected Service", "default_branch": "release/main"},
+		[]map[string]any{{
+			"id":            "remote-1",
+			"provider_type": "github",
+			"protected":     true,
+			"metadata": map[string]any{
+				"api_base_url":    server.URL,
+				"owner":           "acme",
+				"token_env":       "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_TEST",
+				"branch_strategy": "proposed_branch",
+				"branch_prefix":   "assops/starter",
+			},
+		}},
+		[]map[string]any{{"path": "README.md", "content": "# Protected\n"}},
+	)
+	if err != nil {
+		t.Fatalf("ProvisionTemplateRepository: %v", err)
+	}
+	reconcile := mapFromAny(result.Details["repository_reconciliation"])
+	strategy := mapFromAny(reconcile["branch_strategy"])
+	if strategy["mode"] != "proposed_branch" || strategy["strategy_status"] != "planned" {
+		t.Fatalf("branch strategy = %#v", strategy)
+	}
+	if strategy["proposed_branch"] != "assops/starter/protected-service-release-main" || strategy["target_branch"] != "release/main" {
+		t.Fatalf("branch strategy branches = %#v", strategy)
+	}
+	if !strings.Contains(fmt.Sprint(reconcile["action_required"]), "assops/starter/protected-service-release-main") {
+		t.Fatalf("action_required missing proposed branch: %#v", reconcile)
+	}
+}
+
+func TestSafeTemplateBranchNameSanitizesParts(t *testing.T) {
+	got := safeTemplateBranchName("assops// bad! starter/", "Billing API!", "release/main")
+	if got != "assops/bad-starter/billing-api-release-main" {
+		t.Fatalf("safeTemplateBranchName = %q", got)
+	}
+	if !isSafeGitRefPart(got) {
+		t.Fatalf("generated branch should be a safe git ref: %q", got)
+	}
+}
+
+func TestTemplateProtectedBranchStrategyRejectsUnsafeProposedBranch(t *testing.T) {
+	strategy := templateProtectedBranchStrategy(
+		map[string]any{"repo_key": "Billing API", "default_branch": "main"},
+		map[string]any{
+			"provider_type": "github",
+			"metadata": map[string]any{
+				"branch_strategy": "proposed_branch",
+				"proposed_branch": "../unsafe",
+			},
+		},
+		"main",
+	)
+	if strategy["proposed_branch"] != "assops/template/billing-api-main" {
+		t.Fatalf("unsafe proposed branch should fall back to safe generated branch: %#v", strategy)
+	}
+}
+
+func TestTemplateBranchStrategyActionRequiredUsesProviderTerms(t *testing.T) {
+	pr := templateBranchStrategyActionRequired(map[string]any{
+		"mode":            "pull_request",
+		"provider_type":   "github",
+		"proposed_branch": "assops/template/demo-main",
+	}, "main")
+	if !strings.Contains(pr, "GitHub pull request") {
+		t.Fatalf("pull request action = %q", pr)
+	}
+	mr := templateBranchStrategyActionRequired(map[string]any{
+		"mode":            "merge_request",
+		"provider_type":   "gitlab",
+		"proposed_branch": "assops/template/demo-main",
+	}, "main")
+	if !strings.Contains(mr, "merge request") {
+		t.Fatalf("merge request action = %q", mr)
+	}
+}
+
 func TestProvisionTemplateRepositorySkipsExternalProviderWithoutToken(t *testing.T) {
 	t.Setenv("ASSOPS_ALLOW_LOCAL_TEMPLATE_PROVIDER_API", "true")
 	called := false
