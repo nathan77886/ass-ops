@@ -458,6 +458,23 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	if len(apiOperations) != 3 || apiOperations[0]["endpoint_key"] != "github.create_branch_ref" {
 		t.Fatalf("github provider api request operations = %#v", apiOperations)
 	}
+	reconciliation := mapFromAny(githubPlan["provider_review_reconciliation"])
+	if reconciliation["status"] != "blocked" ||
+		reconciliation["mode"] != "preflight_reconciliation" ||
+		reconciliation["adapter_status"] != "missing" ||
+		reconciliation["external_call_made"] != false ||
+		reconciliation["provider_api_mutation"] != "disabled" {
+		t.Fatalf("github provider review reconciliation = %#v", reconciliation)
+	}
+	if !containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_api_adapter") ||
+		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "starter_file_payload_staged") ||
+		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_api_request_plan_ready") {
+		t.Fatalf("github provider review reconciliation blocked reasons = %#v", reconciliation)
+	}
+	reconcileOperations := sliceOfMapsFromAny(reconciliation["operations"])
+	if len(reconcileOperations) != 3 || reconcileOperations[0]["endpoint_key"] != "github.create_branch_ref" {
+		t.Fatalf("github provider review reconciliation operations = %#v", reconcileOperations)
+	}
 	gates := sliceOfMapsFromAny(githubGuardrail["gates"])
 	if len(gates) != 4 || gates[0]["gate"] != "provider_review_execution_enabled" || gates[2]["status"] != "ready" {
 		t.Fatalf("github execution guardrail gates = %#v", gates)

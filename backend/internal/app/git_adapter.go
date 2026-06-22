@@ -601,6 +601,7 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 	guardrail := templateProviderReviewExecutionGuardrail(provider, reviewKind, sourceBranch, targetBranch, false)
 	// Starter files are staged later when the approval payload is built.
 	apiRequestPlan := templateProviderReviewAPIRequestPlan(provider, reviewKind, sourceBranch, targetBranch, nil)
+	reconciliation := templateProviderReviewExecutionReconciliation(provider, reviewKind, nil, guardrail, apiRequestPlan)
 	steps := []map[string]any{
 		{
 			"name":      "create_branch",
@@ -631,22 +632,23 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 		},
 	}
 	return map[string]any{
-		"mode":                      "dry_run",
-		"provider_type":             provider,
-		"strategy_mode":             mode,
-		"review_kind":               reviewKind,
-		"source_branch":             sourceBranch,
-		"target_branch":             targetBranch,
-		"execution_enabled":         false,
-		"external_call_made":        false,
-		"requires_approval":         true,
-		"approval_action":           templateProviderReviewExecuteApprovalAction,
-		"provider_api_mutation":     "disabled",
-		"execution_request":         executionRequest,
-		"execution_guardrail":       guardrail,
-		"provider_api_request_plan": apiRequestPlan,
-		"steps":                     steps,
-		"message":                   "Provider review execution request is prepared for approval, but branch creation, starter-file commits, and PR/MR creation remain disabled.",
+		"mode":                           "dry_run",
+		"provider_type":                  provider,
+		"strategy_mode":                  mode,
+		"review_kind":                    reviewKind,
+		"source_branch":                  sourceBranch,
+		"target_branch":                  targetBranch,
+		"execution_enabled":              false,
+		"external_call_made":             false,
+		"requires_approval":              true,
+		"approval_action":                templateProviderReviewExecuteApprovalAction,
+		"provider_api_mutation":          "disabled",
+		"execution_request":              executionRequest,
+		"execution_guardrail":            guardrail,
+		"provider_api_request_plan":      apiRequestPlan,
+		"provider_review_reconciliation": reconciliation,
+		"steps":                          steps,
+		"message":                        "Provider review execution request is prepared for approval, but branch creation, starter-file commits, and PR/MR creation remain disabled.",
 	}
 }
 
@@ -719,6 +721,89 @@ func templateProviderReviewAPIRequestPlan(provider, reviewKind, sourceBranch, ta
 				"api_call":              false,
 			},
 		},
+	}
+}
+
+func templateProviderReviewExecutionReconciliation(provider, reviewKind string, starterFilePayload, guardrail, apiRequestPlan map[string]any) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	providerSupported := provider == "github" || provider == "gitea"
+	starterReady := starterFilePayloadReady(starterFilePayload)
+	planReady := fmt.Sprint(apiRequestPlan["status"]) == "ready"
+	// Keep this false until branch/ref, starter-file commit, and review-request
+	// adapters are implemented together with matching adapter status and gates.
+	adapterReady := false
+	enabled := boolValueFromAny(guardrail["execution_enabled"])
+	gates := []map[string]any{
+		{
+			"gate":              "provider_supported",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[providerSupported],
+			"provider_type":     provider,
+			"message":           "Provider review adapters are only planned for GitHub and Gitea.",
+			"sensitive_payload": false,
+		},
+		{
+			"gate":              "starter_file_payload_staged",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[starterReady],
+			"message":           "Starter-file payload must be staged as a content-redacted summary before provider review execution.",
+			"sensitive_payload": false,
+		},
+		{
+			"gate":              "provider_api_request_plan_ready",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[planReady],
+			"message":           "Provider API request plan must have valid branches and staged starter-file payload metadata.",
+			"sensitive_payload": false,
+		},
+		{
+			"gate":              "provider_review_api_adapter",
+			"status":            "blocked",
+			"provider_type":     provider,
+			"review_kind":       reviewKind,
+			"message":           "Provider branch creation, starter-file commit, and PR/MR adapters are not wired yet.",
+			"sensitive_payload": false,
+		},
+	}
+	blocked := make([]string, 0, len(gates))
+	for _, gate := range gates {
+		if gate["status"] != "ready" {
+			blocked = append(blocked, stringFromMap(gate, "gate"))
+		}
+	}
+	return map[string]any{
+		"status":                 map[bool]string{true: "ready", false: "blocked"}[enabled && providerSupported && starterReady && planReady && adapterReady],
+		"mode":                   "preflight_reconciliation",
+		"provider_type":          provider,
+		"review_kind":            reviewKind,
+		"adapter_status":         "missing",
+		"external_call_made":     false,
+		"provider_api_call_made": false,
+		"provider_api_mutation":  "disabled",
+		"blocked_reasons":        blocked,
+		"gates":                  gates,
+		"operations": []map[string]any{
+			{
+				"name":               "create_branch_ref",
+				"endpoint_key":       providerReviewEndpointKey(provider, "create_branch_ref"),
+				"status":             "blocked",
+				"blocked_reason":     "provider_review_api_adapter",
+				"external_call_made": false,
+			},
+			{
+				"name":               "commit_starter_files",
+				"endpoint_key":       providerReviewEndpointKey(provider, "commit_files"),
+				"status":             "blocked",
+				"blocked_reason":     "provider_review_api_adapter",
+				"external_call_made": false,
+			},
+			{
+				"name":               "open_review_request",
+				"endpoint_key":       providerReviewEndpointKey(provider, "open_review"),
+				"status":             "blocked",
+				"blocked_reason":     "provider_review_api_adapter",
+				"external_call_made": false,
+			},
+		},
+		"next_step": "Implement provider branch/ref, starter-file commit, and review-request adapters behind the existing approval and guardrail contract.",
 	}
 }
 

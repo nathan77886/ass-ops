@@ -1033,10 +1033,13 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
   const guardrail = value.execution_guardrail || {};
   const starter = value.starter_file_payload || {};
   const apiPlan = value.provider_api_request_plan || {};
+  const reconciliation = value.provider_review_reconciliation || {};
   const result = value.approval_result || {};
   const gates = Array.isArray(guardrail.gates) ? guardrail.gates : [];
   const files = Array.isArray(starter.files) ? starter.files : [];
   const operations = Array.isArray(apiPlan.operations) ? apiPlan.operations : [];
+  const reconciliationGates = Array.isArray(reconciliation.gates) ? reconciliation.gates : [];
+  const reconciliationOperations = Array.isArray(reconciliation.operations) ? reconciliation.operations : [];
   return (
     <Space direction="vertical" size={8} className="full">
       <Space size={4} wrap>
@@ -1085,6 +1088,32 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
           {operations.map((operation: AnyRow, index: number) => (
             <Tag key={String(operation.endpoint_key || operation.name || `operation-${index}`)} color={operation.api_call === true ? 'red' : 'default'}>
               {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.payload_shape || operation.method || 'redacted')}
+            </Tag>
+          ))}
+        </Space>
+      ) : null}
+      {reconciliation.status ? (
+        <Space size={4} wrap>
+          <Tag color={reconciliation.status === 'ready' ? 'green' : 'gold'}>reconcile {String(reconciliation.status)}</Tag>
+          <Tag>adapter {String(reconciliation.adapter_status || 'unknown')}</Tag>
+          <Tag color={reconciliation.external_call_made === true ? 'red' : 'default'}>{reconciliation.external_call_made === true ? 'external call made' : 'no external call'}</Tag>
+          <Tag>{String(reconciliation.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {reconciliationGates.length ? (
+        <Space size={4} wrap>
+          {reconciliationGates.map((gate: AnyRow, index: number) => (
+            <Tag key={String(gate.gate || `reconcile-gate-${index}`)} color={gate.status === 'ready' ? 'green' : 'gold'}>
+              {String(gate.gate || 'gate')}: {String(gate.status || 'unknown')}
+            </Tag>
+          ))}
+        </Space>
+      ) : null}
+      {reconciliationOperations.length ? (
+        <Space size={4} wrap>
+          {reconciliationOperations.map((operation: AnyRow, index: number) => (
+            <Tag key={String(operation.endpoint_key || operation.name || `reconcile-operation-${index}`)} color={operation.status === 'ready' ? 'green' : 'default'}>
+              {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.status || 'blocked')}
             </Tag>
           ))}
         </Space>

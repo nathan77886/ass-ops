@@ -890,8 +890,8 @@ func projectTemplateProviderReviewApprovalPayload(run map[string]any) (map[strin
 func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, providerReviewExecutionEnabled bool) (map[string]any, error) {
 	result := mapFromAny(run["result"])
 	details := mapFromAny(result["details"])
-	reconciliation := mapFromAny(details["repository_reconciliation"])
-	readiness := mapFromAny(reconciliation["provider_review_readiness"])
+	repositoryReconciliation := mapFromAny(details["repository_reconciliation"])
+	readiness := mapFromAny(repositoryReconciliation["provider_review_readiness"])
 	executionPlan := mapFromAny(readiness["execution_plan"])
 	executionRequest := mapFromAny(executionPlan["execution_request"])
 	if executionRequest["status"] != "approval_ready" {
@@ -913,6 +913,13 @@ func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, p
 		stringFromMap(executionRequest, "target_branch"),
 		starterFilePayload,
 	)
+	reconciliation := templateProviderReviewExecutionReconciliation(
+		stringFromMap(executionRequest, "provider_type"),
+		stringFromMap(executionRequest, "review_kind"),
+		starterFilePayload,
+		executionGuardrail,
+		providerAPIRequestPlan,
+	)
 	projectTemplateRunID := cleanOptionalID(fmt.Sprint(run["id"]))
 	if projectTemplateRunID == "" {
 		return nil, fmt.Errorf("template run id is required")
@@ -931,16 +938,17 @@ func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, p
 		"requires_operator_review": true,
 	}
 	return map[string]any{
-		"kind":                      "project_template_provider_review_execute",
-		"project_template_run_id":   projectTemplateRunID,
-		"project_id":                cleanOptionalID(fmt.Sprint(run["project_id"])),
-		"execution_request":         request,
-		"execution_guardrail":       executionGuardrail,
-		"starter_file_payload":      starterFilePayload,
-		"provider_api_request_plan": providerAPIRequestPlan,
-		"provider_api_call_made":    false,
-		"provider_api_mutation":     "disabled",
-		"message":                   "Provider review execution is approval-gated; provider API mutation remains disabled in the first version.",
+		"kind":                           "project_template_provider_review_execute",
+		"project_template_run_id":        projectTemplateRunID,
+		"project_id":                     cleanOptionalID(fmt.Sprint(run["project_id"])),
+		"execution_request":              request,
+		"execution_guardrail":            executionGuardrail,
+		"starter_file_payload":           starterFilePayload,
+		"provider_api_request_plan":      providerAPIRequestPlan,
+		"provider_review_reconciliation": reconciliation,
+		"provider_api_call_made":         false,
+		"provider_api_mutation":          "disabled",
+		"message":                        "Provider review execution is approval-gated; provider API mutation remains disabled in the first version.",
 	}, nil
 }
 
@@ -8658,16 +8666,18 @@ func operationApprovalPayloadAudit(approval map[string]any) map[string]any {
 		out["execution_guardrail"] = sanitizedProviderReviewExecutionGuardrail(mapFromAny(payload["execution_guardrail"]))
 		out["starter_file_payload"] = sanitizedStarterFilePayloadSummary(mapFromAny(payload["starter_file_payload"]))
 		out["provider_api_request_plan"] = sanitizedProviderAPIRequestPlan(mapFromAny(payload["provider_api_request_plan"]))
+		out["provider_review_reconciliation"] = sanitizedProviderReviewReconciliation(mapFromAny(payload["provider_review_reconciliation"]))
 		if result := mapFromAny(payload["approval_result"]); len(result) > 0 {
 			out["approval_result"] = map[string]any{
-				"project_template_run_id":   cleanOptionalID(stringFromMap(result, "project_template_run_id")),
-				"execution_request":         out["execution_request"],
-				"execution_guardrail":       sanitizedProviderReviewExecutionGuardrail(mapFromAny(result["execution_guardrail"])),
-				"starter_file_payload":      sanitizedStarterFilePayloadSummary(mapFromAny(result["starter_file_payload"])),
-				"provider_api_request_plan": sanitizedProviderAPIRequestPlan(mapFromAny(result["provider_api_request_plan"])),
-				"provider_api_call_made":    false,
-				"provider_api_mutation":     "disabled",
-				"execution_enabled":         false,
+				"project_template_run_id":        cleanOptionalID(stringFromMap(result, "project_template_run_id")),
+				"execution_request":              out["execution_request"],
+				"execution_guardrail":            sanitizedProviderReviewExecutionGuardrail(mapFromAny(result["execution_guardrail"])),
+				"starter_file_payload":           sanitizedStarterFilePayloadSummary(mapFromAny(result["starter_file_payload"])),
+				"provider_api_request_plan":      sanitizedProviderAPIRequestPlan(mapFromAny(result["provider_api_request_plan"])),
+				"provider_review_reconciliation": sanitizedProviderReviewReconciliation(mapFromAny(result["provider_review_reconciliation"])),
+				"provider_api_call_made":         false,
+				"provider_api_mutation":          "disabled",
+				"execution_enabled":              false,
 			}
 		}
 		return out
@@ -8759,6 +8769,41 @@ func sanitizedProviderAPIRequestOperations(items []map[string]any) []map[string]
 			"contains_token":        false,
 			"contains_file_content": false,
 			"api_call":              false,
+		})
+	}
+	return out
+}
+
+func sanitizedProviderReviewReconciliation(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"status":                 cleanOptionalText(stringFromMap(value, "status")),
+		"mode":                   cleanOptionalText(stringFromMap(value, "mode")),
+		"provider_type":          cleanOptionalText(stringFromMap(value, "provider_type")),
+		"review_kind":            cleanOptionalText(stringFromMap(value, "review_kind")),
+		"adapter_status":         cleanOptionalText(stringFromMap(value, "adapter_status")),
+		"external_call_made":     false,
+		"provider_api_call_made": false,
+		"provider_api_mutation":  "disabled",
+		"blocked_reasons":        stringSliceFromAny(value["blocked_reasons"]),
+		"gates":                  sanitizedProviderReviewGates(mapSliceFromAny(value["gates"])),
+		"operations":             sanitizedProviderReviewReconciliationOperations(mapSliceFromAny(value["operations"])),
+		"next_step":              cleanOptionalText(stringFromMap(value, "next_step")),
+	}
+}
+
+func sanitizedProviderReviewReconciliationOperations(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"name":                  cleanOptionalText(stringFromMap(item, "name")),
+			"endpoint_key":          cleanOptionalText(stringFromMap(item, "endpoint_key")),
+			"status":                cleanOptionalText(stringFromMap(item, "status")),
+			"blocked_reason":        cleanOptionalText(stringFromMap(item, "blocked_reason")),
+			"external_call_made":    false,
+			"provider_api_mutation": "disabled",
 		})
 	}
 	return out
@@ -9823,16 +9868,24 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			s.cfg.ProviderReviewExecutionEnabled,
 			starterFilePayloadReady(starterFilePayload),
 		)
+		reconciliation := templateProviderReviewExecutionReconciliation(
+			stringFromMap(request, "provider_type"),
+			stringFromMap(request, "review_kind"),
+			starterFilePayload,
+			guardrail,
+			providerAPIRequestPlan,
+		)
 		return map[string]any{
-			"project_template_run_id":   stringFromMap(payload, "project_template_run_id"),
-			"execution_request":         request,
-			"execution_guardrail":       guardrail,
-			"starter_file_payload":      starterFilePayload,
-			"provider_api_request_plan": providerAPIRequestPlan,
-			"provider_api_call_made":    false,
-			"provider_api_mutation":     "disabled",
-			"execution_enabled":         false,
-			"message":                   "Provider review execution approval was recorded; provider API branch creation and PR/MR mutation remain disabled.",
+			"project_template_run_id":        stringFromMap(payload, "project_template_run_id"),
+			"execution_request":              request,
+			"execution_guardrail":            guardrail,
+			"starter_file_payload":           starterFilePayload,
+			"provider_api_request_plan":      providerAPIRequestPlan,
+			"provider_review_reconciliation": reconciliation,
+			"provider_api_call_made":         false,
+			"provider_api_mutation":          "disabled",
+			"execution_enabled":              false,
+			"message":                        "Provider review execution approval was recorded; provider API branch creation and PR/MR mutation remain disabled.",
 		}, "", nil
 	default:
 		return nil, "", fmt.Errorf("unsupported approval payload")
