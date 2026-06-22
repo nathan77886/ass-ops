@@ -1413,6 +1413,8 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.rotate_token_env")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "webhook_connection.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "webhook_connection.rotate_secret")`,
+		`syncing canonical assets for webhook event`,
+		`failed to record webhook diagnostic event`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "webhook_event.replay")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "webhook_event.github_workflow_run")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "webhook_event.gitea_push")`,

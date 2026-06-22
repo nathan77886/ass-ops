@@ -3680,7 +3680,7 @@ func (s *Server) receiveGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if enabled, ok := connection["enabled"].(bool); ok && !enabled {
-		_, _ = s.recordWebhookEvent(r.Context(), connection, eventType, deliveryID, false, "disabled", "webhook connection is disabled", nil, nil)
+		s.recordWebhookDiagnosticEvent(r.Context(), connection, eventType, deliveryID, false, "disabled", "webhook connection is disabled", nil, nil)
 		writeError(w, http.StatusGone, "webhook connection is disabled")
 		return
 	}
@@ -3690,19 +3690,19 @@ func (s *Server) receiveGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !verifyWebhookSignature(r.Header, secret, body) {
-		_, _ = s.recordWebhookEvent(r.Context(), connection, eventType, deliveryID, false, "rejected", "invalid signature", nil, nil)
+		s.recordWebhookDiagnosticEvent(r.Context(), connection, eventType, deliveryID, false, "rejected", "invalid signature", nil, nil)
 		writeError(w, http.StatusUnauthorized, "invalid webhook signature")
 		return
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		_, _ = s.recordWebhookEvent(r.Context(), connection, eventType, deliveryID, true, "failed", "invalid JSON payload", nil, nil)
+		s.recordWebhookDiagnosticEvent(r.Context(), connection, eventType, deliveryID, true, "failed", "invalid JSON payload", nil, nil)
 		writeError(w, http.StatusBadRequest, "invalid webhook JSON")
 		return
 	}
 	if eventType != "workflow_run" {
 		result := map[string]any{"event_type": eventType, "message": "ignored unsupported event"}
-		_, _ = s.recordWebhookEvent(r.Context(), connection, eventType, deliveryID, true, "ignored", "unsupported event type", payload, result)
+		s.recordWebhookDiagnosticEvent(r.Context(), connection, eventType, deliveryID, true, "ignored", "unsupported event type", payload, result)
 		writeJSON(w, http.StatusAccepted, result)
 		return
 	}
@@ -3785,7 +3785,7 @@ func (s *Server) receiveGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if enabled, ok := connection["enabled"].(bool); ok && !enabled {
-		_, _ = s.recordWebhookEvent(r.Context(), connection, eventType, deliveryID, false, "disabled", "webhook connection is disabled", nil, nil)
+		s.recordWebhookDiagnosticEvent(r.Context(), connection, eventType, deliveryID, false, "disabled", "webhook connection is disabled", nil, nil)
 		writeError(w, http.StatusGone, "webhook connection is disabled")
 		return
 	}
@@ -3795,25 +3795,25 @@ func (s *Server) receiveGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !verifyWebhookSignature(r.Header, secret, body) {
-		_, _ = s.recordWebhookEvent(r.Context(), connection, eventType, deliveryID, false, "rejected", "invalid signature", nil, nil)
+		s.recordWebhookDiagnosticEvent(r.Context(), connection, eventType, deliveryID, false, "rejected", "invalid signature", nil, nil)
 		writeError(w, http.StatusUnauthorized, "invalid webhook signature")
 		return
 	}
 	if eventType != "" && eventType != "push" {
 		result := map[string]any{"event_type": eventType, "message": "ignored unsupported event"}
-		_, _ = s.recordWebhookEvent(r.Context(), connection, eventType, deliveryID, true, "ignored", "unsupported event type", nil, result)
+		s.recordWebhookDiagnosticEvent(r.Context(), connection, eventType, deliveryID, true, "ignored", "unsupported event type", nil, result)
 		writeJSON(w, http.StatusAccepted, result)
 		return
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		_, _ = s.recordWebhookEvent(r.Context(), connection, eventType, deliveryID, true, "failed", "invalid JSON payload", nil, nil)
+		s.recordWebhookDiagnosticEvent(r.Context(), connection, eventType, deliveryID, true, "failed", "invalid JSON payload", nil, nil)
 		writeError(w, http.StatusBadRequest, "invalid webhook JSON")
 		return
 	}
 	push := parseGiteaPushPayload(payload)
 	if push.Ref == "" {
-		_, _ = s.recordWebhookEvent(r.Context(), connection, "push", deliveryID, true, "failed", "push ref is required", payload, nil)
+		s.recordWebhookDiagnosticEvent(r.Context(), connection, "push", deliveryID, true, "failed", "push ref is required", payload, nil)
 		writeError(w, http.StatusBadRequest, "push ref is required")
 		return
 	}
@@ -4155,7 +4155,36 @@ func refListMatches(values []string, name string) bool {
 }
 
 func (s *Server) recordWebhookEvent(ctx context.Context, connection map[string]any, eventType, deliveryID string, signatureValid bool, status, errorMessage string, payload, result map[string]any) (map[string]any, error) {
-	return s.recordWebhookEventTx(ctx, s.store.DB, connection, eventType, deliveryID, signatureValid, status, errorMessage, payload, result)
+	tx, err := s.store.DB.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	event, err := s.recordWebhookEventTx(ctx, tx, connection, eventType, deliveryID, signatureValid, status, errorMessage, payload, result)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		return nil, fmt.Errorf("syncing canonical assets for webhook event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return event, nil
+}
+
+func (s *Server) recordWebhookDiagnosticEvent(ctx context.Context, connection map[string]any, eventType, deliveryID string, signatureValid bool, status, errorMessage string, payload, result map[string]any) {
+	if _, err := s.recordWebhookEvent(ctx, connection, eventType, deliveryID, signatureValid, status, errorMessage, payload, result); err != nil && s.log != nil {
+		s.log.Warn(
+			"failed to record webhook diagnostic event",
+			"webhook_connection_id", connection["id"],
+			"provider", connection["provider"],
+			"event_type", eventType,
+			"delivery_id", deliveryID,
+			"status", status,
+			"error", err,
+		)
+	}
 }
 
 func (s *Server) recordWebhookEventTx(ctx context.Context, db sqlx.ExtContext, connection map[string]any, eventType, deliveryID string, signatureValid bool, status, errorMessage string, payload, result map[string]any) (map[string]any, error) {
@@ -4200,12 +4229,14 @@ func (s *Server) recordWebhookEventTx(ctx context.Context, db sqlx.ExtContext, c
 	if err != nil {
 		return nil, err
 	}
-	_, _ = db.ExecContext(ctx, `
+	if _, err := db.ExecContext(ctx, `
 		UPDATE webhook_connections
 		SET last_delivery_status=$2,
 			last_delivery_error=$3,
 			updated_at=now()
-		WHERE id=$1`, connection["id"], status, errorMessage)
+		WHERE id=$1`, connection["id"], status, errorMessage); err != nil {
+		return nil, err
+	}
 	return event, nil
 }
 
