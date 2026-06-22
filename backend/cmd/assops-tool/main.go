@@ -475,7 +475,7 @@ func releaseBackupSchedulePlan(repo, environment, runner, cronExpr, backupSource
 	switch sourceKind {
 	case "artifact":
 		artifactInput = sourceValue
-		runnerNote = "Any runner with actions/download-artifact access can use a retained backup artifact."
+		runnerNote = "Any runner with repository Actions artifact read access can download the latest unexpired retained backup artifact by name."
 	case "path":
 		pathInput = sourceValue
 		if runner == "ubuntu-latest" {
@@ -505,7 +505,7 @@ func releaseBackupSchedulePlan(repo, environment, runner, cronExpr, backupSource
 	fmt.Fprintf(&b, "- `ASSOPS_REHEARSAL_DATABASE_PASSWORD`: optional password passed through `PGPASSWORD` when the URL omits a password.\n")
 	fmt.Fprintf(&b, "- `ASSOPS_ACTIVE_DATABASE_URL`: optional guard value so `assops-tool` can reject a rehearsal target that equals the active database.\n\n")
 	fmt.Fprintf(&b, "## Manual Dispatch Check\n\n")
-	fmt.Fprintf(&b, "Run this once before enabling a scheduled workflow:\n\n```bash\n")
+	fmt.Fprintf(&b, "Run this once before enabling the scheduled workflow gate:\n\n```bash\n")
 	fmt.Fprintf(&b, "gh workflow run production-restore-rehearsal.yml --repo %s \\\n", repo)
 	fmt.Fprintf(&b, "  -f github_environment=%q \\\n", environment)
 	fmt.Fprintf(&b, "  -f runner=%q \\\n", runner)
@@ -518,13 +518,22 @@ func releaseBackupSchedulePlan(repo, environment, runner, cronExpr, backupSource
 	}
 	fmt.Fprintf(&b, "  -f artifact_retention_days=%q\n", strconv.Itoa(retention))
 	fmt.Fprintf(&b, "```\n\n")
-	fmt.Fprintf(&b, "## Schedule Patch Template\n\n")
-	fmt.Fprintf(&b, "Add a scheduled trigger only after the manual dispatch succeeds and the retained backup source is stable:\n\n```yaml\n")
-	fmt.Fprintf(&b, "on:\n")
-	fmt.Fprintf(&b, "  schedule:\n")
-	fmt.Fprintf(&b, "    - cron: %q\n", cronExpr)
-	fmt.Fprintf(&b, "```\n\n")
-	fmt.Fprintf(&b, "Keep the workflow protected by the `%s` environment and preserve the one-source-only guard between `backup_artifact_name` and `backup_path`.\n", environment)
+	fmt.Fprintf(&b, "## Scheduled Workflow Variables\n\n")
+	fmt.Fprintf(&b, "The workflow already contains a scheduled trigger. After the manual dispatch succeeds, set these repository variables to enable it:\n\n")
+	fmt.Fprintf(&b, "- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_ENABLED=true`\n")
+	fmt.Fprintf(&b, "- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_ENVIRONMENT=%s`\n", environment)
+	fmt.Fprintf(&b, "- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_RUNNER=%s`\n", runner)
+	if artifactInput != "" {
+		fmt.Fprintf(&b, "- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_BACKUP_ARTIFACT=%s`\n", artifactInput)
+		fmt.Fprintf(&b, "- Leave `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_BACKUP_PATH` unset.\n")
+	} else {
+		fmt.Fprintf(&b, "- Leave `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_BACKUP_ARTIFACT` unset.\n")
+		fmt.Fprintf(&b, "- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_BACKUP_PATH=%s`\n", pathInput)
+	}
+	fmt.Fprintf(&b, "- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_REPORT_NAME=production-restore-rehearsal-scheduled`\n")
+	fmt.Fprintf(&b, "- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_RETENTION_DAYS=%d`\n\n", retention)
+	fmt.Fprintf(&b, "The checked-in schedule is `%s`; update the workflow cron separately only if the environment needs a different window.\n\n", cronExpr)
+	fmt.Fprintf(&b, "Keep the workflow protected by the `%s` environment and preserve the one-source-only guard between the artifact and path variables.\n", environment)
 	return b.String(), nil
 }
 

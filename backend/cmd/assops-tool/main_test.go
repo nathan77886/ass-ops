@@ -339,10 +339,11 @@ func TestReleaseBackupSchedulePlanForArtifactSource(t *testing.T) {
 		"production-restore-rehearsal.yml",
 		"ASSOPS_REHEARSAL_DATABASE_URL",
 		"ASSOPS_ACTIVE_DATABASE_URL",
-		"actions/download-artifact",
+		"ASSOPS_PRODUCTION_RESTORE_REHEARSAL_ENABLED=true",
+		"ASSOPS_PRODUCTION_RESTORE_REHEARSAL_BACKUP_ARTIFACT=retained-assops-backup",
 		"backup_artifact_name=\"retained-assops-backup\"",
 		"backup_path=''",
-		"cron: \"17 3 * * 1\"",
+		"The checked-in schedule is `17 3 * * 1`",
 		"external",
 	} {
 		if want == "external" {
@@ -365,6 +366,7 @@ func TestReleaseBackupSchedulePlanForMountedPathSource(t *testing.T) {
 	for _, want := range []string{
 		"runner-local backup path `/mnt/backups/assops-20260622-120000.dump`",
 		"must be self-hosted",
+		"ASSOPS_PRODUCTION_RESTORE_REHEARSAL_BACKUP_PATH=/mnt/backups/assops-20260622-120000.dump",
 		"backup_artifact_name=''",
 		"backup_path=\"/mnt/backups/assops-20260622-120000.dump\"",
 	} {

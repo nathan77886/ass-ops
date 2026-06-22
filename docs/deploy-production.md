@@ -164,7 +164,7 @@ Minimum first-version rehearsal record:
 
 GitHub Actions also includes `.github/workflows/restore-rehearsal.yml`, a weekly and manual scheduled rehearsal that runs the same backup and disposable restore flow against temporary runner databases and uploads the JSON report as a short-retention artifact. Treat it as a drift detector for the backup tooling; it does not replace an environment-specific rehearsal against retained production backups.
 
-For retained environment backups, `.github/workflows/production-restore-rehearsal.yml` provides a protected manual rehearsal path. Configure a GitHub environment such as `production` with:
+For retained environment backups, `.github/workflows/production-restore-rehearsal.yml` provides a protected rehearsal path. It can be run manually and also has a weekly schedule that is disabled by default. Configure a GitHub environment such as `production` with:
 
 - `ASSOPS_REHEARSAL_DATABASE_URL`: URL of a pre-created disposable restore database whose name includes `rehearsal`, `restore`, `test`, `tmp`, `scratch`, or `disposable`.
 - `ASSOPS_REHEARSAL_DATABASE_PASSWORD`: optional database password passed to PostgreSQL tools through `PGPASSWORD` when the URL does not include a password.
@@ -172,12 +172,12 @@ For retained environment backups, `.github/workflows/production-restore-rehearsa
 
 Run the workflow with exactly one backup source:
 
-- `backup_artifact_name`: a workflow artifact that contains one retained `assops-*.dump` file.
+- `backup_artifact_name`: the name of a retained, unexpired repository workflow artifact that contains one `assops-*.dump` file. The workflow downloads the latest unexpired artifact with this name.
 - `backup_path`: a runner-local backup path for self-hosted runners that mount the retained backup store. Set the workflow `runner` input to that self-hosted runner label; the default `ubuntu-latest` runner can only use downloaded artifacts or files created inside the job workspace.
 
 The workflow does not create backups, does not create the disposable database, and does not connect to the active database. It validates inputs, restores only into `ASSOPS_REHEARSAL_DATABASE_URL`, reruns migrations, validates the JSON report shape, and uploads the report as a private short-retention artifact for release notes.
 
-Before converting the protected manual path into a scheduled environment job, generate a local schedule-readiness plan. The command is offline: it validates the intended repository, GitHub environment, runner, cron expression, backup source shape, and artifact retention, but it does not read or print GitHub environment secret values.
+Before enabling the scheduled environment job, generate a local schedule-readiness plan. The command is offline: it validates the intended repository, GitHub environment, runner, cron expression, backup source shape, and artifact retention, but it does not read or print GitHub environment secret values.
 
 Use a retained backup artifact source with a GitHub-hosted runner:
 
@@ -205,7 +205,16 @@ assops-tool release backup-schedule-plan \
   /backups/release-notes/backup-schedule-plan.md
 ```
 
-The generated plan includes the required environment secrets, a one-time `gh workflow run production-restore-rehearsal.yml` manual dispatch check, and a `schedule` YAML snippet. Enable the scheduled trigger only after the manual dispatch succeeds against the chosen retained backup source.
+The generated plan includes the required environment secrets, a one-time `gh workflow run production-restore-rehearsal.yml` manual dispatch check, and the scheduled configuration values. Enable the scheduled trigger only after the manual dispatch succeeds against the chosen retained backup source.
+
+Set these repository variables to enable the scheduled path:
+
+- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_ENABLED=true`
+- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_ENVIRONMENT=production`
+- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_RUNNER=ubuntu-latest` for artifact sources, or a self-hosted runner label for mounted paths.
+- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_BACKUP_ARTIFACT=retained-assops-backup` or `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_BACKUP_PATH=/mnt/assops-backups/assops-YYYYMMDD-HHMMSS.dump`; set exactly one.
+- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_REPORT_NAME=production-restore-rehearsal-scheduled`
+- `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_RETENTION_DAYS=14`
 
 Before promoting a release candidate, validate the downloaded release artifact directory and the restore rehearsal report together:
 
