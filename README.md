@@ -53,6 +53,7 @@ make build
 
 - CI workflow: `.github/workflows/ci.yml`
 - Scheduled restore rehearsal workflow: `.github/workflows/restore-rehearsal.yml`
+- Production backup restore rehearsal workflow: `.github/workflows/production-restore-rehearsal.yml`
 - Release candidate workflow: `.github/workflows/release.yml`
 - Production promotion workflow: `.github/workflows/promote-production.yml`
 - Dependabot maintenance: `.github/dependabot.yml`
@@ -65,6 +66,7 @@ make build
 
 CI validates workflow syntax/semantics with `actionlint`, secret scanning with Gitleaks, Go tests, `go vet`, frontend build, Compose config, database backup/restore rehearsal, Helm lint/template for both default and production example values, a disposable kind-based Helm install smoke test, Docker image builds, and `govulncheck`.
 The scheduled restore rehearsal workflow runs weekly and on demand against disposable GitHub Actions PostgreSQL databases, then uploads the JSON rehearsal report as a short-retention artifact.
+The production backup restore rehearsal workflow is manual and protected-environment scoped. It restores an existing retained `assops-*.dump` backup into an explicitly configured disposable database secret, then uploads the private rehearsal report for release notes.
 Dependabot is configured for weekly Go, web npm, GitHub Actions, and Docker image update PRs.
 The release candidate workflow builds Linux amd64 binaries, the web bundle, a packaged Helm chart, checksums, and Docker image smoke builds for `v*` tags or manual runs. It also creates GitHub artifact attestations for release files. Tagged `v*` runs publish gateway, worker, node-worker, and web images to GHCR with version and commit-SHA tags, then attach registry-backed image attestations.
 Apply the repository ruleset in `docs/github-branch-protection.md` before treating `main` as the protected release branch.
@@ -187,4 +189,4 @@ Not yet first-class:
 - Production Kubernetes rollout/TLS/storage-class hardening.
 - WebSocket/Redis-backed log fanout.
 - Codex CLI process execution for AI tasks.
-- Scheduled disaster-recovery rehearsal automation for production backups.
+- Fully scheduled disaster-recovery rehearsal automation for production backups; the first protected manual workflow exists, but storage-specific scheduling is still environment-owned.

@@ -1,0 +1,175 @@
+name: Production Backup Restore Rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      github_environment:
+        description: GitHub environment that stores rehearsal database secrets
+        required: true
+        default: production
+        type: string
+      runner:
+        description: Runner label; use self-hosted only when it mounts backup_path
+        required: true
+        default: ubuntu-latest
+        type: string
+      backup_artifact_name:
+        description: Optional workflow artifact name containing one assops-*.dump backup
+        required: false
+        type: string
+      backup_path:
+        description: Optional runner-local backup path, for self-hosted environments
+        required: false
+        type: string
+      report_name:
+        description: Artifact/report name for the rehearsal result
+        required: true
+        default: production-restore-rehearsal
+        type: string
+      artifact_retention_days:
+        description: Days to retain the private rehearsal report artifact
+        required: true
+        default: 30
+        type: number
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: production-restore-rehearsal-${{ inputs.github_environment }}
+  cancel-in-progress: false
+
+jobs:
+  rehearse:
+    name: Production Backup Restore Rehearsal
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    environment:
+      name: ${{ inputs.github_environment }}
+    env:
+      # Optional active database URL; used only so assops-tool can refuse rehearsal
+      # targets that accidentally point at the real database.
+      DATABASE_URL: ${{ secrets.ASSOPS_ACTIVE_DATABASE_URL }}
+      TARGET_DATABASE_URL: ${{ secrets.ASSOPS_REHEARSAL_DATABASE_URL }}
+      PGPASSWORD: ${{ secrets.ASSOPS_REHEARSAL_DATABASE_PASSWORD }}
+      INPUT_BACKUP_ARTIFACT_NAME: ${{ inputs.backup_artifact_name }}
+      INPUT_BACKUP_PATH: ${{ inputs.backup_path }}
+      INPUT_REPORT_NAME: ${{ inputs.report_name }}
+      REPORT_PATH: dist/rehearsal/${{ inputs.report_name }}.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 || sudo apt-get install -y postgresql-client
+          pg_restore --version
+
+      - name: Build assops-tool
+        run: |
+          mkdir -p bin dist/rehearsal .assops/input-backup
+          go build -trimpath -o bin/assops-tool ./backend/cmd/assops-tool
+
+      - name: Validate rehearsal inputs
+        run: |
+          test -n "$TARGET_DATABASE_URL" || (echo "ASSOPS_REHEARSAL_DATABASE_URL environment secret is required" && exit 1)
+          case "$INPUT_REPORT_NAME" in
+            ""|*[!A-Za-z0-9._-]*)
+              echo "report_name must contain only letters, numbers, dot, underscore, or hyphen"
+              exit 1
+              ;;
+          esac
+          case "$INPUT_BACKUP_ARTIFACT_NAME" in
+            *[!A-Za-z0-9._-]*)
+              echo "backup_artifact_name must contain only letters, numbers, dot, underscore, or hyphen"
+              exit 1
+              ;;
+          esac
+          if [ -n "$INPUT_BACKUP_PATH" ] && printf '%s' "$INPUT_BACKUP_PATH" | grep -q '[^A-Za-z0-9/._@=:+-]'; then
+            echo "backup_path must contain only letters, numbers, slash, dot, underscore, at, equals, colon, plus, or hyphen"
+            exit 1
+          fi
+          if [ -n "$INPUT_BACKUP_ARTIFACT_NAME" ] && [ -n "$INPUT_BACKUP_PATH" ]; then
+            echo "Use either backup_artifact_name or backup_path, not both"
+            exit 1
+          fi
+          if [ -z "$INPUT_BACKUP_ARTIFACT_NAME" ] && [ -z "$INPUT_BACKUP_PATH" ]; then
+            echo "backup_artifact_name or backup_path is required"
+            exit 1
+          fi
+
+      - name: Download backup artifact
+        if: ${{ inputs.backup_artifact_name != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.backup_artifact_name }}
+          path: .assops/input-backup
+
+      - name: Resolve backup path
+        id: backup
+        run: |
+          if [ -n "$INPUT_BACKUP_PATH" ]; then
+            backup="$INPUT_BACKUP_PATH"
+          else
+            backup="$(find .assops/input-backup -type f -name 'assops-*.dump' | sort | tail -n 1)"
+          fi
+          test -n "$backup" || (echo "No assops-*.dump backup found" && exit 1)
+          test -f "$backup" || (echo "Backup file not found: $backup" && exit 1)
+          printf '%s\n' "path=$backup" >> "$GITHUB_OUTPUT"
+
+      - name: Rehearse restore from retained backup
+        run: |
+          bin/assops-tool db rehearse-restore \
+            "${{ steps.backup.outputs.path }}" \
+            "$TARGET_DATABASE_URL" \
+            "$REPORT_PATH"
+
+      - name: Validate rehearsal report
+        run: |
+          cat > /tmp/validate-production-rehearsal-report.py <<'PY'
+          import datetime
+          import json
+          import os
+
+          report_path = os.environ["REPORT_PATH"]
+          with open(report_path, encoding="utf-8") as handle:
+              report = json.load(handle)
+          required = [
+              "backup",
+              "target_database",
+              "inspect_line_count",
+              "backup_object_counts",
+              "restore_output_lines",
+              "migrations",
+              "rehearsed_at",
+          ]
+          missing = [key for key in required if key not in report]
+          if missing:
+              raise SystemExit(f"missing report fields: {missing}")
+          if not report["backup_object_counts"]:
+              raise SystemExit("backup_object_counts is empty")
+          if not report["migrations"]:
+              raise SystemExit("migrations is empty")
+          if "://" not in report["target_database"]:
+              raise SystemExit("target_database must be URL-style")
+          if "@" in report["target_database"].split("://", 1)[1].split("/", 1)[0] and ":" in report["target_database"].split("://", 1)[1].split("@", 1)[0]:
+              raise SystemExit("target_database must not include a password")
+          datetime.datetime.fromisoformat(report["rehearsed_at"].replace("Z", "+00:00"))
+          PY
+          python3 /tmp/validate-production-rehearsal-report.py
+
+      - name: Upload private rehearsal report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.report_name }}
+          retention-days: ${{ inputs.artifact_retention_days }}
+          path: ${{ env.REPORT_PATH }}
+          if-no-files-found: error

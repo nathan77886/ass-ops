@@ -164,6 +164,19 @@ Minimum first-version rehearsal record:
 
 GitHub Actions also includes `.github/workflows/restore-rehearsal.yml`, a weekly and manual scheduled rehearsal that runs the same backup and disposable restore flow against temporary runner databases and uploads the JSON report as a short-retention artifact. Treat it as a drift detector for the backup tooling; it does not replace an environment-specific rehearsal against retained production backups.
 
+For retained environment backups, `.github/workflows/production-restore-rehearsal.yml` provides a protected manual rehearsal path. Configure a GitHub environment such as `production` with:
+
+- `ASSOPS_REHEARSAL_DATABASE_URL`: URL of a pre-created disposable restore database whose name includes `rehearsal`, `restore`, `test`, `tmp`, `scratch`, or `disposable`.
+- `ASSOPS_REHEARSAL_DATABASE_PASSWORD`: optional database password passed to PostgreSQL tools through `PGPASSWORD` when the URL does not include a password.
+- `ASSOPS_ACTIVE_DATABASE_URL`: optional active database URL used only as a guard so `assops-tool` can reject a rehearsal target that accidentally equals production.
+
+Run the workflow with exactly one backup source:
+
+- `backup_artifact_name`: a workflow artifact that contains one retained `assops-*.dump` file.
+- `backup_path`: a runner-local backup path for self-hosted runners that mount the retained backup store. Set the workflow `runner` input to that self-hosted runner label; the default `ubuntu-latest` runner can only use downloaded artifacts or files created inside the job workspace.
+
+The workflow does not create backups, does not create the disposable database, and does not connect to the active database. It validates inputs, restores only into `ASSOPS_REHEARSAL_DATABASE_URL`, reruns migrations, validates the JSON report shape, and uploads the report as a private short-retention artifact for release notes.
+
 Before promoting a release candidate, validate the downloaded release artifact directory and the restore rehearsal report together:
 
 ```bash
