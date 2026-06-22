@@ -8565,8 +8565,10 @@ func (s *Server) getOperationApproval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireApprovalRead(w, r, approval) {
 		return
 	}
+	payloadAudit := operationApprovalPayloadAudit(approval)
+	delete(approval, "request_payload")
 	opID := cleanOptionalID(fmt.Sprint(approval["operation_run_id"]))
-	response := map[string]any{"approval": approval}
+	response := map[string]any{"approval": approval, "approval_payload_audit": payloadAudit}
 	decisions, err := s.operationApprovalDecisions(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load approval decisions")
@@ -8621,6 +8623,145 @@ func (s *Server) getOperationApproval(w http.ResponseWriter, r *http.Request) {
 	response["worker_jobs"] = jobs
 	response["run_records"] = runRecords
 	writeJSON(w, http.StatusOK, response)
+}
+
+func operationApprovalPayloadAudit(approval map[string]any) map[string]any {
+	payload := mapFromAny(approval["request_payload"])
+	switch stringFromMap(payload, "kind") {
+	case "project_template_provider_review_execute":
+		out := map[string]any{
+			"kind":                    "project_template_provider_review_execute",
+			"project_template_run_id": cleanOptionalID(stringFromMap(payload, "project_template_run_id")),
+			"project_id":              cleanOptionalID(stringFromMap(payload, "project_id")),
+			"provider_api_call_made":  false,
+			"provider_api_mutation":   "disabled",
+			"payload_redacted":        true,
+			"contains_token":          false,
+			"contains_file_content":   false,
+		}
+		request := mapFromAny(payload["execution_request"])
+		if len(request) > 0 {
+			out["execution_request"] = map[string]any{
+				"status":                   request["status"],
+				"approval_action":          request["approval_action"],
+				"resource_type":            request["resource_type"],
+				"provider_type":            request["provider_type"],
+				"review_kind":              request["review_kind"],
+				"source_branch":            request["source_branch"],
+				"target_branch":            request["target_branch"],
+				"payload_redacted":         true,
+				"contains_token":           false,
+				"provider_api_mutation":    "disabled",
+				"requires_operator_review": true,
+			}
+		}
+		out["execution_guardrail"] = sanitizedProviderReviewExecutionGuardrail(mapFromAny(payload["execution_guardrail"]))
+		out["starter_file_payload"] = sanitizedStarterFilePayloadSummary(mapFromAny(payload["starter_file_payload"]))
+		out["provider_api_request_plan"] = sanitizedProviderAPIRequestPlan(mapFromAny(payload["provider_api_request_plan"]))
+		if result := mapFromAny(payload["approval_result"]); len(result) > 0 {
+			out["approval_result"] = map[string]any{
+				"project_template_run_id":   cleanOptionalID(stringFromMap(result, "project_template_run_id")),
+				"execution_request":         out["execution_request"],
+				"execution_guardrail":       sanitizedProviderReviewExecutionGuardrail(mapFromAny(result["execution_guardrail"])),
+				"starter_file_payload":      sanitizedStarterFilePayloadSummary(mapFromAny(result["starter_file_payload"])),
+				"provider_api_request_plan": sanitizedProviderAPIRequestPlan(mapFromAny(result["provider_api_request_plan"])),
+				"provider_api_call_made":    false,
+				"provider_api_mutation":     "disabled",
+				"execution_enabled":         false,
+			}
+		}
+		return out
+	default:
+		return map[string]any{}
+	}
+}
+
+func sanitizedProviderReviewExecutionGuardrail(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"execution_mode":           cleanOptionalText(stringFromMap(value, "execution_mode")),
+		"execution_enabled":        false,
+		"execution_enabled_config": boolValueFromAny(value["execution_enabled_config"]),
+		"provider_type":            cleanOptionalText(stringFromMap(value, "provider_type")),
+		"review_kind":              cleanOptionalText(stringFromMap(value, "review_kind")),
+		"source_branch":            cleanOptionalText(stringFromMap(value, "source_branch")),
+		"target_branch":            cleanOptionalText(stringFromMap(value, "target_branch")),
+		"provider_api_call_made":   false,
+		"provider_api_mutation":    "disabled",
+		"branch_creation_allowed":  false,
+		"review_request_allowed":   false,
+		"blocked_reasons":          stringSliceFromAny(value["blocked_reasons"]),
+		"gates":                    sanitizedProviderReviewGates(mapSliceFromAny(value["gates"])),
+		"next_step":                cleanOptionalText(stringFromMap(value, "next_step")),
+	}
+}
+
+func boolValueFromAny(value any) bool {
+	if typed, ok := value.(bool); ok {
+		return typed
+	}
+	text := strings.ToLower(strings.TrimSpace(fmt.Sprint(value)))
+	return text == "true" || text == "1" || text == "yes" || text == "on"
+}
+
+func sanitizedProviderReviewGates(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"gate":              cleanOptionalText(stringFromMap(item, "gate")),
+			"status":            cleanOptionalText(stringFromMap(item, "status")),
+			"required_config":   cleanOptionalText(stringFromMap(item, "required_config")),
+			"provider_type":     cleanOptionalText(stringFromMap(item, "provider_type")),
+			"review_kind":       cleanOptionalText(stringFromMap(item, "review_kind")),
+			"source_branch":     cleanOptionalText(stringFromMap(item, "source_branch")),
+			"target_branch":     cleanOptionalText(stringFromMap(item, "target_branch")),
+			"message":           cleanOptionalText(stringFromMap(item, "message")),
+			"sensitive_payload": false,
+		})
+	}
+	return out
+}
+
+func sanitizedProviderAPIRequestPlan(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"status":                 cleanOptionalText(stringFromMap(value, "status")),
+		"mode":                   cleanOptionalText(stringFromMap(value, "mode")),
+		"provider_type":          cleanOptionalText(stringFromMap(value, "provider_type")),
+		"review_kind":            cleanOptionalText(stringFromMap(value, "review_kind")),
+		"source_branch":          cleanOptionalText(stringFromMap(value, "source_branch")),
+		"target_branch":          cleanOptionalText(stringFromMap(value, "target_branch")),
+		"file_count":             intFromAny(value["file_count"], 0),
+		"payload_redacted":       true,
+		"contains_token":         false,
+		"contains_file_content":  false,
+		"provider_api_call_made": false,
+		"provider_api_mutation":  "disabled",
+		"blocked_reasons":        stringSliceFromAny(value["blocked_reasons"]),
+		"operations":             sanitizedProviderAPIRequestOperations(mapSliceFromAny(value["operations"])),
+	}
+}
+
+func sanitizedProviderAPIRequestOperations(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"name":                  cleanOptionalText(stringFromMap(item, "name")),
+			"method":                cleanOptionalText(stringFromMap(item, "method")),
+			"endpoint_key":          cleanOptionalText(stringFromMap(item, "endpoint_key")),
+			"payload_shape":         cleanOptionalText(stringFromMap(item, "payload_shape")),
+			"file_count":            intFromAny(item["file_count"], 0),
+			"payload_redacted":      true,
+			"contains_token":        false,
+			"contains_file_content": false,
+			"api_call":              false,
+		})
+	}
+	return out
 }
 
 func (s *Server) operationApprovalDecisions(ctx context.Context, approvalID string) ([]map[string]any, error) {

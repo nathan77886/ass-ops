@@ -1027,6 +1027,79 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
   );
 }
 
+function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
+  if (!value || value.kind !== 'project_template_provider_review_execute') return null;
+  const request = value.execution_request || {};
+  const guardrail = value.execution_guardrail || {};
+  const starter = value.starter_file_payload || {};
+  const apiPlan = value.provider_api_request_plan || {};
+  const result = value.approval_result || {};
+  const gates = Array.isArray(guardrail.gates) ? guardrail.gates : [];
+  const files = Array.isArray(starter.files) ? starter.files : [];
+  const operations = Array.isArray(apiPlan.operations) ? apiPlan.operations : [];
+  return (
+    <Space direction="vertical" size={8} className="full">
+      <Space size={4} wrap>
+        <Tag color="blue">{String(value.kind)}</Tag>
+        <Tag>{String(request.provider_type || value.provider_type || 'provider')}</Tag>
+        <Tag>{String(request.review_kind || 'review')}</Tag>
+        <Tag color="green">redacted</Tag>
+        <Tag color={value.provider_api_call_made === true ? 'red' : 'default'}>{value.provider_api_call_made === true ? 'api called' : 'no api call'}</Tag>
+        <Tag>{String(value.provider_api_mutation || 'disabled')}</Tag>
+      </Space>
+      <Typography.Text type="secondary">Run: {String(value.project_template_run_id || '-')}</Typography.Text>
+      <Space size={4} wrap>
+        <Tag color="gold">guardrail {String(guardrail.execution_mode || 'disabled').replaceAll('_', ' ')}</Tag>
+        {Array.isArray(guardrail.blocked_reasons) && guardrail.blocked_reasons.map((reason: unknown) => (
+          <Tag key={String(reason)}>{String(reason)}</Tag>
+        ))}
+      </Space>
+      {gates.length ? (
+        <Space size={4} wrap>
+          {gates.map((gate: AnyRow, index: number) => (
+            <Tag key={String(gate.gate || `gate-${index}`)} color={gate.status === 'ready' ? 'green' : 'gold'}>
+              {String(gate.gate || 'gate')}: {String(gate.status || 'unknown')}
+            </Tag>
+          ))}
+        </Space>
+      ) : null}
+      <Space size={4} wrap>
+        <Tag color={starter.status === 'ready' ? 'green' : 'gold'}>starter {String(starter.status || 'unknown')}</Tag>
+        <Tag>files {Number(starter.file_count || 0)}</Tag>
+        <Tag>{starter.content_included === true ? 'content included' : 'content redacted'}</Tag>
+      </Space>
+      {files.length ? (
+        <Space size={4} wrap>
+          {files.map((file: AnyRow, index: number) => (
+            <Tag key={String(file.id || file.path || `file-${index}`)}>{String(file.path || 'file')}: {String(file.status || file.kind || 'planned')}</Tag>
+          ))}
+        </Space>
+      ) : null}
+      <Space size={4} wrap>
+        <Tag color={apiPlan.status === 'ready' ? 'green' : 'gold'}>api plan {String(apiPlan.status || 'unknown')}</Tag>
+        <Tag>{String(apiPlan.mode || 'redacted_request_plan').replaceAll('_', ' ')}</Tag>
+        <Tag>files {Number(apiPlan.file_count || 0)}</Tag>
+      </Space>
+      {operations.length ? (
+        <Space size={4} wrap>
+          {operations.map((operation: AnyRow, index: number) => (
+            <Tag key={String(operation.endpoint_key || operation.name || `operation-${index}`)} color={operation.api_call === true ? 'red' : 'default'}>
+              {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.payload_shape || operation.method || 'redacted')}
+            </Tag>
+          ))}
+        </Space>
+      ) : null}
+      {result && result.execution_enabled !== undefined ? (
+        <Space size={4} wrap>
+          <Tag color={result.execution_enabled === true ? 'red' : 'default'}>{result.execution_enabled === true ? 'execution enabled' : 'execution disabled'}</Tag>
+          <Tag color={result.provider_api_call_made === true ? 'red' : 'default'}>{result.provider_api_call_made === true ? 'result api called' : 'result no api call'}</Tag>
+          <Tag>{String(result.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+    </Space>
+  );
+}
+
 function canRetryTemplateProvision(row: AnyRow) {
   if (row.result?.repository_provisioned) return false;
   if (!row.project_id) return false;
@@ -2544,6 +2617,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             { title: 'Created', dataIndex: 'created_at' }
           ]} />
           {approvalAudit.data?.approval?.notification_last_error && <Alert type="error" showIcon message={approvalAudit.data.approval.notification_last_error} />}
+          <ProviderReviewApprovalAudit value={approvalAudit.data?.approval_payload_audit} />
           {approvalAudit.data?.approval && approvalStillActive(approvalAudit.data.approval) && canActOnApproval(approvalAudit.data.approval, currentRole) && (
             <Space wrap>
               <Input placeholder="Delegate to email" value={delegateEmail} onChange={(event) => setDelegateEmail(event.target.value)} style={{ width: 240 }} />

@@ -1640,6 +1640,86 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 	}
 }
 
+func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *testing.T) {
+	approval := map[string]any{
+		"request_payload": map[string]any{
+			"kind":                    "project_template_provider_review_execute",
+			"project_template_run_id": "22222222-2222-2222-2222-222222222222",
+			"project_id":              "11111111-1111-1111-1111-111111111111",
+			"execution_request": map[string]any{
+				"status":          "approval_ready",
+				"approval_action": templateProviderReviewExecuteApprovalAction,
+				"resource_type":   "project_template_run",
+				"provider_type":   "github",
+				"review_kind":     "pull_request",
+				"source_branch":   "assops/template/demo-main",
+				"target_branch":   "main",
+				"token":           "secret-token",
+			},
+			"execution_guardrail": map[string]any{
+				"execution_mode":           "adapter_blocked",
+				"execution_enabled_config": true,
+				"provider_type":            "github",
+				"review_kind":              "pull_request",
+				"source_branch":            "assops/template/demo-main",
+				"target_branch":            "main",
+				"api_base_url":             "https://api.github.example.test",
+				"blocked_reasons":          []any{"provider_review_api_adapter"},
+				"gates": []map[string]any{
+					{"gate": "provider_review_api_adapter", "status": "blocked", "message": "adapter blocked", "token": "secret-token"},
+				},
+			},
+			"starter_file_payload": map[string]any{
+				"status":           "ready",
+				"file_count":       1,
+				"content_included": false,
+				"files": []map[string]any{
+					{"id": "33333333-3333-3333-3333-333333333333", "path": "README.md", "kind": "text", "status": "planned", "content": "do-not-include"},
+				},
+			},
+			"provider_api_request_plan": map[string]any{
+				"status":                "ready",
+				"mode":                  "redacted_request_plan",
+				"provider_type":         "github",
+				"review_kind":           "pull_request",
+				"source_branch":         "assops/template/demo-main",
+				"target_branch":         "main",
+				"file_count":            1,
+				"api_base_url":          "https://api.github.example.test",
+				"owner":                 "acme",
+				"repo":                  "secret-repo",
+				"provider_api_mutation": "enabled",
+				"operations": []map[string]any{
+					{"name": "commit_starter_files", "method": "PUT", "endpoint_key": "github.commit_files", "payload_shape": "content_redacted_file_batch", "file_count": 1, "url": "https://api.github.example.test/repos/acme/secret-repo", "content": "do-not-include", "api_call": true},
+				},
+			},
+			"approval_result": map[string]any{
+				"execution_enabled":         true,
+				"provider_api_call_made":    true,
+				"provider_api_mutation":     "enabled",
+				"starter_file_payload":      map[string]any{"files": []map[string]any{{"path": "README.md", "content": "do-not-include"}}},
+				"provider_api_request_plan": map[string]any{"operations": []map[string]any{{"url": "https://api.github.example.test", "content": "do-not-include", "api_call": true}}},
+			},
+		},
+	}
+	audit := operationApprovalPayloadAudit(approval)
+	if audit["kind"] != "project_template_provider_review_execute" ||
+		audit["provider_api_call_made"] != false ||
+		audit["provider_api_mutation"] != "disabled" {
+		t.Fatalf("audit summary = %#v", audit)
+	}
+	result := mapFromAny(audit["approval_result"])
+	if result["execution_enabled"] != false || result["provider_api_call_made"] != false || result["provider_api_mutation"] != "disabled" {
+		t.Fatalf("approval result audit should force disabled/no-call: %#v", result)
+	}
+	encoded, _ := json.Marshal(audit)
+	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", `"api_call":true`, `"enabled"`} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
 func TestRepoSyncRunFiltersFromRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/repo-sync-runs?asset_id=%20asset-1%20&status=%20failed%20&ref=%20refs/heads/main%20&since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z", nil)
 	got, err := repoSyncRunFiltersFromRequest(req)
@@ -2071,6 +2151,114 @@ func TestOperationApprovalFiltersFromRequest(t *testing.T) {
 	}
 	if got.Query != "deploy" || got.RequestedBy != "ops@example.com" {
 		t.Fatalf("text filters = %#v", got)
+	}
+}
+
+func TestListOperationApprovalsDoesNotReturnRequestPayload(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)UPDATE operation_approvals.*RETURNING \*`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery(`(?s)SELECT\s+oa\.id,.*FROM operation_approvals oa`).
+		WithArgs(true, "admin-1", "", "", "", "", "", "", "", "admin-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"project_id",
+			"operation_run_id",
+			"approval_rule_id",
+			"resource_type",
+			"resource_id",
+			"action",
+			"title",
+			"status",
+			"required_approver_roles",
+			"required_approval_count",
+			"notification_channels",
+			"escalation_after_minutes",
+			"escalation_channels",
+			"last_escalated_at",
+			"escalation_count",
+			"notification_status",
+			"requested_by",
+			"decided_by",
+			"decision_reason",
+			"decided_at",
+			"expires_at",
+			"expired_at",
+			"created_at",
+			"updated_at",
+			"requested_by_email",
+			"decided_by_email",
+			"project_name",
+			"approved_count",
+			"rejected_count",
+			"can_current_user_decide",
+		}).AddRow(
+			"approval-1",
+			"project-1",
+			nil,
+			"rule-1",
+			"project_template_run",
+			"run-1",
+			"project_template_provider_review.execute",
+			"Provider review execution",
+			"pending",
+			[]byte(`["admin"]`),
+			1,
+			[]byte(`["ui"]`),
+			nil,
+			[]byte(`[]`),
+			nil,
+			0,
+			"pending",
+			"admin-1",
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			"2026-01-01T00:00:00Z",
+			"2026-01-01T00:00:00Z",
+			"admin@example.com",
+			nil,
+			"ASSOPS",
+			0,
+			0,
+			true,
+		))
+	req := httptest.NewRequest(http.MethodGet, "/api/operation-approvals", nil)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.listOperationApprovals(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "request_payload") || strings.Contains(rr.Body.String(), "secret-token") {
+		t.Fatalf("list response leaked approval request payload: %s", rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	items, ok := body["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("items = %#v", body["items"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("item = %#v", items[0])
+	}
+	if _, ok := item["request_payload"]; ok {
+		t.Fatalf("list item should not include request_payload: %#v", item)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
 	}
 }
 
