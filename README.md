@@ -160,7 +160,7 @@ Implemented as real local code:
 - Dashboard first-version readiness checklist derived from canonical assets and recent operations
 - Project, repository, GitRemote CRUD
 - Operation runs, worker jobs, operation logs
-- Control-worker queue consumption and worker queue health summaries
+- Control-worker queue consumption, PostgreSQL-only queue backend posture, and worker queue health summaries
 - Node-worker register, heartbeat, claim, log upload, complete/fail
 - Gateway, control-worker, and node-worker `/healthz` endpoints for Compose healthchecks
 - AI runtime CRUD and verify marker

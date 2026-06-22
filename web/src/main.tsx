@@ -2367,6 +2367,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
 function WorkerNodes() {
   const summary = useLoad(() => api('/api/worker-queue/summary'), []);
   const data = summary.data || {};
+  const backend = data.backend_summary || {};
   const hasQueueRisk = (data.stale_nodes || 0) > 0 || (data.aged_queued_jobs || 0) > 0 || (data.stale_running_jobs || 0) > 0 || (data.failed_24h || 0) > 0;
   return (
     <Space direction="vertical" size={16} className="full">
@@ -2374,6 +2375,25 @@ function WorkerNodes() {
       <Alert showIcon message="Node workers register through /api/worker-nodes/register. Start one with go run ./backend/cmd/node-worker." />
       {summary.error && <Alert showIcon type="error" message={summary.error} />}
       {hasQueueRisk && <Alert showIcon type="warning" message="Worker queue needs attention" description={`${data.stale_nodes || 0} stale nodes, ${data.aged_queued_jobs || 0} aged queued jobs, ${data.stale_running_jobs || 0} stale running jobs, ${data.failed_24h || 0} failures in 24h.`} />}
+      {backend.message && (
+        <Alert
+          showIcon
+          type="info"
+          message="Queue backend"
+          description={
+            <Space direction="vertical" size={8}>
+              <Typography.Text>{backend.message}</Typography.Text>
+              <Space size={[8, 8]} wrap>
+                <Tag color="blue">backend: {backend.backend}</Tag>
+                <Tag color="geekblue">claiming: {backend.claiming}</Tag>
+                <Tag color="orange">redis locks: {backend.redis_locking}</Tag>
+                <Tag color="orange">pub/sub: {backend.pubsub}</Tag>
+                <Tag color="cyan">logs: {backend.log_fanout}</Tag>
+              </Space>
+            </Space>
+          }
+        />
+      )}
       <div className="metricGrid">
         <Card loading={summary.loading}><Typography.Text type="secondary">Online nodes</Typography.Text><Typography.Title level={4}>{data.online_nodes || 0}/{data.total_nodes || 0}</Typography.Title></Card>
         <Card loading={summary.loading}><Typography.Text type="secondary">Queued jobs</Typography.Text><Typography.Title level={4}>{data.queued_jobs || 0}</Typography.Title><Typography.Text type="secondary">{data.aged_queued_jobs || 0} older than 15m</Typography.Text></Card>

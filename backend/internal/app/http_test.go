@@ -2611,6 +2611,103 @@ func TestWorkerQueueSummarySQLIncludesVisibilityAndRiskMetrics(t *testing.T) {
 	}
 }
 
+func TestGetWorkerQueueSummaryIncludesBackendSummary(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s).*WITH visible_jobs AS .*recent_failures`).
+		WithArgs(true, "admin-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"total_nodes",
+			"online_nodes",
+			"stale_nodes",
+			"total_jobs",
+			"queued_jobs",
+			"running_jobs",
+			"failed_jobs",
+			"completed_24h",
+			"failed_24h",
+			"aged_queued_jobs",
+			"stale_running_jobs",
+			"jobs_by_status",
+			"nodes_by_kind",
+			"queue_by_tool",
+			"recent_failures",
+		}).AddRow(1, 1, 0, 2, 1, 1, 0, 1, 0, 0, 0, []byte(`{"queued":1,"running":1}`), []byte(`[{"kind":"control","count":1}]`), []byte(`[{"tool_name":"repo.sync","queued":1}]`), []byte(`[]`)))
+	req := httptest.NewRequest(http.MethodGet, "/api/worker-queue/summary", nil)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.getWorkerQueueSummary(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	backend, ok := body["backend_summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("backend_summary missing or wrong type: %#v", body["backend_summary"])
+	}
+	if backend["backend"] != "postgres" || backend["redis_locking"] != "disabled" || backend["pubsub"] != "disabled" || backend["log_fanout"] != "sse_polling" {
+		t.Fatalf("backend_summary = %#v", backend)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestGetWorkerQueueSummaryErrorDoesNotExposeBackendSummary(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s).*WITH visible_jobs AS .*recent_failures`).
+		WithArgs(true, "admin-1").
+		WillReturnError(fmt.Errorf("database offline"))
+	req := httptest.NewRequest(http.MethodGet, "/api/worker-queue/summary", nil)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.getWorkerQueueSummary(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body = %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "backend_summary") {
+		t.Fatalf("error response should not expose backend_summary: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestWorkerQueueBackendSummaryDocumentsPostgresOnlyMode(t *testing.T) {
+	summary := workerQueueBackendSummary()
+	for key, want := range map[string]string{
+		"backend":       "postgres",
+		"claiming":      "select_for_update_skip_locked",
+		"redis_locking": "disabled",
+		"pubsub":        "disabled",
+		"log_fanout":    "sse_polling",
+	} {
+		if got, _ := summary[key].(string); got != want {
+			t.Fatalf("workerQueueBackendSummary[%s] = %q, want %q", key, got, want)
+		}
+	}
+	message, _ := summary["message"].(string)
+	if !strings.Contains(message, "PostgreSQL") || !strings.Contains(message, "Redis") {
+		t.Fatalf("workerQueueBackendSummary message should document PostgreSQL/Redis boundary: %q", message)
+	}
+}
+
 func TestApprovalReminderMigrationAndFreshInit(t *testing.T) {
 	migration, err := os.ReadFile("../../migrations/009_approval_reminders.sql")
 	if err != nil {

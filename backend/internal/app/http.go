@@ -6788,7 +6788,21 @@ func (s *Server) getWorkerQueueSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	user := currentUser(r)
 	summary, err := queryOne(r.Context(), s.store.DB, workerQueueSummarySQL(), userCanReadAllProjects(user), userIDOrNil(user))
+	if err == nil {
+		summary["backend_summary"] = workerQueueBackendSummary()
+	}
 	writeQueryOne(w, summary, err)
+}
+
+func workerQueueBackendSummary() map[string]any {
+	return map[string]any{
+		"backend":       "postgres",
+		"claiming":      "select_for_update_skip_locked",
+		"redis_locking": "disabled",
+		"pubsub":        "disabled",
+		"log_fanout":    "sse_polling",
+		"message":       "Worker jobs use PostgreSQL polling and row locks; Redis-backed locking and pub/sub fanout are deferred.",
+	}
 }
 
 func workerQueueSummarySQL() string {
