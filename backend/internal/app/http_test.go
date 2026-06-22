@@ -1608,6 +1608,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`refreshCanonicalAssetsAfterOperation(ctx, job, opID, "failed")`,
 		`canonicalAssetsSyncedInAdapterTransaction(job)`,
 		`"repo.sync", "repo.sync_remote", "repo.tag", "repo.create_tag"`,
+		`"project.template_provision_retry", "agent.execute"`,
 		`SyncCanonicalAssetsWith(ctx, tx)`,
 		`syncing canonical assets for running repo sync`,
 		`syncing canonical assets for completed repo sync`,
@@ -1625,6 +1626,11 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncing canonical assets for completed project template creation`,
 		`syncing canonical assets for completed project template provision retry`,
 		`syncing canonical assets for failed project template provision retry`,
+		`syncing canonical assets for running agent execution`,
+		`syncing canonical assets for completed agent execution`,
+		`syncing canonical assets for failed agent execution`,
+		`agent_call_failures AS`,
+		`agent_task_failures AS`,
 	} {
 		if !strings.Contains(string(workerSource), token) {
 			t.Fatalf("worker.go missing canonical asset refresh hook %q", token)

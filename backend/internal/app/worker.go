@@ -198,7 +198,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "repo.sync", "repo.sync_remote", "repo.tag", "repo.create_tag", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry":
+	case "repo.sync", "repo.sync_remote", "repo.tag", "repo.create_tag", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute":
 		return true
 	default:
 		return false
@@ -347,6 +347,24 @@ func (w *ControlWorker) recoverStaleRunningJobs(ctx context.Context) error {
 				AND ptr.status IN ('queued', 'running', 'provisioning')`, opID); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE agent_tool_calls
+			SET status='failed',
+				error_message='worker timed out while running',
+				finished_at=now(),
+				updated_at=now()
+			WHERE operation_run_id=$1
+				AND status IN ('queued', 'planned', 'running')`, opID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE agent_tasks
+			SET status='failed',
+				updated_at=now()
+			WHERE id=(SELECT NULLIF(input->>'agent_task_id', '')::uuid FROM operation_runs WHERE id=$1 AND operation_type='agent.execute')
+				AND status IN ('queued', 'running')`, opID); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		WITH stale_ops AS (
@@ -422,13 +440,37 @@ func (w *ControlWorker) recoverStaleRunningJobs(ctx context.Context) error {
 				AND ptr.id=NULLIF(updated_ops.input->>'project_template_run_id', '')::uuid
 				AND ptr.status IN ('queued', 'running', 'provisioning')
 			RETURNING ptr.id
+		),
+		agent_call_failures AS (
+			UPDATE agent_tool_calls atc
+			SET status='failed',
+				error_message='worker timed out while running',
+				finished_at=now(),
+				updated_at=now()
+			FROM updated_ops
+			WHERE updated_ops.operation_type='agent.execute'
+				AND atc.operation_run_id=updated_ops.id
+				AND atc.status IN ('queued', 'planned', 'running')
+			RETURNING atc.agent_task_id
+		),
+		agent_task_failures AS (
+			UPDATE agent_tasks at
+			SET status='failed',
+				updated_at=now()
+			FROM updated_ops
+			WHERE updated_ops.operation_type='agent.execute'
+				AND at.id=NULLIF(updated_ops.input->>'agent_task_id', '')::uuid
+				AND at.status IN ('queued', 'running')
+			RETURNING at.id
 		)
 		SELECT
 			(SELECT count(*) FROM repo_sync_run_failures) AS repo_sync_run_count,
 			(SELECT count(*) FROM repo_sync_asset_failures) AS repo_sync_asset_count,
 			(SELECT count(*) FROM repo_sync_remote_failures) AS repo_sync_remote_count,
 			(SELECT count(*) FROM template_create) AS template_create_count,
-			(SELECT count(*) FROM template_retry) AS template_retry_count`, recoveryResult); err != nil {
+			(SELECT count(*) FROM template_retry) AS template_retry_count,
+			(SELECT count(*) FROM agent_call_failures) AS agent_call_count,
+			(SELECT count(*) FROM agent_task_failures) AS agent_task_count`, recoveryResult); err != nil {
 		return err
 	}
 	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
@@ -497,14 +539,27 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 				AND ptr.id=NULLIF(op.input->>'project_template_run_id', '')::uuid`, opID)
 		return err
 	case "agent.execute":
-		_, err := db.ExecContext(ctx, `
+		if _, err := db.ExecContext(ctx, `
 			UPDATE agent_tool_calls
 			SET status='running',
 				started_at=COALESCE(started_at, now()),
 				updated_at=now()
 			WHERE operation_run_id=$1
-				AND status IN ('queued', 'planned')`, opID)
-		return err
+				AND status IN ('queued', 'planned')`, opID); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, `
+			UPDATE agent_tasks
+			SET status='running',
+				updated_at=now()
+			WHERE id=(SELECT NULLIF(input->>'agent_task_id', '')::uuid FROM operation_runs WHERE id=$1)
+				AND status IN ('queued', 'planned')`, opID); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+			return fmt.Errorf("syncing canonical assets for running agent execution: %w", err)
+		}
+		return nil
 	default:
 		return nil
 	}
@@ -737,12 +792,18 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `
+		if _, err = tx.ExecContext(ctx, `
 			UPDATE agent_tasks
 			SET status='failed',
 				updated_at=now()
-			WHERE id=(SELECT NULLIF(input->>'agent_task_id', '')::uuid FROM operation_runs WHERE id=$1)`, opID)
-		return err
+			WHERE id=(SELECT NULLIF(input->>'agent_task_id', '')::uuid FROM operation_runs WHERE id=$1)
+				AND status IN ('queued', 'running')`, opID); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed agent execution: %w", err)
+		}
+		return nil
 	}
 	return nil
 }
@@ -911,12 +972,18 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 				AND status IN ('queued', 'planned', 'running')`, opID, output); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `
+		if _, err = tx.ExecContext(ctx, `
 			UPDATE agent_tasks
 			SET status='executed',
 				updated_at=now()
-			WHERE id=(SELECT NULLIF(input->>'agent_task_id', '')::uuid FROM operation_runs WHERE id=$1)`, opID)
-		return err
+			WHERE id=(SELECT NULLIF(input->>'agent_task_id', '')::uuid FROM operation_runs WHERE id=$1)
+				AND status IN ('queued', 'running')`, opID); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed agent execution: %w", err)
+		}
+		return nil
 	default:
 		return nil
 	}
