@@ -1900,7 +1900,13 @@ func canonicalAssetForRelation(ctx context.Context, db sqlx.ExtContext, assetID 
 }
 
 func (s *Server) deleteAssetRelation(w http.ResponseWriter, r *http.Request) {
-	relation, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM asset_relations WHERE id=$1", chi.URLParam(r, "id"))
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete asset relation")
+		return
+	}
+	defer tx.Rollback()
+	relation, err := queryOne(r.Context(), tx, "SELECT * FROM asset_relations WHERE id=$1 FOR UPDATE", chi.URLParam(r, "id"))
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -1918,7 +1924,7 @@ func (s *Server) deleteAssetRelation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "only manual asset relations can be deleted")
 		return
 	}
-	result, err := s.store.DB.ExecContext(r.Context(), "DELETE FROM asset_relations WHERE id=$1", chi.URLParam(r, "id"))
+	result, err := tx.ExecContext(r.Context(), "DELETE FROM asset_relations WHERE id=$1", chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete asset relation")
 		return
@@ -1930,6 +1936,13 @@ func (s *Server) deleteAssetRelation(w http.ResponseWriter, r *http.Request) {
 	}
 	if count == 0 {
 		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.delete") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit asset relation delete")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

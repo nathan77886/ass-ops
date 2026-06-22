@@ -1408,6 +1408,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "argo_connection.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "ssh_machine.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.delete")`,
 		`SyncCanonicalAssetsWith(r.Context(), tx)`,
 	} {
 		if !strings.Contains(string(httpSource), reason) {
