@@ -1948,6 +1948,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.progress")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.execute")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.reject")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "operation.cancel")`,
 		`syncing canonical assets for expired operation approvals`,
 		`could not sync canonical assets after approval notification`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "worker_node.register")`,
@@ -2042,6 +2043,24 @@ func TestOperationLogCursorIDRoundTrip(t *testing.T) {
 	}
 	if cursor.CreatedAt != createdAt.Format(time.RFC3339Nano) || cursor.ID != "log-1" {
 		t.Fatalf("cursor = %+v", cursor)
+	}
+}
+
+func TestCancelOperationRunGuardsTerminalStateAndQueuedJobs(t *testing.T) {
+	content, err := os.ReadFile("http.go")
+	if err != nil {
+		t.Fatalf("read http.go: %v", err)
+	}
+	source := string(content)
+	for _, token := range []string{
+		"status NOT IN ('completed', 'failed', 'canceled', 'cancelled')",
+		"UPDATE worker_jobs",
+		"SET status='canceled'",
+		"AND status='queued'",
+	} {
+		if !strings.Contains(source, token) {
+			t.Fatalf("cancelOperationRun missing %q", token)
+		}
 	}
 }
 

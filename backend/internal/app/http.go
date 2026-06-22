@@ -9143,14 +9143,46 @@ func (s *Server) cancelOperation(w http.ResponseWriter, r *http.Request) {
 	} else if !s.requirePolicyOrApproval(w, r, resource, "operation.cancel", "cancel "+fmt.Sprint(op["title"]), payload) {
 		return
 	}
-	item, err := s.cancelOperationRun(r.Context(), s.store.DB, opID)
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start operation cancel transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := s.cancelOperationRun(r.Context(), tx, opID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation.cancel") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit operation cancel")
+		return
+	}
 	writeQueryOne(w, item, err)
 }
 
 func (s *Server) cancelOperationRun(ctx context.Context, db sqlx.ExtContext, operationID string) (map[string]any, error) {
-	return queryOne(ctx, db, `
+	item, err := queryOne(ctx, db, `
 		UPDATE operation_runs SET status='canceled', finished_at=now(), updated_at=now()
-		WHERE id=$1 RETURNING *`, operationID)
+		WHERE id=$1
+			AND status NOT IN ('completed', 'failed', 'canceled', 'cancelled')
+		RETURNING *`, operationID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE worker_jobs
+		SET status='canceled',
+			finished_at=now(),
+			updated_at=now()
+		WHERE operation_run_id=$1
+			AND status='queued'`, operationID); err != nil {
+		return nil, err
+	}
+	return item, nil
 }
 
 func (s *Server) createNodeTestJob(w http.ResponseWriter, r *http.Request) {
