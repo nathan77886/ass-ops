@@ -609,6 +609,22 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 		!containsString(stringSliceFromAny(enabledGuardrail["blocked_reasons"]), "provider_review_mutation_armed") {
 		t.Fatalf("enabled guardrail should still require mutation arming: %#v", enabledGuardrail)
 	}
+	armingOnlyGuardrail := templateProviderReviewExecutionGuardrailWithStaging("github", "pull_request", "assops/template/demo-main", "main", false, true, true)
+	if armingOnlyGuardrail["execution_mode"] != "disabled" ||
+		armingOnlyGuardrail["mutation_armed_config"] != false ||
+		!containsString(stringSliceFromAny(armingOnlyGuardrail["blocked_reasons"]), "provider_review_execution_enabled") ||
+		!containsString(stringSliceFromAny(armingOnlyGuardrail["blocked_reasons"]), "provider_review_mutation_armed") {
+		t.Fatalf("arming config should require execution config before becoming ready: %#v", armingOnlyGuardrail)
+	}
+	armedGuardrail := templateProviderReviewExecutionGuardrailWithStaging("github", "pull_request", "assops/template/demo-main", "main", true, true, true)
+	if armedGuardrail["execution_mode"] != "mutation_armed_audit_only" ||
+		armedGuardrail["execution_enabled"] != false ||
+		armedGuardrail["execution_enabled_config"] != true ||
+		armedGuardrail["mutation_armed_config"] != true ||
+		armedGuardrail["provider_api_mutation"] != "disabled" ||
+		containsString(stringSliceFromAny(armedGuardrail["blocked_reasons"]), "provider_review_mutation_armed") {
+		t.Fatalf("armed guardrail should expose arming config while staying audit-only: %#v", armedGuardrail)
+	}
 	readyAPIPlan := templateProviderReviewAPIRequestPlan("github", "pull_request", "assops/template/demo-main", "main", map[string]any{
 		"status":           "ready",
 		"file_count":       2,
@@ -620,6 +636,34 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	for _, operation := range sliceOfMapsFromAny(readyAPIPlan["operations"]) {
 		if operation["api_call"] != false || operation["payload_redacted"] != true || operation["contains_token"] != false || operation["contains_file_content"] != false {
 			t.Fatalf("ready api operation should be redacted/no-call: %#v", operation)
+		}
+	}
+	armedReconciliation := templateProviderReviewExecutionReconciliation(
+		"github",
+		"pull_request",
+		map[string]any{"status": "ready", "file_count": 2, "content_included": false},
+		armedGuardrail,
+		readyAPIPlan,
+		map[string]any{
+			"mode":                 "provider_account_token_env",
+			"token_env_configured": true,
+			"token_env_present":    true,
+		},
+	)
+	armedMutationPlan := mapFromAny(armedReconciliation["mutation_arming_plan"])
+	if armedMutationPlan["status"] != "armed" ||
+		armedMutationPlan["mutation_armed_config"] != true ||
+		armedMutationPlan["mutation_armed"] != true ||
+		armedMutationPlan["provider_api_call_made"] != false ||
+		armedMutationPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("armed mutation plan should remain no-call: %#v", armedMutationPlan)
+	}
+	if armedReconciliation["status"] != "ready" || armedReconciliation["provider_api_mutation"] != "disabled" {
+		t.Fatalf("armed reconciliation should be preflight-ready but mutation-disabled: %#v", armedReconciliation)
+	}
+	for _, operation := range sliceOfMapsFromAny(armedReconciliation["operations"]) {
+		if operation["external_call_made"] != false {
+			t.Fatalf("armed reconciliation operation should remain local-only: %#v", operation)
 		}
 	}
 	for _, tt := range []struct {

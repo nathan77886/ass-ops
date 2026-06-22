@@ -832,7 +832,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 	credentialPresent := boolValueFromAny(credentialStrategy["token_env_present"])
 	adapterStatus := providerReviewAdapterStatus(provider, reviewKind)
 	adapterReady := adapterStatus == "planned"
-	mutationArmed := false
+	mutationArmed := boolValueFromAny(guardrail["mutation_armed_config"])
 	executionEnabledConfig := boolValueFromAny(guardrail["execution_enabled_config"])
 	requestEnvelopes := providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload)
 	adapterRehearsal := providerReviewAdapterRehearsal(provider, reviewKind, adapterStatus, credentialStrategy, requestEnvelopes)
@@ -889,6 +889,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		{
 			"gate":              "provider_review_mutation_armed",
 			"status":            map[bool]string{true: "ready", false: "blocked"}[mutationArmed],
+			"required_config":   "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION",
 			"provider_type":     provider,
 			"review_kind":       reviewKind,
 			"adapter_status":    adapterStatus,
@@ -976,6 +977,7 @@ func providerReviewMutationArmingPlan(provider, reviewKind string, executionEnab
 		"required_config":                "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION",
 		"execution_enabled_config":       executionEnabledConfig,
 		"adapter_rehearsal_ready":        rehearsalReady,
+		"mutation_armed_config":          mutationArmed,
 		"mutation_armed":                 mutationArmed,
 		"blocked_reasons":                blockedReasons,
 		"external_call_made":             false,
@@ -1476,10 +1478,10 @@ func providerReviewEndpointKey(provider, operation string) string {
 }
 
 func templateProviderReviewExecutionGuardrail(provider, reviewKind, sourceBranch, targetBranch string, enableRequested bool) map[string]any {
-	return templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, sourceBranch, targetBranch, enableRequested, false)
+	return templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, sourceBranch, targetBranch, enableRequested, false, false)
 }
 
-func templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, sourceBranch, targetBranch string, enableRequested, starterFilePayloadStaged bool) map[string]any {
+func templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, sourceBranch, targetBranch string, enableRequested, mutationArmingRequested, starterFilePayloadStaged bool) map[string]any {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
 	sourceBranch = strings.TrimSpace(sourceBranch)
@@ -1487,12 +1489,18 @@ func templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, s
 	branchReady := sourceBranch != "" && targetBranch != "" && isSafeGitRefPart(sourceBranch) && isSafeGitRefPart(targetBranch)
 	adapterStatus := providerReviewAdapterStatus(provider, reviewKind)
 	adapterReady := adapterStatus == "planned"
-	mutationArmed := false
 	configStatus := "blocked"
 	configMessage := "Set ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION=true only after provider branch, commit, and review adapters are ready."
 	if enableRequested {
 		configStatus = "ready"
 		configMessage = "Provider review execution was explicitly requested by configuration."
+	}
+	mutationReady := enableRequested && mutationArmingRequested
+	mutationStatus := "blocked"
+	mutationMessage := "Set ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION=true and ASSOPS_ARM_PROVIDER_REVIEW_MUTATION=true only after provider review rehearsal evidence is reviewed."
+	if mutationReady {
+		mutationStatus = "ready"
+		mutationMessage = "Provider review mutation arming was explicitly requested by configuration; live provider API calls remain disabled."
 	}
 	gates := []map[string]any{
 		{
@@ -1513,11 +1521,12 @@ func templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, s
 		},
 		{
 			"gate":              "provider_review_mutation_armed",
-			"status":            map[bool]string{true: "ready", false: "blocked"}[mutationArmed],
+			"status":            mutationStatus,
+			"required_config":   "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION",
 			"provider_type":     provider,
 			"review_kind":       reviewKind,
 			"adapter_status":    adapterStatus,
-			"message":           "Provider API mutation remains disabled until the execution adapter is explicitly armed after rehearsal.",
+			"message":           mutationMessage,
 			"sensitive_payload": false,
 		},
 		{
@@ -1545,10 +1554,14 @@ func templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, s
 	if enableRequested {
 		mode = "mutation_blocked"
 	}
+	if mutationReady {
+		mode = "mutation_armed_audit_only"
+	}
 	return map[string]any{
 		"execution_mode":           mode,
 		"execution_enabled":        false,
 		"execution_enabled_config": enableRequested,
+		"mutation_armed_config":    mutationReady,
 		"provider_type":            provider,
 		"review_kind":              reviewKind,
 		"source_branch":            sourceBranch,

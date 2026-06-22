@@ -845,7 +845,7 @@ func (s *Server) requestProjectTemplateProviderReviewExecution(w http.ResponseWr
 		writeQueryOne(w, nil, err)
 		return
 	}
-	payload, err := projectTemplateProviderReviewApprovalPayloadForConfig(run, s.cfg.ProviderReviewExecutionEnabled)
+	payload, err := projectTemplateProviderReviewApprovalPayloadForConfig(run, s.cfg.ProviderReviewExecutionEnabled, s.cfg.ProviderReviewMutationArmed)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -884,10 +884,10 @@ func (s *Server) requestProjectTemplateProviderReviewExecution(w http.ResponseWr
 }
 
 func projectTemplateProviderReviewApprovalPayload(run map[string]any) (map[string]any, error) {
-	return projectTemplateProviderReviewApprovalPayloadForConfig(run, false)
+	return projectTemplateProviderReviewApprovalPayloadForConfig(run, false, false)
 }
 
-func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, providerReviewExecutionEnabled bool) (map[string]any, error) {
+func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, providerReviewExecutionEnabled, providerReviewMutationArmed bool) (map[string]any, error) {
 	result := mapFromAny(run["result"])
 	details := mapFromAny(result["details"])
 	repositoryReconciliation := mapFromAny(details["repository_reconciliation"])
@@ -904,6 +904,7 @@ func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, p
 		stringFromMap(executionRequest, "source_branch"),
 		stringFromMap(executionRequest, "target_branch"),
 		providerReviewExecutionEnabled,
+		providerReviewMutationArmed,
 		starterFilePayloadReady(starterFilePayload),
 	)
 	providerAPIRequestPlan := templateProviderReviewAPIRequestPlan(
@@ -8750,6 +8751,7 @@ func sanitizedProviderReviewExecutionGuardrail(value map[string]any) map[string]
 		"execution_mode":           cleanOptionalText(stringFromMap(value, "execution_mode")),
 		"execution_enabled":        false,
 		"execution_enabled_config": boolValueFromAny(value["execution_enabled_config"]),
+		"mutation_armed_config":    boolOnlyFromAny(value["mutation_armed_config"]),
 		"provider_type":            cleanOptionalText(stringFromMap(value, "provider_type")),
 		"review_kind":              cleanOptionalText(stringFromMap(value, "review_kind")),
 		"source_branch":            cleanOptionalText(stringFromMap(value, "source_branch")),
@@ -9017,6 +9019,7 @@ func sanitizedProviderReviewMutationArmingPlan(value map[string]any) map[string]
 		"required_config":                "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION",
 		"execution_enabled_config":       executionEnabled,
 		"adapter_rehearsal_ready":        rehearsalReady,
+		"mutation_armed_config":          boolOnlyFromAny(value["mutation_armed_config"]),
 		"mutation_armed":                 false,
 		"blocked_reasons":                safeProviderReviewBlockedReasons(stringSliceFromAny(value["blocked_reasons"])),
 		"external_call_made":             false,
@@ -10360,6 +10363,7 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			stringFromMap(request, "source_branch"),
 			stringFromMap(request, "target_branch"),
 			s.cfg.ProviderReviewExecutionEnabled,
+			s.cfg.ProviderReviewMutationArmed,
 			starterFilePayloadReady(starterFilePayload),
 		)
 		credentialStrategy := sanitizedProviderReviewCredentialStrategy(mapFromAny(payload["credential_strategy"]))

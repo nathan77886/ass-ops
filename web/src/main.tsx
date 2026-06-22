@@ -1177,6 +1177,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag color={mutationArmingPlan.status === 'ready_to_arm' ? 'green' : 'gold'}>arming {String(mutationArmingPlan.status).replaceAll('_', ' ')}</Tag>
           <Tag>{mutationArmingPlan.execution_enabled_config === true ? 'execution config ready' : 'execution config blocked'}</Tag>
           <Tag>{mutationArmingPlan.adapter_rehearsal_ready === true ? 'rehearsal ready' : 'rehearsal blocked'}</Tag>
+          <Tag>{mutationArmingPlan.mutation_armed_config === true ? 'arming config requested' : 'arming config off'}</Tag>
           <Tag color={mutationArmingPlan.adapter_mutation_currently_off === true ? 'blue' : 'red'}>{mutationArmingPlan.adapter_mutation_currently_off === true ? 'mutation off' : 'mutation armed'}</Tag>
           <Tag>{String(mutationArmingPlan.provider_api_mutation || 'disabled')}</Tag>
         </Space>

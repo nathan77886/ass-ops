@@ -17,6 +17,7 @@ type Config struct {
 	ApprovalWebhookURL             string
 	ApprovalWebhookToken           string
 	ProviderReviewExecutionEnabled bool
+	ProviderReviewMutationArmed    bool
 	AdminEmail                     string
 	AdminPassword                  string
 	ContextDir                     string
@@ -36,6 +37,7 @@ func LoadConfig() Config {
 		ApprovalWebhookURL:             env("ASSOPS_APPROVAL_WEBHOOK_URL", ""),
 		ApprovalWebhookToken:           env("ASSOPS_APPROVAL_WEBHOOK_TOKEN", ""),
 		ProviderReviewExecutionEnabled: envBool("ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION", false),
+		ProviderReviewMutationArmed:    envBool("ASSOPS_ARM_PROVIDER_REVIEW_MUTATION", false),
 		AdminEmail:                     env("ASSOPS_ADMIN_EMAIL", "admin@assops.local"),
 		AdminPassword:                  env("ASSOPS_ADMIN_PASSWORD", "admin1234"),
 		ContextDir:                     env("ASSOPS_CONTEXT_DIR", ".assops/context"),
