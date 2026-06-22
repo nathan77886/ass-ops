@@ -8324,7 +8324,7 @@ func (s *Server) streamOperationLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	cursor := operationLogCursor{}
+	cursor := operationLogCursorFromRequest(r)
 	streamCtx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 	ticker := time.NewTicker(time.Second)
@@ -8372,11 +8372,12 @@ func (s *Server) writeOperationLogStreamTick(ctx context.Context, w io.Writer, o
 		return false, fmt.Errorf("loading operation logs: %w", err)
 	}
 	for _, item := range items {
-		if err := writeSSE(w, "log", item); err != nil {
+		cursorID := operationLogCursorID(item)
+		if err := writeSSEWithID(w, "log", cursorID, item); err != nil {
 			return false, fmt.Errorf("%w: %v", errSSEWrite, err)
 		}
 		cursor.CreatedAt = operationLogCursorTime(item["created_at"])
-		cursor.ID = fmt.Sprint(item["id"])
+		cursor.ID = strings.TrimSpace(fmt.Sprint(item["id"]))
 	}
 	status, err := operationStatus(ctx, s.store.DB, opID)
 	if err != nil {
@@ -8389,6 +8390,42 @@ func (s *Server) writeOperationLogStreamTick(ctx context.Context, w io.Writer, o
 		return true, nil
 	}
 	return false, nil
+}
+
+func operationLogCursorFromRequest(r *http.Request) operationLogCursor {
+	for _, value := range []string{
+		r.Header.Get("Last-Event-ID"),
+		r.URL.Query().Get("cursor"),
+		r.URL.Query().Get("last_event_id"),
+	} {
+		if cursor, ok := parseOperationLogCursorID(value); ok {
+			return cursor
+		}
+	}
+	return operationLogCursor{}
+}
+
+func operationLogCursorID(item map[string]any) string {
+	createdAt := operationLogCursorTime(item["created_at"])
+	id := strings.TrimSpace(fmt.Sprint(item["id"]))
+	if createdAt == "" || createdAt == "<nil>" || id == "" || id == "<nil>" {
+		return ""
+	}
+	return createdAt + "|" + id
+}
+
+func parseOperationLogCursorID(value string) (operationLogCursor, bool) {
+	value = strings.TrimSpace(value)
+	createdAt, id, ok := strings.Cut(value, "|")
+	if !ok {
+		return operationLogCursor{}, false
+	}
+	createdAt = strings.TrimSpace(createdAt)
+	id = strings.TrimSpace(id)
+	if createdAt == "" || createdAt == "<nil>" || id == "" || id == "<nil>" {
+		return operationLogCursor{}, false
+	}
+	return operationLogCursor{CreatedAt: createdAt, ID: id}, true
 }
 
 func operationLogCursorTime(value any) string {
@@ -8445,9 +8482,18 @@ func operationStreamTerminal(status string) bool {
 }
 
 func writeSSE(w io.Writer, event string, data any) error {
+	return writeSSEWithID(w, event, "", data)
+}
+
+func writeSSEWithID(w io.Writer, event, id string, data any) error {
 	payload, err := json.Marshal(data)
 	if err != nil {
 		return err
+	}
+	if id != "" {
+		if _, err := fmt.Fprintf(w, "id: %s\n", id); err != nil {
+			return err
+		}
 	}
 	if event != "" {
 		if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {

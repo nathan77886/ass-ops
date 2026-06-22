@@ -1649,6 +1649,98 @@ func TestAgentPlanStatusApproved(t *testing.T) {
 	}
 }
 
+func TestOperationLogCursorIDRoundTrip(t *testing.T) {
+	createdAt := time.Date(2026, 6, 22, 10, 30, 45, 123, time.UTC)
+	item := map[string]any{
+		"id":         "log-1",
+		"created_at": createdAt,
+	}
+	cursorID := operationLogCursorID(item)
+	if !strings.Contains(cursorID, "|log-1") {
+		t.Fatalf("operationLogCursorID = %q", cursorID)
+	}
+	cursor, ok := parseOperationLogCursorID(cursorID)
+	if !ok {
+		t.Fatalf("parseOperationLogCursorID(%q) failed", cursorID)
+	}
+	if cursor.CreatedAt != createdAt.Format(time.RFC3339Nano) || cursor.ID != "log-1" {
+		t.Fatalf("cursor = %+v", cursor)
+	}
+}
+
+func TestOperationLogCursorFromRequestPrefersLastEventID(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/operations/op-1/logs/stream?cursor=2026-06-22T10:00:00Z%7Cquery-log", nil)
+	req.Header.Set("Last-Event-ID", "2026-06-22T11:00:00Z|header-log")
+	cursor := operationLogCursorFromRequest(req)
+	if cursor.CreatedAt != "2026-06-22T11:00:00Z" || cursor.ID != "header-log" {
+		t.Fatalf("cursor = %+v", cursor)
+	}
+}
+
+func TestOperationLogCursorFromRequestAcceptsQueryFallbacks(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/operations/op-1/logs/stream?last_event_id=2026-06-22T09:00:00Z%7Clast-event-query", nil)
+	cursor := operationLogCursorFromRequest(req)
+	if cursor.CreatedAt != "2026-06-22T09:00:00Z" || cursor.ID != "last-event-query" {
+		t.Fatalf("last_event_id cursor = %+v", cursor)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/operations/op-1/logs/stream?cursor=2026-06-22T10:00:00Z%7Ccursor-query&last_event_id=2026-06-22T09:00:00Z%7Clast-event-query", nil)
+	cursor = operationLogCursorFromRequest(req)
+	if cursor.CreatedAt != "2026-06-22T10:00:00Z" || cursor.ID != "cursor-query" {
+		t.Fatalf("cursor query should win over last_event_id query: %+v", cursor)
+	}
+}
+
+func TestParseOperationLogCursorIDRejectsInvalidInput(t *testing.T) {
+	for _, input := range []string{"", "|", "created-only|", "|id-only", "missing-delimiter", "<nil>|<nil>", "2026-06-22T10:00:00Z|<nil>", "<nil>|log-1"} {
+		if cursor, ok := parseOperationLogCursorID(input); ok {
+			t.Fatalf("parseOperationLogCursorID(%q) = %+v, true; want false", input, cursor)
+		}
+	}
+}
+
+func TestOperationLogCursorIDSkipsInvalidItems(t *testing.T) {
+	for _, item := range []map[string]any{
+		{"id": "log-1"},
+		{"id": "", "created_at": time.Now()},
+		{"id": nil, "created_at": time.Now()},
+	} {
+		if got := operationLogCursorID(item); got != "" {
+			t.Fatalf("operationLogCursorID(%v) = %q, want empty", item, got)
+		}
+	}
+}
+
+func TestWriteSSEWithIDIncludesReplayCursor(t *testing.T) {
+	var b strings.Builder
+	if err := writeSSEWithID(&b, "log", "2026-06-22T10:00:00Z|log-1", map[string]any{"id": "log-1"}); err != nil {
+		t.Fatalf("writeSSEWithID: %v", err)
+	}
+	got := b.String()
+	for _, token := range []string{
+		"id: 2026-06-22T10:00:00Z|log-1\n",
+		"event: log\n",
+		`data: {"id":"log-1"}`,
+	} {
+		if !strings.Contains(got, token) {
+			t.Fatalf("SSE payload missing %q in %q", token, got)
+		}
+	}
+}
+
+func TestOperationLogsMigrationUsesUUIDIDs(t *testing.T) {
+	content, err := os.ReadFile("../../migrations/001_init.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	match := regexp.MustCompile(`(?s)CREATE TABLE IF NOT EXISTS operation_logs \((.*?)\);`).FindStringSubmatch(string(content))
+	if len(match) != 2 {
+		t.Fatal("operation_logs migration block not found")
+	}
+	if !strings.Contains(match[1], "id UUID PRIMARY KEY DEFAULT gen_random_uuid()") {
+		t.Fatal("operation_logs should use UUID ids so cursor text comparison matches id ordering")
+	}
+}
+
 func TestAgentExecutionAuditSteps(t *testing.T) {
 	steps := agentExecutionAuditSteps(
 		map[string]any{"id": "task-1"},

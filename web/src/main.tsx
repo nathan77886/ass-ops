@@ -160,7 +160,6 @@ function useOperationLogStream(operationID?: string) {
     source.onerror = () => {
       setConnected(false);
       setError('Log stream disconnected');
-      source.close();
     };
     return () => source.close();
   }, [operationID]);
