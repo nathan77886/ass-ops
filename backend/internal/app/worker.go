@@ -2102,6 +2102,9 @@ func (w *ControlWorker) recordArgoSyncAdapterRun(ctx context.Context, tx *sqlx.T
 	if err != nil {
 		return err
 	}
+	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		return fmt.Errorf("syncing canonical assets for Argo app sync: %w", err)
+	}
 	return nil
 }
 

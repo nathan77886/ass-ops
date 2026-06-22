@@ -182,7 +182,7 @@ Implemented as real local code:
 Not yet first-class:
 
 - Canonical Asset / AssetRelation write model across every asset-producing path.
-- Asset dependency paths, manual graph edges, saved graph views, and cross-project graph search exist, and direct project/repository/remote/RepoSyncAsset plus Argo/SSH/manual-relation/template-worker project creation writes now sync the canonical ledger in transaction, but transactionally maintained canonical writes across every asset-producing path are still deferred.
+- Asset dependency paths, manual graph edges, saved graph views, and cross-project graph search exist, and direct project/repository/remote/RepoSyncAsset plus Argo/SSH/manual-relation/template-worker project creation and Argo app sync read-model writes now sync the canonical ledger in transaction, but transactionally maintained canonical writes across every asset-producing path are still deferred.
 - External Gitea/GitHub project-template repository provisioning is first-pass only; provider accounts cover basic account selection, manual token-env rotation, manual token/API health checks, protected-branch push avoidance, sanitized failure diagnostics, and operator-triggered provisioning retry, while automated token rotation and provider-specific protected-branch reconciliation remain limited.
 - Production Kubernetes rollout/TLS/storage-class hardening.
 - WebSocket/Redis-backed log fanout.

@@ -1429,6 +1429,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`refreshCanonicalAssetsAfterOperation(ctx, opID, "completed")`,
 		`refreshCanonicalAssetsAfterOperation(ctx, opID, "failed")`,
 		`SyncCanonicalAssetsWith(ctx, tx)`,
+		`syncing canonical assets for Argo app sync`,
 	} {
 		if !strings.Contains(string(workerSource), token) {
 			t.Fatalf("worker.go missing canonical asset refresh hook %q", token)
