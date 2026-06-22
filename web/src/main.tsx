@@ -324,10 +324,14 @@ type TemplateProvisionGuidance = {
   guardrailMode: string;
   guardrailReasons: string[];
   guardrailGates: AnyRow[];
+  apiPlanStatus: string;
+  apiPlanMode: string;
+  apiPlanFileCount: number;
+  apiPlanOperations: AnyRow[];
   reviewSteps: AnyRow[];
 };
 
-function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'executionRequestStatus' | 'executionRequestResource' | 'guardrailMode' | 'guardrailReasons' | 'guardrailGates' | 'reviewSteps'> & Partial<Pick<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'executionRequestStatus' | 'executionRequestResource' | 'guardrailMode' | 'guardrailReasons' | 'guardrailGates' | 'reviewSteps'>>): TemplateProvisionGuidance {
+function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'executionRequestStatus' | 'executionRequestResource' | 'guardrailMode' | 'guardrailReasons' | 'guardrailGates' | 'apiPlanStatus' | 'apiPlanMode' | 'apiPlanFileCount' | 'apiPlanOperations' | 'reviewSteps'> & Partial<Pick<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'executionRequestStatus' | 'executionRequestResource' | 'guardrailMode' | 'guardrailReasons' | 'guardrailGates' | 'apiPlanStatus' | 'apiPlanMode' | 'apiPlanFileCount' | 'apiPlanOperations' | 'reviewSteps'>>): TemplateProvisionGuidance {
   return {
     reviewStatus: '',
     reviewExecution: '',
@@ -341,6 +345,10 @@ function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' 
     guardrailMode: '',
     guardrailReasons: [],
     guardrailGates: [],
+    apiPlanStatus: '',
+    apiPlanMode: '',
+    apiPlanFileCount: 0,
+    apiPlanOperations: [],
     reviewSteps: [],
     ...value
   };
@@ -373,6 +381,7 @@ function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
     const executionPlan = providerReview.execution_plan || {};
     const executionRequest = executionPlan.execution_request || {};
     const executionGuardrail = executionPlan.execution_guardrail || {};
+    const apiRequestPlan = executionPlan.provider_api_request_plan || {};
     const branchStrategyReady = reconciliation.kind === 'protected_branch' && branchStrategy.strategy_status === 'planned';
     const titles: Record<string, string> = {
       existing_repository: 'Existing repository needs reconciliation',
@@ -397,6 +406,10 @@ function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
       guardrailMode: String(executionGuardrail.execution_mode || ''),
       guardrailReasons: Array.isArray(executionGuardrail.blocked_reasons) ? executionGuardrail.blocked_reasons.map((item: unknown) => String(item)) : [],
       guardrailGates: Array.isArray(executionGuardrail.gates) ? executionGuardrail.gates : [],
+      apiPlanStatus: String(apiRequestPlan.status || ''),
+      apiPlanMode: String(apiRequestPlan.mode || ''),
+      apiPlanFileCount: Number(apiRequestPlan.file_count || 0),
+      apiPlanOperations: Array.isArray(apiRequestPlan.operations) ? apiRequestPlan.operations : [],
       reviewSteps: Array.isArray(executionPlan.steps) ? executionPlan.steps : []
     });
   }
@@ -961,6 +974,7 @@ function templateProvisionGuidanceView(row: AnyRow, compact = false) {
 
 function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionGuidance }) {
   const requestColor = guidance.executionRequestStatus === 'approval_ready' ? 'green' : guidance.executionRequestStatus === 'blocked' ? 'gold' : 'default';
+  const apiPlanColor = guidance.apiPlanStatus === 'ready' ? 'green' : guidance.apiPlanStatus === 'blocked' ? 'gold' : 'default';
   return (
     <Space direction="vertical" size={4}>
       <Space size={4} wrap>
@@ -969,6 +983,7 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
         {guidance.approvalAction ? <Tag>{guidance.approvalAction}</Tag> : null}
         {guidance.guardrailMode ? <Tag color="gold">guardrail {guidance.guardrailMode.replaceAll('_', ' ')}</Tag> : null}
         {guidance.executionRequestStatus ? <Tag color={requestColor}>request {guidance.executionRequestStatus.replaceAll('_', ' ')}</Tag> : null}
+        {guidance.apiPlanStatus ? <Tag color={apiPlanColor}>api plan {guidance.apiPlanStatus}</Tag> : null}
       </Space>
       {guidance.sourceBranch || guidance.targetBranch ? (
         <Typography.Text type="secondary">{guidance.sourceBranch || '-'} -&gt; {guidance.targetBranch || '-'}</Typography.Text>
@@ -987,6 +1002,17 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
       ) : null}
       {guidance.guardrailReasons.length ? (
         <Typography.Text type="secondary">{shortText(`Blocked: ${guidance.guardrailReasons.join(', ')}`, 120)}</Typography.Text>
+      ) : null}
+      {guidance.apiPlanOperations.length ? (
+        <Space size={4} wrap>
+          {guidance.apiPlanMode ? <Tag>{guidance.apiPlanMode.replaceAll('_', ' ')}</Tag> : null}
+          <Tag>files {guidance.apiPlanFileCount}</Tag>
+          {guidance.apiPlanOperations.map((operation, index) => (
+            <Tag key={String(operation.endpoint_key || operation.name || `api-${index}`)} color={operation.api_call === true ? 'red' : 'default'}>
+              {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.payload_shape || operation.method || 'redacted')}
+            </Tag>
+          ))}
+        </Space>
       ) : null}
       {guidance.reviewSteps.length ? (
         <Space size={4} wrap>
