@@ -198,7 +198,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry":
+	case "repo.sync", "repo.sync_remote", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry":
 		return true
 	default:
 		return false
@@ -292,6 +292,13 @@ func (w *ControlWorker) recoverStaleRunningJobs(ctx context.Context) error {
 			SET last_sync_status='failed',
 				updated_at=now()
 			WHERE id=(SELECT repo_sync_asset_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE git_remotes
+			SET last_sync_status='failed',
+				updated_at=now()
+			WHERE id=(SELECT target_remote_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -394,6 +401,9 @@ func (w *ControlWorker) recoverStaleRunningJobs(ctx context.Context) error {
 			(SELECT count(*) FROM template_retry) AS template_retry_count`, recoveryResult); err != nil {
 		return err
 	}
+	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		return fmt.Errorf("syncing canonical assets for stale worker recovery: %w", err)
+	}
 	return tx.Commit()
 }
 
@@ -410,7 +420,13 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 			SET last_sync_status='running',
 				updated_at=now()
 			WHERE id=(SELECT repo_sync_asset_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID)
-		return err
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+			return fmt.Errorf("syncing canonical assets for running repo sync: %w", err)
+		}
+		return nil
 	case "repo.tag", "repo.create_tag":
 		_, err := db.ExecContext(ctx, "UPDATE repo_tag_runs SET status='running', started_at=COALESCE(started_at, now()) WHERE operation_run_id=$1", opID)
 		return err
@@ -531,7 +547,13 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 			SET last_sync_status='failed',
 				updated_at=now()
 			WHERE id=(SELECT repo_sync_asset_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID)
-		return err
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed repo sync: %w", err)
+		}
+		return nil
 	case "repo.tag", "repo.create_tag":
 		_, err := tx.ExecContext(ctx, `
 			UPDATE repo_tag_runs
@@ -721,7 +743,13 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 				last_synced_at=now(),
 				updated_at=now()
 			WHERE id=(SELECT repo_sync_asset_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID)
-		return err
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed repo sync: %w", err)
+		}
+		return nil
 	case "repo.tag", "repo.create_tag":
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE repo_tag_runs
