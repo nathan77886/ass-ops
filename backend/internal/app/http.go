@@ -507,6 +507,9 @@ func (s *Server) createProjectFromTemplate(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "could not create template run")
 		return
 	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project_template.create_operation") {
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit template operation")
 		return
@@ -805,6 +808,9 @@ func (s *Server) retryProjectTemplateProvision(w http.ResponseWriter, r *http.Re
 			updated_at=now()
 		WHERE id=$1`, run["id"], retryRequested); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not record template provision retry")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project_template.retry_operation") {
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -2310,6 +2316,9 @@ func (s *Server) createRepositorySync(w http.ResponseWriter, r *http.Request) {
 		}
 		runs = append(runs, run)
 	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repository_sync.enqueue") {
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit sync runs")
 		return
@@ -2345,6 +2354,9 @@ func (s *Server) createRepositoryTag(w http.ResponseWriter, r *http.Request) {
 	runs, err := s.enqueueRepositoryTagRuns(r.Context(), tx, repoID, req, currentUser(r).ID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repository_tag.enqueue") {
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -5081,6 +5093,30 @@ func assetInventorySQL() string {
 		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
 		UNION ALL
 		SELECT
+			'operation_run:' || op.id::text,
+			COALESCE(op.project_id::text, ''),
+			'operation_run',
+			op.title,
+			op.title,
+			op.operation_type,
+			'assops_operation',
+			op.id::text,
+			op.status,
+			CASE WHEN op.status='failed' THEN 'high' ELSE 'normal' END,
+			'operation_runs',
+			op.id::text,
+			jsonb_build_object(
+				'operation_type', op.operation_type,
+				'git_remote_id', op.git_remote_id,
+				'started_at', op.started_at,
+				'finished_at', op.finished_at,
+				'has_error', op.error <> ''
+			),
+			op.created_at,
+			op.updated_at
+		FROM operation_runs op
+		UNION ALL
+		SELECT
 			'repo_sync:' || rsa.id::text,
 			rsa.project_id::text,
 			'repo_sync',
@@ -5361,6 +5397,29 @@ func assetRelationInventorySQL() string {
 			gr.created_at
 		FROM provider_accounts pa
 		JOIN git_remotes gr ON gr.source_account_id=pa.id
+		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
+		UNION ALL
+		SELECT
+			'project:' || p.id::text || ':owns:operation_run:' || op.id::text,
+			p.id::text,
+			'project:' || p.id::text,
+			'operation_run:' || op.id::text,
+			'owns_operation',
+			jsonb_build_object('operation_type', op.operation_type, 'status', op.status),
+			op.created_at
+		FROM projects p
+		JOIN operation_runs op ON op.project_id=p.id
+		UNION ALL
+		SELECT
+			'git_remote:' || gr.id::text || ':triggered:operation_run:' || op.id::text,
+			r.project_id::text,
+			'git_remote:' || gr.id::text,
+			'operation_run:' || op.id::text,
+			'triggered',
+			jsonb_build_object('operation_type', op.operation_type, 'status', op.status),
+			op.created_at
+		FROM operation_runs op
+		JOIN git_remotes gr ON gr.id=op.git_remote_id
 		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
 		UNION ALL
 		SELECT
@@ -5676,6 +5735,9 @@ func (s *Server) createRemoteOperation(tool string) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if !s.syncCanonicalAssetsInTransaction(w, r, tx, "remote_operation.enqueue") {
+			return
+		}
 		if err := tx.Commit(); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not commit operation")
 			return
@@ -5849,6 +5911,9 @@ func (s *Server) enqueueOperation(ctx context.Context, projectID, remoteID, tool
 	op, err := enqueueOperationTx(ctx, tx, projectID, remoteID, tool, title, input, capabilities, preferredKind)
 	if err != nil {
 		return nil, err
+	}
+	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		return nil, fmt.Errorf("syncing canonical assets for operation enqueue: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -7241,6 +7306,9 @@ func (s *Server) approveOperationApproval(w http.ResponseWriter, r *http.Request
 		RETURNING *`, chi.URLParam(r, "id"), operationRunID, currentUser(r).ID, strings.TrimSpace(req.Reason), resultJSON)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update approval")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.execute") {
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -8934,10 +9002,18 @@ func (s *Server) syncArgoApps(w http.ResponseWriter, r *http.Request) {
 		[]string{"argo"},
 		"control-worker",
 	)
-	if err == nil {
-		err = tx.Commit()
+	if err != nil {
+		writeCreatedOne(w, op, err)
+		return
 	}
-	writeCreatedOne(w, op, err)
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "argo_apps_sync.enqueue") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit Argo sync")
+		return
+	}
+	writeJSON(w, http.StatusCreated, op)
 }
 
 func (s *Server) listArgoApps(w http.ResponseWriter, r *http.Request) {
@@ -9187,6 +9263,9 @@ func (s *Server) createSSHCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ssh_command.enqueue") {
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit SSH command")
 		return
@@ -9380,6 +9459,9 @@ func (s *Server) claimJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update operation status")
 		return
 	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "worker_job.claim") {
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit claimed job")
 		return
@@ -9431,7 +9513,13 @@ func (s *Server) finishNodeJob(w http.ResponseWriter, r *http.Request, status st
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	result, _ := jsonParam(req.Result)
-	job, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start job finish transaction")
+		return
+	}
+	defer tx.Rollback()
+	job, err := queryOne(r.Context(), tx, `
 		UPDATE worker_jobs SET status=$3, result=$4::jsonb, error=$5, finished_at=now(), updated_at=now()
 		WHERE id=$1 AND assigned_worker_node_id=$2
 		RETURNING *`, chi.URLParam(r, "id"), node["id"], status, result, req.Error)
@@ -9443,9 +9531,19 @@ func (s *Server) finishNodeJob(w http.ResponseWriter, r *http.Request, status st
 	if status == "failed" {
 		opStatus = "failed"
 	}
-	_, _ = s.store.DB.ExecContext(r.Context(), `
+	if _, err := tx.ExecContext(r.Context(), `
 		UPDATE operation_runs SET status=$2, result=$3::jsonb, error=$4, finished_at=now(), updated_at=now()
-		WHERE id=$1`, job["operation_run_id"], opStatus, result, req.Error)
+		WHERE id=$1`, job["operation_run_id"], opStatus, result, req.Error); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update operation status")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "worker_job.finish") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit job finish")
+		return
+	}
 	writeJSON(w, http.StatusOK, job)
 }
 

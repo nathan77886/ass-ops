@@ -163,7 +163,7 @@ Implemented as real local code:
 - Agent task, generated plan, approve plan, approval-gated execute-plan operation enqueue, and simulation-only tool-call audit
 - Argo connection CRUD, Argo app sync/list, deployment posture summary, and rollback point visibility
 - SSH machine CRUD and controlled SSH command runs
-- Asset Center inventory search, cross-project graph search, saved graph views, selected-asset relation graph, status history, manual graph relation edits, and upstream/downstream dependency path queries
+- Asset Center inventory search, cross-project graph search, saved graph views, selected-asset relation graph, status history, manual graph relation edits, operation-run asset visibility, and upstream/downstream dependency path queries
 - Canonical asset ledger backfill/sync from current domain tables, deduplicated asset status snapshots, plus best-effort refresh after key asset-producing writes and worker operation completion
 - Provider account management for GitHub/Gitea template repository creation, with masked token-env display and template account selectors
 - Gitea/GitHub webhook connection, HMAC verification, event audit, connection health summaries, RepoSyncAsset enqueue, and GitHub Actions read-model updates
@@ -182,7 +182,7 @@ Implemented as real local code:
 Not yet first-class:
 
 - Canonical Asset / AssetRelation write model across every asset-producing path.
-- Asset dependency paths, manual graph edges, saved graph views, and cross-project graph search exist, and direct project/repository/remote/RepoSyncAsset lifecycle/run queue plus worker-status/repo-tag writes and stale worker recovery, provider-account management, webhook-connection/delivery-health writes, webhook-event delivery read-model writes, AI-runtime and agent-task management, worker-node registration/heartbeat, Argo sync status/read-model writes, SSH/manual-relation create/delete, template-worker project creation/completion/retry writes, and GitHub Actions pipeline read-model writes now sync the canonical ledger in transaction, but transactionally maintained canonical writes across every asset-producing path are still deferred.
+- Asset dependency paths, manual graph edges, saved graph views, and cross-project graph search exist, and direct project/repository/remote/RepoSyncAsset lifecycle/run queue plus operation-run enqueue/status writes, worker-status/repo-tag writes and stale worker recovery, provider-account management, webhook-connection/delivery-health writes, webhook-event delivery read-model writes, AI-runtime and agent-task management, worker-node registration/heartbeat, Argo sync status/read-model writes, SSH/manual-relation create/delete, template-worker project creation/completion/retry writes, and GitHub Actions pipeline read-model writes now sync the canonical ledger in transaction, but transactionally maintained canonical writes across every asset-producing path are still deferred.
 - External Gitea/GitHub project-template repository provisioning is first-pass only; provider accounts cover basic account selection, manual token-env rotation, manual token/API health checks, protected-branch push avoidance, sanitized failure diagnostics, and operator-triggered provisioning retry, while automated token rotation and provider-specific protected-branch reconciliation remain limited.
 - Production Kubernetes rollout/TLS/storage-class hardening.
 - WebSocket/Redis-backed log fanout.

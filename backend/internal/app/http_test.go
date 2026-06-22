@@ -105,6 +105,9 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		"'template_file'",
 		"'repository'",
 		"'git_remote'",
+		"'operation_run'",
+		"FROM operation_runs op",
+		"'has_error', op.error <> ''",
 		"'repo_sync'",
 		"'webhook_connection'",
 		"'pipeline_run'",
@@ -134,6 +137,22 @@ func TestAssetRelationInventorySQLIncludesAgentTaskEdges(t *testing.T) {
 		"'uses_runtime'",
 		"WHERE ar.project_id=at.project_id OR ar.project_id IS NULL",
 		"CASE WHEN ar.status='verified' THEN 0 ELSE 1 END",
+	} {
+		if !strings.Contains(sql, token) {
+			t.Fatalf("assetRelationInventorySQL missing %s", token)
+		}
+	}
+}
+
+func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
+	sql := assetRelationInventorySQL()
+	for _, token := range []string{
+		"'project:' || p.id::text || ':owns:operation_run:' || op.id::text",
+		"'git_remote:' || gr.id::text || ':triggered:operation_run:' || op.id::text",
+		"'owns_operation'",
+		"'triggered'",
+		"JOIN operation_runs op ON op.project_id=p.id",
+		"JOIN git_remotes gr ON gr.id=op.git_remote_id",
 	} {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("assetRelationInventorySQL missing %s", token)
@@ -1419,6 +1438,11 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "git_repository.update")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "git_remote.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "git_remote.update")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "project_template.create_operation")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "project_template.retry_operation")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "remote_operation.enqueue")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "repository_sync.enqueue")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "repository_tag.enqueue")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.update")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.archive")`,
@@ -1444,8 +1468,12 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.execute")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "worker_node.register")`,
 		`SyncWorkerNodeCanonicalAssetWith(r.Context(), tx, node["id"])`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "worker_job.claim")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "worker_job.finish")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "argo_connection.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "argo_apps_sync.enqueue")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "ssh_machine.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "ssh_command.enqueue")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.delete")`,
 		`SyncCanonicalAssetsWith(r.Context(), tx)`,
