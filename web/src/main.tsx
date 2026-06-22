@@ -306,95 +306,116 @@ function templateProvisionSummary(row: AnyRow) {
   return { color: 'default', label: 'pending', detail: '' };
 }
 
-function templateProvisionGuidance(row: AnyRow) {
+type TemplateProvisionGuidance = {
+  status: string;
+  color: string;
+  title: string;
+  detail: string;
+  next: string;
+  reviewStatus: string;
+  reviewExecution: string;
+};
+
+function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution'> & Partial<Pick<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution'>>): TemplateProvisionGuidance {
+  return {
+    reviewStatus: '',
+    reviewExecution: '',
+    ...value
+  };
+}
+
+function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
   const details = row.result?.details || {};
   const reconciliation = details.repository_reconciliation || {};
   if (row.result?.repository_provisioned) {
-    return {
+    return templateGuidance({
       status: 'ready',
       color: 'green',
       title: 'Repository provisioned',
       detail: 'Starter files were pushed and the repository metadata is linked to this template run.',
       next: 'Continue with RepoSync or deployment wiring.'
-    };
+    });
   }
   if (row.status === 'provisioning' || row.status === 'running' || row.status === 'queued') {
-    return {
+    return templateGuidance({
       status: 'waiting',
       color: 'blue',
       title: 'Provisioning in progress',
       detail: 'The worker is still reconciling repository provisioning for this template run.',
       next: 'Wait for the run to finish before retrying.'
-    };
+    });
   }
   if (reconciliation.kind) {
     const branchStrategy = reconciliation.branch_strategy || {};
+    const providerReview = reconciliation.provider_review_readiness || {};
     const branchStrategyReady = reconciliation.kind === 'protected_branch' && branchStrategy.strategy_status === 'planned';
     const titles: Record<string, string> = {
       existing_repository: 'Existing repository needs reconciliation',
       protected_branch: branchStrategyReady ? 'Protected branch strategy ready' : 'Protected branch guard is active',
       missing_token: 'Provider token is not configured'
     };
-    return {
+    return templateGuidance({
       status: reconciliation.kind === 'missing_token' ? 'token' : branchStrategyReady ? 'branch strategy' : 'manual reconcile',
       color: reconciliation.kind === 'missing_token' ? 'red' : 'gold',
       title: titles[String(reconciliation.kind)] || 'Repository needs reconciliation',
       detail: String((branchStrategyReady ? reconciliation.action_required : branchStrategy.message) || reconciliation.action_required || details.reason || row.result?.repository_provision_reason || 'Repository provisioning needs operator review.'),
-      next: String(reconciliation.retry_after || 'Retry after the missing provider condition is fixed.')
-    };
+      next: String(providerReview.message || reconciliation.retry_after || 'Retry after the missing provider condition is fixed.'),
+      reviewStatus: String(providerReview.status || ''),
+      reviewExecution: providerReview.execution_enabled === true ? 'enabled' : 'disabled'
+    });
   }
   if (details.repository_exists && details.starter_push_skipped) {
-    return {
+    return templateGuidance({
       status: 'manual reconcile',
       color: 'gold',
       title: 'Existing repository needs reconciliation',
       detail: 'Starter files were skipped because the external repository already exists.',
       next: 'Review the repository contents, then set allow_existing_repository_push only when it is safe to write starter files.'
-    };
+    });
   }
   if (details.starter_push_skipped) {
-    return {
+    return templateGuidance({
       status: 'manual reconcile',
       color: 'gold',
       title: 'Protected branch guard is active',
       detail: String(row.result?.repository_provision_reason || details.reason || 'Starter files were skipped by a template remote protection guard.'),
       next: 'Configure a provider-specific branch strategy or set allow_protected_branch_push only after branch protection rules are reviewed.'
-    };
+    });
   }
   if (details.token_configured === false) {
-    return {
+    return templateGuidance({
       status: 'token',
       color: 'red',
       title: 'Provider token is not configured',
       detail: 'The selected provider account token environment variable is missing at runtime.',
       next: 'Rotate the provider account to a configured token env, run Check, then retry provisioning.'
-    };
+    });
   }
   if (details.provider_status || details.provider_error) {
-    return {
+    return templateGuidance({
       status: 'provider',
       color: 'red',
       title: details.provider_status ? `Provider returned HTTP ${details.provider_status}` : 'Provider API error',
       detail: shortText(details.provider_error || row.result?.repository_provision_reason, 96),
       next: 'Use the provider account Check action and provider diagnostics before retrying.'
-    };
+    });
   }
   if (row.result?.repository_provision_reason) {
-    return {
+    return templateGuidance({
       status: 'review',
       color: 'gold',
       title: 'Repository needs review',
       detail: shortText(row.result.repository_provision_reason, 96),
       next: 'Review the template remote metadata and retry after the missing condition is fixed.'
-    };
+    });
   }
-  return {
+  return templateGuidance({
     status: 'pending',
     color: 'default',
     title: 'Provisioning not attempted',
     detail: 'No repository provisioning result has been recorded for this run yet.',
     next: 'Start or retry the template run when the provider account and template remotes are ready.'
-  };
+  });
 }
 
 function providerTokenRotationSummary(row: AnyRow) {
@@ -822,7 +843,10 @@ function templateProvisionGuidanceView(row: AnyRow, compact = false) {
   if (compact) {
     return (
       <Space direction="vertical" size={2}>
-        <Tag color={guidance.color}>{guidance.status}</Tag>
+        <Space size={4} wrap>
+          <Tag color={guidance.color}>{guidance.status}</Tag>
+          {guidance.reviewStatus ? <Tag>{guidance.reviewStatus}</Tag> : null}
+        </Space>
         <Typography.Text type="secondary">{shortText(guidance.next, 96)}</Typography.Text>
       </Space>
     );
@@ -834,6 +858,7 @@ function templateProvisionGuidanceView(row: AnyRow, compact = false) {
       message={guidance.title}
       description={<Space direction="vertical" size={4}>
         <Typography.Text>{guidance.detail}</Typography.Text>
+        {guidance.reviewStatus ? <Space size={4} wrap><Tag>{guidance.reviewStatus}</Tag><Tag>provider execution: {guidance.reviewExecution}</Tag></Space> : null}
         <Typography.Text strong>{guidance.next}</Typography.Text>
       </Space>}
     />

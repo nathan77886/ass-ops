@@ -317,6 +317,13 @@ func TestProvisionTemplateRepositoryReportsProtectedBranchStrategy(t *testing.T)
 	if strategy["mode"] != "proposed_branch" || strategy["strategy_status"] != "planned" {
 		t.Fatalf("branch strategy = %#v", strategy)
 	}
+	readiness := mapFromAny(reconcile["provider_review_readiness"])
+	if readiness["status"] != "planned" || readiness["execution_enabled"] != false || readiness["external_call_made"] != false {
+		t.Fatalf("provider review readiness = %#v", readiness)
+	}
+	if readiness["branch_creation"] != "locally_planned" || readiness["review_request"] != "locally_planned" {
+		t.Fatalf("provider review branch/review readiness = %#v", readiness)
+	}
 	if strategy["proposed_branch"] != "assops/starter/protected-service-release-main" || strategy["target_branch"] != "release/main" {
 		t.Fatalf("branch strategy branches = %#v", strategy)
 	}
@@ -332,6 +339,37 @@ func TestSafeTemplateBranchNameSanitizesParts(t *testing.T) {
 	}
 	if !isSafeGitRefPart(got) {
 		t.Fatalf("generated branch should be a safe git ref: %q", got)
+	}
+}
+
+func TestTemplateProviderReviewReadinessBlocksWithoutPlan(t *testing.T) {
+	existing := templateProviderReviewReadiness("existing_repository", "github", nil)
+	if existing["status"] != "blocked" || existing["execution_enabled"] != false || existing["external_call_made"] != false {
+		t.Fatalf("existing repository readiness = %#v", existing)
+	}
+	if !strings.Contains(fmt.Sprint(existing["message"]), "Review existing repository") {
+		t.Fatalf("existing repository message = %#v", existing)
+	}
+
+	missingToken := templateProviderReviewReadiness("missing_token", "gitea", nil)
+	if missingToken["status"] != "blocked" || !strings.Contains(fmt.Sprint(missingToken["message"]), "token") {
+		t.Fatalf("missing token readiness = %#v", missingToken)
+	}
+
+	unsupportedProtected := templateProviderReviewReadiness("protected_branch", "github", map[string]any{"mode": "custom", "strategy_status": "unsupported"})
+	if unsupportedProtected["status"] != "blocked" || unsupportedProtected["execution_enabled"] != false {
+		t.Fatalf("unsupported protected readiness = %#v", unsupportedProtected)
+	}
+	if !strings.Contains(fmt.Sprint(unsupportedProtected["message"]), "supported branch strategy") {
+		t.Fatalf("unsupported protected message = %#v", unsupportedProtected)
+	}
+
+	unknown := templateProviderReviewReadiness("unknown_kind", "github", nil)
+	if unknown["status"] != "blocked" || unknown["execution_enabled"] != false {
+		t.Fatalf("unknown readiness = %#v", unknown)
+	}
+	if !strings.Contains(fmt.Sprint(unknown["message"]), "Manual repository reconciliation") {
+		t.Fatalf("unknown message = %#v", unknown)
 	}
 }
 

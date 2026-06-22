@@ -511,6 +511,7 @@ func templateRepositoryReconciliation(kind string, repo, remote map[string]any, 
 		stringFromMap(remote, "kind"),
 	)))
 	branchStrategy := templateProtectedBranchStrategy(repo, remote, defaultBranch)
+	reviewReadiness := templateProviderReviewReadiness(kind, provider, branchStrategy)
 	summary := map[string]any{
 		"kind":               kind,
 		"provider_type":      provider,
@@ -523,6 +524,7 @@ func templateRepositoryReconciliation(kind string, repo, remote map[string]any, 
 			"mode":         "provider_account_token_env",
 			"token_stored": false,
 		},
+		"provider_review_readiness": reviewReadiness,
 	}
 	switch kind {
 	case "existing_repository":
@@ -550,6 +552,40 @@ func templateRepositoryReconciliation(kind string, repo, remote map[string]any, 
 		summary["retry_after"] = "Retry after the missing provider condition is fixed."
 	}
 	return summary
+}
+
+func templateProviderReviewReadiness(kind, provider string, branchStrategy map[string]any) map[string]any {
+	readiness := map[string]any{
+		"status":             "blocked",
+		"provider_type":      provider,
+		"execution_enabled":  false,
+		"external_call_made": false,
+		"branch_creation":    "disabled",
+		"review_request":     "disabled",
+		"message":            "Provider branch and review execution are disabled in this first version.",
+	}
+	switch kind {
+	case "protected_branch":
+		if stringFromMap(branchStrategy, "strategy_status") == "planned" {
+			readiness["status"] = "planned"
+			readiness["mode"] = branchStrategy["mode"]
+			readiness["proposed_branch"] = branchStrategy["proposed_branch"]
+			readiness["target_branch"] = branchStrategy["target_branch"]
+			readiness["branch_creation"] = "locally_planned"
+			readiness["review_request"] = "locally_planned"
+			readiness["provider_next_action"] = branchStrategy["provider_next_action"]
+			readiness["message"] = "Local branch/review plan is ready; provider API-backed branch creation and PR/MR execution remain disabled."
+			return readiness
+		}
+		readiness["message"] = "Configure a supported branch strategy before provider review execution can be planned."
+	case "existing_repository":
+		readiness["message"] = "Review existing repository contents before planning provider branch/review execution."
+	case "missing_token":
+		readiness["message"] = "Provider token readiness is blocked; rotate and health-check the provider account before review execution."
+	default:
+		readiness["message"] = "Manual repository reconciliation is required before provider review execution can be planned."
+	}
+	return readiness
 }
 
 func templateBranchStrategyActionRequired(strategy map[string]any, defaultBranch string) string {
