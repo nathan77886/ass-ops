@@ -329,6 +329,133 @@ func TestReleasePromotionPlanRejectsMismatchedHelmValues(t *testing.T) {
 	}
 }
 
+func TestReleaseBackupSchedulePlanForArtifactSource(t *testing.T) {
+	plan, err := releaseBackupSchedulePlan("nathan77886/ass-ops", "production", "ubuntu-latest", "17 3 * * 1", "artifact:retained-assops-backup", "14")
+	if err != nil {
+		t.Fatalf("releaseBackupSchedulePlan: %v", err)
+	}
+	for _, want := range []string{
+		"# ASSOPS Production Backup Schedule Plan",
+		"production-restore-rehearsal.yml",
+		"ASSOPS_REHEARSAL_DATABASE_URL",
+		"ASSOPS_ACTIVE_DATABASE_URL",
+		"actions/download-artifact",
+		"backup_artifact_name=\"retained-assops-backup\"",
+		"backup_path=''",
+		"cron: \"17 3 * * 1\"",
+		"external",
+	} {
+		if want == "external" {
+			if strings.Contains(plan, "ASSOPS_REHEARSAL_DATABASE_PASSWORD=") {
+				t.Fatalf("schedule plan should not include secret values:\n%s", plan)
+			}
+			continue
+		}
+		if !strings.Contains(plan, want) {
+			t.Fatalf("schedule plan missing %q in:\n%s", want, plan)
+		}
+	}
+}
+
+func TestReleaseBackupSchedulePlanForMountedPathSource(t *testing.T) {
+	plan, err := releaseBackupSchedulePlan("nathan77886/ass-ops", "production", "self-hosted-prod", "23 2 * * 0", "path:/mnt/backups/assops-20260622-120000.dump", "30")
+	if err != nil {
+		t.Fatalf("releaseBackupSchedulePlan path source: %v", err)
+	}
+	for _, want := range []string{
+		"runner-local backup path `/mnt/backups/assops-20260622-120000.dump`",
+		"must be self-hosted",
+		"backup_artifact_name=''",
+		"backup_path=\"/mnt/backups/assops-20260622-120000.dump\"",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("path schedule plan missing %q in:\n%s", want, plan)
+		}
+	}
+}
+
+func TestReleaseBackupSchedulePlanRejectsUnsafeInputs(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "invalid repo",
+			args: []string{"owner", "production", "ubuntu-latest", "17 3 * * 1", "artifact:backup", "14"},
+			want: "owner/repo",
+		},
+		{
+			name: "unsafe cron",
+			args: []string{"owner/repo", "production", "ubuntu-latest", "17 3 * * 1; curl bad", "artifact:backup", "14"},
+			want: "five-field",
+		},
+		{
+			name: "timezone cron prefix rejected",
+			args: []string{"owner/repo", "production", "ubuntu-latest", "CRON_TZ=Asia/Shanghai 17 3 * * 1", "artifact:backup", "14"},
+			want: "five-field",
+		},
+		{
+			name: "empty environment",
+			args: []string{"owner/repo", "", "ubuntu-latest", "17 3 * * 1", "artifact:backup", "14"},
+			want: "environment",
+		},
+		{
+			name: "empty runner",
+			args: []string{"owner/repo", "production", "", "17 3 * * 1", "artifact:backup", "14"},
+			want: "runner",
+		},
+		{
+			name: "empty source",
+			args: []string{"owner/repo", "production", "ubuntu-latest", "17 3 * * 1", "", "14"},
+			want: "backup source",
+		},
+		{
+			name: "artifact source without value",
+			args: []string{"owner/repo", "production", "ubuntu-latest", "17 3 * * 1", "artifact:", "14"},
+			want: "value is required",
+		},
+		{
+			name: "artifact source with path characters",
+			args: []string{"owner/repo", "production", "ubuntu-latest", "17 3 * * 1", "artifact:/mnt/backup.dump", "14"},
+			want: "artifact name",
+		},
+		{
+			name: "path source needs self hosted",
+			args: []string{"owner/repo", "production", "ubuntu-latest", "17 3 * * 1", "path:/mnt/backups/assops.dump", "14"},
+			want: "self-hosted",
+		},
+		{
+			name: "unsafe path",
+			args: []string{"owner/repo", "production", "self-hosted", "17 3 * * 1", "path:/mnt/../secret.dump", "14"},
+			want: "unsupported",
+		},
+		{
+			name: "retention too long",
+			args: []string{"owner/repo", "production", "ubuntu-latest", "17 3 * * 1", "artifact:backup", "120"},
+			want: "between 1 and 90",
+		},
+		{
+			name: "retention zero",
+			args: []string{"owner/repo", "production", "ubuntu-latest", "17 3 * * 1", "artifact:backup", "0"},
+			want: "between 1 and 90",
+		},
+		{
+			name: "retention negative",
+			args: []string{"owner/repo", "production", "ubuntu-latest", "17 3 * * 1", "artifact:backup", "-1"},
+			want: "between 1 and 90",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := releaseBackupSchedulePlan(tc.args[0], tc.args[1], tc.args[2], tc.args[3], tc.args[4], tc.args[5])
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("releaseBackupSchedulePlan error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestCountNonEmptyLines(t *testing.T) {
 	if got := countNonEmptyLines("one\n\n two \n"); got != 2 {
 		t.Fatalf("countNonEmptyLines = %d, want 2", got)

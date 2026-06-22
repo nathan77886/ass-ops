@@ -94,12 +94,23 @@ func run() error {
 			fmt.Print(plan)
 			return nil
 		}
+		if (len(args) == 8 || len(args) == 9) && args[1] == "backup-schedule-plan" {
+			plan, err := releaseBackupSchedulePlan(args[2], args[3], args[4], args[5], args[6], args[7])
+			if err != nil {
+				return err
+			}
+			if len(args) == 9 {
+				return writeTextFile(args[8], plan)
+			}
+			fmt.Print(plan)
+			return nil
+		}
 	}
 	return usage()
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -431,6 +442,167 @@ func releasePromotionPlan(repo, owner, version, artifactDir, rehearsalReport, he
 	fmt.Fprintf(&b, "## Rollback Note\n\n")
 	fmt.Fprintf(&b, "Keep the previous Helm values overlay and database backup path with the release notes before rollout.\n")
 	return b.String(), nil
+}
+
+func releaseBackupSchedulePlan(repo, environment, runner, cronExpr, backupSource, retentionDays string) (string, error) {
+	repo = strings.TrimSpace(repo)
+	environment = strings.TrimSpace(environment)
+	runner = strings.TrimSpace(runner)
+	cronExpr = strings.TrimSpace(cronExpr)
+	backupSource = strings.TrimSpace(backupSource)
+	retentionDays = strings.TrimSpace(retentionDays)
+	if !isOwnerRepo(repo) {
+		return "", fmt.Errorf("repository must be owner/repo")
+	}
+	if !isSafeWorkflowInput(environment) {
+		return "", fmt.Errorf("environment must contain only letters, numbers, dot, underscore, or hyphen")
+	}
+	if !isSafeWorkflowInput(runner) {
+		return "", fmt.Errorf("runner must contain only letters, numbers, dot, underscore, or hyphen")
+	}
+	if !isSafeCronExpression(cronExpr) {
+		return "", fmt.Errorf("cron must be a five-field GitHub Actions cron expression without quotes or shell metacharacters")
+	}
+	retention, err := strconv.Atoi(retentionDays)
+	if err != nil || retention < 1 || retention > 90 {
+		return "", fmt.Errorf("artifact retention days must be between 1 and 90")
+	}
+	sourceKind, sourceValue, err := parseBackupScheduleSource(backupSource)
+	if err != nil {
+		return "", err
+	}
+	var artifactInput, pathInput, runnerNote string
+	switch sourceKind {
+	case "artifact":
+		artifactInput = sourceValue
+		runnerNote = "Any runner with actions/download-artifact access can use a retained backup artifact."
+	case "path":
+		pathInput = sourceValue
+		if runner == "ubuntu-latest" {
+			return "", fmt.Errorf("backup path sources require a self-hosted runner that mounts the retained backup store")
+		}
+		runnerNote = "The selected runner must be self-hosted and mount the retained backup store read-only."
+	default:
+		return "", fmt.Errorf("unsupported backup source kind %q", sourceKind)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# ASSOPS Production Backup Schedule Plan\n\n")
+	fmt.Fprintf(&b, "Repository: `%s`\n\n", repo)
+	fmt.Fprintf(&b, "Workflow: `.github/workflows/production-restore-rehearsal.yml`\n\n")
+	fmt.Fprintf(&b, "GitHub environment: `%s`\n\n", environment)
+	fmt.Fprintf(&b, "Runner: `%s`\n\n", runner)
+	fmt.Fprintf(&b, "Cron: `%s`\n\n", cronExpr)
+	fmt.Fprintf(&b, "Artifact retention: `%d days`\n\n", retention)
+	fmt.Fprintf(&b, "## Backup Source\n\n")
+	if sourceKind == "artifact" {
+		fmt.Fprintf(&b, "- Use workflow artifact `%s` containing exactly one retained `assops-*.dump` file.\n", sourceValue)
+	} else {
+		fmt.Fprintf(&b, "- Use runner-local backup path `%s`.\n", sourceValue)
+	}
+	fmt.Fprintf(&b, "- %s\n\n", runnerNote)
+	fmt.Fprintf(&b, "## Required GitHub Environment Secrets\n\n")
+	fmt.Fprintf(&b, "- `ASSOPS_REHEARSAL_DATABASE_URL`: disposable restore database URL; the database name must include rehearsal, restore, test, tmp, scratch, or disposable.\n")
+	fmt.Fprintf(&b, "- `ASSOPS_REHEARSAL_DATABASE_PASSWORD`: optional password passed through `PGPASSWORD` when the URL omits a password.\n")
+	fmt.Fprintf(&b, "- `ASSOPS_ACTIVE_DATABASE_URL`: optional guard value so `assops-tool` can reject a rehearsal target that equals the active database.\n\n")
+	fmt.Fprintf(&b, "## Manual Dispatch Check\n\n")
+	fmt.Fprintf(&b, "Run this once before enabling a scheduled workflow:\n\n```bash\n")
+	fmt.Fprintf(&b, "gh workflow run production-restore-rehearsal.yml --repo %s \\\n", repo)
+	fmt.Fprintf(&b, "  -f github_environment=%q \\\n", environment)
+	fmt.Fprintf(&b, "  -f runner=%q \\\n", runner)
+	if artifactInput != "" {
+		fmt.Fprintf(&b, "  -f backup_artifact_name=%q \\\n", artifactInput)
+		fmt.Fprintf(&b, "  -f backup_path='' \\\n")
+	} else {
+		fmt.Fprintf(&b, "  -f backup_artifact_name='' \\\n")
+		fmt.Fprintf(&b, "  -f backup_path=%q \\\n", pathInput)
+	}
+	fmt.Fprintf(&b, "  -f artifact_retention_days=%q\n", strconv.Itoa(retention))
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "## Schedule Patch Template\n\n")
+	fmt.Fprintf(&b, "Add a scheduled trigger only after the manual dispatch succeeds and the retained backup source is stable:\n\n```yaml\n")
+	fmt.Fprintf(&b, "on:\n")
+	fmt.Fprintf(&b, "  schedule:\n")
+	fmt.Fprintf(&b, "    - cron: %q\n", cronExpr)
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "Keep the workflow protected by the `%s` environment and preserve the one-source-only guard between `backup_artifact_name` and `backup_path`.\n", environment)
+	return b.String(), nil
+}
+
+func parseBackupScheduleSource(value string) (string, string, error) {
+	kind, raw, ok := strings.Cut(strings.TrimSpace(value), ":")
+	if !ok {
+		return "", "", fmt.Errorf("backup source must use artifact:NAME or path:/mounted/assops-*.dump")
+	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", fmt.Errorf("backup source value is required")
+	}
+	switch kind {
+	case "artifact":
+		if !isSafeWorkflowInput(raw) {
+			return "", "", fmt.Errorf("backup artifact name must contain only letters, numbers, dot, underscore, or hyphen")
+		}
+	case "path":
+		if !isSafeBackupPath(raw) {
+			return "", "", fmt.Errorf("backup path contains unsupported characters")
+		}
+	default:
+		return "", "", fmt.Errorf("backup source must use artifact:NAME or path:/mounted/assops-*.dump")
+	}
+	return kind, raw, nil
+}
+
+func isSafeWorkflowInput(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isSafeBackupPath(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "..") {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		switch r {
+		case '/', '.', '_', '@', '=', ':', '+', '-':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isSafeCronExpression(value string) bool {
+	fields := strings.Fields(strings.TrimSpace(value))
+	if len(fields) != 5 {
+		return false
+	}
+	for _, field := range fields {
+		if field == "" {
+			return false
+		}
+		for _, r := range field {
+			if (r >= '0' && r <= '9') || r == '*' || r == ',' || r == '-' || r == '/' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func validateReleaseHelmValuesFile(path, owner, version string) (string, error) {

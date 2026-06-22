@@ -1,4 +1,4 @@
-.PHONY: postgres gateway worker node-worker web build test tool context db-migrate db-migrations db-seed-demo db-sync-assets db-backup-retain db-rehearse-restore release-validate-bundle release-helm-values release-promotion-plan helm-lint helm-template helm-smoke
+.PHONY: postgres gateway worker node-worker web build test tool context db-migrate db-migrations db-seed-demo db-sync-assets db-backup-retain db-rehearse-restore release-validate-bundle release-helm-values release-promotion-plan release-backup-schedule-plan helm-lint helm-template helm-smoke
 
 postgres:
 	docker compose -f deploy/docker-compose.yml up -d postgres
@@ -69,6 +69,15 @@ release-promotion-plan:
 	@test -n "$(REHEARSAL_REPORT)" || (echo "REHEARSAL_REPORT=/path/to/restore-rehearsal.json is required" && exit 1)
 	@test -n "$(HELM_VALUES)" || (echo "HELM_VALUES=/path/to/helm-values.yaml is required" && exit 1)
 	go run ./backend/cmd/assops-tool release promotion-plan "$(REPO)" "$(GHCR_OWNER)" "$(VERSION)" "$(ARTIFACT_DIR)" "$(REHEARSAL_REPORT)" "$(HELM_VALUES)" $(if $(OUTPUT),"$(OUTPUT)")
+
+release-backup-schedule-plan:
+	@test -n "$(REPO)" || (echo "REPO=owner/repo is required" && exit 1)
+	@test -n "$(ENV)" || (echo "ENV=production is required" && exit 1)
+	@test -n "$(RUNNER)" || (echo "RUNNER=ubuntu-latest or self-hosted label is required" && exit 1)
+	@test -n "$(CRON)" || (echo "CRON='17 3 * * 1' is required" && exit 1)
+	@test -n "$(BACKUP_SOURCE)" || (echo "BACKUP_SOURCE=artifact:name or path:/mounted/assops.dump is required" && exit 1)
+	@test -n "$(RETENTION_DAYS)" || (echo "RETENTION_DAYS=14 is required" && exit 1)
+	go run ./backend/cmd/assops-tool release backup-schedule-plan "$(REPO)" "$(ENV)" "$(RUNNER)" "$(CRON)" "$(BACKUP_SOURCE)" "$(RETENTION_DAYS)" $(if $(OUTPUT),"$(OUTPUT)")
 
 helm-lint:
 	helm lint deploy/helm/assops

@@ -177,6 +177,36 @@ Run the workflow with exactly one backup source:
 
 The workflow does not create backups, does not create the disposable database, and does not connect to the active database. It validates inputs, restores only into `ASSOPS_REHEARSAL_DATABASE_URL`, reruns migrations, validates the JSON report shape, and uploads the report as a private short-retention artifact for release notes.
 
+Before converting the protected manual path into a scheduled environment job, generate a local schedule-readiness plan. The command is offline: it validates the intended repository, GitHub environment, runner, cron expression, backup source shape, and artifact retention, but it does not read or print GitHub environment secret values.
+
+Use a retained backup artifact source with a GitHub-hosted runner:
+
+```bash
+assops-tool release backup-schedule-plan \
+  nathan77886/ass-ops \
+  production \
+  ubuntu-latest \
+  '17 3 * * 1' \
+  artifact:retained-assops-backup \
+  14 \
+  /backups/release-notes/backup-schedule-plan.md
+```
+
+Use a runner-local mounted backup path only with a self-hosted runner that mounts the retained backup store read-only:
+
+```bash
+assops-tool release backup-schedule-plan \
+  nathan77886/ass-ops \
+  production \
+  self-hosted-prod \
+  '23 2 * * 0' \
+  path:/mnt/assops-backups/assops-YYYYMMDD-HHMMSS.dump \
+  30 \
+  /backups/release-notes/backup-schedule-plan.md
+```
+
+The generated plan includes the required environment secrets, a one-time `gh workflow run production-restore-rehearsal.yml` manual dispatch check, and a `schedule` YAML snippet. Enable the scheduled trigger only after the manual dispatch succeeds against the chosen retained backup source.
+
 Before promoting a release candidate, validate the downloaded release artifact directory and the restore rehearsal report together:
 
 ```bash

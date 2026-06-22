@@ -66,7 +66,7 @@ make build
 
 CI validates workflow syntax/semantics with `actionlint`, secret scanning with Gitleaks, Go tests, `go vet`, frontend build, Compose config, database backup/restore rehearsal, Helm lint/template for both default and production example values, a disposable kind-based Helm install smoke test, Docker image builds, and `govulncheck`.
 The scheduled restore rehearsal workflow runs weekly and on demand against disposable GitHub Actions PostgreSQL databases, then uploads the JSON rehearsal report as a short-retention artifact.
-The production backup restore rehearsal workflow is manual and protected-environment scoped. It restores an existing retained `assops-*.dump` backup into an explicitly configured disposable database secret, then uploads the private rehearsal report for release notes.
+The production backup restore rehearsal workflow is manual and protected-environment scoped. It restores an existing retained `assops-*.dump` backup into an explicitly configured disposable database secret, then uploads the private rehearsal report for release notes. `assops-tool release backup-schedule-plan` can generate an offline readiness plan for turning that protected manual path into a scheduled environment job once the retained backup source, runner, secrets, and artifact retention are chosen.
 Dependabot is configured for weekly Go, web npm, GitHub Actions, and Docker image update PRs.
 The release candidate workflow builds Linux amd64 binaries, the web bundle, a packaged Helm chart, checksums, and Docker image smoke builds for `v*` tags or manual runs. It also creates GitHub artifact attestations for release files. Tagged `v*` runs publish gateway, worker, node-worker, and web images to GHCR with version and commit-SHA tags, then attach registry-backed image attestations.
 Apply the repository ruleset in `docs/github-branch-protection.md` before treating `main` as the protected release branch.
@@ -106,9 +106,11 @@ go run ./backend/cmd/assops-tool db sync-assets
 go run ./backend/cmd/assops-tool db backup-retain .assops/backups 3
 go run ./backend/cmd/assops-tool db rehearse-restore .assops/backups/assops-YYYYMMDD-HHMMSS.dump 'postgres://assops:assops@localhost:5432/assops_restore_test?sslmode=disable' .assops/release-notes/restore-rehearsal.json
 go run ./backend/cmd/assops-tool release validate-bundle .assops/release-artifacts .assops/release-notes/restore-rehearsal.json
+go run ./backend/cmd/assops-tool release backup-schedule-plan nathan77886/ass-ops production ubuntu-latest '17 3 * * 1' artifact:retained-assops-backup 14 .assops/release-notes/backup-schedule-plan.md
 make release-validate-bundle ARTIFACT_DIR=.assops/release-artifacts REHEARSAL_REPORT=.assops/release-notes/restore-rehearsal.json
 make release-helm-values GHCR_OWNER=nathan77886 VERSION=v0.1.0 OUTPUT=.assops/release-notes/helm-values-v0.1.0.yaml
 make release-promotion-plan REPO=nathan77886/ass-ops GHCR_OWNER=nathan77886 VERSION=v0.1.0 ARTIFACT_DIR=.assops/release-artifacts REHEARSAL_REPORT=.assops/release-notes/restore-rehearsal.json HELM_VALUES=.assops/release-notes/helm-values-v0.1.0.yaml OUTPUT=.assops/release-notes/promotion-plan-v0.1.0.md
+make release-backup-schedule-plan REPO=nathan77886/ass-ops ENV=production RUNNER=ubuntu-latest CRON='17 3 * * 1' BACKUP_SOURCE=artifact:retained-assops-backup RETENTION_DAYS=14 OUTPUT=.assops/release-notes/backup-schedule-plan.md
 ```
 
 ## Runtime Integrations
@@ -191,4 +193,4 @@ Not yet first-class:
 - Production Kubernetes rollout/TLS/storage-class hardening.
 - WebSocket/Redis-backed log fanout.
 - Codex CLI process execution for AI tasks.
-- Fully scheduled disaster-recovery rehearsal automation for production backups; the first protected manual workflow exists, but storage-specific scheduling is still environment-owned.
+- Fully scheduled disaster-recovery rehearsal automation for production backups; the first protected manual workflow and an offline schedule-readiness plan exist, but storage-specific scheduling is still environment-owned.
