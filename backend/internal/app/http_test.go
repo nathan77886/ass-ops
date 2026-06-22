@@ -169,6 +169,55 @@ func TestRollbackGuardrailSummary(t *testing.T) {
 	}
 }
 
+func TestDeploymentExecutionReadinessDryRun(t *testing.T) {
+	ready := deploymentExecutionReadiness(map[string]any{
+		"name":           "prod",
+		"status":         "healthy",
+		"cluster_name":   "prod-cluster",
+		"namespace":      "billing",
+		"argo_app_count": int64(2),
+	})
+	if ready["status"] != "planned" || ready["mode"] != "dry_run" || ready["execution_enabled"] != false || ready["external_call_made"] != false {
+		t.Fatalf("ready deployment execution readiness = %#v", ready)
+	}
+	if ready["requires_approval"] != true || ready["execution_backend"] != "disabled" {
+		t.Fatalf("ready deployment execution guardrails = %#v", ready)
+	}
+	steps := sliceOfMapsFromAny(ready["steps"])
+	if len(steps) != 4 {
+		t.Fatalf("ready deployment execution steps = %#v", steps)
+	}
+	for _, step := range steps {
+		if step["execution"] != false {
+			t.Fatalf("deployment execution step should be disabled: %#v", step)
+		}
+	}
+
+	blocked := deploymentExecutionReadiness(map[string]any{
+		"name":           "broken",
+		"status":         "degraded",
+		"cluster_name":   "",
+		"namespace":      "",
+		"argo_app_count": int64(0),
+	})
+	if blocked["status"] != "blocked" || blocked["execution_enabled"] != false {
+		t.Fatalf("blocked deployment execution readiness = %#v", blocked)
+	}
+	reasons := stringSliceFromAny(blocked["blocked_reasons"])
+	for _, want := range []string{"status needs review", "cluster name is missing", "namespace is missing", "no Argo apps"} {
+		found := false
+		for _, reason := range reasons {
+			if strings.Contains(reason, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("blocked reasons missing %q in %#v", want, reasons)
+		}
+	}
+}
+
 func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 	sql := assetInventorySQL()
 	for _, token := range []string{
@@ -2174,7 +2223,7 @@ func TestAgentPlanContentUsesContextSnapshot(t *testing.T) {
 				"operations":   []any{map[string]any{"status": "completed"}},
 				"approvals":    []any{map[string]any{"status": "pending"}},
 				"deployment_targets": []any{
-					map[string]any{"name": "prod"},
+					map[string]any{"name": "prod", "deployment_execution_readiness": map[string]any{"status": "planned"}},
 				},
 				"rollback_points": []any{
 					map[string]any{"name": "prod@abc123", "rollback_readiness": "previewable"},
@@ -2206,6 +2255,7 @@ func TestAgentPlanContentUsesContextSnapshot(t *testing.T) {
 		"Git remotes: 2",
 		"Recent operations: 1",
 		"Deployment targets: 1",
+		"Deployment execution readiness: planned=1",
 		"Rollback points: 2",
 		"Rollback readiness: blocked=1, previewable=1",
 		"Rollback execution: read_only_preview (1 previewable, 0 executable)",
@@ -2218,6 +2268,7 @@ func TestAgentPlanContentUsesContextSnapshot(t *testing.T) {
 		"Asset health: high=1, normal=1",
 		"Review canonical asset graph entries, status snapshots",
 		"No code changes, deployments, SSH execution",
+		"Deployment execution readiness is dry-run only",
 		"Rollback execution is disabled in this first version",
 		"Agent patch workflow is audit-only",
 		"High-risk follow-up actions must use operation approvals",

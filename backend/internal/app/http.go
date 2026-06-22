@@ -9847,6 +9847,10 @@ func agentPlanContent(task, snapshot map[string]any) string {
 	if rollbackReadinessSummary == "" {
 		rollbackReadinessSummary = "none"
 	}
+	deploymentExecutionSummary := formatCountMap(countNestedStringField(deploymentTargets, "deployment_execution_readiness", "status"))
+	if deploymentExecutionSummary == "" {
+		deploymentExecutionSummary = "none"
+	}
 	rollbackGuardrail := mapFromAny(contextJSON["rollback_guardrail"])
 	if len(rollbackGuardrail) == 0 {
 		rollbackGuardrail = rollbackGuardrailSummary(rollbackPoints)
@@ -9864,6 +9868,7 @@ func agentPlanContent(task, snapshot map[string]any) string {
 	fmt.Fprintf(&b, "- Recent operations: %d\n", len(operations))
 	fmt.Fprintf(&b, "- Pending/Recent approvals: %d\n", len(approvals))
 	fmt.Fprintf(&b, "- Deployment targets: %d\n", len(deploymentTargets))
+	fmt.Fprintf(&b, "- Deployment execution readiness: %s\n", deploymentExecutionSummary)
 	fmt.Fprintf(&b, "- Rollback points: %d\n", len(rollbackPoints))
 	fmt.Fprintf(&b, "- Rollback readiness: %s\n", rollbackReadinessSummary)
 	fmt.Fprintf(&b, "- Rollback execution: %s (%d previewable, %d executable)\n",
@@ -9887,6 +9892,7 @@ func agentPlanContent(task, snapshot map[string]any) string {
 	fmt.Fprintf(&b, "- context.generate\n- repo.sync status review\n- github.actions.sync status review\n- argo.apps.sync status review\n- ssh command audit review\n\n")
 	fmt.Fprintf(&b, "## Guardrails\n\n")
 	fmt.Fprintf(&b, "- No code changes, deployments, SSH execution, repository tags, or rollback actions in this plan.\n")
+	fmt.Fprintf(&b, "- Deployment execution readiness is dry-run only; Helm/k8s execution remains disabled.\n")
 	if msg := strings.TrimSpace(fmt.Sprint(rollbackGuardrail["message"])); msg != "" && msg != "<nil>" {
 		fmt.Fprintf(&b, "- %s\n", msg)
 	}
@@ -9939,6 +9945,19 @@ func countByStringField(rows []map[string]any, field string) map[string]int {
 	counts := make(map[string]int)
 	for _, row := range rows {
 		key := strings.TrimSpace(fmt.Sprint(row[field]))
+		if key == "" || key == "<nil>" {
+			continue
+		}
+		counts[key]++
+	}
+	return counts
+}
+
+func countNestedStringField(rows []map[string]any, outer, inner string) map[string]int {
+	counts := make(map[string]int)
+	for _, row := range rows {
+		nested := mapFromAny(row[outer])
+		key := strings.TrimSpace(fmt.Sprint(nested[inner]))
 		if key == "" || key == "<nil>" {
 			continue
 		}
@@ -10425,6 +10444,7 @@ func (s *Server) listDeploymentTargets(w http.ResponseWriter, r *http.Request) {
 		GROUP BY dt.id, ac.name
 		ORDER BY dt.environment, dt.namespace, dt.created_at DESC
 		LIMIT 500`, projectID)
+	enrichDeploymentTargetsWithExecutionReadiness(items)
 	writeQueryResult(w, items, err)
 }
 
@@ -10483,6 +10503,66 @@ func rollbackPointReadinessSQL(limit int) string {
 		WHERE rp.project_id=$1
 		ORDER BY rp.captured_at DESC
 		LIMIT %d`, limit)
+}
+
+func enrichDeploymentTargetsWithExecutionReadiness(rows []map[string]any) {
+	for _, row := range rows {
+		row["deployment_execution_readiness"] = deploymentExecutionReadiness(row)
+	}
+}
+
+func deploymentExecutionReadiness(row map[string]any) map[string]any {
+	healthStatus := strings.ToLower(strings.TrimSpace(fmt.Sprint(row["status"])))
+	cluster := strings.TrimSpace(fmt.Sprint(row["cluster_name"]))
+	namespace := strings.TrimSpace(fmt.Sprint(row["namespace"]))
+	appCount := intFromAny(row["argo_app_count"], -1)
+	blockedReasons := make([]string, 0)
+	if deploymentTargetStatusBlocksExecution(healthStatus) {
+		blockedReasons = append(blockedReasons, "deployment target status needs review before execution")
+	}
+	if cluster == "" || cluster == "<nil>" {
+		blockedReasons = append(blockedReasons, "cluster name is missing")
+	}
+	if namespace == "" || namespace == "<nil>" {
+		blockedReasons = append(blockedReasons, "namespace is missing")
+	}
+	if appCount == 0 {
+		blockedReasons = append(blockedReasons, "no Argo apps are linked to this deployment target")
+	}
+	readiness := "planned"
+	message := "Deployment execution dry-run plan is ready; Helm/k8s execution remains disabled."
+	if len(blockedReasons) > 0 {
+		readiness = "blocked"
+		message = "Deployment execution cannot be planned until target metadata and health are reviewed."
+	}
+	return map[string]any{
+		"status":             readiness,
+		"mode":               "dry_run",
+		"execution_enabled":  false,
+		"external_call_made": false,
+		"requires_approval":  true,
+		"approval_action":    "deployment.execute",
+		"execution_backend":  "disabled",
+		"blocked_reasons":    blockedReasons,
+		"steps": []map[string]any{
+			{"name": "validate_target", "status": "planned", "execution": false},
+			{"name": "render_manifest", "status": "planned", "execution": false},
+			{"name": "helm_or_kubectl_preflight", "status": "planned", "execution": false},
+			{"name": "rollout", "status": "planned", "execution": false},
+		},
+		"message": message,
+	}
+}
+
+func deploymentTargetStatusBlocksExecution(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "<nil>", "healthy", "synced", "running", "available", "active", "ok", "completed":
+		return false
+	case "failed", "error", "degraded", "outofsync", "missing", "unknown":
+		return true
+	default:
+		return true
+	}
 }
 
 func validPublicHTTPURL(ctx context.Context, value string) bool {
@@ -11031,6 +11111,7 @@ func (s *Server) BuildContextFiles(ctx context.Context, projectID string) (map[s
 	if err != nil {
 		return nil, nil, err
 	}
+	enrichDeploymentTargetsWithExecutionReadiness(deploymentTargets)
 	deploymentRecords, err := queryMaps(ctx, s.store.DB, `
 		SELECT id, deployment_target_id, name, environment, namespace, cluster_name, source, status, revision, observed_at
 		FROM deployment_records
@@ -11149,7 +11230,11 @@ func (s *Server) BuildContextFiles(ctx context.Context, projectID string) (map[s
 		},
 	}
 	manifest := map[string]any{"tools": tools}
-	brief := fmt.Sprintf("# ASSOPS Context\n\nProject: %s\n\nRepositories: %d\nRemotes: %d\nRecent operations: %d\nApprovals: %d\nDeployment targets: %d\nRollback points: %d\nRollback execution: %s\nSSH machines: %d\nGitHub Actions runs: %d\nAsset graph assets: %d\nAsset graph relations: %d\nAsset status snapshots: %d\n", project["name"], len(repos), len(remotes), len(operations), len(approvals), len(deploymentTargets), len(rollbackPoints), rollbackGuardrail["execution_mode"], len(sshMachines), len(githubRuns), len(assets), len(assetRelations), len(assetStatusSnapshots))
+	deploymentExecutionSummary := formatCountMap(countNestedStringField(deploymentTargets, "deployment_execution_readiness", "status"))
+	if deploymentExecutionSummary == "" {
+		deploymentExecutionSummary = "none"
+	}
+	brief := fmt.Sprintf("# ASSOPS Context\n\nProject: %s\n\nRepositories: %d\nRemotes: %d\nRecent operations: %d\nApprovals: %d\nDeployment targets: %d\nDeployment execution readiness: %s\nRollback points: %d\nRollback execution: %s\nSSH machines: %d\nGitHub Actions runs: %d\nAsset graph assets: %d\nAsset graph relations: %d\nAsset status snapshots: %d\n", project["name"], len(repos), len(remotes), len(operations), len(approvals), len(deploymentTargets), deploymentExecutionSummary, len(rollbackPoints), rollbackGuardrail["execution_mode"], len(sshMachines), len(githubRuns), len(assets), len(assetRelations), len(assetStatusSnapshots))
 	base := filepath.Join(s.cfg.ContextDir, projectID)
 	if err := os.MkdirAll(base, contextDirMode); err != nil {
 		return nil, nil, err

@@ -126,12 +126,12 @@ Recommended next slice:
 
 ### 5. Deployment Is Still Read-Model Only
 
-Argo app sync is real, and Argo sync now derives `deployment_targets` by project/environment/cluster/namespace, records latest `deployment_records`, captures `rollback_points` when Argo reports a revision or images, links these objects in the asset relation graph, and shows a read-only deployment posture summary with target count, unhealthy target count, environment count, available rollback points, rollback readiness preview/reasons, and a page-level rollback guardrail explaining that execution is disabled in the first version. The same rollback readiness preview and a `rollback_guardrail` summary are included in generated AI/context snapshots and agent plan text. This makes "where is this app deployed?", "is anything unhealthy?", "what could I roll back to?", and "why is rollback still preview-only?" visible, but deploy execution, k8s cluster credentials, Helm releases, secrets, and actual rollback execution are still not implemented.
+Argo app sync is real, and Argo sync now derives `deployment_targets` by project/environment/cluster/namespace, records latest `deployment_records`, captures `rollback_points` when Argo reports a revision or images, links these objects in the asset relation graph, and shows a read-only deployment posture summary with target count, unhealthy target count, environment count, available rollback points, per-target dry-run deployment execution readiness, rollback readiness preview/reasons, and page-level deployment/rollback guardrails explaining that execution is disabled in the first version. The same dry-run deployment execution readiness, rollback readiness preview, and `rollback_guardrail` summary are included in generated AI/context snapshots and agent plan text. This makes "where is this app deployed?", "is anything unhealthy?", "what would need to be true before deploy execution?", "what could I roll back to?", and "why is rollback still preview-only?" visible, but deploy execution, k8s cluster credentials, Helm releases, secrets, and actual rollback execution are still not implemented.
 
 Recommended next slice:
 
 - Keep first implementation read-only or mock deploy until approval and environment rules are stronger.
-- Add actual deployment execution and rollback actions only after approval and environment rules are stronger.
+- Add actual deployment execution and rollback actions only after dry-run readiness has been exercised and approval/environment rules are stronger.
 
 ### 6. Approval Flow Needs Policy Depth
 

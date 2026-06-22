@@ -2763,6 +2763,35 @@ function buildRollbackGuardrail(rollbackPoints: AnyRow[]) {
   };
 }
 
+function buildDeploymentExecutionGuardrail(targets: AnyRow[]) {
+  if (!targets.length) return null;
+  const planned = targets.filter((row) => row.deployment_execution_readiness?.status === 'planned').length;
+  const blocked = targets.filter((row) => row.deployment_execution_readiness?.status === 'blocked').length;
+  return {
+    type: planned > 0 && blocked === 0 ? 'info' as const : 'warning' as const,
+    message: 'Deployment execution is dry-run only',
+    description: planned > 0
+      ? `${planned} target${planned === 1 ? '' : 's'} have dry-run execution prerequisites planned; Helm/k8s execution remains disabled.`
+      : `${blocked} target${blocked === 1 ? '' : 's'} need metadata or health review before execution can be planned.`
+  };
+}
+
+function deploymentExecutionReadinessView(row: AnyRow) {
+  const readiness = row.deployment_execution_readiness || {};
+  const status = String(readiness.status || 'unknown');
+  const reasons = Array.isArray(readiness.blocked_reasons) ? readiness.blocked_reasons : [];
+  return (
+    <Space direction="vertical" size={2}>
+      <Space size={4} wrap>
+        <Tag color={status === 'planned' ? 'blue' : status === 'blocked' ? 'red' : 'default'}>{status}</Tag>
+        <Tag>{readiness.mode || 'dry_run'}</Tag>
+        <Tag>execution: {readiness.execution_enabled === true ? 'enabled' : 'disabled'}</Tag>
+      </Space>
+      {reasons.length ? <Typography.Text type="secondary">{shortText(String(reasons[0]), 72)}</Typography.Text> : <Typography.Text type="secondary">{shortText(String(readiness.message || ''), 72)}</Typography.Text>}
+    </Space>
+  );
+}
+
 function deploymentStatusUnhealthy(status: any) {
   const value = String(status || '').toLowerCase();
   return ['failed', 'error', 'degraded', 'outofsync', 'missing', 'unknown'].includes(value);
@@ -2794,6 +2823,7 @@ function ConfigPage() {
     rollbackPoints.data?.items || []
   );
   const rollbackGuardrail = buildRollbackGuardrail(rollbackPoints.data?.items || []);
+  const deploymentExecutionGuardrail = buildDeploymentExecutionGuardrail(deploymentTargets.data?.items || []);
   useEffect(() => {
     if (!argoSyncOpID) return;
     let alive = true;
@@ -2924,6 +2954,7 @@ function ConfigPage() {
             <Card><Typography.Text type="secondary">Rollback points</Typography.Text><Typography.Title level={3}>{deploymentPosture.rollbackPoints}</Typography.Title></Card>
           </div>
           {deploymentPosture.summary !== 'No deployment targets yet' && <Alert showIcon type={deploymentPosture.unhealthy > 0 ? 'warning' : 'success'} message={deploymentPosture.summary} />}
+          {deploymentExecutionGuardrail && <Alert showIcon type={deploymentExecutionGuardrail.type} message={deploymentExecutionGuardrail.message} description={deploymentExecutionGuardrail.description} />}
           {rollbackGuardrail && <Alert showIcon type={rollbackGuardrail.type} message={rollbackGuardrail.message} description={rollbackGuardrail.description} />}
           <Table<AnyRow> rowKey="id" dataSource={argoRows} pagination={false} columns={[
             { title: 'Name', dataIndex: 'name' },
@@ -2938,6 +2969,7 @@ function ConfigPage() {
             { title: 'Namespace', dataIndex: 'namespace' },
             { title: 'Cluster', dataIndex: 'cluster_name' },
             { title: 'Apps', dataIndex: 'argo_app_count' },
+            { title: 'Execution', render: (_, row) => deploymentExecutionReadinessView(row) },
             { title: 'Status', render: (_, row) => <Tag color={argoStatusColor(row.status)}>{row.status}</Tag> }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={deploymentRecords.data?.items || []} pagination={{ pageSize: 6 }} columns={[
