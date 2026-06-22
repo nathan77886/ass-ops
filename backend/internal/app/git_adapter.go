@@ -818,6 +818,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		"credential_strategy":    sanitizedProviderReviewCredentialStrategy(credentialStrategy),
 		"adapter_contract":       adapterContract,
 		"request_envelopes":      providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload),
+		"response_diagnostics":   providerReviewAdapterResponseDiagnostics(provider, reviewKind),
 		"adapter_status":         "missing",
 		"external_call_made":     false,
 		"provider_api_call_made": false,
@@ -875,6 +876,7 @@ func providerReviewAdapterContract(provider, reviewKind string, requestInputs ..
 		"contains_file_content": false,
 		"operations":            providerReviewAdapterContractOperations(provider, reviewKind),
 		"request_envelopes":     providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload),
+		"response_diagnostics":  providerReviewAdapterResponseDiagnostics(provider, reviewKind),
 		"next_step":             "Implement operation adapters only after provider credentials, approval, payload staging, and protected-branch rules pass preflight.",
 	}
 }
@@ -978,6 +980,57 @@ func readyStatus(ready bool) string {
 		return "ready"
 	}
 	return "blocked"
+}
+
+func providerReviewAdapterResponseDiagnostics(provider, reviewKind string) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	return map[string]any{
+		"status":                 "pending",
+		"mode":                   "redacted_response_diagnostics",
+		"provider_type":          provider,
+		"review_kind":            reviewKind,
+		"adapter_status":         "missing",
+		"external_call_made":     false,
+		"provider_api_call_made": false,
+		"provider_api_mutation":  "disabled",
+		"response_body_included": false,
+		"headers_included":       false,
+		"contains_token":         false,
+		"contains_provider_url":  false,
+		"diagnostic_fields": []string{
+			"status_code_class",
+			"provider_request_id_present",
+			"rate_limit_state",
+			"retryable",
+			"sanitized_error_code",
+		},
+		"operations": providerReviewAdapterResponseDiagnosticOperations(provider, reviewKind),
+	}
+}
+
+func providerReviewAdapterResponseDiagnosticOperations(provider, reviewKind string) []map[string]any {
+	return []map[string]any{
+		providerReviewAdapterResponseDiagnosticOperation(provider, "create_branch_ref", "create_branch_ref", "2xx_or_already_exists"),
+		providerReviewAdapterResponseDiagnosticOperation(provider, "commit_starter_files", "commit_files", "2xx"),
+		providerReviewAdapterResponseDiagnosticOperation(provider, "open_review_request", "open_review", "2xx_or_already_exists"),
+	}
+}
+
+func providerReviewAdapterResponseDiagnosticOperation(provider, name, endpointOperation, successClass string) map[string]any {
+	return map[string]any{
+		"name":                     name,
+		"endpoint_key":             providerReviewEndpointKey(provider, endpointOperation),
+		"status":                   "pending",
+		"success_status_class":     successClass,
+		"retryable_status_classes": []string{"429", "5xx"},
+		"response_body_included":   false,
+		"headers_included":         false,
+		"contains_token":           false,
+		"contains_provider_url":    false,
+		"external_call_made":       false,
+		"provider_api_mutation":    "disabled",
+	}
 }
 
 func providerReviewAdapterContractOperations(provider, reviewKind string) []map[string]any {

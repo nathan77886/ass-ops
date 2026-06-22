@@ -8748,7 +8748,7 @@ func sanitizedProviderAPIRequestPlan(value map[string]any) map[string]any {
 	}
 	return map[string]any{
 		"status":                 cleanOptionalText(stringFromMap(value, "status")),
-		"mode":                   cleanOptionalText(stringFromMap(value, "mode")),
+		"mode":                   "redacted_request_plan",
 		"provider_type":          cleanOptionalText(stringFromMap(value, "provider_type")),
 		"review_kind":            cleanOptionalText(stringFromMap(value, "review_kind")),
 		"source_branch":          cleanOptionalText(stringFromMap(value, "source_branch")),
@@ -8788,12 +8788,13 @@ func sanitizedProviderReviewReconciliation(value map[string]any) map[string]any 
 	}
 	return map[string]any{
 		"status":                 cleanOptionalText(stringFromMap(value, "status")),
-		"mode":                   cleanOptionalText(stringFromMap(value, "mode")),
+		"mode":                   "preflight_reconciliation",
 		"provider_type":          cleanOptionalText(stringFromMap(value, "provider_type")),
 		"review_kind":            cleanOptionalText(stringFromMap(value, "review_kind")),
 		"credential_strategy":    sanitizedProviderReviewCredentialStrategy(mapFromAny(value["credential_strategy"])),
 		"adapter_contract":       sanitizedProviderReviewAdapterContract(mapFromAny(value["adapter_contract"])),
 		"request_envelopes":      sanitizedProviderReviewAdapterRequestEnvelopes(mapSliceFromAny(value["request_envelopes"])),
+		"response_diagnostics":   sanitizedProviderReviewAdapterResponseDiagnostics(mapFromAny(value["response_diagnostics"])),
 		"adapter_status":         cleanOptionalText(stringFromMap(value, "adapter_status")),
 		"external_call_made":     false,
 		"provider_api_call_made": false,
@@ -8821,8 +8822,51 @@ func sanitizedProviderReviewAdapterContract(value map[string]any) map[string]any
 		"contains_file_content": false,
 		"operations":            sanitizedProviderReviewAdapterContractOperations(mapSliceFromAny(value["operations"])),
 		"request_envelopes":     sanitizedProviderReviewAdapterRequestEnvelopes(mapSliceFromAny(value["request_envelopes"])),
+		"response_diagnostics":  sanitizedProviderReviewAdapterResponseDiagnostics(mapFromAny(value["response_diagnostics"])),
 		"next_step":             cleanOptionalText(stringFromMap(value, "next_step")),
 	}
+}
+
+func sanitizedProviderReviewAdapterResponseDiagnostics(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"status":                 cleanOptionalText(stringFromMap(value, "status")),
+		"mode":                   "redacted_response_diagnostics",
+		"provider_type":          cleanOptionalText(stringFromMap(value, "provider_type")),
+		"review_kind":            cleanOptionalText(stringFromMap(value, "review_kind")),
+		"adapter_status":         cleanOptionalText(stringFromMap(value, "adapter_status")),
+		"external_call_made":     false,
+		"provider_api_call_made": false,
+		"provider_api_mutation":  "disabled",
+		"response_body_included": false,
+		"headers_included":       false,
+		"contains_token":         false,
+		"contains_provider_url":  false,
+		"diagnostic_fields":      stringSliceFromAny(value["diagnostic_fields"]),
+		"operations":             sanitizedProviderReviewAdapterResponseDiagnosticOperations(mapSliceFromAny(value["operations"])),
+	}
+}
+
+func sanitizedProviderReviewAdapterResponseDiagnosticOperations(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"name":                     cleanOptionalText(stringFromMap(item, "name")),
+			"endpoint_key":             cleanOptionalText(stringFromMap(item, "endpoint_key")),
+			"status":                   cleanOptionalText(stringFromMap(item, "status")),
+			"success_status_class":     cleanOptionalText(stringFromMap(item, "success_status_class")),
+			"retryable_status_classes": stringSliceFromAny(item["retryable_status_classes"]),
+			"response_body_included":   false,
+			"headers_included":         false,
+			"contains_token":           false,
+			"contains_provider_url":    false,
+			"external_call_made":       false,
+			"provider_api_mutation":    "disabled",
+		})
+	}
+	return out
 }
 
 func sanitizedProviderReviewAdapterRequestEnvelopes(items []map[string]any) []map[string]any {

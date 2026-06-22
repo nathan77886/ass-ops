@@ -1046,6 +1046,8 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
   const requestEnvelopes = Array.isArray(reconciliation.request_envelopes)
     ? reconciliation.request_envelopes
     : (Array.isArray(adapterContract.request_envelopes) ? adapterContract.request_envelopes : []);
+  const responseDiagnostics = reconciliation.response_diagnostics || adapterContract.response_diagnostics || {};
+  const responseDiagnosticOperations = Array.isArray(responseDiagnostics.operations) ? responseDiagnostics.operations : [];
   return (
     <Space direction="vertical" size={8} className="full">
       <Space size={4} wrap>
@@ -1153,6 +1155,23 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
               </Tag>
             ));
           })}
+        </Space>
+      ) : null}
+      {responseDiagnostics.status ? (
+        <Space size={4} wrap>
+          <Tag color={responseDiagnostics.status === 'ready' ? 'green' : 'gold'}>response diagnostics {String(responseDiagnostics.status)}</Tag>
+          <Tag>{String(responseDiagnostics.mode || 'redacted_response_diagnostics').replaceAll('_', ' ')}</Tag>
+          <Tag>{responseDiagnostics.response_body_included === true ? 'body included' : 'body redacted'}</Tag>
+          <Tag>{responseDiagnostics.headers_included === true ? 'headers included' : 'headers redacted'}</Tag>
+        </Space>
+      ) : null}
+      {responseDiagnosticOperations.length ? (
+        <Space size={4} wrap>
+          {responseDiagnosticOperations.map((operation: AnyRow, index: number) => (
+            <Tag key={String(operation.endpoint_key || operation.name || `response-diagnostic-${index}`)}>
+              {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.status || 'pending')}
+            </Tag>
+          ))}
         </Space>
       ) : null}
       {reconciliationGates.length ? (

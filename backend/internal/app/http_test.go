@@ -1803,6 +1803,41 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 							},
 						},
 					},
+					"response_diagnostics": map[string]any{
+						"status":                 "ready",
+						"mode":                   "raw_response_diagnostics",
+						"provider_type":          "github",
+						"review_kind":            "pull_request",
+						"adapter_status":         "ready",
+						"external_call_made":     true,
+						"provider_api_call_made": true,
+						"provider_api_mutation":  "enabled",
+						"response_body_included": true,
+						"headers_included":       true,
+						"contains_token":         true,
+						"contains_provider_url":  true,
+						"diagnostic_fields":      []any{"status_code_class", "provider_request_id_present"},
+						"response_body":          `{"token":"secret-token"}`,
+						"headers":                map[string]any{"Authorization": "Bearer secret-token"},
+						"url":                    "https://api.github.example.test/repos/acme/secret-repo",
+						"operations": []map[string]any{
+							{
+								"name":                     "commit_starter_files",
+								"endpoint_key":             "github.commit_files",
+								"status":                   "ready",
+								"success_status_class":     "2xx",
+								"retryable_status_classes": []any{"429", "5xx"},
+								"response_body_included":   true,
+								"headers_included":         true,
+								"contains_token":           true,
+								"contains_provider_url":    true,
+								"external_call_made":       true,
+								"provider_api_mutation":    "enabled",
+								"response_body":            `{"content":"do-not-include"}`,
+								"headers":                  map[string]any{"Authorization": "Bearer secret-token"},
+							},
+						},
+					},
 				},
 				"adapter_status":        "ready",
 				"external_call_made":    true,
@@ -1835,6 +1870,39 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 						},
 					},
 				},
+				"response_diagnostics": map[string]any{
+					"status":                 "ready",
+					"mode":                   "raw_response_diagnostics",
+					"provider_type":          "github",
+					"review_kind":            "pull_request",
+					"adapter_status":         "ready",
+					"external_call_made":     true,
+					"provider_api_call_made": true,
+					"provider_api_mutation":  "enabled",
+					"response_body_included": true,
+					"headers_included":       true,
+					"contains_token":         true,
+					"contains_provider_url":  true,
+					"diagnostic_fields":      []any{"status_code_class"},
+					"response_body":          `{"url":"https://api.github.example.test/repos/acme/secret-repo"}`,
+					"headers":                map[string]any{"Authorization": "Bearer secret-token"},
+					"operations": []map[string]any{
+						{
+							"name":                     "open_review_request",
+							"endpoint_key":             "github.open_review",
+							"status":                   "ready",
+							"success_status_class":     "2xx_or_already_exists",
+							"retryable_status_classes": []any{"429", "5xx"},
+							"response_body_included":   true,
+							"headers_included":         true,
+							"contains_token":           true,
+							"contains_provider_url":    true,
+							"external_call_made":       true,
+							"provider_api_mutation":    "enabled",
+							"url":                      "https://api.github.example.test/repos/acme/secret-repo/pulls",
+						},
+					},
+				},
 			},
 			"approval_result": map[string]any{
 				"execution_enabled":         true,
@@ -1864,8 +1932,16 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		t.Fatalf("approval result audit should force disabled/no-call: %#v", result)
 	}
 	reconciliation := mapFromAny(audit["provider_review_reconciliation"])
-	if reconciliation["external_call_made"] != false || reconciliation["provider_api_mutation"] != "disabled" {
+	if reconciliation["external_call_made"] != false ||
+		reconciliation["mode"] != "preflight_reconciliation" ||
+		reconciliation["provider_api_mutation"] != "disabled" {
 		t.Fatalf("provider review reconciliation audit should force disabled/no-call: %#v", reconciliation)
+	}
+	apiPlan := mapFromAny(audit["provider_api_request_plan"])
+	if apiPlan["mode"] != "redacted_request_plan" ||
+		apiPlan["provider_api_call_made"] != false ||
+		apiPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("api request plan audit should preserve plan mode and force disabled/no-call: %#v", apiPlan)
 	}
 	adapterContract := mapFromAny(reconciliation["adapter_contract"])
 	if adapterContract["external_call_made"] != false ||
@@ -1892,6 +1968,27 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		contractRequestEnvelopes[0]["contains_repository_ref"] != false {
 		t.Fatalf("adapter contract request envelopes should be sanitized: %#v", contractRequestEnvelopes)
 	}
+	contractResponseDiagnostics := mapFromAny(adapterContract["response_diagnostics"])
+	if contractResponseDiagnostics["external_call_made"] != false ||
+		contractResponseDiagnostics["mode"] != "redacted_response_diagnostics" ||
+		contractResponseDiagnostics["provider_api_call_made"] != false ||
+		contractResponseDiagnostics["provider_api_mutation"] != "disabled" ||
+		contractResponseDiagnostics["response_body_included"] != false ||
+		contractResponseDiagnostics["headers_included"] != false ||
+		contractResponseDiagnostics["contains_token"] != false ||
+		contractResponseDiagnostics["contains_provider_url"] != false {
+		t.Fatalf("adapter contract response diagnostics should be sanitized: %#v", contractResponseDiagnostics)
+	}
+	contractResponseOperations := sliceOfMapsFromAny(contractResponseDiagnostics["operations"])
+	if len(contractResponseOperations) != 1 ||
+		contractResponseOperations[0]["response_body_included"] != false ||
+		contractResponseOperations[0]["headers_included"] != false ||
+		contractResponseOperations[0]["contains_token"] != false ||
+		contractResponseOperations[0]["contains_provider_url"] != false ||
+		contractResponseOperations[0]["external_call_made"] != false ||
+		contractResponseOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("adapter contract response diagnostic operations should be sanitized: %#v", contractResponseOperations)
+	}
 	requestEnvelopes := sliceOfMapsFromAny(reconciliation["request_envelopes"])
 	if len(requestEnvelopes) != 1 ||
 		requestEnvelopes[0]["api_call"] != false ||
@@ -1905,6 +2002,27 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 	requestReadiness := sliceOfMapsFromAny(requestEnvelopes[0]["readiness"])
 	if len(requestReadiness) != 1 || requestReadiness[0]["evidence"] != "provider_api_request_plan_ready" {
 		t.Fatalf("request envelope readiness should preserve safe evidence only: %#v", requestReadiness)
+	}
+	responseDiagnostics := mapFromAny(reconciliation["response_diagnostics"])
+	if responseDiagnostics["external_call_made"] != false ||
+		responseDiagnostics["mode"] != "redacted_response_diagnostics" ||
+		responseDiagnostics["provider_api_call_made"] != false ||
+		responseDiagnostics["provider_api_mutation"] != "disabled" ||
+		responseDiagnostics["response_body_included"] != false ||
+		responseDiagnostics["headers_included"] != false ||
+		responseDiagnostics["contains_token"] != false ||
+		responseDiagnostics["contains_provider_url"] != false {
+		t.Fatalf("response diagnostics should be sanitized: %#v", responseDiagnostics)
+	}
+	responseOperations := sliceOfMapsFromAny(responseDiagnostics["operations"])
+	if len(responseOperations) != 1 ||
+		responseOperations[0]["response_body_included"] != false ||
+		responseOperations[0]["headers_included"] != false ||
+		responseOperations[0]["contains_token"] != false ||
+		responseOperations[0]["contains_provider_url"] != false ||
+		responseOperations[0]["external_call_made"] != false ||
+		responseOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("response diagnostic operations should be sanitized: %#v", responseOperations)
 	}
 	credential := mapFromAny(audit["credential_strategy"])
 	if credential["token_stored"] != false || credential["external_call_made"] != false || credential["token_env_present"] != true {
@@ -1933,6 +2051,54 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
 		}
+	}
+}
+
+func TestOperationApprovalPayloadAuditProviderReviewAllowsMissingResponseDiagnostics(t *testing.T) {
+	approval := map[string]any{
+		"request_payload": map[string]any{
+			"kind":                    "project_template_provider_review_execute",
+			"project_template_run_id": "22222222-2222-2222-2222-222222222222",
+			"project_id":              "11111111-1111-1111-1111-111111111111",
+			"execution_request": map[string]any{
+				"status":          "approval_ready",
+				"approval_action": templateProviderReviewExecuteApprovalAction,
+				"resource_type":   "project_template_run",
+				"provider_type":   "github",
+				"review_kind":     "pull_request",
+			},
+			"provider_review_reconciliation": map[string]any{
+				"status":        "blocked",
+				"mode":          "preflight_reconciliation",
+				"provider_type": "github",
+				"review_kind":   "pull_request",
+				"adapter_contract": map[string]any{
+					"status":           "planned",
+					"adapter_status":   "missing",
+					"contract_version": "provider-review-v1",
+				},
+				"adapter_status":         "missing",
+				"external_call_made":     true,
+				"provider_api_call_made": true,
+				"provider_api_mutation":  "enabled",
+			},
+		},
+	}
+	audit := operationApprovalPayloadAudit(approval)
+	reconciliation := mapFromAny(audit["provider_review_reconciliation"])
+	if reconciliation["external_call_made"] != false ||
+		reconciliation["provider_api_call_made"] != false ||
+		reconciliation["provider_api_mutation"] != "disabled" {
+		t.Fatalf("reconciliation should still be sanitized when response diagnostics are missing: %#v", reconciliation)
+	}
+	responseDiagnostics := mapFromAny(reconciliation["response_diagnostics"])
+	if len(responseDiagnostics) != 0 {
+		t.Fatalf("missing response diagnostics should remain empty: %#v", responseDiagnostics)
+	}
+	adapterContract := mapFromAny(reconciliation["adapter_contract"])
+	contractResponseDiagnostics := mapFromAny(adapterContract["response_diagnostics"])
+	if len(contractResponseDiagnostics) != 0 {
+		t.Fatalf("missing contract response diagnostics should remain empty: %#v", contractResponseDiagnostics)
 	}
 }
 

@@ -510,6 +510,22 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	if len(requestReadiness) != 3 || requestReadiness[2]["evidence"] != "starter_file_payload_staged" {
 		t.Fatalf("github provider review request envelope readiness = %#v", requestReadiness)
 	}
+	responseDiagnostics := mapFromAny(reconciliation["response_diagnostics"])
+	if responseDiagnostics["status"] != "pending" ||
+		responseDiagnostics["mode"] != "redacted_response_diagnostics" ||
+		responseDiagnostics["response_body_included"] != false ||
+		responseDiagnostics["headers_included"] != false ||
+		responseDiagnostics["contains_token"] != false ||
+		responseDiagnostics["contains_provider_url"] != false {
+		t.Fatalf("github provider review response diagnostics = %#v", responseDiagnostics)
+	}
+	responseDiagnosticOperations := sliceOfMapsFromAny(responseDiagnostics["operations"])
+	if len(responseDiagnosticOperations) != 3 ||
+		responseDiagnosticOperations[0]["endpoint_key"] != "github.create_branch_ref" ||
+		responseDiagnosticOperations[1]["endpoint_key"] != "github.commit_files" ||
+		responseDiagnosticOperations[2]["endpoint_key"] != "github.open_review" {
+		t.Fatalf("github provider review response diagnostic operations = %#v", responseDiagnosticOperations)
+	}
 	gates := sliceOfMapsFromAny(githubGuardrail["gates"])
 	if len(gates) != 4 || gates[0]["gate"] != "provider_review_execution_enabled" || gates[2]["status"] != "ready" {
 		t.Fatalf("github execution guardrail gates = %#v", gates)
