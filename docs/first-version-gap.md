@@ -54,7 +54,7 @@ The staged plan in Notion starts with an asset ledger, then provider sync, then 
 
 - Dashboard, first-version readiness checklist, and operation list.
 - Project/repository detail and read-only project template catalog.
-- Repo Sync page with source/target remotes, branches/tags, GitHub Actions project/repository linkage summary, and run tables.
+- Repo Sync page with source/target remotes, branches/tags, GitHub Actions project/repository linkage summary, webhook callback rehearsal readiness, and run tables.
 - Worker node page with queue backend posture, queue health, stale-node, stale-running-job, queued-by-tool, and recent-failure visibility.
 - AI runtime/task pages.
 - Argo connection/app page with sync polling and deployment target table.
@@ -107,11 +107,11 @@ Recommended next slice:
 
 ### 3. Webhook Intake Needs Hardening
 
-Notion's critical flow is Gitea push webhook -> Gateway -> Worker SSH sync -> GitHub Actions. Current implementation supports project-scoped `webhook_connections`, encrypted-at-rest one-time shared secrets for new/rotated connections, HMAC-SHA256 verification, `POST /api/webhooks/gitea/{connection_id}`, `POST /api/webhooks/github/{connection_id}`, Gitea push ref parsing, matching enabled RepoSyncAssets, enqueueing `repo.sync`, GitHub `workflow_run` read-model updates, webhook event audit rows, webhook event canonical assets linked to their connection, matched RepoSyncAsset, and triggered operation without exposing raw payload/result/error bodies, connection-level delivery health summaries, replay controls, secret rotation, basic rate limiting, delivery-id deduplication, deployment-manifest `ASSOPS_GATEWAY_URL` wiring, and public webhook URL normalization to an HTTP(S) origin.
+Notion's critical flow is Gitea push webhook -> Gateway -> Worker SSH sync -> GitHub Actions. Current implementation supports project-scoped `webhook_connections`, encrypted-at-rest one-time shared secrets for new/rotated connections, HMAC-SHA256 verification, `POST /api/webhooks/gitea/{connection_id}`, `POST /api/webhooks/github/{connection_id}`, Gitea push ref parsing, matching enabled RepoSyncAssets, enqueueing `repo.sync`, GitHub `workflow_run` read-model updates, webhook event audit rows, webhook event canonical assets linked to their connection, matched RepoSyncAsset, and triggered operation without exposing raw payload/result/error bodies, connection-level delivery health summaries, local callback rehearsal readiness previews, replay controls, secret rotation, basic rate limiting, delivery-id deduplication, deployment-manifest `ASSOPS_GATEWAY_URL` wiring, and public webhook URL normalization to an HTTP(S) origin.
 
 Recommended next slice:
 
-- Run provider-level callback rehearsals against real Gitea/GitHub webhook settings once a public staging hostname is available.
+- Run provider-level callback rehearsals against real Gitea/GitHub webhook settings once a public staging hostname is available; the current readiness preview intentionally performs no external provider calls.
 
 ### 4. Project Template Instantiation Partially Complete
 

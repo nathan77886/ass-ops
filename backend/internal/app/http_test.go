@@ -1482,6 +1482,150 @@ func TestWebhookConnectionHealth(t *testing.T) {
 	}
 }
 
+func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
+	cases := []struct {
+		name        string
+		baseURL     string
+		row         map[string]any
+		wantStatus  string
+		wantMessage string
+	}{
+		{
+			name:    "ready with public origin",
+			baseURL: "https://assops.example.com",
+			row: map[string]any{
+				"provider":         "gitea",
+				"webhook_url":      "https://assops.example.com/api/webhooks/gitea/hook-1",
+				"enabled":          true,
+				"source_remote_id": "remote-1",
+				"event_types":      []any{"push"},
+				"failures_7d":      0,
+			},
+			wantStatus:  "ready",
+			wantMessage: "local prerequisites are ready",
+		},
+		{
+			name:    "localhost blocks rehearsal",
+			baseURL: "http://localhost:8080",
+			row: map[string]any{
+				"provider":         "gitea",
+				"webhook_url":      "http://localhost:8080/api/webhooks/gitea/hook-1",
+				"enabled":          true,
+				"source_remote_id": "remote-1",
+				"event_types":      []any{"push"},
+			},
+			wantStatus:  "blocked",
+			wantMessage: "ASSOPS_GATEWAY_URL",
+		},
+		{
+			name:    "private ip blocks rehearsal",
+			baseURL: "http://192.168.1.10",
+			row: map[string]any{
+				"provider":         "gitea",
+				"webhook_url":      "http://192.168.1.10/api/webhooks/gitea/hook-1",
+				"enabled":          true,
+				"source_remote_id": "remote-1",
+				"event_types":      []any{"push"},
+			},
+			wantStatus:  "blocked",
+			wantMessage: "ASSOPS_GATEWAY_URL",
+		},
+		{
+			name:    "internal hostname blocks rehearsal",
+			baseURL: "https://assops.svc.cluster.local",
+			row: map[string]any{
+				"provider":         "gitea",
+				"webhook_url":      "https://assops.svc.cluster.local/api/webhooks/gitea/hook-1",
+				"enabled":          true,
+				"source_remote_id": "remote-1",
+				"event_types":      []any{"push"},
+			},
+			wantStatus:  "blocked",
+			wantMessage: "ASSOPS_GATEWAY_URL",
+		},
+		{
+			name:    "single label hostname blocks rehearsal",
+			baseURL: "https://private-vpn-host",
+			row: map[string]any{
+				"provider":         "gitea",
+				"webhook_url":      "https://private-vpn-host/api/webhooks/gitea/hook-1",
+				"enabled":          true,
+				"source_remote_id": "remote-1",
+				"event_types":      []any{"push"},
+			},
+			wantStatus:  "blocked",
+			wantMessage: "ASSOPS_GATEWAY_URL",
+		},
+		{
+			name:    "unsupported scheme blocks rehearsal",
+			baseURL: "ftp://assops.example.com",
+			row: map[string]any{
+				"provider":         "gitea",
+				"webhook_url":      "ftp://assops.example.com/api/webhooks/gitea/hook-1",
+				"enabled":          true,
+				"source_remote_id": "remote-1",
+				"event_types":      []any{"push"},
+			},
+			wantStatus:  "blocked",
+			wantMessage: "ASSOPS_GATEWAY_URL",
+		},
+		{
+			name:    "disabled and failed delivery block rehearsal",
+			baseURL: "https://assops.example.com",
+			row: map[string]any{
+				"provider":             "github",
+				"webhook_url":          "https://assops.example.com/api/webhooks/github/hook-1",
+				"enabled":              false,
+				"source_remote_id":     "remote-1",
+				"event_types":          []any{"workflow_run"},
+				"failures_7d":          int64(2),
+				"last_delivery_status": "failed",
+			},
+			wantStatus:  "blocked",
+			wantMessage: "last delivery was failed",
+		},
+		{
+			name:    "missing source and event types block rehearsal",
+			baseURL: "https://assops.example.com",
+			row: map[string]any{
+				"provider":    "gitea",
+				"webhook_url": "https://assops.example.com/api/webhooks/gitea/hook-1",
+				"enabled":     true,
+			},
+			wantStatus:  "blocked",
+			wantMessage: "source remote is missing",
+		},
+		{
+			name:    "zero source and empty event types block rehearsal",
+			baseURL: "https://assops.example.com",
+			row: map[string]any{
+				"provider":         "gitea",
+				"webhook_url":      "https://assops.example.com/api/webhooks/gitea/hook-1",
+				"enabled":          true,
+				"source_remote_id": 0,
+				"event_types":      []any{},
+			},
+			wantStatus:  "blocked",
+			wantMessage: "event types are missing",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := webhookCallbackRehearsalReadiness(tc.row, tc.baseURL)
+			if got["status"] != tc.wantStatus || !strings.Contains(fmt.Sprint(got["message"]), tc.wantMessage) {
+				t.Fatalf("webhookCallbackRehearsalReadiness = %#v; want status %q message containing %q", got, tc.wantStatus, tc.wantMessage)
+			}
+			if got["external_call_made"] != false {
+				t.Fatalf("readiness must not claim external callback rehearsal was performed: %#v", got)
+			}
+		})
+	}
+}
+
+func TestAnnotateWebhookCallbackReadinessAllowsNilItems(t *testing.T) {
+	annotateWebhookCallbackReadiness(nil, "https://assops.example.com")
+}
+
 func TestOperationApprovalFiltersFromRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/operation-approvals?status=%20pending%20&action=ssh.exec&resource_type=ssh_machine&q=%20deploy%20&requested_by=%20ops@example.com%20&since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z", nil)
 	got, err := operationApprovalFiltersFromRequest(req)

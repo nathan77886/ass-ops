@@ -3509,6 +3509,7 @@ func (s *Server) listWebhookConnections(w http.ResponseWriter, r *http.Request) 
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "webhook_connection", ProjectID: projectID}, "read") {
 		return
 	}
+	baseURL := s.publicBaseURL()
 	items, err := queryMaps(r.Context(), s.store.DB, `
 		SELECT wc.id,
 			wc.project_id,
@@ -3548,8 +3549,9 @@ func (s *Server) listWebhookConnections(w http.ResponseWriter, r *http.Request) 
 			WHERE we.webhook_connection_id=wc.id
 		) stats ON true
 		WHERE wc.project_id=$1
-		ORDER BY wc.created_at DESC`, projectID, s.publicBaseURL())
+		ORDER BY wc.created_at DESC`, projectID, baseURL)
 	annotateWebhookConnectionHealth(items)
+	annotateWebhookCallbackReadiness(items, baseURL)
 	writeQueryResult(w, items, err)
 }
 
@@ -3589,6 +3591,80 @@ func webhookConnectionHealth(row map[string]any) (string, string) {
 		return "unknown", "no deliveries in 7d"
 	}
 	return "ok", fmt.Sprintf("%d deliveries in 7d", deliveries)
+}
+
+func annotateWebhookCallbackReadiness(items []map[string]any, baseURL string) {
+	for _, item := range items {
+		item["callback_rehearsal"] = webhookCallbackRehearsalReadiness(item, baseURL)
+	}
+}
+
+func webhookCallbackRehearsalReadiness(row map[string]any, baseURL string) map[string]any {
+	reasons := make([]string, 0)
+	origin := strings.TrimSpace(baseURL)
+	if !isPlausiblePublicWebhookOrigin(origin) {
+		reasons = append(reasons, "set ASSOPS_GATEWAY_URL to a public HTTP(S) origin before provider callback rehearsal")
+	}
+	if enabled, ok := row["enabled"].(bool); ok && !enabled {
+		reasons = append(reasons, "webhook connection is disabled")
+	}
+	if !hasNonZeroValue(row["source_remote_id"]) {
+		reasons = append(reasons, "source remote is missing")
+	}
+	if len(stringSliceFromAny(row["event_types"])) == 0 {
+		reasons = append(reasons, "event types are missing")
+	}
+	if failures := intFromAny(row["failures_7d"], 0); failures > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d failed or rejected deliveries in 7d should be reviewed before rehearsal", failures))
+	}
+	switch strings.TrimSpace(fmt.Sprint(row["last_delivery_status"])) {
+	case "failed", "rejected":
+		reasons = append(reasons, "last delivery was "+fmt.Sprint(row["last_delivery_status"]))
+	}
+	status := "ready"
+	message := "local prerequisites are ready; complete provider callback rehearsal in Gitea/GitHub"
+	if len(reasons) > 0 {
+		status = "blocked"
+		message = strings.Join(reasons, "; ")
+	}
+	return map[string]any{
+		"status":             status,
+		"public_origin":      origin,
+		"provider":           strings.TrimSpace(fmt.Sprint(row["provider"])),
+		"webhook_url":        strings.TrimSpace(fmt.Sprint(row["webhook_url"])),
+		"required_provider":  "gitea_or_github_webhook_settings",
+		"external_call_made": false,
+		"reasons":            reasons,
+		"message":            message,
+	}
+}
+
+func isPlausiblePublicWebhookOrigin(baseURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return false
+	}
+	host := strings.Trim(strings.ToLower(parsed.Hostname()), "[]")
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return isPublicIP(ip)
+	}
+	if !strings.Contains(host, ".") {
+		return false
+	}
+	for _, suffix := range []string{".local", ".internal", ".cluster.local", ".svc", ".svc.cluster.local"} {
+		if strings.HasSuffix(host, suffix) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasNonZeroValue(value any) bool {
+	text := strings.TrimSpace(fmt.Sprint(value))
+	return text != "" && text != "<nil>" && text != "0"
 }
 
 func (s *Server) createWebhookConnection(w http.ResponseWriter, r *http.Request) {

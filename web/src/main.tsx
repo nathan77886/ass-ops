@@ -1690,6 +1690,11 @@ function GitRemotes() {
             { title: 'URL', render: (_, row) => <Typography.Text copyable>{row.webhook_url || row.webhook_path}</Typography.Text> },
             { title: 'Delivery', render: (_, row) => <Tag color={row.last_delivery_status === 'queued' ? 'green' : row.last_delivery_status === 'failed' || row.last_delivery_status === 'rejected' ? 'red' : 'default'}>{row.last_delivery_status || 'never'}</Tag> },
             { title: 'Health', render: (_, row) => <Space size={4} wrap><Tag color={signalSeverityColor(row.webhook_health)}>{row.webhook_health || 'unknown'}</Tag><Typography.Text>{shortText(row.webhook_summary, 48)}</Typography.Text></Space> },
+            { title: 'Rehearsal', render: (_, row) => {
+              const readiness = row.callback_rehearsal || {};
+              const status = readiness.status || 'unknown';
+              return <Space size={4} wrap><Tag color={status === 'ready' ? 'green' : status === 'blocked' ? 'red' : 'default'}>{status}</Tag><Typography.Text>{shortText(readiness.message, 56)}</Typography.Text></Space>;
+            } },
             { title: 'Action', render: (_, row) => <Button size="small" onClick={() => rotateWebhookSecret(row.id)}>Rotate secret</Button> }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={webhookEvents.data?.items || []} pagination={{ pageSize: 6 }} columns={[
