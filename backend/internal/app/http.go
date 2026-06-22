@@ -3096,6 +3096,9 @@ func (s *Server) runRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update repo sync asset")
 		return
 	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.run") {
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit repo sync asset run")
 		return
@@ -3169,6 +3172,9 @@ func (s *Server) rerunRepoSyncRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := tx.ExecContext(r.Context(), "UPDATE repo_sync_assets SET last_sync_status='queued', last_sync_run_id=$2, updated_at=now() WHERE id=$1", assetID, newRun["id"]); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update repo sync asset")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.rerun") {
 		return
 	}
 	if err := tx.Commit(); err != nil {

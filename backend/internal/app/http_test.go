@@ -1405,6 +1405,8 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.update")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.archive")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.restore")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.run")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.rerun")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.update")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.check")`,
