@@ -270,6 +270,18 @@ func (e *GitExecutor) ProvisionTemplateRepository(ctx context.Context, repo map[
 		if len(files) == 0 {
 			return result, nil
 		}
+		if alreadyExists, _ := result.Details["already_provisioned"].(bool); alreadyExists && !templateRemoteAllowsExistingRepositoryPush(remote) {
+			defaultBranch := defaultBranchFromRow(repo)
+			result.Details["provisioned"] = false
+			result.Details["repository_exists"] = true
+			result.Details["starter_push_skipped"] = true
+			result.Details["reason"] = "starter files were not pushed because the external repository already exists"
+			result.Details["remote_id"] = remote["id"]
+			result.Details["remote_url"] = remoteURL
+			result.Details["default_branch"] = defaultBranch
+			result.Details["file_count"] = len(files)
+			return result, nil
+		}
 	}
 	if len(files) == 0 {
 		result.Details["reason"] = "no starter files configured"
@@ -621,6 +633,11 @@ func templateRemoteProtectsDefaultBranch(remote map[string]any) bool {
 func templateRemoteAllowsProtectedBranchPush(remote map[string]any) bool {
 	metadata := mapFromAny(remote["metadata"])
 	return boolFromMap(metadata, "allow_protected_branch_push")
+}
+
+func templateRemoteAllowsExistingRepositoryPush(remote map[string]any) bool {
+	metadata := mapFromAny(remote["metadata"])
+	return boolFromMap(metadata, "allow_existing_repository_push")
 }
 
 func safeTemplateProviderTokenEnv(provider, value string) bool {

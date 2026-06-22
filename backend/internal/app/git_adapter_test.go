@@ -501,6 +501,90 @@ func TestProvisionTemplateRepositoryAlreadyExistsIncludesDiagnostics(t *testing.
 	}
 }
 
+func TestProvisionTemplateRepositorySkipsStarterPushWhenExternalRepositoryExists(t *testing.T) {
+	t.Setenv("ASSOPS_ALLOW_LOCAL_TEMPLATE_PROVIDER_API", "true")
+	t.Setenv("ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_TEST", "secret-token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"name already exists"}]}`))
+	}))
+	defer server.Close()
+
+	result, err := (&GitExecutor{HTTPClient: server.Client()}).ProvisionTemplateRepository(context.Background(),
+		map[string]any{"id": "repo-1", "repo_key": "billing-service", "default_branch": "main"},
+		[]map[string]any{{
+			"id":            "remote-1",
+			"provider_type": "github",
+			"remote_url":    "git@github.com:acme/billing-service.git",
+			"metadata": map[string]any{
+				"api_base_url": server.URL,
+				"owner":        "acme",
+				"token_env":    "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_TEST",
+			},
+		}},
+		[]map[string]any{{"path": "README.md", "content": "# Billing\n"}},
+	)
+	if err != nil {
+		t.Fatalf("already exists should not fail: %v", err)
+	}
+	if result.Details["provisioned"] != false || result.Details["repository_exists"] != true || result.Details["starter_push_skipped"] != true {
+		t.Fatalf("existing repository skip details = %#v", result.Details)
+	}
+	if !strings.Contains(fmt.Sprint(result.Details["reason"]), "already exists") {
+		t.Fatalf("reason = %v", result.Details["reason"])
+	}
+}
+
+func TestProvisionTemplateRepositoryAllowsStarterPushWhenExistingRepositoryOptedIn(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary is required for template repository provisioning test")
+	}
+	t.Setenv("ASSOPS_ALLOW_LOCAL_TEMPLATE_PROVIDER_API", "true")
+	t.Setenv("ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_TEST", "secret-token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"name already exists"}]}`))
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	remotePath := filepath.Join(root, "repos", "billing.git")
+	if err := os.MkdirAll(filepath.Dir(remotePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "init", "--bare", remotePath).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v: %s", err, out)
+	}
+
+	result, err := (&GitExecutor{HTTPClient: server.Client(), WorkDir: filepath.Join(root, "work")}).ProvisionTemplateRepository(context.Background(),
+		map[string]any{"id": "repo-1", "repo_key": "billing-service", "default_branch": "main"},
+		[]map[string]any{{
+			"id":            "remote-1",
+			"provider_type": "github",
+			"remote_url":    remotePath,
+			"metadata": map[string]any{
+				"api_base_url":                   server.URL,
+				"owner":                          "acme",
+				"token_env":                      "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_TEST",
+				"allow_existing_repository_push": true,
+			},
+		}},
+		[]map[string]any{{"path": "README.md", "content": "# Billing\n"}},
+	)
+	if err != nil {
+		t.Fatalf("existing repository opt-in should push starter files: %v\nstdout=%s\nstderr=%s", err, result.Stdout, result.Stderr)
+	}
+	if result.Details["provisioned"] != true || result.Details["starter_push_skipped"] == true {
+		t.Fatalf("existing repository opt-in details = %#v", result.Details)
+	}
+	out, err := exec.Command("git", "--git-dir", remotePath, "show", "refs/heads/main:README.md").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git show pushed README: %v: %s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "# Billing" {
+		t.Fatalf("README content = %q", out)
+	}
+}
+
 func TestProviderErrorSuffixTruncatesLongMessages(t *testing.T) {
 	longMessage := strings.Repeat("x", providerDiagnosticErrorLimit+20)
 	suffix := providerErrorSuffix([]byte(`{"message":"` + longMessage + `"}`))
