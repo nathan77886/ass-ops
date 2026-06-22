@@ -1354,14 +1354,6 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read http.go: %v", err)
 	}
-	for _, token := range []string{
-		`writeCreatedOneAndRefreshAssets(w, r, item, err, "argo_connection.create")`,
-		`writeCreatedOneAndRefreshAssets(w, r, item, err, "ssh_machine.create")`,
-	} {
-		if !strings.Contains(string(httpSource), token) {
-			t.Fatalf("http.go missing canonical asset refresh hook %q", token)
-		}
-	}
 	for _, reason := range []string{
 		`syncCanonicalAssetsInTransaction(w, r, tx, "project.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "project.update")`,
@@ -1373,6 +1365,8 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.update")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.archive")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.restore")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "argo_connection.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "ssh_machine.create")`,
 		`SyncCanonicalAssetsWith(r.Context(), tx)`,
 	} {
 		if !strings.Contains(string(httpSource), reason) {

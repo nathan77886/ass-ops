@@ -8550,11 +8550,28 @@ func (s *Server) createArgoConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "config must be valid JSON")
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start argo connection transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		INSERT INTO argo_connections(project_id, name, server_url, auth_type, config)
 		VALUES ($1, $2, $3, $4, $5::jsonb)
 		RETURNING *`, projectID, req.Name, req.ServerURL, req.AuthType, config)
-	s.writeCreatedOneAndRefreshAssets(w, r, item, err, "argo_connection.create")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not create resource")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "argo_connection.create") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit argo connection")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func (s *Server) listArgoConnections(w http.ResponseWriter, r *http.Request) {
@@ -8786,11 +8803,28 @@ func (s *Server) createSSHMachine(w http.ResponseWriter, r *http.Request) {
 		req.AuthType = "key"
 	}
 	metadata, _ := jsonParam(req.Metadata)
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start ssh machine transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		INSERT INTO ssh_machines(project_id, name, host, port, username, auth_type, metadata)
 		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
 		RETURNING *`, projectID, req.Name, req.Host, req.Port, req.Username, req.AuthType, metadata)
-	s.writeCreatedOneAndRefreshAssets(w, r, item, err, "ssh_machine.create")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not create resource")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ssh_machine.create") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit ssh machine")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func (s *Server) listSSHMachines(w http.ResponseWriter, r *http.Request) {
@@ -9373,41 +9407,6 @@ func writeCreatedOne(w http.ResponseWriter, item map[string]any, err error) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
-}
-
-func (s *Server) writeUpdatedOneAndRefreshAssets(w http.ResponseWriter, r *http.Request, item map[string]any, err error, reason string) {
-	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed")
-		return
-	}
-	s.refreshCanonicalAssetsAfterWrite(r.Context(), reason)
-	writeJSON(w, http.StatusOK, item)
-}
-
-func (s *Server) writeCreatedOneAndRefreshAssets(w http.ResponseWriter, r *http.Request, item map[string]any, err error, reason string) {
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "could not create resource")
-		return
-	}
-	s.refreshCanonicalAssetsAfterWrite(r.Context(), reason)
-	writeJSON(w, http.StatusCreated, item)
-}
-
-func (s *Server) refreshCanonicalAssetsAfterWrite(ctx context.Context, reason string) {
-	result, err := s.store.SyncCanonicalAssets(ctx)
-	if err != nil {
-		if s.log != nil {
-			s.log.Warn("canonical asset refresh failed", "reason", reason, "error", err)
-		}
-		return
-	}
-	if s.log != nil {
-		s.log.Debug("canonical assets refreshed", "reason", reason, "synced_assets", result.SyncedAssets, "inserted_relations", result.InsertedRelations)
-	}
 }
 
 func (s *Server) syncCanonicalAssetsInTransaction(w http.ResponseWriter, r *http.Request, tx *sqlx.Tx, reason string) bool {
