@@ -8732,6 +8732,7 @@ func (s *Server) providerReviewAttemptLedgerForApproval(ctx context.Context, app
 			depends_on_operation,
 			dependency_status,
 			request_summary,
+			response_diagnostics,
 			provider_api_call_made,
 			provider_api_mutation,
 			external_call_made
@@ -8882,6 +8883,7 @@ func sanitizedProviderReviewAttemptLedger(value map[string]any) map[string]any {
 			"depends_on_operation":     safeProviderReviewAttemptDependencyName(stringFromMap(operation, "depends_on_operation")),
 			"dependency_status":        safeProviderReviewAttemptDependencyStatus(stringFromMap(operation, "dependency_status")),
 			"request_summary":          sanitizedProviderReviewAttemptRequestSummary(mapFromAny(operation["request_summary"])),
+			"response_diagnostics":     sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(operation["response_diagnostics"])),
 			"external_call_made":       false,
 			"provider_api_call_made":   false,
 			"provider_api_mutation":    "disabled",
@@ -10714,10 +10716,10 @@ func providerReviewAttemptResponseDiagnostics(reconciliation map[string]any, end
 		if cleanOptionalText(stringFromMap(operation, "endpoint_key")) == endpointKey {
 			return map[string]any{
 				"mode":                     "redacted_attempt_response_diagnostics",
-				"endpoint_key":             endpointKey,
-				"status":                   cleanOptionalText(stringFromMap(operation, "status")),
-				"success_status_class":     cleanOptionalText(stringFromMap(operation, "success_status_class")),
-				"retryable_status_classes": stringSliceFromAny(operation["retryable_status_classes"]),
+				"endpoint_key":             safeProviderReviewEndpointKey(endpointKey),
+				"status":                   safeProviderReviewAttemptResponseStatus(stringFromMap(operation, "status")),
+				"success_status_class":     safeProviderReviewStatusClass(stringFromMap(operation, "success_status_class")),
+				"retryable_status_classes": safeProviderReviewStatusClasses(stringSliceFromAny(operation["retryable_status_classes"])),
 				"response_body_included":   false,
 				"headers_included":         false,
 				"contains_token":           false,
@@ -10729,16 +10731,18 @@ func providerReviewAttemptResponseDiagnostics(reconciliation map[string]any, end
 		}
 	}
 	return map[string]any{
-		"mode":                   "redacted_attempt_response_diagnostics",
-		"endpoint_key":           endpointKey,
-		"status":                 "pending",
-		"response_body_included": false,
-		"headers_included":       false,
-		"contains_token":         false,
-		"contains_provider_url":  false,
-		"provider_api_call_made": false,
-		"provider_api_mutation":  "disabled",
-		"external_call_made":     false,
+		"mode":                     "redacted_attempt_response_diagnostics",
+		"endpoint_key":             safeProviderReviewEndpointKey(endpointKey),
+		"status":                   "pending",
+		"success_status_class":     "",
+		"retryable_status_classes": []string{},
+		"response_body_included":   false,
+		"headers_included":         false,
+		"contains_token":           false,
+		"contains_provider_url":    false,
+		"provider_api_call_made":   false,
+		"provider_api_mutation":    "disabled",
+		"external_call_made":       false,
 	}
 }
 
@@ -10765,6 +10769,7 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 			"depends_on_operation":     safeProviderReviewAttemptDependencyName(stringFromMap(attempt, "depends_on_operation")),
 			"dependency_status":        safeProviderReviewAttemptDependencyStatus(stringFromMap(attempt, "dependency_status")),
 			"request_summary":          sanitizedProviderReviewAttemptRequestSummary(mapFromAny(attempt["request_summary"])),
+			"response_diagnostics":     sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(attempt["response_diagnostics"])),
 			"external_call_made":       false,
 			"provider_api_call_made":   false,
 			"provider_api_mutation":    "disabled",
@@ -10823,6 +10828,67 @@ func sanitizedProviderReviewAttemptRequestSummary(value map[string]any) map[stri
 		"contains_branch_name":        false,
 		"contains_file_content":       false,
 	}
+}
+
+func sanitizedProviderReviewAttemptResponseDiagnostics(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"mode":                     "redacted_attempt_response_diagnostics",
+		"endpoint_key":             safeProviderReviewEndpointKey(stringFromMap(value, "endpoint_key")),
+		"status":                   safeProviderReviewAttemptResponseStatus(stringFromMap(value, "status")),
+		"success_status_class":     safeProviderReviewStatusClass(stringFromMap(value, "success_status_class")),
+		"retryable_status_classes": safeProviderReviewStatusClasses(stringSliceFromAny(value["retryable_status_classes"])),
+		"response_body_included":   false,
+		"headers_included":         false,
+		"contains_token":           false,
+		"contains_provider_url":    false,
+		"provider_api_call_made":   false,
+		"provider_api_mutation":    "disabled",
+		"external_call_made":       false,
+	}
+}
+
+func safeProviderReviewAttemptResponseStatus(value string) string {
+	switch cleanOptionalText(value) {
+	case "pending", "success", "retryable", "failed", "blocked":
+		return cleanOptionalText(value)
+	default:
+		return "blocked"
+	}
+}
+
+func safeProviderReviewStatusClass(value string) string {
+	switch cleanOptionalText(value) {
+	case "2xx", "4xx", "5xx":
+		return cleanOptionalText(value)
+	default:
+		return ""
+	}
+}
+
+func safeProviderReviewEndpointKey(value string) string {
+	switch cleanOptionalText(value) {
+	case "github.create_branch_ref", "github.commit_files", "github.open_review", "gitea.create_branch_ref", "gitea.commit_files", "gitea.open_review":
+		return cleanOptionalText(value)
+	default:
+		return ""
+	}
+}
+
+func safeProviderReviewStatusClasses(items []string) []string {
+	out := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		item = safeProviderReviewStatusClass(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		out = append(out, item)
+		seen[item] = true
+	}
+	return out
 }
 
 func providerReviewAttemptOrchestrationSummary(operations []map[string]any) map[string]any {

@@ -2453,6 +2453,23 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 								"repo":                     "secret-repo",
 								"content":                  "do-not-include",
 							},
+							"response_diagnostics": map[string]any{
+								"mode":                     "raw_attempt_response_diagnostics",
+								"endpoint_key":             "github.open_review",
+								"status":                   "ready",
+								"success_status_class":     "2xx",
+								"retryable_status_classes": []any{"5xx", "secret-token"},
+								"response_body_included":   true,
+								"headers_included":         true,
+								"external_call_made":       true,
+								"provider_api_call_made":   true,
+								"provider_api_mutation":    "enabled",
+								"contains_token":           true,
+								"contains_provider_url":    true,
+								"token":                    "secret-token",
+								"url":                      "https://api.github.example.test/repos/acme/secret-repo/pulls",
+								"body":                     "do-not-include",
+							},
 							"branch": "assops/template/demo-main",
 							"repo":   "secret-repo",
 							"token":  "secret-token",
@@ -2835,13 +2852,25 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		resultAttemptRequestSummary["contains_file_content"] != false {
 		t.Fatalf("approval result attempt request summary should be sanitized: %#v", resultAttemptRequestSummary)
 	}
+	resultAttemptResponseDiagnostics := mapFromAny(resultAttemptOperations[0]["response_diagnostics"])
+	if resultAttemptResponseDiagnostics["mode"] != "redacted_attempt_response_diagnostics" ||
+		resultAttemptResponseDiagnostics["status"] != "blocked" ||
+		resultAttemptResponseDiagnostics["success_status_class"] != "2xx" ||
+		resultAttemptResponseDiagnostics["response_body_included"] != false ||
+		resultAttemptResponseDiagnostics["headers_included"] != false ||
+		resultAttemptResponseDiagnostics["provider_api_call_made"] != false ||
+		resultAttemptResponseDiagnostics["provider_api_mutation"] != "disabled" ||
+		resultAttemptResponseDiagnostics["contains_token"] != false ||
+		resultAttemptResponseDiagnostics["contains_provider_url"] != false {
+		t.Fatalf("approval result attempt response diagnostics should be sanitized: %#v", resultAttemptResponseDiagnostics)
+	}
 	for _, field := range []string{"branch", "repo", "token", "idempotency_key_material"} {
 		if _, ok := resultAttemptOperations[0][field]; ok {
 			t.Fatalf("approval result attempt operation should not expose %s: %#v", field, resultAttemptOperations[0])
 		}
 	}
 	encoded, _ := json.Marshal(audit)
-	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_adapter_rehearsal", "raw_mutation_arming_plan", "raw_adapter_execution_blueprint", "raw_builder", "raw_handler", "raw_stage", "SECRET_CONFIG", "raw_attempt_ledger", "raw_attempt_orchestration", "raw_key"} {
+	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_adapter_rehearsal", "raw_mutation_arming_plan", "raw_adapter_execution_blueprint", "raw_attempt_response_diagnostics", "raw_builder", "raw_handler", "raw_stage", "SECRET_CONFIG", "raw_attempt_ledger", "raw_attempt_orchestration", "raw_key"} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
 		}
@@ -3036,6 +3065,17 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		requestSummary["contains_file_content"] != false {
 		t.Fatalf("attempt request summary = %#v", requestSummary)
 	}
+	responseDiagnostics := mapFromAny(operations[2]["response_diagnostics"])
+	if responseDiagnostics["mode"] != "redacted_attempt_response_diagnostics" ||
+		responseDiagnostics["status"] != "pending" ||
+		responseDiagnostics["response_body_included"] != false ||
+		responseDiagnostics["headers_included"] != false ||
+		responseDiagnostics["provider_api_call_made"] != false ||
+		responseDiagnostics["provider_api_mutation"] != "disabled" ||
+		responseDiagnostics["contains_token"] != false ||
+		responseDiagnostics["contains_provider_url"] != false {
+		t.Fatalf("attempt response diagnostics = %#v", responseDiagnostics)
+	}
 	encoded, _ := json.Marshal(summary)
 	for _, leak := range []string{"assops/template/demo-main", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "idempotency_key_material"} {
 		if strings.Contains(string(encoded), leak) {
@@ -3068,6 +3108,7 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 			"depends_on_operation",
 			"dependency_status",
 			"request_summary",
+			"response_diagnostics",
 			"provider_api_call_made",
 			"provider_api_mutation",
 			"external_call_made",
@@ -3083,6 +3124,7 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 			"commit_starter_files",
 			"waiting_for_dependency",
 			[]byte(`{"mode":"raw_attempt_request_summary","operation_name":"open_review_request","endpoint_key":"github.open_review","payload_builder":"raw_builder","response_handler":"raw_handler","execution_status":"ready","request_body_included":true,"headers_included":true,"idempotency_key_included":true,"external_call_made":true,"provider_api_call_made":true,"provider_api_mutation":"enabled","contains_token":true,"contains_provider_url":true,"contains_repository_ref":true,"contains_branch_name":true,"contains_file_content":true,"token":"secret-token","url":"https://api.github.example.test/repos/acme/secret-repo/pulls","repo":"secret-repo","content":"do-not-include"}`),
+			[]byte(`{"mode":"raw_attempt_response_diagnostics","endpoint_key":"github.open_review","status":"ready","success_status_class":"2xx","retryable_status_classes":["5xx","4xx","secret-token"],"response_body_included":true,"headers_included":true,"contains_token":true,"contains_provider_url":true,"provider_api_call_made":true,"provider_api_mutation":"enabled","external_call_made":true,"body":"do-not-include","url":"https://api.github.example.test/repos/acme/secret-repo/pulls","token":"secret-token"}`),
 			false,
 			"disabled",
 			false,
@@ -3132,8 +3174,24 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 		requestSummary["contains_file_content"] != false {
 		t.Fatalf("persisted attempt request summary = %#v", requestSummary)
 	}
+	responseDiagnostics := mapFromAny(operations[0]["response_diagnostics"])
+	if responseDiagnostics["mode"] != "redacted_attempt_response_diagnostics" ||
+		responseDiagnostics["status"] != "blocked" ||
+		responseDiagnostics["success_status_class"] != "2xx" ||
+		responseDiagnostics["response_body_included"] != false ||
+		responseDiagnostics["headers_included"] != false ||
+		responseDiagnostics["provider_api_call_made"] != false ||
+		responseDiagnostics["provider_api_mutation"] != "disabled" ||
+		responseDiagnostics["contains_token"] != false ||
+		responseDiagnostics["contains_provider_url"] != false {
+		t.Fatalf("persisted attempt response diagnostics = %#v", responseDiagnostics)
+	}
+	retryable := stringSliceFromAny(responseDiagnostics["retryable_status_classes"])
+	if len(retryable) != 2 || retryable[0] != "5xx" || retryable[1] != "4xx" {
+		t.Fatalf("persisted attempt retryable classes = %#v", retryable)
+	}
 	encoded, _ := json.Marshal(summary)
-	for _, leak := range []string{"idempotency_key_material", "idempotency_key_hash", "secret-token", "api.github.example.test", "secret-repo", "raw_builder", "raw_handler"} {
+	for _, leak := range []string{"idempotency_key_material", "idempotency_key_hash", "secret-token", "api.github.example.test", "secret-repo", "raw_builder", "raw_handler", "do-not-include", "raw_attempt_response_diagnostics"} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("persisted attempt ledger leaked %q: %s", leak, encoded)
 		}
@@ -3173,6 +3231,7 @@ func TestProviderReviewAttemptLedgerForApprovalHandlesEmptyInputAndRows(t *testi
 			"depends_on_operation",
 			"dependency_status",
 			"request_summary",
+			"response_diagnostics",
 			"provider_api_call_made",
 			"provider_api_mutation",
 			"external_call_made",
@@ -3186,6 +3245,73 @@ func TestProviderReviewAttemptLedgerForApprovalHandlesEmptyInputAndRows(t *testi
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptResponseDiagnosticSanitizers(t *testing.T) {
+	for _, item := range []struct {
+		input string
+		want  string
+	}{
+		{"pending", "pending"},
+		{"success", "success"},
+		{"retryable", "retryable"},
+		{"failed", "failed"},
+		{"blocked", "blocked"},
+		{"  success  ", "success"},
+		{"ready", "blocked"},
+		{"rate_limited", "blocked"},
+		{"FAILED", "blocked"},
+		{"", "blocked"},
+		{"<script>alert(1)</script>", "blocked"},
+	} {
+		if got := safeProviderReviewAttemptResponseStatus(item.input); got != item.want {
+			t.Fatalf("safeProviderReviewAttemptResponseStatus(%q) = %q, want %q", item.input, got, item.want)
+		}
+	}
+	for _, item := range []struct {
+		input string
+		want  string
+	}{
+		{"2xx", "2xx"},
+		{"4xx", "4xx"},
+		{"5xx", "5xx"},
+		{"  4xx  ", "4xx"},
+		{"3xx", ""},
+		{"secret-token", ""},
+		{"", ""},
+		{"<script>alert(1)</script>", ""},
+	} {
+		if got := safeProviderReviewStatusClass(item.input); got != item.want {
+			t.Fatalf("safeProviderReviewStatusClass(%q) = %q, want %q", item.input, got, item.want)
+		}
+	}
+	classes := safeProviderReviewStatusClasses([]string{"5xx", "4xx", "5xx", "3xx", "secret-token", "2xx"})
+	if len(classes) != 3 || classes[0] != "5xx" || classes[1] != "4xx" || classes[2] != "2xx" {
+		t.Fatalf("safeProviderReviewStatusClasses mixed = %#v", classes)
+	}
+	if got := safeProviderReviewStatusClasses(nil); len(got) != 0 {
+		t.Fatalf("safeProviderReviewStatusClasses nil = %#v", got)
+	}
+	for _, item := range []struct {
+		input string
+		want  string
+	}{
+		{"github.create_branch_ref", "github.create_branch_ref"},
+		{"github.commit_files", "github.commit_files"},
+		{"github.open_review", "github.open_review"},
+		{"gitea.create_branch_ref", "gitea.create_branch_ref"},
+		{"gitea.commit_files", "gitea.commit_files"},
+		{"gitea.open_review", "gitea.open_review"},
+		{"  github.open_review  ", "github.open_review"},
+		{"github.secret", ""},
+		{"secret-token", ""},
+		{"<script>alert(1)</script>", ""},
+		{"", ""},
+	} {
+		if got := safeProviderReviewEndpointKey(item.input); got != item.want {
+			t.Fatalf("safeProviderReviewEndpointKey(%q) = %q, want %q", item.input, got, item.want)
+		}
 	}
 }
 

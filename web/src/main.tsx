@@ -1337,6 +1337,14 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
                   {String(operation.request_summary.payload_builder)} / {String(operation.request_summary.response_handler || 'handle_provider_response')}
                 </Tag>
               ) : null}
+              {operation.response_diagnostics?.mode ? (
+                <Tag>
+                  response {String(operation.response_diagnostics.status || 'pending')}
+                  {Array.isArray(operation.response_diagnostics.retryable_status_classes) && operation.response_diagnostics.retryable_status_classes.length
+                    ? ` retry ${operation.response_diagnostics.retryable_status_classes.join(',')}`
+                    : ''}
+                </Tag>
+              ) : null}
             </Space.Compact>
           ))}
         </Space>
