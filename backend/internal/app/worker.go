@@ -198,7 +198,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "argo.apps.sync", "github.actions.sync", "project.create_from_template":
+	case "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry":
 		return true
 	default:
 		return false
@@ -660,7 +660,13 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 			FROM operation_runs op
 			WHERE op.id=$1
 				AND ptr.id=NULLIF(op.input->>'project_template_run_id', '')::uuid`, opID, adapterErr.Error())
-		return err
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed project template provision retry: %w", err)
+		}
+		return nil
 	case "agent.execute":
 		_, err := tx.ExecContext(ctx, `
 			UPDATE agent_tool_calls
@@ -1139,6 +1145,9 @@ func (w *ControlWorker) markProjectTemplateProvisionRetryCompleted(ctx context.C
 		WHERE id=$1`, runID, stepsJSON, resultJSON); err != nil {
 		return err
 	}
+	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		return fmt.Errorf("syncing canonical assets for completed project template provision retry: %w", err)
+	}
 	return tx.Commit()
 }
 
@@ -1170,6 +1179,9 @@ func (w *ControlWorker) markProjectTemplateProvisionRetryFailed(ctx context.Cont
 			updated_at=now()
 		WHERE id=$1`, runID, stepsJSON, resultJSON, errorMessage); err != nil {
 		return err
+	}
+	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		return fmt.Errorf("syncing canonical assets for failed project template provision retry: %w", err)
 	}
 	return tx.Commit()
 }
@@ -2049,6 +2061,9 @@ func (w *ControlWorker) markProjectTemplateRunCompleted(ctx context.Context, opI
 			updated_at=now()
 		WHERE operation_run_id=$1`, opID, stepsJSON, resultJSON); err != nil {
 		return err
+	}
+	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		return fmt.Errorf("syncing canonical assets for completed project template creation: %w", err)
 	}
 	return tx.Commit()
 }

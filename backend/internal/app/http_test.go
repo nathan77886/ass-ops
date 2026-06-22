@@ -1449,6 +1449,9 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncing canonical assets for Argo app sync`,
 		`syncing canonical assets for failed Argo app sync`,
 		`syncing canonical assets for failed project template creation`,
+		`syncing canonical assets for completed project template creation`,
+		`syncing canonical assets for completed project template provision retry`,
+		`syncing canonical assets for failed project template provision retry`,
 	} {
 		if !strings.Contains(string(workerSource), token) {
 			t.Fatalf("worker.go missing canonical asset refresh hook %q", token)
