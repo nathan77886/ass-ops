@@ -302,6 +302,80 @@ function templateProvisionSummary(row: AnyRow) {
   return { color: 'default', label: 'pending', detail: '' };
 }
 
+function templateProvisionGuidance(row: AnyRow) {
+  const details = row.result?.details || {};
+  if (row.result?.repository_provisioned) {
+    return {
+      status: 'ready',
+      color: 'green',
+      title: 'Repository provisioned',
+      detail: 'Starter files were pushed and the repository metadata is linked to this template run.',
+      next: 'Continue with RepoSync or deployment wiring.'
+    };
+  }
+  if (row.status === 'provisioning' || row.status === 'running' || row.status === 'queued') {
+    return {
+      status: 'waiting',
+      color: 'blue',
+      title: 'Provisioning in progress',
+      detail: 'The worker is still reconciling repository provisioning for this template run.',
+      next: 'Wait for the run to finish before retrying.'
+    };
+  }
+  if (details.repository_exists && details.starter_push_skipped) {
+    return {
+      status: 'manual reconcile',
+      color: 'gold',
+      title: 'Existing repository needs reconciliation',
+      detail: 'Starter files were skipped because the external repository already exists.',
+      next: 'Review the repository contents, then set allow_existing_repository_push only when it is safe to write starter files.'
+    };
+  }
+  if (details.starter_push_skipped) {
+    return {
+      status: 'manual reconcile',
+      color: 'gold',
+      title: 'Protected branch guard is active',
+      detail: String(row.result?.repository_provision_reason || details.reason || 'Starter files were skipped by a template remote protection guard.'),
+      next: 'Configure a provider-specific branch strategy or set allow_protected_branch_push only after branch protection rules are reviewed.'
+    };
+  }
+  if (details.token_configured === false) {
+    return {
+      status: 'token',
+      color: 'red',
+      title: 'Provider token is not configured',
+      detail: 'The selected provider account token environment variable is missing at runtime.',
+      next: 'Rotate the provider account to a configured token env, run Check, then retry provisioning.'
+    };
+  }
+  if (details.provider_status || details.provider_error) {
+    return {
+      status: 'provider',
+      color: 'red',
+      title: details.provider_status ? `Provider returned HTTP ${details.provider_status}` : 'Provider API error',
+      detail: shortText(details.provider_error || row.result?.repository_provision_reason, 96),
+      next: 'Use the provider account Check action and provider diagnostics before retrying.'
+    };
+  }
+  if (row.result?.repository_provision_reason) {
+    return {
+      status: 'review',
+      color: 'gold',
+      title: 'Repository needs review',
+      detail: shortText(row.result.repository_provision_reason, 96),
+      next: 'Review the template remote metadata and retry after the missing condition is fixed.'
+    };
+  }
+  return {
+    status: 'pending',
+    color: 'default',
+    title: 'Provisioning not attempted',
+    detail: 'No repository provisioning result has been recorded for this run yet.',
+    next: 'Start or retry the template run when the provider account and template remotes are ready.'
+  };
+}
+
 function providerTokenRotationSummary(row: AnyRow) {
   const rotation = row.token_rotation_status || {};
   const status = String(rotation.status || 'unknown');
@@ -555,7 +629,8 @@ function Projects() {
         expandable={{
           expandedRowRender: (row) => <Tabs items={[
             { key: 'result', label: 'Result', children: <JSONBlock value={row.result} /> },
-            { key: 'steps', label: 'Steps', children: <JSONBlock value={row.steps} /> }
+            { key: 'steps', label: 'Steps', children: <JSONBlock value={row.steps} /> },
+            { key: 'reconcile', label: 'Reconcile', children: templateProvisionGuidanceView(row) }
           ]} />
         }}
         columns={[
@@ -564,6 +639,7 @@ function Projects() {
           { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : row.status === 'running' || row.status === 'provisioning' ? 'blue' : 'gold'}>{row.status}</Tag> },
           { title: 'Repository', render: (_, row) => row.result?.repository_id ? <Tag color="green">created</Tag> : <Tag>planned</Tag> },
           { title: 'Provision', render: (_, row) => templateProvisionStatus(row) },
+          { title: 'Reconcile', render: (_, row) => templateProvisionGuidanceView(row, true) },
           { title: 'RepoSync', render: (_, row) => row.result?.repo_sync_asset_id ? <Tag color="green">created</Tag> : <Tag>planned</Tag> },
           { title: 'Files', render: (_, row) => Array.isArray(row.result?.template_file_ids) ? <Tag color="green">{row.result.template_file_ids.length}</Tag> : <Tag>planned</Tag> },
           { title: 'Steps', render: (_, row) => Array.isArray(row.steps) ? `${row.steps.filter((step: AnyRow) => step.status === 'completed').length}/${row.steps.length}` : '-' },
@@ -586,6 +662,29 @@ function templateProvisionStatus(row: AnyRow) {
       <Tag color={summary.color}>{summary.label}</Tag>
       {summary.detail ? <Typography.Text type="secondary">{summary.detail}</Typography.Text> : null}
     </Space>
+  );
+}
+
+function templateProvisionGuidanceView(row: AnyRow, compact = false) {
+  const guidance = templateProvisionGuidance(row);
+  if (compact) {
+    return (
+      <Space direction="vertical" size={2}>
+        <Tag color={guidance.color}>{guidance.status}</Tag>
+        <Typography.Text type="secondary">{shortText(guidance.next, 96)}</Typography.Text>
+      </Space>
+    );
+  }
+  return (
+    <Alert
+      showIcon
+      type={guidance.color === 'red' ? 'error' : guidance.color === 'green' ? 'success' : guidance.color === 'gold' ? 'warning' : 'info'}
+      message={guidance.title}
+      description={<Space direction="vertical" size={4}>
+        <Typography.Text>{guidance.detail}</Typography.Text>
+        <Typography.Text strong>{guidance.next}</Typography.Text>
+      </Space>}
+    />
   );
 }
 
