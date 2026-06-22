@@ -470,7 +470,13 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 				last_sync_error='',
 				updated_at=now()
 			WHERE id=(SELECT (input->>'argo_connection_id')::uuid FROM operation_runs WHERE id=$1 LIMIT 1)`, opID)
-		return err
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+			return fmt.Errorf("syncing canonical assets for running Argo app sync: %w", err)
+		}
+		return nil
 	case "project.create_from_template":
 		_, err := db.ExecContext(ctx, "UPDATE project_template_runs SET status='running', started_at=COALESCE(started_at, now()), updated_at=now() WHERE operation_run_id=$1", opID)
 		return err

@@ -1455,6 +1455,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncing canonical assets for GitHub Actions sync`,
 		`syncing canonical assets for failed GitHub Actions sync`,
 		`syncing canonical assets for failed GitHub Actions sync without remote`,
+		`syncing canonical assets for running Argo app sync`,
 		`syncing canonical assets for Argo app sync`,
 		`syncing canonical assets for failed Argo app sync`,
 		`syncing canonical assets for failed project template creation`,
