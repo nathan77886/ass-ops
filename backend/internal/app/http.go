@@ -5318,6 +5318,35 @@ func assetInventorySQL() string {
 		) decision_counts ON true
 		UNION ALL
 		SELECT
+			'operation_approval_rule:' || oar.id::text,
+			'',
+			'operation_approval_rule',
+			COALESCE(NULLIF(oar.resource_type, ''), '*') || ':' || oar.action,
+			COALESCE(NULLIF(oar.resource_type, ''), '*') || ':' || oar.action,
+			'Approval policy rule',
+			'assops_policy',
+			oar.id::text,
+			CASE WHEN oar.enabled THEN 'active' ELSE 'disabled' END,
+			CASE WHEN oar.enabled THEN 'normal' ELSE 'warning' END,
+			'operation_approval_rules',
+			oar.id::text,
+			jsonb_build_object(
+				'resource_type', oar.resource_type,
+				'action', oar.action,
+				'required_approver_roles', oar.required_approver_roles,
+				'required_approval_count', oar.required_approval_count,
+				'expires_after_minutes', oar.expires_after_minutes,
+				'notification_channels', oar.notification_channels,
+				'escalation_after_minutes', oar.escalation_after_minutes,
+				'escalation_channels', oar.escalation_channels,
+				'priority', oar.priority,
+				'enabled', oar.enabled
+			),
+			oar.created_at,
+			oar.updated_at
+		FROM operation_approval_rules oar
+		UNION ALL
+		SELECT
 			'repo_sync:' || rsa.id::text,
 			rsa.project_id::text,
 			'repo_sync',
@@ -5636,6 +5665,17 @@ func assetRelationInventorySQL() string {
 			oa.created_at
 		FROM operation_approvals oa
 		JOIN operation_runs op ON op.id=oa.operation_run_id
+		UNION ALL
+		SELECT
+			'operation_approval_rule:' || oar.id::text || ':governs:operation_approval:' || oa.id::text,
+			COALESCE(oa.project_id::text, ''),
+			'operation_approval_rule:' || oar.id::text,
+			'operation_approval:' || oa.id::text,
+			'governs',
+			jsonb_build_object('action', oa.action, 'status', oa.status),
+			oa.created_at
+		FROM operation_approval_rules oar
+		JOIN operation_approvals oa ON oa.approval_rule_id=oar.id
 		UNION ALL
 		SELECT
 			'operation_approval:' || oa.id::text || ':targets:' || approval_resource.asset_id,
@@ -6834,6 +6874,9 @@ func (s *Server) createOperationApprovalRule(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "could not record approval rule audit")
 		return
 	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval_rule.create") {
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit approval rule")
 		return
@@ -6900,6 +6943,9 @@ func (s *Server) updateOperationApprovalRule(w http.ResponseWriter, r *http.Requ
 	}
 	if err := s.recordOperationApprovalRuleAudit(r.Context(), tx, item["id"], currentUser(r), "update", before, item); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not record approval rule audit")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval_rule.update") {
 		return
 	}
 	if err := tx.Commit(); err != nil {

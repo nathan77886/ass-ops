@@ -186,6 +186,10 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		"'required_approval_count', oa.required_approval_count",
 		"'approved_count', COALESCE(decision_counts.approved_count, 0)",
 		"WHEN oa.status IN ('rejected', 'expired') THEN 'high'",
+		"'operation_approval_rule'",
+		"FROM operation_approval_rules oar",
+		"'required_approval_count', oar.required_approval_count",
+		"CASE WHEN oar.enabled THEN 'active' ELSE 'disabled' END",
 		"'repo_sync'",
 		"'webhook_connection'",
 		"WHEN wc.last_delivery_status IN ('failed', 'rejected') THEN 'high'",
@@ -206,6 +210,9 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("assetInventorySQL missing %s", token)
 		}
+	}
+	if regexp.MustCompile(`\boar\.metadata\b`).MatchString(sql) {
+		t.Fatalf("operation approval rule metadata should not be exposed in assetInventorySQL")
 	}
 }
 
@@ -230,6 +237,10 @@ func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
 		"'project:' || p.id::text || ':owns:operation_run:' || op.id::text",
 		"'project:' || p.id::text || ':owns:operation_approval:' || oa.id::text",
 		"'operation_approval:' || oa.id::text || ':gates_operation:operation_run:' || op.id::text",
+		"'operation_approval_rule:' || oar.id::text || ':governs:operation_approval:' || oa.id::text",
+		"'operation_approval_rule:' || oar.id::text",
+		"'governs'",
+		"JOIN operation_approvals oa ON oa.approval_rule_id=oar.id",
 		"'operation_approval:' || oa.id::text || ':targets:' || approval_resource.asset_id",
 		"WHEN 'ssh_machine' THEN 'ssh_machine:' || oa.resource_id",
 		"'git_remote:' || gr.id::text || ':triggered:operation_run:' || op.id::text",
@@ -1800,6 +1811,8 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.approve_plan")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.execute")`,
 		`syncing canonical assets for operation approval create`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval_rule.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval_rule.update")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.progress")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.execute")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.reject")`,
