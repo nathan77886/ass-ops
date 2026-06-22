@@ -8,6 +8,11 @@ type providerReviewAttemptAdapterRuntime interface {
 	PrepareInvocation(context.Context, providerReviewAttemptAdapterRuntimeInput) providerReviewAttemptAdapterRuntimeResult
 }
 
+type providerReviewAttemptRequestBuilder interface {
+	BuilderName() string
+	BuildPlan(providerReviewAttemptRequestBuilderInput) map[string]any
+}
+
 type providerReviewAttemptAdapterRuntimeInput struct {
 	ProviderType  string
 	OperationName string
@@ -22,8 +27,18 @@ type providerReviewAttemptAdapterRuntimeResult struct {
 	OperationSupported bool
 }
 
+type providerReviewAttemptRequestBuilderInput struct {
+	ProviderType  string
+	OperationName string
+	EndpointKey   string
+}
+
 type disabledProviderReviewAdapterRuntime struct {
 	adapterKind string
+}
+
+type disabledProviderReviewAttemptRequestBuilder struct {
+	builderName string
 }
 
 func (a disabledProviderReviewAdapterRuntime) AdapterKind() string {
@@ -51,12 +66,87 @@ func (a disabledProviderReviewAdapterRuntime) PrepareInvocation(_ context.Contex
 	}
 }
 
+func (b disabledProviderReviewAttemptRequestBuilder) BuilderName() string {
+	return b.builderName
+}
+
+func (b disabledProviderReviewAttemptRequestBuilder) BuildPlan(input providerReviewAttemptRequestBuilderInput) map[string]any {
+	providerType := safeProviderReviewProviderType(input.ProviderType)
+	operationName := safeProviderReviewAttemptOperationName(input.OperationName)
+	endpointKey := safeProviderReviewEndpointKey(input.EndpointKey)
+	endpointTemplateKey := providerReviewEndpointPathTemplateKeyForOperation(providerType, operationName)
+	if providerType == "" || operationName == "" || endpointKey == "" || endpointTemplateKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"mode":                                 "redacted_attempt_adapter_request_builder_plan",
+		"request_builder_state":                "blocked",
+		"request_builder_ready":                false,
+		"request_builder_ready_reason":         "provider_review_request_builder_not_armed",
+		"provider_type":                        providerType,
+		"operation_name":                       operationName,
+		"endpoint_key":                         endpointKey,
+		"builder_name":                         b.BuilderName(),
+		"method":                               providerReviewMethodForOperation(operationName),
+		"endpoint_path_template_key":           endpointTemplateKey,
+		"payload_shape":                        providerReviewPayloadShapeForOperation(operationName),
+		"requires_provider_repository_context": true,
+		"requires_redacted_payload_summary":    true,
+		"requires_starter_file_manifest":       operationName == "commit_starter_files",
+		"builder_interface_registered":         true,
+		"builder_registered":                   true,
+		"builder_implemented":                  false,
+		"provider_repository_context_resolved": false,
+		"request_path_materialized":            false,
+		"request_url_materialized":             false,
+		"request_body_materialized":            false,
+		"payload_materialized":                 false,
+		"headers_materialized":                 false,
+		"starter_file_manifest_materialized":   false,
+		"authorization_header_materialized":    false,
+		"request_builder_boundary_redacted":    true,
+		"external_call_made":                   false,
+		"provider_api_call_made":               false,
+		"provider_api_mutation":                "disabled",
+		"request_body_included":                false,
+		"headers_included":                     false,
+		"provider_url_included":                false,
+		"repository_ref_included":              false,
+		"branch_name_included":                 false,
+		"file_content_included":                false,
+		"idempotency_key_included":             false,
+		"contains_token":                       false,
+		"contains_provider_url":                false,
+		"contains_repository_ref":              false,
+		"contains_branch_name":                 false,
+		"contains_file_content":                false,
+		"blocked_reasons": []string{
+			"provider_review_request_builder_not_armed",
+			"provider_review_live_adapter_not_implemented",
+			"provider_review_mutation_not_armed",
+		},
+	}
+}
+
 func providerReviewAttemptAdapterRuntimeForProvider(providerType string) providerReviewAttemptAdapterRuntime {
 	switch safeProviderReviewProviderType(providerType) {
 	case "github":
 		return disabledProviderReviewAdapterRuntime{adapterKind: "github_provider_review_adapter"}
 	case "gitea":
 		return disabledProviderReviewAdapterRuntime{adapterKind: "gitea_provider_review_adapter"}
+	default:
+		return nil
+	}
+}
+
+func providerReviewAttemptRequestBuilderForOperation(operationName string) providerReviewAttemptRequestBuilder {
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref":
+		return disabledProviderReviewAttemptRequestBuilder{builderName: "build_redacted_branch_ref_request"}
+	case "commit_starter_files":
+		return disabledProviderReviewAttemptRequestBuilder{builderName: "build_redacted_commit_files_request"}
+	case "open_review_request":
+		return disabledProviderReviewAttemptRequestBuilder{builderName: "build_redacted_review_request"}
 	default:
 		return nil
 	}
@@ -78,6 +168,7 @@ func providerReviewAttemptAdapterRuntimePlan(providerType, operationName, endpoi
 	if !result.OperationSupported {
 		return map[string]any{}
 	}
+	builderPlan := providerReviewAttemptAdapterRequestBuilderPlan(providerType, operationName, endpointKey)
 	return map[string]any{
 		"mode":                          "redacted_attempt_adapter_runtime_plan",
 		"runtime_state":                 "blocked",
@@ -95,6 +186,7 @@ func providerReviewAttemptAdapterRuntimePlan(providerType, operationName, endpoi
 		"provider_client_constructed":   false,
 		"execute_method_bound":          false,
 		"request_builder_bound":         false,
+		"request_builder_plan":          builderPlan,
 		"response_handler_bound":        false,
 		"transaction_handler_bound":     false,
 		"requires_provider_client":      true,
@@ -124,4 +216,19 @@ func providerReviewAttemptAdapterRuntimePlan(providerType, operationName, endpoi
 			"provider_review_mutation_not_armed",
 		},
 	}
+}
+
+func providerReviewAttemptAdapterRequestBuilderPlan(providerType, operationName, endpointKey string) map[string]any {
+	providerType = safeProviderReviewProviderType(providerType)
+	operationName = safeProviderReviewAttemptOperationName(operationName)
+	endpointKey = safeProviderReviewEndpointKey(endpointKey)
+	builder := providerReviewAttemptRequestBuilderForOperation(operationName)
+	if builder == nil || providerType == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+		return map[string]any{}
+	}
+	return builder.BuildPlan(providerReviewAttemptRequestBuilderInput{
+		ProviderType:  providerType,
+		OperationName: operationName,
+		EndpointKey:   endpointKey,
+	})
 }

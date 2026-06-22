@@ -1109,6 +1109,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptCredentialPlanMode = typeof attemptCredentialPlan.mode === 'string' ? attemptCredentialPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter credential binding plan';
   const attemptRuntimePlan = attemptDispatchPlan.adapter_runtime_plan || {};
   const attemptRuntimePlanMode = typeof attemptRuntimePlan.mode === 'string' ? attemptRuntimePlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter runtime plan';
+  const attemptRuntimeRequestBuilderPlan = attemptRuntimePlan.request_builder_plan || {};
   const attemptTransactionPlan = attemptDispatchPlan.transaction_plan || {};
   const attemptTransactionPlanMode = typeof attemptTransactionPlan.mode === 'string' ? attemptTransactionPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter transaction plan';
   const attemptInvocationPlan = attemptDispatchPlan.invocation_plan || {};
@@ -1485,6 +1486,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
             runtime {String(attemptRuntimePlan.runtime_state ?? 'blocked')}
           </Tag>
           <Tag>{String(attemptRuntimePlan.adapter_kind ?? 'redacted adapter')}</Tag>
+          <Tag>{String(attemptRuntimeRequestBuilderPlan.builder_name ?? 'redacted builder')}</Tag>
           <Tag>{attemptRuntimePlan.adapter_interface_registered === true ? 'interface registered' : 'interface missing'}</Tag>
           <Tag>{attemptRuntimePlan.live_adapter_implemented === true ? 'live adapter ready' : 'live adapter blocked'}</Tag>
           <Tag>{attemptRuntimePlan.provider_api_call_made === true ? 'api called' : 'no api call'}</Tag>
