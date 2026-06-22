@@ -648,6 +648,10 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 }
 
 func templateProviderReviewExecutionGuardrail(provider, reviewKind, sourceBranch, targetBranch string, enableRequested bool) map[string]any {
+	return templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, sourceBranch, targetBranch, enableRequested, false)
+}
+
+func templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, sourceBranch, targetBranch string, enableRequested, starterFilePayloadStaged bool) map[string]any {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
 	sourceBranch = strings.TrimSpace(sourceBranch)
@@ -685,8 +689,8 @@ func templateProviderReviewExecutionGuardrail(provider, reviewKind, sourceBranch
 		},
 		{
 			"gate":              "starter_file_payload_staged",
-			"status":            "blocked",
-			"message":           "Approved provider review execution does not yet stage starter-file content for external provider mutation.",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[starterFilePayloadStaged],
+			"message":           "Starter-file payload must be staged as a content-redacted audit summary before external provider mutation.",
 			"sensitive_payload": false,
 		},
 	}

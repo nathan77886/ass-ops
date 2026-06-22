@@ -897,12 +897,14 @@ func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, p
 	if executionRequest["status"] != "approval_ready" {
 		return nil, fmt.Errorf("provider review execution request is not approval ready")
 	}
-	executionGuardrail := templateProviderReviewExecutionGuardrail(
+	starterFilePayload := projectTemplateStarterFilePayloadSummary(run)
+	executionGuardrail := templateProviderReviewExecutionGuardrailWithStaging(
 		stringFromMap(executionRequest, "provider_type"),
 		stringFromMap(executionRequest, "review_kind"),
 		stringFromMap(executionRequest, "source_branch"),
 		stringFromMap(executionRequest, "target_branch"),
 		providerReviewExecutionEnabled,
+		starterFilePayloadReady(starterFilePayload),
 	)
 	projectTemplateRunID := cleanOptionalID(fmt.Sprint(run["id"]))
 	if projectTemplateRunID == "" {
@@ -927,10 +929,78 @@ func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, p
 		"project_id":              cleanOptionalID(fmt.Sprint(run["project_id"])),
 		"execution_request":       request,
 		"execution_guardrail":     executionGuardrail,
+		"starter_file_payload":    starterFilePayload,
 		"provider_api_call_made":  false,
 		"provider_api_mutation":   "disabled",
 		"message":                 "Provider review execution is approval-gated; provider API mutation remains disabled in the first version.",
 	}, nil
+}
+
+func projectTemplateStarterFilePayloadSummary(run map[string]any) map[string]any {
+	result := mapFromAny(run["result"])
+	return starterFilePayloadSummaryFromFiles(mapSliceFromAny(result["template_files"]))
+}
+
+func starterFilePayloadSummaryFromFiles(files []map[string]any) map[string]any {
+	if len(files) == 0 {
+		return map[string]any{
+			"status":           "blocked",
+			"file_count":       0,
+			"files":            []map[string]any{},
+			"payload_redacted": true,
+			"content_included": false,
+			"blocked_reason":   "template run result does not include starter file summaries",
+		}
+	}
+	summaries := make([]map[string]any, 0, len(files))
+	for _, file := range files {
+		path := safeTemplateFilePath(stringFromMap(file, "path"))
+		if path == "" {
+			continue
+		}
+		summaries = append(summaries, map[string]any{
+			"id":     cleanOptionalID(fmt.Sprint(file["id"])),
+			"path":   path,
+			"kind":   cleanOptionalText(firstNonEmptyString(stringFromMap(file, "kind"), "text")),
+			"status": cleanOptionalText(firstNonEmptyString(stringFromMap(file, "status"), "planned")),
+		})
+	}
+	if len(summaries) == 0 {
+		return map[string]any{
+			"status":           "blocked",
+			"file_count":       0,
+			"files":            []map[string]any{},
+			"payload_redacted": true,
+			"content_included": false,
+			"blocked_reason":   "template run result does not include safe starter file paths",
+		}
+	}
+	return map[string]any{
+		"status":           "ready",
+		"file_count":       len(summaries),
+		"files":            summaries,
+		"payload_redacted": true,
+		"content_included": false,
+	}
+}
+
+func sanitizedStarterFilePayloadSummary(payload map[string]any) map[string]any {
+	return starterFilePayloadSummaryFromFiles(mapSliceFromAny(payload["files"]))
+}
+
+func starterFilePayloadReady(payload map[string]any) bool {
+	return payload["status"] == "ready" && intFromAny(payload["file_count"], 0) > 0 && payload["content_included"] == false
+}
+
+func providerReviewStarterFilePayloadForExecution(ctx context.Context, tx *sqlx.Tx, payload map[string]any) map[string]any {
+	runID := cleanOptionalID(stringFromMap(payload, "project_template_run_id"))
+	if tx != nil && runID != "" {
+		run, err := queryOne(ctx, tx, "SELECT result FROM project_template_runs WHERE id=$1", runID)
+		if err == nil {
+			return projectTemplateStarterFilePayloadSummary(run)
+		}
+	}
+	return sanitizedStarterFilePayloadSummary(mapFromAny(payload["starter_file_payload"]))
 }
 
 func canRetryTemplateProvision(run map[string]any) bool {
@@ -9588,17 +9658,20 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "project_template_provider_review_execute":
 		request := mapFromAny(payload["execution_request"])
-		guardrail := templateProviderReviewExecutionGuardrail(
+		starterFilePayload := providerReviewStarterFilePayloadForExecution(ctx, tx, payload)
+		guardrail := templateProviderReviewExecutionGuardrailWithStaging(
 			stringFromMap(request, "provider_type"),
 			stringFromMap(request, "review_kind"),
 			stringFromMap(request, "source_branch"),
 			stringFromMap(request, "target_branch"),
 			s.cfg.ProviderReviewExecutionEnabled,
+			starterFilePayloadReady(starterFilePayload),
 		)
 		return map[string]any{
 			"project_template_run_id": stringFromMap(payload, "project_template_run_id"),
 			"execution_request":       request,
 			"execution_guardrail":     guardrail,
+			"starter_file_payload":    starterFilePayload,
 			"provider_api_call_made":  false,
 			"provider_api_mutation":   "disabled",
 			"execution_enabled":       false,

@@ -1420,6 +1420,9 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 		"id":         "11111111-1111-1111-1111-111111111111",
 		"project_id": "22222222-2222-2222-2222-222222222222",
 		"result": map[string]any{
+			"template_files": []map[string]any{
+				{"id": "33333333-3333-3333-3333-333333333333", "path": "README.md", "kind": "text", "status": "planned", "content": "do-not-include"},
+			},
 			"details": map[string]any{
 				"repository_reconciliation": map[string]any{
 					"provider_review_readiness": map[string]any{
@@ -1449,6 +1452,17 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 	if !containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_execution_enabled") {
 		t.Fatalf("payload guardrail blocked reasons = %#v", guardrail)
 	}
+	if containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "starter_file_payload_staged") {
+		t.Fatalf("starter file staging should be ready in approval payload: %#v", guardrail)
+	}
+	starterPayload := mapFromAny(payload["starter_file_payload"])
+	if starterPayload["status"] != "ready" || starterPayload["file_count"] != 1 || starterPayload["content_included"] != false {
+		t.Fatalf("starter file payload = %#v", starterPayload)
+	}
+	starterFiles := sliceOfMapsFromAny(starterPayload["files"])
+	if len(starterFiles) != 1 || starterFiles[0]["path"] != "README.md" {
+		t.Fatalf("starter file summaries = %#v", starterFiles)
+	}
 	request := mapFromAny(payload["execution_request"])
 	if request["status"] != "approval_ready" ||
 		request["approval_action"] != templateProviderReviewExecuteApprovalAction ||
@@ -1457,7 +1471,7 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 		t.Fatalf("execution request = %#v", request)
 	}
 	encoded, _ := json.Marshal(payload)
-	for _, leak := range []string{"ASSOPS_TEMPLATE_PROVIDER_TOKEN", "secret-token", "api_base_url"} {
+	for _, leak := range []string{"ASSOPS_TEMPLATE_PROVIDER_TOKEN", "secret-token", "api_base_url", "do-not-include"} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("provider review approval payload leaked %q: %s", leak, encoded)
 		}
@@ -1493,6 +1507,9 @@ func TestProjectTemplateProviderReviewApprovalPayloadUsesRuntimeGuardrailConfig(
 		"id":         "11111111-1111-1111-1111-111111111111",
 		"project_id": "22222222-2222-2222-2222-222222222222",
 		"result": map[string]any{
+			"template_files": []map[string]any{
+				{"id": "33333333-3333-3333-3333-333333333333", "path": "README.md", "kind": "text", "status": "planned"},
+			},
 			"details": map[string]any{
 				"repository_reconciliation": map[string]any{
 					"provider_review_readiness": map[string]any{"execution_plan": plan},
@@ -1512,6 +1529,28 @@ func TestProjectTemplateProviderReviewApprovalPayloadUsesRuntimeGuardrailConfig(
 	}
 }
 
+func TestProjectTemplateStarterFilePayloadSummaryBlocked(t *testing.T) {
+	missing := projectTemplateStarterFilePayloadSummary(map[string]any{"result": map[string]any{}})
+	if missing["status"] != "blocked" || starterFilePayloadReady(missing) {
+		t.Fatalf("missing files should block starter payload: %#v", missing)
+	}
+	unsafe := projectTemplateStarterFilePayloadSummary(map[string]any{
+		"result": map[string]any{
+			"template_files": []map[string]any{
+				{"path": "../secret.txt", "kind": "text", "content": "do-not-include"},
+				{"path": "", "kind": "text", "content": "do-not-include"},
+			},
+		},
+	})
+	if unsafe["status"] != "blocked" || starterFilePayloadReady(unsafe) {
+		t.Fatalf("unsafe files should block starter payload: %#v", unsafe)
+	}
+	encoded, _ := json.Marshal(unsafe)
+	if strings.Contains(string(encoded), "do-not-include") {
+		t.Fatalf("blocked starter payload leaked content: %s", encoded)
+	}
+}
+
 func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 	server := &Server{cfg: Config{ProviderReviewExecutionEnabled: true}}
 	result, operationID, err := server.executeApprovedOperation(context.Background(), nil, map[string]any{
@@ -1526,6 +1565,15 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 				"source_branch":         "assops/template/demo-main",
 				"target_branch":         "main",
 				"provider_api_mutation": "disabled",
+			},
+			"starter_file_payload": map[string]any{
+				"status":           "ready",
+				"file_count":       1,
+				"content_included": false,
+				"payload_redacted": true,
+				"files": []map[string]any{
+					{"id": "33333333-3333-3333-3333-333333333333", "path": "README.md", "kind": "text", "status": "planned", "content": "forged-content"},
+				},
 			},
 		},
 	})
@@ -1548,8 +1596,16 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 		t.Fatalf("provider review execution guardrail should stay blocked: %#v", guardrail)
 	}
 	if !containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_api_adapter") ||
-		!containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "starter_file_payload_staged") {
+		containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "starter_file_payload_staged") {
 		t.Fatalf("provider review execution blocked reasons = %#v", guardrail)
+	}
+	starterPayload := mapFromAny(result["starter_file_payload"])
+	if starterPayload["status"] != "ready" || starterPayload["content_included"] != false {
+		t.Fatalf("provider review execution starter file payload = %#v", starterPayload)
+	}
+	encoded, _ := json.Marshal(result)
+	if strings.Contains(string(encoded), "forged-content") {
+		t.Fatalf("provider review execution result leaked forged content: %s", encoded)
 	}
 }
 
