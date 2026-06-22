@@ -70,6 +70,23 @@ function safeProviderAuthSchemeLabel(value: unknown) {
   }
 }
 
+function safeProviderEndpointTemplateLabel(value: unknown) {
+  switch (value) {
+    case 'github_git_refs_path_template':
+    case 'gitea_git_refs_path_template':
+      return 'git refs template';
+    case 'github_repository_contents_path_template':
+    case 'gitea_repository_contents_path_template':
+      return 'repository contents template';
+    case 'github_pull_request_path_template':
+      return 'pull request template';
+    case 'gitea_merge_request_path_template':
+      return 'merge request template';
+    default:
+      return 'redacted endpoint template';
+  }
+}
+
 function Login({ onLogin }: { onLogin: () => void }) {
   const [loading, setLoading] = useState(false);
   return (
@@ -1082,6 +1099,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptClaimPlanMode = typeof attemptClaimPlan.mode === 'string' ? attemptClaimPlan.mode.replaceAll('_', ' ') : 'redacted attempt execution claim plan';
   const attemptDispatchPlan = attemptExecutionCandidate.dispatch_plan || {};
   const attemptDispatchPlanMode = typeof attemptDispatchPlan.mode === 'string' ? attemptDispatchPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter dispatch plan';
+  const attemptRequestPlan = attemptDispatchPlan.request_materialization_plan || {};
+  const attemptRequestPlanMode = typeof attemptRequestPlan.mode === 'string' ? attemptRequestPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter request materialization plan';
   const attemptTransportPlan = attemptDispatchPlan.transport_plan || {};
   const attemptTransportPlanMode = typeof attemptTransportPlan.mode === 'string' ? attemptTransportPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter transport plan';
   const attemptResponsePlan = attemptDispatchPlan.response_plan || {};
@@ -1399,6 +1418,19 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>{String(attemptDispatchPlan.method || 'redacted method')}</Tag>
           <Tag>{String(attemptDispatchPlan.payload_shape || 'redacted payload')}</Tag>
           <Tag>{String(attemptDispatchPlan.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {attemptRequestPlan.mode ? (
+        <Space size={4} wrap>
+          <Tag>{attemptRequestPlanMode}</Tag>
+          <Tag color={attemptRequestPlan.request_materialization_state === 'blocked' ? 'red' : 'gold'}>
+            request {String(attemptRequestPlan.request_materialization_state || 'blocked')}
+          </Tag>
+          <Tag>{String(attemptRequestPlan.method || 'redacted method')}</Tag>
+          <Tag>{safeProviderEndpointTemplateLabel(attemptRequestPlan.endpoint_path_template_key)}</Tag>
+          <Tag>{String(attemptRequestPlan.payload_shape || 'redacted payload')}</Tag>
+          <Tag>{attemptRequestPlan.request_url_materialized === true ? 'url materialized' : 'url redacted'}</Tag>
+          <Tag>{attemptRequestPlan.request_body_materialized === true ? 'body materialized' : 'body redacted'}</Tag>
         </Space>
       ) : null}
       {attemptTransportPlan.mode ? (

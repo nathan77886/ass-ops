@@ -11146,6 +11146,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 		"payload_shape":                providerReviewPayloadShapeForOperation(operationName),
 		"payload_builder":              safeProviderReviewPayloadBuilderName(stringFromMap(requestSummary, "payload_builder")),
 		"response_handler":             safeProviderReviewResponseHandlerName(stringFromMap(requestSummary, "response_handler")),
+		"request_materialization_plan": providerReviewAttemptAdapterRequestMaterializationPlan(operation, requestSummary, providerType),
 		"transport_plan":               providerReviewAttemptAdapterTransportPlan(providerType, operationName),
 		"response_plan":                providerReviewAttemptAdapterResponsePlan(operation, requestSummary, responseDiagnostics),
 		"credential_binding_plan":      providerReviewAttemptAdapterCredentialBindingPlan(providerType, operationName),
@@ -11175,6 +11176,67 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 		"blocked_reasons":              blockedReasons,
 		"dispatch_boundary_redacted":   true,
 		"provider_request_id_included": false,
+	}
+}
+
+func providerReviewAttemptAdapterRequestMaterializationPlan(operation, requestSummary map[string]any, providerType string) map[string]any {
+	if len(operation) == 0 {
+		return map[string]any{}
+	}
+	providerType = safeProviderReviewProviderType(providerType)
+	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+	endpointTemplateKey := providerReviewEndpointPathTemplateKeyForOperation(providerType, operationName)
+	if providerType == "" || operationName == "" || endpointKey == "" || endpointTemplateKey == "" {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"mode":                                      "redacted_attempt_adapter_request_materialization_plan",
+		"request_materialization_state":             "blocked",
+		"request_materialization_ready":             false,
+		"request_materialization_ready_reason":      "provider_request_materialization_not_armed",
+		"provider_type":                             providerType,
+		"operation_name":                            operationName,
+		"endpoint_key":                              endpointKey,
+		"operation_order":                           intFromAny(operation["operation_order"], 0),
+		"method":                                    providerReviewMethodForOperation(operationName),
+		"endpoint_path_template_key":                endpointTemplateKey,
+		"payload_shape":                             providerReviewPayloadShapeForOperation(operationName),
+		"payload_builder":                           safeProviderReviewPayloadBuilderName(stringFromMap(requestSummary, "payload_builder")),
+		"requires_request_builder":                  true,
+		"requires_provider_repository_context":      true,
+		"requires_redacted_payload_summary":         true,
+		"requires_starter_file_manifest":            operationName == "commit_starter_files",
+		"requires_mutation_arming":                  true,
+		"request_builder_implemented":               false,
+		"provider_repository_context_resolved":      false,
+		"request_path_materialized":                 false,
+		"request_url_materialized":                  false,
+		"request_body_materialized":                 false,
+		"payload_materialized":                      false,
+		"headers_materialized":                      false,
+		"starter_file_manifest_materialized":        false,
+		"authorization_header_materialized":         false,
+		"external_call_made":                        false,
+		"provider_api_call_made":                    false,
+		"provider_api_mutation":                     "disabled",
+		"request_body_included":                     false,
+		"headers_included":                          false,
+		"provider_url_included":                     false,
+		"repository_ref_included":                   false,
+		"branch_name_included":                      false,
+		"file_content_included":                     false,
+		"contains_token":                            false,
+		"contains_provider_url":                     false,
+		"contains_repository_ref":                   false,
+		"contains_branch_name":                      false,
+		"contains_file_content":                     false,
+		"request_materialization_boundary_redacted": true,
+		"blocked_reasons": []string{
+			"provider_request_not_materialized",
+			"provider_review_adapter_not_implemented",
+			"provider_review_mutation_not_armed",
+		},
 	}
 }
 
@@ -11457,6 +11519,34 @@ func providerReviewEndpointOperationForAttempt(operationName string) string {
 	default:
 		return ""
 	}
+}
+
+func providerReviewEndpointPathTemplateKeyForOperation(providerType, operationName string) string {
+	providerType = safeProviderReviewProviderType(providerType)
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref":
+		switch providerType {
+		case "github":
+			return "github_git_refs_path_template"
+		case "gitea":
+			return "gitea_git_refs_path_template"
+		}
+	case "commit_starter_files":
+		switch providerType {
+		case "github":
+			return "github_repository_contents_path_template"
+		case "gitea":
+			return "gitea_repository_contents_path_template"
+		}
+	case "open_review_request":
+		switch providerType {
+		case "github":
+			return "github_pull_request_path_template"
+		case "gitea":
+			return "gitea_merge_request_path_template"
+		}
+	}
+	return ""
 }
 
 func providerReviewAuthSchemeForProvider(provider string) string {
