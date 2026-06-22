@@ -115,10 +115,28 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		"'rollback_point'",
 		"'argo_app'",
 		"'ai_runtime'",
+		"'agent_task'",
+		"FROM agent_tasks at",
+		"'latest_plan_status', latest_plan.status",
 		"'node_agent'",
 	} {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("assetInventorySQL missing %s", token)
+		}
+	}
+}
+
+func TestAssetRelationInventorySQLIncludesAgentTaskEdges(t *testing.T) {
+	sql := assetRelationInventorySQL()
+	for _, token := range []string{
+		"'project:' || p.id::text || ':owns:agent_task:' || at.id::text",
+		"'agent_task:' || at.id::text || ':uses_runtime:ai_runtime:' || runtime.id::text",
+		"'uses_runtime'",
+		"WHERE ar.project_id=at.project_id OR ar.project_id IS NULL",
+		"CASE WHEN ar.status='verified' THEN 0 ELSE 1 END",
+	} {
+		if !strings.Contains(sql, token) {
+			t.Fatalf("assetRelationInventorySQL missing %s", token)
 		}
 	}
 }
@@ -1420,6 +1438,10 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "webhook_event.gitea_push")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "ai_runtime.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "ai_runtime.verify")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.generate_plan")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.approve_plan")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.execute")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "worker_node.register")`,
 		`SyncWorkerNodeCanonicalAssetWith(r.Context(), tx, node["id"])`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "argo_connection.create")`,

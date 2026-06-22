@@ -5276,6 +5276,36 @@ func assetInventorySQL() string {
 		FROM ai_runtimes ar
 		UNION ALL
 		SELECT
+			'agent_task:' || at.id::text,
+			at.project_id::text,
+			'agent_task',
+			at.title,
+			at.title,
+			'AI agent task',
+			'assops_agent',
+			at.id::text,
+			at.status,
+			'normal',
+			'agent_tasks',
+			at.id::text,
+			jsonb_build_object(
+				'created_by', at.created_by,
+				'latest_plan_id', latest_plan.id,
+				'latest_plan_status', latest_plan.status,
+				'latest_plan_approved_at', latest_plan.approved_at
+			),
+			at.created_at,
+			at.updated_at
+		FROM agent_tasks at
+		LEFT JOIN LATERAL (
+			SELECT id, status, approved_at
+			FROM agent_plans ap
+			WHERE ap.agent_task_id=at.id
+			ORDER BY created_at DESC
+			LIMIT 1
+		) latest_plan ON true
+		UNION ALL
+		SELECT
 			'worker_node:' || wn.id::text,
 			'',
 			'node_agent',
@@ -5509,6 +5539,37 @@ func assetRelationInventorySQL() string {
 			ar.created_at
 		FROM projects p
 		JOIN ai_runtimes ar ON ar.project_id=p.id
+		UNION ALL
+		SELECT
+			'project:' || p.id::text || ':owns:agent_task:' || at.id::text,
+			p.id::text,
+			'project:' || p.id::text,
+			'agent_task:' || at.id::text,
+			'owns',
+			jsonb_build_object('status', at.status),
+			at.created_at
+		FROM projects p
+		JOIN agent_tasks at ON at.project_id=p.id
+		UNION ALL
+		SELECT
+			'agent_task:' || at.id::text || ':uses_runtime:ai_runtime:' || runtime.id::text,
+			at.project_id::text,
+			'agent_task:' || at.id::text,
+			'ai_runtime:' || runtime.id::text,
+			'uses_runtime',
+			jsonb_build_object('runtime_type', runtime.runtime_type),
+			at.updated_at
+		FROM agent_tasks at
+		JOIN LATERAL (
+			SELECT ar.id, ar.runtime_type
+			FROM ai_runtimes ar
+			WHERE ar.project_id=at.project_id OR ar.project_id IS NULL
+			ORDER BY
+				CASE WHEN ar.project_id=at.project_id THEN 0 ELSE 1 END,
+				CASE WHEN ar.status='verified' THEN 0 ELSE 1 END,
+				ar.updated_at DESC
+			LIMIT 1
+		) runtime ON true
 		UNION ALL
 		SELECT
 			ar.id::text,
@@ -8306,11 +8367,28 @@ func (s *Server) createAgentTask(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start agent task transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		INSERT INTO agent_tasks(project_id, title, prompt, created_by)
 		VALUES ($1, $2, $3, $4)
 		RETURNING *`, projectID, req.Title, req.Prompt, currentUser(r).ID)
-	writeCreatedOne(w, item, err)
+	if err != nil {
+		writeCreatedOne(w, item, err)
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.create") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit agent task")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func (s *Server) listAgentTasks(w http.ResponseWriter, r *http.Request) {
@@ -8396,11 +8474,28 @@ func (s *Server) generatePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	content := agentPlanContent(task, snapshot)
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start agent plan transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		INSERT INTO agent_plans(agent_task_id, content)
 		VALUES ($1, $2)
 		RETURNING *`, taskID, content)
-	writeCreatedOne(w, item, err)
+	if err != nil {
+		writeCreatedOne(w, item, err)
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.generate_plan") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit agent plan")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func agentPlanContent(task, snapshot map[string]any) string {
@@ -8497,11 +8592,28 @@ func (s *Server) approvePlan(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "agent_task", ID: taskID, ProjectID: projectID}, "agent.approve_plan") {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start agent plan approval transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE agent_plans SET status='approved', approved_at=now()
 		WHERE agent_task_id=$1 AND id=(SELECT id FROM agent_plans WHERE agent_task_id=$1 ORDER BY created_at DESC LIMIT 1)
 		RETURNING *`, taskID)
-	writeQueryOne(w, item, err)
+	if err != nil {
+		writeQueryOne(w, item, err)
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.approve_plan") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit agent plan approval")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) executePlan(w http.ResponseWriter, r *http.Request) {
@@ -8525,10 +8637,18 @@ func (s *Server) executePlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	if err == nil {
-		err = tx.Commit()
+	if err != nil {
+		writeCreatedOne(w, op, err)
+		return
 	}
-	writeCreatedOne(w, op, err)
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.execute") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit agent execution")
+		return
+	}
+	writeJSON(w, http.StatusCreated, op)
 }
 
 func (s *Server) enqueueAgentTaskExecutionTx(ctx context.Context, tx *sqlx.Tx, taskID string) (map[string]any, error) {
