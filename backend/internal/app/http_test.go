@@ -1763,10 +1763,23 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 				},
 			},
 			"provider_review_reconciliation": map[string]any{
-				"status":                "ready",
-				"mode":                  "preflight_reconciliation",
-				"provider_type":         "github",
-				"review_kind":           "pull_request",
+				"status":        "ready",
+				"mode":          "preflight_reconciliation",
+				"provider_type": "github",
+				"review_kind":   "pull_request",
+				"adapter_contract": map[string]any{
+					"status":                "ready",
+					"adapter_status":        "ready",
+					"contract_version":      "provider-review-v1",
+					"provider_api_mutation": "enabled",
+					"external_call_made":    true,
+					"contains_token":        true,
+					"contains_file_content": true,
+					"api_base_url":          "https://api.github.example.test",
+					"operations": []map[string]any{
+						{"name": "open_review_request", "endpoint_key": "github.open_review", "required_capability": "review_request_write", "required_scope": "pull_requests:write", "payload_shape": "pull_request", "adapter_status": "ready", "execution_status": "ready", "external_call_made": true, "provider_api_mutation": "enabled", "url": "https://api.github.example.test/repos/acme/secret-repo/pulls", "token": "secret-token", "content": "do-not-include"},
+					},
+				},
 				"adapter_status":        "ready",
 				"external_call_made":    true,
 				"provider_api_mutation": "enabled",
@@ -1805,6 +1818,21 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 	reconciliation := mapFromAny(audit["provider_review_reconciliation"])
 	if reconciliation["external_call_made"] != false || reconciliation["provider_api_mutation"] != "disabled" {
 		t.Fatalf("provider review reconciliation audit should force disabled/no-call: %#v", reconciliation)
+	}
+	adapterContract := mapFromAny(reconciliation["adapter_contract"])
+	if adapterContract["external_call_made"] != false ||
+		adapterContract["provider_api_mutation"] != "disabled" ||
+		adapterContract["contains_token"] != false ||
+		adapterContract["contains_file_content"] != false {
+		t.Fatalf("adapter contract audit should force disabled/no-call/redacted flags: %#v", adapterContract)
+	}
+	adapterOperations := sliceOfMapsFromAny(adapterContract["operations"])
+	if len(adapterOperations) != 1 ||
+		adapterOperations[0]["external_call_made"] != false ||
+		adapterOperations[0]["provider_api_mutation"] != "disabled" ||
+		adapterOperations[0]["contains_token"] != false ||
+		adapterOperations[0]["contains_file_content"] != false {
+		t.Fatalf("adapter contract operations should be sanitized: %#v", adapterOperations)
 	}
 	credential := mapFromAny(audit["credential_strategy"])
 	if credential["token_stored"] != false || credential["external_call_made"] != false || credential["token_env_present"] != true {

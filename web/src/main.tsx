@@ -1035,12 +1035,14 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
   const starter = value.starter_file_payload || {};
   const apiPlan = value.provider_api_request_plan || {};
   const reconciliation = value.provider_review_reconciliation || {};
+  const adapterContract = reconciliation.adapter_contract || {};
   const result = value.approval_result || {};
   const gates = Array.isArray(guardrail.gates) ? guardrail.gates : [];
   const files = Array.isArray(starter.files) ? starter.files : [];
   const operations = Array.isArray(apiPlan.operations) ? apiPlan.operations : [];
   const reconciliationGates = Array.isArray(reconciliation.gates) ? reconciliation.gates : [];
   const reconciliationOperations = Array.isArray(reconciliation.operations) ? reconciliation.operations : [];
+  const adapterOperations = Array.isArray(adapterContract.operations) ? adapterContract.operations : [];
   return (
     <Space direction="vertical" size={8} className="full">
       <Space size={4} wrap>
@@ -1107,6 +1109,23 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
           <Tag>adapter {String(reconciliation.adapter_status || 'unknown')}</Tag>
           <Tag color={reconciliation.external_call_made === true ? 'red' : 'default'}>{reconciliation.external_call_made === true ? 'external call made' : 'no external call'}</Tag>
           <Tag>{String(reconciliation.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {adapterContract.status ? (
+        <Space size={4} wrap>
+          <Tag>audit-only</Tag>
+          <Tag color={adapterContract.status === 'planned' ? 'blue' : 'gold'}>contract {String(adapterContract.status)}</Tag>
+          <Tag>version {String(adapterContract.contract_version || 'unknown')}</Tag>
+          <Tag>adapter {String(adapterContract.adapter_status || 'missing')}</Tag>
+        </Space>
+      ) : null}
+      {adapterOperations.length ? (
+        <Space size={4} wrap>
+          {adapterOperations.map((operation: AnyRow, index: number) => (
+            <Tag key={String(operation.endpoint_key || operation.name || `adapter-operation-${index}`)}>
+              {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.required_capability || operation.execution_status || 'blocked')}
+            </Tag>
+          ))}
         </Space>
       ) : null}
       {reconciliationGates.length ? (

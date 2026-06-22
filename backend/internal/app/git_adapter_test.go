@@ -478,6 +478,21 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	if len(reconcileOperations) != 3 || reconcileOperations[0]["endpoint_key"] != "github.create_branch_ref" {
 		t.Fatalf("github provider review reconciliation operations = %#v", reconcileOperations)
 	}
+	adapterContract := mapFromAny(reconciliation["adapter_contract"])
+	if adapterContract["status"] != "planned" ||
+		adapterContract["adapter_status"] != "missing" ||
+		adapterContract["contract_version"] != "provider-review-v1" ||
+		adapterContract["external_call_made"] != false ||
+		adapterContract["provider_api_mutation"] != "disabled" {
+		t.Fatalf("github provider review adapter contract = %#v", adapterContract)
+	}
+	adapterOperations := sliceOfMapsFromAny(adapterContract["operations"])
+	if len(adapterOperations) != 3 ||
+		adapterOperations[0]["required_capability"] != "branch_ref_write" ||
+		adapterOperations[1]["required_capability"] != "file_content_write" ||
+		adapterOperations[2]["required_capability"] != "review_request_write" {
+		t.Fatalf("github provider review adapter operations = %#v", adapterOperations)
+	}
 	gates := sliceOfMapsFromAny(githubGuardrail["gates"])
 	if len(gates) != 4 || gates[0]["gate"] != "provider_review_execution_enabled" || gates[2]["status"] != "ready" {
 		t.Fatalf("github execution guardrail gates = %#v", gates)

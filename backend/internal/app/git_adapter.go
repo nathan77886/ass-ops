@@ -744,6 +744,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
 	credentialStrategy := firstProviderReviewCredentialStrategy(credentialStrategies...)
+	adapterContract := providerReviewAdapterContract(provider, reviewKind)
 	providerSupported := provider == "github" || provider == "gitea"
 	starterReady := starterFilePayloadReady(starterFilePayload)
 	planReady := fmt.Sprint(apiRequestPlan["status"]) == "ready"
@@ -798,6 +799,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 			"status":            "blocked",
 			"provider_type":     provider,
 			"review_kind":       reviewKind,
+			"adapter_status":    adapterContract["adapter_status"],
 			"message":           "Provider branch creation, starter-file commit, and PR/MR adapters are not wired yet.",
 			"sensitive_payload": false,
 		},
@@ -814,6 +816,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		"provider_type":          provider,
 		"review_kind":            reviewKind,
 		"credential_strategy":    sanitizedProviderReviewCredentialStrategy(credentialStrategy),
+		"adapter_contract":       adapterContract,
 		"adapter_status":         "missing",
 		"external_call_made":     false,
 		"provider_api_call_made": false,
@@ -844,6 +847,78 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 			},
 		},
 		"next_step": "Implement provider branch/ref, starter-file commit, and review-request adapters behind the existing approval and guardrail contract.",
+	}
+}
+
+func providerReviewAdapterContract(provider, reviewKind string) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	supported := provider == "github" || provider == "gitea"
+	return map[string]any{
+		"status":                map[bool]string{true: "planned", false: "unsupported"}[supported],
+		"adapter_status":        "missing",
+		"contract_version":      "provider-review-v1",
+		"provider_type":         provider,
+		"review_kind":           reviewKind,
+		"external_call_made":    false,
+		"provider_api_mutation": "disabled",
+		"contains_token":        false,
+		"contains_file_content": false,
+		"operations":            providerReviewAdapterContractOperations(provider, reviewKind),
+		"next_step":             "Implement operation adapters only after provider credentials, approval, payload staging, and protected-branch rules pass preflight.",
+	}
+}
+
+func providerReviewAdapterContractOperations(provider, reviewKind string) []map[string]any {
+	scope := "contents:write"
+	reviewScope := "pull_requests:write"
+	if provider == "gitea" {
+		scope = "repository:write"
+		reviewScope = "repository:write"
+	}
+	return []map[string]any{
+		{
+			"name":                  "create_branch_ref",
+			"endpoint_key":          providerReviewEndpointKey(provider, "create_branch_ref"),
+			"required_capability":   "branch_ref_write",
+			"required_scope":        scope,
+			"payload_shape":         "ref_from_target_branch",
+			"adapter_status":        "missing",
+			"execution_status":      "blocked",
+			"external_call_made":    false,
+			"provider_api_mutation": "disabled",
+			"payload_redacted":      true,
+			"contains_token":        false,
+			"contains_file_content": false,
+		},
+		{
+			"name":                  "commit_starter_files",
+			"endpoint_key":          providerReviewEndpointKey(provider, "commit_files"),
+			"required_capability":   "file_content_write",
+			"required_scope":        scope,
+			"payload_shape":         "content_redacted_file_batch",
+			"adapter_status":        "missing",
+			"execution_status":      "blocked",
+			"external_call_made":    false,
+			"provider_api_mutation": "disabled",
+			"payload_redacted":      true,
+			"contains_token":        false,
+			"contains_file_content": false,
+		},
+		{
+			"name":                  "open_review_request",
+			"endpoint_key":          providerReviewEndpointKey(provider, "open_review"),
+			"required_capability":   "review_request_write",
+			"required_scope":        reviewScope,
+			"payload_shape":         reviewKind,
+			"adapter_status":        "missing",
+			"execution_status":      "blocked",
+			"external_call_made":    false,
+			"provider_api_mutation": "disabled",
+			"payload_redacted":      true,
+			"contains_token":        false,
+			"contains_file_content": false,
+		},
 	}
 }
 
