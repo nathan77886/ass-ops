@@ -132,6 +132,8 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		"'has_error', op.error <> ''",
 		"'repo_sync'",
 		"'webhook_connection'",
+		"WHEN wc.last_delivery_status IN ('failed', 'rejected') THEN 'high'",
+		"WHEN NOT wc.enabled THEN 'warning'",
 		"'pipeline_run'",
 		"'host'",
 		"'argo_connection'",
@@ -427,7 +429,7 @@ func TestProviderAccountTokenRotationStatus(t *testing.T) {
 			name: "fresh from rotation metadata",
 			item: map[string]any{
 				"token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_MAIN",
-				"metadata": map[string]any{"token_rotation": map[string]any{"rotated_at": now.AddDate(0, 0, -10).Format(time.RFC3339)}},
+				"metadata":  map[string]any{"token_rotation": map[string]any{"rotated_at": now.AddDate(0, 0, -10).Format(time.RFC3339)}},
 			},
 			want: "fresh",
 			src:  "token_rotation",

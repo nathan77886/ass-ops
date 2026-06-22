@@ -5268,7 +5268,11 @@ func assetInventorySQL() string {
 			'webhook',
 			wc.id::text,
 			wc.last_delivery_status,
-			'normal',
+			CASE
+				WHEN wc.last_delivery_status IN ('failed', 'rejected') THEN 'high'
+				WHEN NOT wc.enabled THEN 'warning'
+				ELSE 'normal'
+			END,
 			'webhook_connections',
 			wc.id::text,
 			jsonb_build_object('provider', wc.provider, 'source_remote_id', wc.source_remote_id, 'enabled', wc.enabled, 'last_delivery_error', wc.last_delivery_error),
