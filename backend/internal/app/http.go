@@ -2861,6 +2861,21 @@ func repoSyncAssetCapacitySQL() string {
 			pair_pressure.active_runs, pair_pressure.runs_24h, pair_pressure.failed_runs_24h`
 }
 
+const (
+	repoSyncCapacityActiveWarningThreshold       = 1
+	repoSyncCapacityActiveDangerThreshold        = 3
+	repoSyncCapacityFailure7dWarningThreshold    = 1
+	repoSyncCapacityFailure7dDangerThreshold     = 5
+	repoSyncCapacityWebhookWarningThreshold      = 1
+	repoSyncCapacityWebhookDangerThreshold       = 3
+	repoSyncCapacityGitHubVolumeWarningThreshold = 50
+	repoSyncCapacityGitHubVolumeDangerThreshold  = 200
+	repoSyncCapacityPairActiveWarningThreshold   = 3
+	repoSyncCapacityPairActiveDangerThreshold    = 8
+	repoSyncCapacityPairFailureWarningThreshold  = 1
+	repoSyncCapacityPairFailureDangerThreshold   = 3
+)
+
 func repoSyncCapacitySignals(asset, raw map[string]any, sourceID, targetID string) []map[string]any {
 	signals := []map[string]any{
 		{
@@ -2880,15 +2895,25 @@ func repoSyncCapacitySignals(asset, raw map[string]any, sourceID, targetID strin
 	signals = append(signals, map[string]any{
 		"name":     "sync capacity",
 		"status":   activeRuns,
-		"severity": severityForCount(activeRuns, 1, 3),
-		"detail":   fmt.Sprintf("%d queued or running sync runs", activeRuns),
+		"severity": severityForCount(activeRuns, repoSyncCapacityActiveWarningThreshold, repoSyncCapacityActiveDangerThreshold),
+		"threshold": thresholdDetail(
+			repoSyncCapacityActiveWarningThreshold,
+			repoSyncCapacityActiveDangerThreshold,
+			"active runs",
+		),
+		"detail": fmt.Sprintf("%d queued or running sync runs", activeRuns),
 	})
 	failedRuns := intFromAny(raw["failed_runs_7d"], 0)
 	signals = append(signals, map[string]any{
 		"name":     "7d sync failures",
 		"status":   failedRuns,
-		"severity": severityForCount(failedRuns, 1, 5),
-		"detail":   fmt.Sprintf("%d failed sync runs in the last 7 days", failedRuns),
+		"severity": severityForCount(failedRuns, repoSyncCapacityFailure7dWarningThreshold, repoSyncCapacityFailure7dDangerThreshold),
+		"threshold": thresholdDetail(
+			repoSyncCapacityFailure7dWarningThreshold,
+			repoSyncCapacityFailure7dDangerThreshold,
+			"failures",
+		),
+		"detail": fmt.Sprintf("%d failed sync runs in the last 7 days", failedRuns),
 	})
 	webhookFailures := intFromAny(raw["webhook_failures_7d"], 0)
 	lastWebhookError := strings.TrimSpace(fmt.Sprint(raw["last_webhook_error"]))
@@ -2902,27 +2927,44 @@ func repoSyncCapacitySignals(asset, raw map[string]any, sourceID, targetID strin
 	signals = append(signals, map[string]any{
 		"name":     "webhook delivery",
 		"status":   webhookFailures,
-		"severity": severityForCount(webhookFailures, 1, 3),
-		"detail":   detail,
+		"severity": severityForCount(webhookFailures, repoSyncCapacityWebhookWarningThreshold, repoSyncCapacityWebhookDangerThreshold),
+		"threshold": thresholdDetail(
+			repoSyncCapacityWebhookWarningThreshold,
+			repoSyncCapacityWebhookDangerThreshold,
+			"failed events",
+		),
+		"detail": detail,
 	})
 	githubRuns := intFromAny(raw["github_runs_24h"], 0)
 	signals = append(signals, map[string]any{
 		"name":     "GitHub Actions volume",
 		"status":   githubRuns,
-		"severity": severityForCount(githubRuns, 50, 200),
-		"detail":   fmt.Sprintf("%d action runs observed on source/target remotes in the last 24 hours", githubRuns),
+		"severity": severityForCount(githubRuns, repoSyncCapacityGitHubVolumeWarningThreshold, repoSyncCapacityGitHubVolumeDangerThreshold),
+		"threshold": thresholdDetail(
+			repoSyncCapacityGitHubVolumeWarningThreshold,
+			repoSyncCapacityGitHubVolumeDangerThreshold,
+			"runs",
+		),
+		"detail": fmt.Sprintf("%d action runs observed on source/target remotes in the last 24 hours", githubRuns),
 	})
 	pairActive := intFromAny(raw["provider_pair_active_runs"], 0)
 	pairRuns24h := intFromAny(raw["provider_pair_runs_24h"], 0)
 	pairFailures24h := intFromAny(raw["provider_pair_failed_runs_24h"], 0)
-	pairSeverity := severityForCount(pairActive, 3, 8)
-	if failureSeverity := severityForCount(pairFailures24h, 1, 3); failureSeverity == "danger" || (failureSeverity == "warning" && pairSeverity == "ok") {
+	pairSeverity := severityForCount(pairActive, repoSyncCapacityPairActiveWarningThreshold, repoSyncCapacityPairActiveDangerThreshold)
+	if failureSeverity := severityForCount(pairFailures24h, repoSyncCapacityPairFailureWarningThreshold, repoSyncCapacityPairFailureDangerThreshold); failureSeverity == "danger" || (failureSeverity == "warning" && pairSeverity == "ok") {
 		pairSeverity = failureSeverity
 	}
 	signals = append(signals, map[string]any{
 		"name":     "provider pair pressure",
 		"status":   pairActive,
 		"severity": pairSeverity,
+		"threshold": fmt.Sprintf(
+			"active warning >= %d / danger >= %d; failures warning >= %d / danger >= %d",
+			repoSyncCapacityPairActiveWarningThreshold,
+			repoSyncCapacityPairActiveDangerThreshold,
+			repoSyncCapacityPairFailureWarningThreshold,
+			repoSyncCapacityPairFailureDangerThreshold,
+		),
 		"detail": fmt.Sprintf(
 			"%d active and %d total sync runs in 24h for %s -> %s providers (%d failed)",
 			pairActive,
@@ -2939,6 +2981,10 @@ func repoSyncCapacitySignals(asset, raw map[string]any, sourceID, targetID strin
 		signals = append(signals, map[string]any{"name": "asset state", "status": "archived", "severity": "warning", "detail": "archived sync assets are hidden and cannot run until restored"})
 	}
 	return signals
+}
+
+func thresholdDetail(warningAt, dangerAt int, unit string) string {
+	return fmt.Sprintf("warning >= %d %s / danger >= %d %s", warningAt, unit, dangerAt, unit)
 }
 
 func signalStatusFromSync(value any) string {

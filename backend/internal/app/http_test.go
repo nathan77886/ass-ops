@@ -966,20 +966,42 @@ func TestRepoSyncCapacitySignals(t *testing.T) {
 	if byName["sync capacity"]["severity"] != "warning" {
 		t.Fatalf("sync capacity severity = %v", byName["sync capacity"]["severity"])
 	}
+	if !strings.Contains(fmt.Sprint(byName["sync capacity"]["threshold"]), "warning >= 1 active runs") {
+		t.Fatalf("sync capacity threshold = %#v", byName["sync capacity"]["threshold"])
+	}
 	if byName["7d sync failures"]["severity"] != "danger" {
 		t.Fatalf("7d sync failures severity = %v", byName["7d sync failures"]["severity"])
+	}
+	if !strings.Contains(fmt.Sprint(byName["7d sync failures"]["threshold"]), "warning >= 1 failures") {
+		t.Fatalf("7d sync failures threshold = %#v", byName["7d sync failures"]["threshold"])
 	}
 	if byName["webhook delivery"]["severity"] != "warning" || !strings.Contains(fmt.Sprint(byName["webhook delivery"]["detail"]), "bad signature") {
 		t.Fatalf("webhook signal = %#v", byName["webhook delivery"])
 	}
+	if !strings.Contains(fmt.Sprint(byName["webhook delivery"]["threshold"]), "danger >= 3 failed events") {
+		t.Fatalf("webhook threshold = %#v", byName["webhook delivery"]["threshold"])
+	}
 	if byName["GitHub Actions volume"]["severity"] != "warning" {
 		t.Fatalf("GitHub Actions volume severity = %v", byName["GitHub Actions volume"]["severity"])
+	}
+	if !strings.Contains(fmt.Sprint(byName["GitHub Actions volume"]["threshold"]), "warning >= 50 runs") {
+		t.Fatalf("GitHub Actions volume threshold = %#v", byName["GitHub Actions volume"]["threshold"])
 	}
 	if byName["provider pair pressure"]["severity"] != "warning" || !strings.Contains(fmt.Sprint(byName["provider pair pressure"]["detail"]), "gitea -> github") {
 		t.Fatalf("provider pair pressure signal = %#v", byName["provider pair pressure"])
 	}
+	if !strings.Contains(fmt.Sprint(byName["provider pair pressure"]["threshold"]), "active warning >= 3") {
+		t.Fatalf("provider pair pressure threshold = %#v", byName["provider pair pressure"]["threshold"])
+	}
 	if byName["asset state"]["status"] != "disabled" {
 		t.Fatalf("asset state signal = %#v", byName["asset state"])
+	}
+}
+
+func TestRepoSyncCapacityThresholdDetail(t *testing.T) {
+	got := thresholdDetail(2, 4, "items")
+	if got != "warning >= 2 items / danger >= 4 items" {
+		t.Fatalf("thresholdDetail = %q", got)
 	}
 }
 
@@ -991,9 +1013,9 @@ func TestRepoSyncProviderPairPressureSeverity(t *testing.T) {
 		want        string
 	}{
 		{name: "empty", want: "ok"},
-		{name: "failure warning", failures24h: 1, want: "warning"},
-		{name: "failure danger", failures24h: 3, want: "danger"},
-		{name: "active danger", active: 10, want: "danger"},
+		{name: "failure warning", failures24h: int64(repoSyncCapacityPairFailureWarningThreshold), want: "warning"},
+		{name: "failure danger", failures24h: int64(repoSyncCapacityPairFailureDangerThreshold), want: "danger"},
+		{name: "active danger", active: int64(repoSyncCapacityPairActiveDangerThreshold), want: "danger"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

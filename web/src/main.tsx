@@ -1708,6 +1708,7 @@ function GitRemotes() {
             { title: 'Signal', dataIndex: 'name' },
             { title: 'Severity', render: (_, row) => <Tag color={signalSeverityColor(row.severity)}>{row.severity || 'ok'}</Tag> },
             { title: 'Status', render: (_, row) => String(row.status ?? '-') },
+            { title: 'Threshold', render: (_, row) => row.threshold ? shortText(row.threshold, 88) : '-' },
             { title: 'Detail', render: (_, row) => shortText(row.detail, 120) }
           ]} />
           <Typography.Title level={5}>14-day trend</Typography.Title>

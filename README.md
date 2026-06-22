@@ -171,7 +171,7 @@ Implemented as real local code:
 - Canonical asset ledger backfill/sync from current domain tables, deduplicated asset status snapshots, plus best-effort refresh after key asset-producing writes and worker operation completion
 - Provider account management for GitHub/Gitea template repository creation, with masked token-env display and template account selectors
 - Gitea/GitHub webhook connection, HMAC verification, event audit, connection health summaries, RepoSyncAsset enqueue, and GitHub Actions read-model updates
-- RepoSyncAsset archive/restore, filtered sync run history, per-asset sync health analytics, list-level risk summaries, 14-day trend, and provider/capacity signals
+- RepoSyncAsset archive/restore, filtered sync run history, per-asset sync health analytics, list-level risk summaries, 14-day trend, and provider/capacity signals with visible warning/danger thresholds
 - Background approval expiry sweep with expired-event notifications
 - Approval summary metrics, admin/owner approval rule editing with audit history, reminder-candidate SLA watch, manual and scheduled reminder delivery, escalation routing, approval delegation/revocation, multi-approver progress, per-user decision audit, saved audit views, audit filters for status/action/requester/keyword/time windows, and approval detail drilldown
 - SSE live operation log stream for selected operation runs

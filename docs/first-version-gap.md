@@ -95,14 +95,14 @@ Notion treats RepoSyncAsset as the key model for Gitea -> GitHub SSH sync. The i
 Impact:
 
 - RepoSyncAsset lifecycle basics are now covered, and webhook-triggered sync policies now have replay and one-time secret rotation controls.
-- Operators can inspect per-asset sync health, list-level risk summaries, recent trend, active queue pressure, provider-pair pressure, provider status, webhook failures, and GitHub Actions volume/status tied to the selected repository and project without opening every individual run. Webhook connection delivery failures also flow into canonical asset health/status snapshots for Asset Center and AI context review.
+- Operators can inspect per-asset sync health, list-level risk summaries, recent trend, active queue pressure, provider-pair pressure, provider status, webhook failures, GitHub Actions volume/status, and the warning/danger thresholds behind each capacity signal tied to the selected repository and project without opening every individual run. Webhook connection delivery failures also flow into canonical asset health/status snapshots for Asset Center and AI context review.
 - Webhook shared secrets are now encrypted at rest for new/rotated connections, with legacy plaintext fallback for existing rows.
 - The UI now shows a copyable fully qualified webhook URL generated from `ASSOPS_GATEWAY_URL`.
 - GitHub `workflow_run` webhooks can now update the `github_action_runs` read model for the connected GitHub remote.
 
 Recommended next slice:
 
-- Tune provider-pair capacity thresholds after real sync volume and provider limits are known.
+- Tune provider-pair capacity thresholds after real sync volume and provider limits are known; the current thresholds are now named in code and visible in the RepoSync detail signal table.
 
 ### 3. Webhook Intake Needs Hardening
 
