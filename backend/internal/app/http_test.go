@@ -2008,6 +2008,39 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 					"provider_api_mutation": "enabled",
 					"operations":            []map[string]any{{"url": "https://api.github.example.test", "external_call_made": true}},
 				},
+				"provider_review_attempt_ledger": map[string]any{
+					"status":                   "recorded",
+					"mode":                     "raw_attempt_ledger",
+					"attempt_count":            1,
+					"external_call_made":       true,
+					"provider_api_call_made":   true,
+					"provider_api_mutation":    "enabled",
+					"idempotency_key_included": true,
+					"contains_token":           true,
+					"contains_provider_url":    true,
+					"contains_repository_ref":  true,
+					"contains_branch_name":     true,
+					"contains_file_content":    true,
+					"operations": []map[string]any{
+						{
+							"id":                       "44444444-4444-4444-4444-444444444444",
+							"name":                     "open_review_request",
+							"endpoint_key":             "github.open_review",
+							"status":                   "planned",
+							"replay_check":             "detect_existing_open_review",
+							"conflict_policy":          "reuse_existing_review_request",
+							"retry_policy":             "retry_only_after_response_diagnostics",
+							"external_call_made":       true,
+							"provider_api_call_made":   true,
+							"provider_api_mutation":    "enabled",
+							"idempotency_key_included": true,
+							"idempotency_key_material": "fake-repo:fake/namespace/fake-ref:fake-token",
+							"branch":                   "assops/template/demo-main",
+							"repo":                     "secret-repo",
+							"token":                    "secret-token",
+						},
+					},
+				},
 			},
 		},
 	}
@@ -2198,8 +2231,33 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 	if resultReconciliation["external_call_made"] != false || resultReconciliation["provider_api_mutation"] != "disabled" {
 		t.Fatalf("approval result reconciliation audit should force disabled/no-call: %#v", resultReconciliation)
 	}
+	resultAttemptLedger := mapFromAny(result["provider_review_attempt_ledger"])
+	if resultAttemptLedger["mode"] != "redacted_attempt_ledger" ||
+		resultAttemptLedger["external_call_made"] != false ||
+		resultAttemptLedger["provider_api_call_made"] != false ||
+		resultAttemptLedger["provider_api_mutation"] != "disabled" ||
+		resultAttemptLedger["idempotency_key_included"] != false ||
+		resultAttemptLedger["contains_token"] != false ||
+		resultAttemptLedger["contains_provider_url"] != false ||
+		resultAttemptLedger["contains_repository_ref"] != false ||
+		resultAttemptLedger["contains_branch_name"] != false ||
+		resultAttemptLedger["contains_file_content"] != false {
+		t.Fatalf("approval result attempt ledger should be sanitized: %#v", resultAttemptLedger)
+	}
+	resultAttemptOperations := sliceOfMapsFromAny(resultAttemptLedger["operations"])
+	if len(resultAttemptOperations) != 1 ||
+		resultAttemptOperations[0]["idempotency_key_included"] != false ||
+		resultAttemptOperations[0]["external_call_made"] != false ||
+		resultAttemptOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("approval result attempt operations should be sanitized: %#v", resultAttemptOperations)
+	}
+	for _, field := range []string{"branch", "repo", "token", "idempotency_key_material"} {
+		if _, ok := resultAttemptOperations[0][field]; ok {
+			t.Fatalf("approval result attempt operation should not expose %s: %#v", field, resultAttemptOperations[0])
+		}
+	}
 	encoded, _ := json.Marshal(audit)
-	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_idempotency_plan", "raw_key"} {
+	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_idempotency_plan", "raw_attempt_ledger", "raw_key"} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
 		}
@@ -2259,6 +2317,102 @@ func TestOperationApprovalPayloadAuditProviderReviewAllowsMissingResponseDiagnos
 	contractIdempotencyPlan := mapFromAny(adapterContract["idempotency_plan"])
 	if len(contractIdempotencyPlan) != 0 {
 		t.Fatalf("missing contract idempotency plan should remain empty: %#v", contractIdempotencyPlan)
+	}
+}
+
+func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	mock.ExpectBegin()
+	tx, err := sqlxDB.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BeginTxx: %v", err)
+	}
+	defer tx.Rollback()
+
+	reconciliation := templateProviderReviewExecutionReconciliation(
+		"github",
+		"pull_request",
+		map[string]any{"status": "ready", "file_count": 1, "content_included": false},
+		map[string]any{"execution_enabled_config": true},
+		templateProviderReviewAPIRequestPlan(
+			"github",
+			"pull_request",
+			"assops/template/demo-main",
+			"main",
+			map[string]any{"status": "ready", "file_count": 1, "content_included": false},
+		),
+		map[string]any{"token_env_configured": true, "token_env_present": true},
+	)
+	for _, item := range []struct {
+		name     string
+		endpoint string
+		replay   string
+		conflict string
+	}{
+		{"create_branch_ref", "github.create_branch_ref", "detect_existing_branch_ref", "treat_existing_matching_ref_as_success"},
+		{"commit_starter_files", "github.commit_files", "detect_existing_commit_batch", "block_on_content_or_parent_conflict"},
+		{"open_review_request", "github.open_review", "detect_existing_open_review", "reuse_existing_review_request"},
+	} {
+		mock.ExpectQuery(`(?s)INSERT INTO provider_review_attempts.*RETURNING id, operation_name`).
+			WillReturnRows(sqlmock.NewRows([]string{
+				"id",
+				"operation_name",
+				"endpoint_key",
+				"status",
+				"replay_check",
+				"conflict_policy",
+				"retry_policy",
+				"provider_api_call_made",
+				"provider_api_mutation",
+				"external_call_made",
+			}).AddRow(
+				"44444444-4444-4444-4444-444444444444",
+				item.name,
+				item.endpoint,
+				"planned",
+				item.replay,
+				item.conflict,
+				"retry_only_after_response_diagnostics",
+				false,
+				"disabled",
+				false,
+			))
+	}
+	server := &Server{}
+	summary, err := server.recordProviderReviewAttemptLedger(
+		context.Background(),
+		tx,
+		"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+		"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+		reconciliation,
+	)
+	if err != nil {
+		t.Fatalf("recordProviderReviewAttemptLedger: %v", err)
+	}
+	if summary["status"] != "recorded" ||
+		summary["attempt_count"] != 3 ||
+		summary["provider_api_call_made"] != false ||
+		summary["provider_api_mutation"] != "disabled" ||
+		summary["idempotency_key_included"] != false {
+		t.Fatalf("attempt ledger summary = %#v", summary)
+	}
+	operations := sliceOfMapsFromAny(summary["operations"])
+	if len(operations) != 3 || operations[0]["endpoint_key"] != "github.create_branch_ref" || operations[2]["replay_check"] != "detect_existing_open_review" {
+		t.Fatalf("attempt ledger operations = %#v", operations)
+	}
+	encoded, _ := json.Marshal(summary)
+	for _, leak := range []string{"assops/template/demo-main", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("attempt ledger summary leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
 	}
 }
 
@@ -4289,6 +4443,37 @@ func TestProviderReviewApprovalRuleMigrationAndFreshInit(t *testing.T) {
 		}
 		if !strings.Contains(string(content), "013_provider_review_approval_rule.sql") {
 			t.Fatalf("%s missing 013_provider_review_approval_rule.sql init mount", path)
+		}
+	}
+}
+
+func TestProviderReviewAttemptsMigrationAndFreshInit(t *testing.T) {
+	migration, err := os.ReadFile("../../migrations/014_provider_review_attempts.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	for _, token := range []string{
+		"CREATE TABLE IF NOT EXISTS provider_review_attempts",
+		"operation_approval_id UUID NOT NULL REFERENCES operation_approvals",
+		"project_template_run_id UUID REFERENCES project_template_runs",
+		"idempotency_key_hash TEXT NOT NULL DEFAULT ''",
+		"idempotency_key_material JSONB NOT NULL DEFAULT '{}'::jsonb",
+		"CHECK (provider_api_call_made = false)",
+		"CHECK (external_call_made = false)",
+		"idx_provider_review_attempts_approval_operation",
+		"idx_provider_review_attempts_template_run",
+	} {
+		if !strings.Contains(string(migration), token) {
+			t.Fatalf("migration missing %q", token)
+		}
+	}
+	for _, path := range []string{"../../../deploy/docker-compose.yml", "../../../deploy/compose.prod.yml"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(content), "014_provider_review_attempts.sql") {
+			t.Fatalf("%s missing 014_provider_review_attempts.sql init mount", path)
 		}
 	}
 }

@@ -1050,6 +1050,8 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
   const responseDiagnosticOperations = Array.isArray(responseDiagnostics.operations) ? responseDiagnostics.operations : [];
   const idempotencyPlan = reconciliation.idempotency_plan || adapterContract.idempotency_plan || {};
   const idempotencyOperations = Array.isArray(idempotencyPlan.operations) ? idempotencyPlan.operations : [];
+  const attemptLedger = result.provider_review_attempt_ledger || {};
+  const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
   return (
     <Space direction="vertical" size={8} className="full">
       <Space size={4} wrap>
@@ -1216,6 +1218,22 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
           <Tag color={result.execution_enabled === true ? 'red' : 'default'}>{result.execution_enabled === true ? 'execution enabled' : 'execution disabled'}</Tag>
           <Tag color={result.provider_api_call_made === true ? 'red' : 'default'}>{result.provider_api_call_made === true ? 'result api called' : 'result no api call'}</Tag>
           <Tag>{String(result.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {attemptLedger.status ? (
+        <Space size={4} wrap>
+          <Tag color={attemptLedger.status === 'recorded' ? 'green' : 'gold'}>attempt ledger {String(attemptLedger.status)}</Tag>
+          <Tag>attempts {Number(attemptLedger.attempt_count || 0)}</Tag>
+          <Tag>{attemptLedger.idempotency_key_included === true ? 'key included' : 'key redacted'}</Tag>
+        </Space>
+      ) : null}
+      {attemptOperations.length ? (
+        <Space size={4} wrap>
+          {attemptOperations.map((operation: AnyRow, index: number) => (
+            <Tag key={`${String(operation.id || operation.endpoint_key || operation.name || 'attempt')}-${index}`}>
+              {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.status || 'planned')}
+            </Tag>
+          ))}
         </Space>
       ) : null}
     </Space>

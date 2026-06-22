@@ -8683,6 +8683,7 @@ func operationApprovalPayloadAudit(approval map[string]any) map[string]any {
 				"starter_file_payload":           sanitizedStarterFilePayloadSummary(mapFromAny(result["starter_file_payload"])),
 				"provider_api_request_plan":      sanitizedProviderAPIRequestPlan(mapFromAny(result["provider_api_request_plan"])),
 				"provider_review_reconciliation": sanitizedProviderReviewReconciliation(mapFromAny(result["provider_review_reconciliation"])),
+				"provider_review_attempt_ledger": sanitizedProviderReviewAttemptLedger(mapFromAny(result["provider_review_attempt_ledger"])),
 				"provider_api_call_made":         false,
 				"provider_api_mutation":          "disabled",
 				"execution_enabled":              false,
@@ -8713,6 +8714,43 @@ func sanitizedProviderReviewExecutionGuardrail(value map[string]any) map[string]
 		"blocked_reasons":          stringSliceFromAny(value["blocked_reasons"]),
 		"gates":                    sanitizedProviderReviewGates(mapSliceFromAny(value["gates"])),
 		"next_step":                cleanOptionalText(stringFromMap(value, "next_step")),
+	}
+}
+
+func sanitizedProviderReviewAttemptLedger(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	operations := make([]map[string]any, 0, len(mapSliceFromAny(value["operations"])))
+	for _, operation := range mapSliceFromAny(value["operations"]) {
+		operations = append(operations, map[string]any{
+			"id":                       cleanOptionalID(fmt.Sprint(operation["id"])),
+			"name":                     cleanOptionalText(stringFromMap(operation, "name")),
+			"endpoint_key":             cleanOptionalText(stringFromMap(operation, "endpoint_key")),
+			"status":                   cleanOptionalText(stringFromMap(operation, "status")),
+			"replay_check":             cleanOptionalText(stringFromMap(operation, "replay_check")),
+			"conflict_policy":          cleanOptionalText(stringFromMap(operation, "conflict_policy")),
+			"retry_policy":             cleanOptionalText(stringFromMap(operation, "retry_policy")),
+			"external_call_made":       false,
+			"provider_api_call_made":   false,
+			"provider_api_mutation":    "disabled",
+			"idempotency_key_included": false,
+		})
+	}
+	return map[string]any{
+		"status":                   cleanOptionalText(stringFromMap(value, "status")),
+		"mode":                     "redacted_attempt_ledger",
+		"attempt_count":            len(operations),
+		"operations":               operations,
+		"external_call_made":       false,
+		"provider_api_call_made":   false,
+		"provider_api_mutation":    "disabled",
+		"idempotency_key_included": false,
+		"contains_token":           false,
+		"contains_provider_url":    false,
+		"contains_repository_ref":  false,
+		"contains_branch_name":     false,
+		"contains_file_content":    false,
 	}
 }
 
@@ -10067,6 +10105,16 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			providerAPIRequestPlan,
 			credentialStrategy,
 		)
+		attemptLedger, err := s.recordProviderReviewAttemptLedger(
+			ctx,
+			tx,
+			cleanOptionalID(fmt.Sprint(approval["id"])),
+			stringFromMap(payload, "project_template_run_id"),
+			reconciliation,
+		)
+		if err != nil {
+			return nil, "", err
+		}
 		return map[string]any{
 			"project_template_run_id":        stringFromMap(payload, "project_template_run_id"),
 			"execution_request":              request,
@@ -10075,6 +10123,7 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			"starter_file_payload":           starterFilePayload,
 			"provider_api_request_plan":      providerAPIRequestPlan,
 			"provider_review_reconciliation": reconciliation,
+			"provider_review_attempt_ledger": attemptLedger,
 			"provider_api_call_made":         false,
 			"provider_api_mutation":          "disabled",
 			"execution_enabled":              false,
@@ -10091,6 +10140,192 @@ func decodePayloadField(payload map[string]any, key string, target any) error {
 		return err
 	}
 	return json.Unmarshal(data, target)
+}
+
+func (s *Server) recordProviderReviewAttemptLedger(ctx context.Context, tx *sqlx.Tx, approvalID, runID string, reconciliation map[string]any) (map[string]any, error) {
+	summary := providerReviewAttemptLedgerSummary(nil)
+	if tx == nil || approvalID == "" {
+		return summary, nil
+	}
+	idempotencyPlan := mapFromAny(reconciliation["idempotency_plan"])
+	operations := mapSliceFromAny(idempotencyPlan["operations"])
+	if len(operations) == 0 {
+		return summary, nil
+	}
+	provider := cleanOptionalText(stringFromMap(reconciliation, "provider_type"))
+	reviewKind := cleanOptionalText(stringFromMap(reconciliation, "review_kind"))
+	projectTemplateRunID := cleanOptionalID(runID)
+	attempts := make([]map[string]any, 0, len(operations))
+	for _, operation := range operations {
+		name := cleanOptionalText(stringFromMap(operation, "name"))
+		if name == "" {
+			continue
+		}
+		endpointKey := cleanOptionalText(stringFromMap(operation, "endpoint_key"))
+		requestSummary := providerReviewAttemptRequestSummary(operation)
+		responseDiagnostics := providerReviewAttemptResponseDiagnostics(reconciliation, endpointKey)
+		requestJSON, err := jsonParam(requestSummary)
+		if err != nil {
+			return summary, fmt.Errorf("encoding provider review attempt request summary: %w", err)
+		}
+		responseJSON, err := jsonParam(responseDiagnostics)
+		if err != nil {
+			return summary, fmt.Errorf("encoding provider review attempt response diagnostics: %w", err)
+		}
+		idempotencyJSON, err := jsonParam(map[string]any{"material": "redacted_required_material_only"})
+		if err != nil {
+			return summary, fmt.Errorf("encoding provider review attempt idempotency material: %w", err)
+		}
+		attempt, err := queryOne(ctx, tx, `
+			INSERT INTO provider_review_attempts(
+				operation_approval_id,
+				project_template_run_id,
+				provider_type,
+				review_kind,
+				operation_name,
+				endpoint_key,
+				status,
+				replay_check,
+				conflict_policy,
+				retry_policy,
+				idempotency_key_kind,
+				idempotency_key_hash,
+				idempotency_key_material,
+				request_summary,
+				response_diagnostics,
+				provider_api_call_made,
+				provider_api_mutation,
+				external_call_made
+			)
+			VALUES (
+				$1,
+				NULLIF($2,'')::uuid,
+				$3,
+				$4,
+				$5,
+				$6,
+				'planned',
+				$7,
+				$8,
+				$9,
+				'operation_scope_hash',
+				'',
+				$10::jsonb,
+				$11::jsonb,
+				$12::jsonb,
+				false,
+				'disabled',
+				false
+			)
+			ON CONFLICT (operation_approval_id, operation_name) DO UPDATE
+			SET updated_at=now()
+			RETURNING id, operation_name, endpoint_key, status, replay_check, conflict_policy, retry_policy, provider_api_call_made, provider_api_mutation, external_call_made`,
+			approvalID,
+			projectTemplateRunID,
+			provider,
+			reviewKind,
+			name,
+			endpointKey,
+			cleanOptionalText(stringFromMap(operation, "replay_check")),
+			cleanOptionalText(stringFromMap(operation, "conflict_policy")),
+			cleanOptionalText(stringFromMap(operation, "retry_policy")),
+			idempotencyJSON,
+			requestJSON,
+			responseJSON,
+		)
+		if err != nil {
+			return summary, fmt.Errorf("recording provider review attempt: %w", err)
+		}
+		attempts = append(attempts, attempt)
+	}
+	return providerReviewAttemptLedgerSummary(attempts), nil
+}
+
+func providerReviewAttemptRequestSummary(operation map[string]any) map[string]any {
+	return map[string]any{
+		"mode":                     "redacted_attempt_request_summary",
+		"operation_name":           cleanOptionalText(stringFromMap(operation, "name")),
+		"endpoint_key":             cleanOptionalText(stringFromMap(operation, "endpoint_key")),
+		"idempotency_key_kind":     "operation_scope_hash",
+		"idempotency_key_included": false,
+		"contains_token":           false,
+		"contains_provider_url":    false,
+		"contains_repository_ref":  false,
+		"contains_branch_name":     false,
+		"contains_file_content":    false,
+	}
+}
+
+func providerReviewAttemptResponseDiagnostics(reconciliation map[string]any, endpointKey string) map[string]any {
+	responseDiagnostics := mapFromAny(reconciliation["response_diagnostics"])
+	for _, operation := range mapSliceFromAny(responseDiagnostics["operations"]) {
+		if cleanOptionalText(stringFromMap(operation, "endpoint_key")) == endpointKey {
+			return map[string]any{
+				"mode":                     "redacted_attempt_response_diagnostics",
+				"endpoint_key":             endpointKey,
+				"status":                   cleanOptionalText(stringFromMap(operation, "status")),
+				"success_status_class":     cleanOptionalText(stringFromMap(operation, "success_status_class")),
+				"retryable_status_classes": stringSliceFromAny(operation["retryable_status_classes"]),
+				"response_body_included":   false,
+				"headers_included":         false,
+				"contains_token":           false,
+				"contains_provider_url":    false,
+				"provider_api_call_made":   false,
+				"provider_api_mutation":    "disabled",
+				"external_call_made":       false,
+			}
+		}
+	}
+	return map[string]any{
+		"mode":                   "redacted_attempt_response_diagnostics",
+		"endpoint_key":           endpointKey,
+		"status":                 "pending",
+		"response_body_included": false,
+		"headers_included":       false,
+		"contains_token":         false,
+		"contains_provider_url":  false,
+		"provider_api_call_made": false,
+		"provider_api_mutation":  "disabled",
+		"external_call_made":     false,
+	}
+}
+
+func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]any {
+	operations := make([]map[string]any, 0, len(attempts))
+	for _, attempt := range attempts {
+		operations = append(operations, map[string]any{
+			"id":                       cleanOptionalID(fmt.Sprint(attempt["id"])),
+			"name":                     cleanOptionalText(stringFromMap(attempt, "operation_name")),
+			"endpoint_key":             cleanOptionalText(stringFromMap(attempt, "endpoint_key")),
+			"status":                   cleanOptionalText(stringFromMap(attempt, "status")),
+			"replay_check":             cleanOptionalText(stringFromMap(attempt, "replay_check")),
+			"conflict_policy":          cleanOptionalText(stringFromMap(attempt, "conflict_policy")),
+			"retry_policy":             cleanOptionalText(stringFromMap(attempt, "retry_policy")),
+			"external_call_made":       false,
+			"provider_api_call_made":   false,
+			"provider_api_mutation":    "disabled",
+			"idempotency_key_included": false,
+		})
+	}
+	status := "not_recorded"
+	if len(operations) > 0 {
+		status = "recorded"
+	}
+	return map[string]any{
+		"status":                   status,
+		"mode":                     "redacted_attempt_ledger",
+		"attempt_count":            len(operations),
+		"operations":               operations,
+		"external_call_made":       false,
+		"provider_api_call_made":   false,
+		"provider_api_mutation":    "disabled",
+		"idempotency_key_included": false,
+		"contains_token":           false,
+		"contains_provider_url":    false,
+		"contains_repository_ref":  false,
+		"contains_branch_name":     false,
+		"contains_file_content":    false,
+	}
 }
 
 func (s *Server) getOperation(w http.ResponseWriter, r *http.Request) {
