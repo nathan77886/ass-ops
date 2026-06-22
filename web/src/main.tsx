@@ -1069,6 +1069,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptAdapterContractMode = typeof attemptAdapterContract.mode === 'string' ? attemptAdapterContract.mode.replaceAll('_', ' ') : 'redacted attempt adapter contract';
   const attemptClaimPlan = attemptExecutionCandidate.claim_plan || {};
   const attemptClaimPlanMode = typeof attemptClaimPlan.mode === 'string' ? attemptClaimPlan.mode.replaceAll('_', ' ') : 'redacted attempt execution claim plan';
+  const attemptDispatchPlan = attemptExecutionCandidate.dispatch_plan || {};
+  const attemptDispatchPlanMode = typeof attemptDispatchPlan.mode === 'string' ? attemptDispatchPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter dispatch plan';
   const attemptExecutionCandidateGates = Array.isArray(attemptExecutionCandidate.gates) ? attemptExecutionCandidate.gates : [];
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
   return (
@@ -1364,6 +1366,22 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>{String(attemptClaimPlan.replay_check || 'redacted replay')}</Tag>
           <Tag>{String(attemptClaimPlan.conflict_policy || 'redacted conflict')}</Tag>
           <Tag>{String(attemptClaimPlan.retry_policy || 'redacted retry')}</Tag>
+        </Space>
+      ) : null}
+      {attemptDispatchPlan.mode ? (
+        <Space size={4} wrap>
+          <Tag>{attemptDispatchPlanMode}</Tag>
+          <Tag color={attemptDispatchPlan.dispatch_state === 'blocked' ? 'red' : 'gold'}>
+            dispatch {String(attemptDispatchPlan.dispatch_state || 'blocked')}
+          </Tag>
+          <Tag>{String(attemptDispatchPlan.dispatch_ready_reason || 'provider_api_adapter_dispatch_not_armed')}</Tag>
+          <Tag color={attemptDispatchPlan.dispatch_metadata_ready === true ? 'green' : 'gold'}>
+            metadata {attemptDispatchPlan.dispatch_metadata_ready === true ? 'ready' : 'blocked'}
+          </Tag>
+          <Tag>{String(attemptDispatchPlan.adapter_kind || 'redacted adapter')}</Tag>
+          <Tag>{String(attemptDispatchPlan.method || 'redacted method')}</Tag>
+          <Tag>{String(attemptDispatchPlan.payload_shape || 'redacted payload')}</Tag>
+          <Tag>{String(attemptDispatchPlan.provider_api_mutation || 'disabled')}</Tag>
         </Space>
       ) : null}
       {attemptExecutionCandidateGates.length ? (

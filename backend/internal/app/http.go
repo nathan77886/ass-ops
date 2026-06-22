@@ -11010,6 +11010,7 @@ func providerReviewAttemptExecutionCandidate(operations []map[string]any, nextOp
 		"requires_mutation_arming":      true,
 		"adapter_contract":              map[string]any{},
 		"claim_plan":                    map[string]any{},
+		"dispatch_plan":                 map[string]any{},
 		"adapter_implemented":           false,
 		"mutation_armed":                false,
 		"external_call_made":            false,
@@ -11041,12 +11042,15 @@ func providerReviewAttemptExecutionCandidate(operations []map[string]any, nextOp
 		endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
 		idempotencyReady := boolOnlyFromAny(requestSummary["requires_idempotency_ledger"])
 		responseReady := mapFromAny(responseDiagnostics)["mode"] == "redacted_attempt_response_diagnostics"
+		adapterContract := providerReviewAttemptCandidateAdapterContract(operation, requestSummary, responseDiagnostics)
+		claimPlan := providerReviewAttemptExecutionClaimPlan(operation, idempotencyReady, responseReady)
 		candidate["next_operation"] = nextOperation
 		candidate["endpoint_key"] = endpointKey
 		candidate["operation_order"] = intFromAny(operation["operation_order"], 0)
 		candidate["status"] = "blocked"
-		candidate["adapter_contract"] = providerReviewAttemptCandidateAdapterContract(operation, requestSummary, responseDiagnostics)
-		candidate["claim_plan"] = providerReviewAttemptExecutionClaimPlan(operation, idempotencyReady, responseReady)
+		candidate["adapter_contract"] = adapterContract
+		candidate["claim_plan"] = claimPlan
+		candidate["dispatch_plan"] = providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, adapterContract, claimPlan)
 		candidate["gates"] = providerReviewAttemptExecutionCandidateGates(true, idempotencyReady, responseReady)
 		return candidate
 	}
@@ -11092,6 +11096,73 @@ func providerReviewAttemptCandidateAdapterContract(operation, requestSummary, re
 		"contains_file_content":           false,
 		"activation_requirements":         []string{"provider_api_adapter_implemented", "provider_review_mutation_armed", "operator_approval_still_valid", "idempotency_ledger_claim"},
 		"adapter_input_boundary_redacted": true,
+	}
+}
+
+func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, adapterContract, claimPlan map[string]any) map[string]any {
+	if len(operation) == 0 {
+		return map[string]any{}
+	}
+	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+	providerType := providerReviewProviderFromEndpointKey(endpointKey)
+	metadataReady := boolOnlyFromAny(claimPlan["claim_metadata_ready"]) &&
+		stringFromMap(adapterContract, "mode") == "redacted_attempt_adapter_contract" &&
+		operationName != "" &&
+		endpointKey != "" &&
+		providerType != ""
+	blockedReasons := []string{
+		"provider_review_attempt_claim_not_recorded",
+		"provider_review_adapter_not_implemented",
+		"provider_review_mutation_not_armed",
+	}
+	if !metadataReady {
+		blockedReasons = append([]string{"provider_review_dispatch_metadata_not_ready"}, blockedReasons...)
+	}
+	if providerType == "" {
+		blockedReasons = append([]string{"provider_review_dispatch_provider_unknown"}, blockedReasons...)
+	}
+	return map[string]any{
+		"mode":                         "redacted_attempt_adapter_dispatch_plan",
+		"dispatch_state":               "blocked",
+		"dispatch_ready":               false,
+		"dispatch_ready_reason":        "provider_api_adapter_dispatch_not_armed",
+		"dispatch_metadata_ready":      metadataReady,
+		"provider_type":                providerType,
+		"adapter_kind":                 providerReviewAdapterKindForProvider(providerType),
+		"operation_name":               operationName,
+		"endpoint_key":                 endpointKey,
+		"operation_order":              intFromAny(operation["operation_order"], 0),
+		"method":                       providerReviewMethodForOperation(operationName),
+		"payload_shape":                providerReviewPayloadShapeForOperation(operationName),
+		"payload_builder":              safeProviderReviewPayloadBuilderName(stringFromMap(requestSummary, "payload_builder")),
+		"response_handler":             safeProviderReviewResponseHandlerName(stringFromMap(requestSummary, "response_handler")),
+		"idempotency_key_kind":         "operation_scope_hash",
+		"requires_attempt_claim":       true,
+		"requires_idempotency_claim":   true,
+		"requires_provider_client":     true,
+		"requires_request_builder":     true,
+		"requires_response_handler":    true,
+		"requires_mutation_arming":     true,
+		"claim_recorded":               false,
+		"idempotency_claim_recorded":   false,
+		"adapter_implemented":          false,
+		"mutation_armed":               false,
+		"external_call_made":           false,
+		"provider_api_call_made":       false,
+		"provider_api_mutation":        "disabled",
+		"request_body_included":        false,
+		"response_body_included":       false,
+		"headers_included":             false,
+		"idempotency_key_included":     false,
+		"contains_token":               false,
+		"contains_provider_url":        false,
+		"contains_repository_ref":      false,
+		"contains_branch_name":         false,
+		"contains_file_content":        false,
+		"blocked_reasons":              blockedReasons,
+		"dispatch_boundary_redacted":   true,
+		"provider_request_id_included": false,
 	}
 }
 
@@ -11177,6 +11248,52 @@ func providerReviewAttemptClaimDependencyReady(status string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func providerReviewProviderFromEndpointKey(endpointKey string) string {
+	switch safeProviderReviewEndpointKey(endpointKey) {
+	case "github.create_branch_ref", "github.commit_files", "github.open_review":
+		return "github"
+	case "gitea.create_branch_ref", "gitea.commit_files", "gitea.open_review":
+		return "gitea"
+	default:
+		return ""
+	}
+}
+
+func providerReviewAdapterKindForProvider(provider string) string {
+	switch cleanOptionalText(provider) {
+	case "github":
+		return "github_provider_review_adapter"
+	case "gitea":
+		return "gitea_provider_review_adapter"
+	default:
+		return ""
+	}
+}
+
+func providerReviewMethodForOperation(operationName string) string {
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref", "open_review_request":
+		return "POST"
+	case "commit_starter_files":
+		return "PUT"
+	default:
+		return ""
+	}
+}
+
+func providerReviewPayloadShapeForOperation(operationName string) string {
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref":
+		return "ref_from_target_branch"
+	case "commit_starter_files":
+		return "content_redacted_file_batch"
+	case "open_review_request":
+		return "review_request"
+	default:
+		return ""
 	}
 }
 

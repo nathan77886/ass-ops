@@ -3152,6 +3152,49 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateClaimBlockedReasons[1] != "provider_review_mutation_not_armed" {
 		t.Fatalf("attempt execution candidate claim blocked reasons = %#v", candidateClaimBlockedReasons)
 	}
+	candidateDispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	if candidateDispatchPlan["mode"] != "redacted_attempt_adapter_dispatch_plan" ||
+		candidateDispatchPlan["dispatch_state"] != "blocked" ||
+		candidateDispatchPlan["dispatch_ready"] != false ||
+		candidateDispatchPlan["dispatch_ready_reason"] != "provider_api_adapter_dispatch_not_armed" ||
+		candidateDispatchPlan["dispatch_metadata_ready"] != true ||
+		candidateDispatchPlan["provider_type"] != "github" ||
+		candidateDispatchPlan["adapter_kind"] != "github_provider_review_adapter" ||
+		candidateDispatchPlan["operation_name"] != "create_branch_ref" ||
+		candidateDispatchPlan["endpoint_key"] != "github.create_branch_ref" ||
+		candidateDispatchPlan["operation_order"] != 10 ||
+		candidateDispatchPlan["method"] != "POST" ||
+		candidateDispatchPlan["payload_shape"] != "ref_from_target_branch" ||
+		candidateDispatchPlan["payload_builder"] != "build_redacted_branch_ref_request" ||
+		candidateDispatchPlan["response_handler"] != "handle_branch_ref_response" ||
+		candidateDispatchPlan["idempotency_key_kind"] != "operation_scope_hash" ||
+		candidateDispatchPlan["requires_attempt_claim"] != true ||
+		candidateDispatchPlan["requires_idempotency_claim"] != true ||
+		candidateDispatchPlan["requires_provider_client"] != true ||
+		candidateDispatchPlan["claim_recorded"] != false ||
+		candidateDispatchPlan["idempotency_claim_recorded"] != false ||
+		candidateDispatchPlan["adapter_implemented"] != false ||
+		candidateDispatchPlan["mutation_armed"] != false ||
+		candidateDispatchPlan["request_body_included"] != false ||
+		candidateDispatchPlan["response_body_included"] != false ||
+		candidateDispatchPlan["headers_included"] != false ||
+		candidateDispatchPlan["provider_api_call_made"] != false ||
+		candidateDispatchPlan["provider_api_mutation"] != "disabled" ||
+		candidateDispatchPlan["contains_token"] != false ||
+		candidateDispatchPlan["contains_provider_url"] != false ||
+		candidateDispatchPlan["contains_repository_ref"] != false ||
+		candidateDispatchPlan["contains_branch_name"] != false ||
+		candidateDispatchPlan["contains_file_content"] != false ||
+		candidateDispatchPlan["dispatch_boundary_redacted"] != true {
+		t.Fatalf("attempt execution candidate dispatch plan = %#v", candidateDispatchPlan)
+	}
+	candidateDispatchBlockedReasons := stringSliceFromAny(candidateDispatchPlan["blocked_reasons"])
+	if len(candidateDispatchBlockedReasons) != 3 ||
+		candidateDispatchBlockedReasons[0] != "provider_review_attempt_claim_not_recorded" ||
+		candidateDispatchBlockedReasons[1] != "provider_review_adapter_not_implemented" ||
+		candidateDispatchBlockedReasons[2] != "provider_review_mutation_not_armed" {
+		t.Fatalf("attempt execution candidate dispatch blocked reasons = %#v", candidateDispatchBlockedReasons)
+	}
 	candidateGates := sliceOfMapsFromAny(candidate["gates"])
 	if len(candidateGates) != 5 ||
 		candidateGates[0]["gate"] != "attempt_operation_ready" ||
@@ -3459,6 +3502,44 @@ func TestProviderReviewAttemptResponseDiagnosticSanitizers(t *testing.T) {
 			t.Fatalf("safeProviderReviewEndpointKey(%q) = %q, want %q", item.input, got, item.want)
 		}
 	}
+	for _, item := range []struct {
+		endpoint string
+		provider string
+		adapter  string
+	}{
+		{"github.create_branch_ref", "github", "github_provider_review_adapter"},
+		{"github.commit_files", "github", "github_provider_review_adapter"},
+		{"github.open_review", "github", "github_provider_review_adapter"},
+		{"gitea.create_branch_ref", "gitea", "gitea_provider_review_adapter"},
+		{"gitea.commit_files", "gitea", "gitea_provider_review_adapter"},
+		{"gitea.open_review", "gitea", "gitea_provider_review_adapter"},
+		{"provider.open_review", "", ""},
+		{"", "", ""},
+	} {
+		if got := providerReviewProviderFromEndpointKey(item.endpoint); got != item.provider {
+			t.Fatalf("providerReviewProviderFromEndpointKey(%q) = %q, want %q", item.endpoint, got, item.provider)
+		}
+		if got := providerReviewAdapterKindForProvider(item.provider); got != item.adapter {
+			t.Fatalf("providerReviewAdapterKindForProvider(%q) = %q, want %q", item.provider, got, item.adapter)
+		}
+	}
+	for _, item := range []struct {
+		operation string
+		method    string
+		shape     string
+	}{
+		{"create_branch_ref", "POST", "ref_from_target_branch"},
+		{"commit_starter_files", "PUT", "content_redacted_file_batch"},
+		{"open_review_request", "POST", "review_request"},
+		{"raw_operation", "", ""},
+	} {
+		if got := providerReviewMethodForOperation(item.operation); got != item.method {
+			t.Fatalf("providerReviewMethodForOperation(%q) = %q, want %q", item.operation, got, item.method)
+		}
+		if got := providerReviewPayloadShapeForOperation(item.operation); got != item.shape {
+			t.Fatalf("providerReviewPayloadShapeForOperation(%q) = %q, want %q", item.operation, got, item.shape)
+		}
+	}
 }
 
 func TestProviderReviewAttemptDependencySanitizers(t *testing.T) {
@@ -3568,6 +3649,67 @@ func TestProviderReviewAttemptOrchestrationSummaryBlocksUnknownStatus(t *testing
 }
 
 func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T) {
+	t.Run("returns empty dispatch plan for empty operation", func(t *testing.T) {
+		if got := providerReviewAttemptAdapterDispatchPlan(nil, nil, nil, nil); len(got) != 0 {
+			t.Fatalf("empty operation dispatch plan = %#v", got)
+		}
+	})
+	t.Run("redacts unknown adapter dispatch plan fields", func(t *testing.T) {
+		dispatchPlan := providerReviewAttemptAdapterDispatchPlan(
+			map[string]any{
+				"name":            "raw_operation",
+				"endpoint_key":    "github.secret_endpoint",
+				"operation_order": 99,
+			},
+			map[string]any{
+				"payload_builder":  "raw_builder",
+				"response_handler": "raw_handler",
+			},
+			map[string]any{
+				"mode": "raw_adapter_contract",
+			},
+			map[string]any{
+				"claim_metadata_ready": true,
+			},
+		)
+		if dispatchPlan["mode"] != "redacted_attempt_adapter_dispatch_plan" ||
+			dispatchPlan["dispatch_state"] != "blocked" ||
+			dispatchPlan["dispatch_ready"] != false ||
+			dispatchPlan["dispatch_ready_reason"] != "provider_api_adapter_dispatch_not_armed" ||
+			dispatchPlan["dispatch_metadata_ready"] != false ||
+			dispatchPlan["provider_type"] != "" ||
+			dispatchPlan["adapter_kind"] != "" ||
+			dispatchPlan["operation_name"] != "" ||
+			dispatchPlan["endpoint_key"] != "" ||
+			dispatchPlan["method"] != "" ||
+			dispatchPlan["payload_shape"] != "" ||
+			dispatchPlan["payload_builder"] != "build_redacted_provider_request" ||
+			dispatchPlan["response_handler"] != "handle_provider_response" ||
+			dispatchPlan["provider_api_call_made"] != false ||
+			dispatchPlan["provider_api_mutation"] != "disabled" ||
+			dispatchPlan["contains_token"] != false ||
+			dispatchPlan["contains_provider_url"] != false ||
+			dispatchPlan["contains_repository_ref"] != false ||
+			dispatchPlan["contains_branch_name"] != false ||
+			dispatchPlan["contains_file_content"] != false {
+			t.Fatalf("unknown operation dispatch plan should be redacted: %#v", dispatchPlan)
+		}
+		blockedReasons := stringSliceFromAny(dispatchPlan["blocked_reasons"])
+		if len(blockedReasons) != 5 ||
+			blockedReasons[0] != "provider_review_dispatch_provider_unknown" ||
+			blockedReasons[1] != "provider_review_dispatch_metadata_not_ready" ||
+			blockedReasons[2] != "provider_review_attempt_claim_not_recorded" ||
+			blockedReasons[3] != "provider_review_adapter_not_implemented" ||
+			blockedReasons[4] != "provider_review_mutation_not_armed" {
+			t.Fatalf("unknown operation dispatch blocked reasons = %#v", blockedReasons)
+		}
+		encoded, _ := json.Marshal(dispatchPlan)
+		for _, leak := range []string{"raw_operation", "github.secret_endpoint", "raw_builder", "raw_handler", "raw_adapter_contract"} {
+			if strings.Contains(string(encoded), leak) {
+				t.Fatalf("unknown operation dispatch plan leaked %q: %s", leak, encoded)
+			}
+		}
+	})
 	t.Run("redacts unknown attempt claim plan fields", func(t *testing.T) {
 		claimPlan := providerReviewAttemptExecutionClaimPlan(
 			map[string]any{
