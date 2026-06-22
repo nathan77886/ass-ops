@@ -86,7 +86,7 @@ Generated files are written under `.assops/context/<project-id>/`:
 - `assops-context.json`
 - `tool-manifest.json`
 
-When the canonical ledger has been backfilled with `assops-tool db sync-assets`, the generated context also includes an `asset_graph` snapshot with canonical assets, relations, recent status snapshots, type counts, and health counts for read-only agent planning. Approved agent execution currently records a simulation-only tool-call audit (`context.generate`, `plan.review`, `runtime.check`, and `patch.prepare`) tied to the operation run. The runtime check records the selected project/global AI runtime readiness without exposing runtime config; it does not mutate repositories or open PRs yet.
+When the canonical ledger has been backfilled with `assops-tool db sync-assets`, the generated context also includes an `asset_graph` snapshot with canonical assets, relations, recent status snapshots, type counts, and health counts for read-only agent planning. Rollback points include a `rollback_guardrail` summary that keeps preview-only execution mode visible in generated context and agent plans. Approved agent execution currently records a simulation-only tool-call audit (`context.generate`, `plan.review`, `runtime.check`, and `patch.prepare`) tied to the operation run. The runtime check records the selected project/global AI runtime readiness without exposing runtime config; it does not mutate repositories or open PRs yet.
 
 The CLI can read those files:
 

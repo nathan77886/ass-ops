@@ -118,6 +118,57 @@ func TestRollbackPointReadinessSQLIncludesPreviewOnlyFields(t *testing.T) {
 	}
 }
 
+func TestRollbackGuardrailSummary(t *testing.T) {
+	empty := rollbackGuardrailSummary(nil)
+	if empty["execution_enabled"] != false || empty["execution_mode"] != "read_only_preview" || empty["total"] != 0 {
+		t.Fatalf("empty summary = %#v", empty)
+	}
+
+	summary := rollbackGuardrailSummary([]map[string]any{
+		{
+			"rollback_readiness":        "previewable",
+			"rollback_executable":       false,
+			"rollback_execution_mode":   "read_only_preview",
+			"rollback_readiness_reason": "revision metadata is available",
+		},
+		{
+			"rollback_readiness":  "blocked",
+			"rollback_executable": false,
+		},
+	})
+	if summary["execution_enabled"] != false || summary["execution_mode"] != "read_only_preview" {
+		t.Fatalf("summary execution fields = %#v", summary)
+	}
+	if summary["previewable_count"] != 1 || summary["executable_count"] != 0 || summary["total"] != 2 {
+		t.Fatalf("summary counts = %#v", summary)
+	}
+	if !strings.Contains(fmt.Sprint(summary["message"]), "disabled") {
+		t.Fatalf("summary message = %#v", summary["message"])
+	}
+
+	executable := rollbackGuardrailSummary([]map[string]any{
+		{
+			"rollback_readiness":      "previewable",
+			"rollback_executable":     true,
+			"rollback_execution_mode": "approval_required",
+		},
+	})
+	if executable["execution_enabled"] != true || executable["executable_count"] != 1 {
+		t.Fatalf("executable summary = %#v", executable)
+	}
+	if !strings.Contains(fmt.Sprint(executable["message"]), "explicit approval") {
+		t.Fatalf("executable summary message = %#v", executable["message"])
+	}
+
+	mixed := rollbackGuardrailSummary([]map[string]any{
+		{"rollback_execution_mode": "read_only_preview"},
+		{"rollback_execution_mode": "approval_required"},
+	})
+	if mixed["execution_mode"] != "mixed" {
+		t.Fatalf("mixed execution mode = %#v", mixed)
+	}
+}
+
 func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 	sql := assetInventorySQL()
 	for _, token := range []string{
@@ -1578,6 +1629,7 @@ func TestAgentPlanContentUsesContextSnapshot(t *testing.T) {
 		"Deployment targets: 1",
 		"Rollback points: 2",
 		"Rollback readiness: blocked=1, previewable=1",
+		"Rollback execution: read_only_preview (1 previewable, 0 executable)",
 		"SSH machines: 1",
 		"GitHub Actions runs: 1",
 		"Asset graph assets: 2",
@@ -1587,6 +1639,7 @@ func TestAgentPlanContentUsesContextSnapshot(t *testing.T) {
 		"Asset health: high=1, normal=1",
 		"Review canonical asset graph entries, status snapshots",
 		"No code changes, deployments, SSH execution",
+		"Rollback execution is disabled in this first version",
 		"High-risk follow-up actions must use operation approvals",
 	} {
 		if !strings.Contains(content, token) {

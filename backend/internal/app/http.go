@@ -8924,6 +8924,10 @@ func agentPlanContent(task, snapshot map[string]any) string {
 	if rollbackReadinessSummary == "" {
 		rollbackReadinessSummary = "none"
 	}
+	rollbackGuardrail := mapFromAny(contextJSON["rollback_guardrail"])
+	if len(rollbackGuardrail) == 0 {
+		rollbackGuardrail = rollbackGuardrailSummary(rollbackPoints)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Agent Read-Only Plan\n\n")
 	fmt.Fprintf(&b, "Task: %s\n\n", strings.TrimSpace(fmt.Sprint(task["title"])))
@@ -8939,6 +8943,11 @@ func agentPlanContent(task, snapshot map[string]any) string {
 	fmt.Fprintf(&b, "- Deployment targets: %d\n", len(deploymentTargets))
 	fmt.Fprintf(&b, "- Rollback points: %d\n", len(rollbackPoints))
 	fmt.Fprintf(&b, "- Rollback readiness: %s\n", rollbackReadinessSummary)
+	fmt.Fprintf(&b, "- Rollback execution: %s (%d previewable, %d executable)\n",
+		strings.TrimSpace(fmt.Sprint(rollbackGuardrail["execution_mode"])),
+		intFromAny(rollbackGuardrail["previewable_count"], 0),
+		intFromAny(rollbackGuardrail["executable_count"], 0),
+	)
 	fmt.Fprintf(&b, "- SSH machines: %d\n", len(sshMachines))
 	fmt.Fprintf(&b, "- GitHub Actions runs: %d\n", len(githubRuns))
 	fmt.Fprintf(&b, "- Asset graph assets: %d\n", len(assets))
@@ -8955,8 +8964,48 @@ func agentPlanContent(task, snapshot map[string]any) string {
 	fmt.Fprintf(&b, "- context.generate\n- repo.sync status review\n- github.actions.sync status review\n- argo.apps.sync status review\n- ssh command audit review\n\n")
 	fmt.Fprintf(&b, "## Guardrails\n\n")
 	fmt.Fprintf(&b, "- No code changes, deployments, SSH execution, repository tags, or rollback actions in this plan.\n")
+	if msg := strings.TrimSpace(fmt.Sprint(rollbackGuardrail["message"])); msg != "" && msg != "<nil>" {
+		fmt.Fprintf(&b, "- %s\n", msg)
+	}
 	fmt.Fprintf(&b, "- High-risk follow-up actions must use operation approvals.\n")
 	return b.String()
+}
+
+func rollbackGuardrailSummary(rollbackPoints []map[string]any) map[string]any {
+	previewable := 0
+	executable := 0
+	mode := ""
+	for _, row := range rollbackPoints {
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(row["rollback_readiness"])), "previewable") {
+			previewable++
+		}
+		if value, ok := row["rollback_executable"].(bool); ok && value {
+			executable++
+		}
+		if rowMode := strings.TrimSpace(fmt.Sprint(row["rollback_execution_mode"])); rowMode != "" && rowMode != "<nil>" {
+			if mode == "" {
+				mode = rowMode
+			} else if mode != rowMode {
+				mode = "mixed"
+			}
+		}
+	}
+	if mode == "" {
+		mode = "read_only_preview"
+	}
+	executionEnabled := executable > 0
+	message := "Rollback execution is disabled in this first version; rollback points are preview-only evidence."
+	if executionEnabled {
+		message = "Rollback execution appears enabled for at least one rollback point; require explicit approval and environment review before action."
+	}
+	return map[string]any{
+		"total":             len(rollbackPoints),
+		"previewable_count": previewable,
+		"executable_count":  executable,
+		"execution_enabled": executionEnabled,
+		"execution_mode":    mode,
+		"message":           message,
+	}
 }
 
 func countByStringField(rows []map[string]any, field string) map[string]int {
@@ -10097,6 +10146,7 @@ func (s *Server) BuildContextFiles(ctx context.Context, projectID string) (map[s
 		{"name": "github.actions.sync", "description": "GitHub Actions query adapter"},
 		{"name": "ssh.exec", "description": "SSH command adapter"},
 	}
+	rollbackGuardrail := rollbackGuardrailSummary(rollbackPoints)
 	contextJSON := map[string]any{
 		"project":            project,
 		"repositories":       repos,
@@ -10106,6 +10156,7 @@ func (s *Server) BuildContextFiles(ctx context.Context, projectID string) (map[s
 		"deployment_targets": deploymentTargets,
 		"deployment_records": deploymentRecords,
 		"rollback_points":    rollbackPoints,
+		"rollback_guardrail": rollbackGuardrail,
 		"ssh_machines":       sshMachines,
 		"github_action_runs": githubRuns,
 		"asset_graph": map[string]any{
@@ -10118,7 +10169,7 @@ func (s *Server) BuildContextFiles(ctx context.Context, projectID string) (map[s
 		},
 	}
 	manifest := map[string]any{"tools": tools}
-	brief := fmt.Sprintf("# ASSOPS Context\n\nProject: %s\n\nRepositories: %d\nRemotes: %d\nRecent operations: %d\nApprovals: %d\nDeployment targets: %d\nSSH machines: %d\nGitHub Actions runs: %d\nAsset graph assets: %d\nAsset graph relations: %d\nAsset status snapshots: %d\n", project["name"], len(repos), len(remotes), len(operations), len(approvals), len(deploymentTargets), len(sshMachines), len(githubRuns), len(assets), len(assetRelations), len(assetStatusSnapshots))
+	brief := fmt.Sprintf("# ASSOPS Context\n\nProject: %s\n\nRepositories: %d\nRemotes: %d\nRecent operations: %d\nApprovals: %d\nDeployment targets: %d\nRollback points: %d\nRollback execution: %s\nSSH machines: %d\nGitHub Actions runs: %d\nAsset graph assets: %d\nAsset graph relations: %d\nAsset status snapshots: %d\n", project["name"], len(repos), len(remotes), len(operations), len(approvals), len(deploymentTargets), len(rollbackPoints), rollbackGuardrail["execution_mode"], len(sshMachines), len(githubRuns), len(assets), len(assetRelations), len(assetStatusSnapshots))
 	base := filepath.Join(s.cfg.ContextDir, projectID)
 	if err := os.MkdirAll(base, contextDirMode); err != nil {
 		return nil, nil, err
