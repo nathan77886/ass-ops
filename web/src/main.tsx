@@ -1027,7 +1027,7 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
   );
 }
 
-function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
+function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?: AnyRow; persistedAttemptLedger?: AnyRow }) {
   if (!value || value.kind !== 'project_template_provider_review_execute') return null;
   const request = value.execution_request || {};
   const guardrail = value.execution_guardrail || {};
@@ -1050,7 +1050,7 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
   const responseDiagnosticOperations = Array.isArray(responseDiagnostics.operations) ? responseDiagnostics.operations : [];
   const idempotencyPlan = reconciliation.idempotency_plan || adapterContract.idempotency_plan || {};
   const idempotencyOperations = Array.isArray(idempotencyPlan.operations) ? idempotencyPlan.operations : [];
-  const attemptLedger = result.provider_review_attempt_ledger || {};
+  const attemptLedger = result.provider_review_attempt_ledger?.status ? result.provider_review_attempt_ledger : (persistedAttemptLedger || {});
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
   return (
     <Space direction="vertical" size={8} className="full">
@@ -2757,7 +2757,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             { title: 'Created', dataIndex: 'created_at' }
           ]} />
           {approvalAudit.data?.approval?.notification_last_error && <Alert type="error" showIcon message={approvalAudit.data.approval.notification_last_error} />}
-          <ProviderReviewApprovalAudit value={approvalAudit.data?.approval_payload_audit} />
+          <ProviderReviewApprovalAudit value={approvalAudit.data?.approval_payload_audit} persistedAttemptLedger={approvalAudit.data?.provider_review_attempt_ledger} />
           {approvalAudit.data?.approval && approvalStillActive(approvalAudit.data.approval) && canActOnApproval(approvalAudit.data.approval, currentRole) && (
             <Space wrap>
               <Input placeholder="Delegate to email" value={delegateEmail} onChange={(event) => setDelegateEmail(event.target.value)} style={{ width: 240 }} />

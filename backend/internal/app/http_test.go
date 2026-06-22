@@ -2416,6 +2416,109 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 	}
 }
 
+func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)SELECT.*FROM provider_review_attempts.*WHERE operation_approval_id=\$1`).
+		WithArgs("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"operation_name",
+			"endpoint_key",
+			"status",
+			"replay_check",
+			"conflict_policy",
+			"retry_policy",
+			"provider_api_call_made",
+			"provider_api_mutation",
+			"external_call_made",
+		}).AddRow(
+			"44444444-4444-4444-4444-444444444444",
+			"open_review_request",
+			"github.open_review",
+			"planned",
+			"detect_existing_open_review",
+			"reuse_existing_review_request",
+			"retry_only_after_response_diagnostics",
+			false,
+			"disabled",
+			false,
+		))
+	summary, err := server.providerReviewAttemptLedgerForApproval(context.Background(), "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	if err != nil {
+		t.Fatalf("providerReviewAttemptLedgerForApproval: %v", err)
+	}
+	if summary["status"] != "recorded" ||
+		summary["attempt_count"] != 1 ||
+		summary["provider_api_call_made"] != false ||
+		summary["provider_api_mutation"] != "disabled" ||
+		summary["idempotency_key_included"] != false {
+		t.Fatalf("attempt ledger summary = %#v", summary)
+	}
+	operations := sliceOfMapsFromAny(summary["operations"])
+	if len(operations) != 1 ||
+		operations[0]["name"] != "open_review_request" ||
+		operations[0]["endpoint_key"] != "github.open_review" ||
+		operations[0]["idempotency_key_included"] != false {
+		t.Fatalf("attempt ledger operations = %#v", operations)
+	}
+	encoded, _ := json.Marshal(summary)
+	for _, leak := range []string{"idempotency_key_material", "idempotency_key_hash", "request_summary", "secret-token", "api.github.example.test", "secret-repo"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("persisted attempt ledger leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLedgerForApprovalHandlesEmptyInputAndRows(t *testing.T) {
+	serverWithoutDB := &Server{}
+	emptySummary, err := serverWithoutDB.providerReviewAttemptLedgerForApproval(context.Background(), "")
+	if err != nil {
+		t.Fatalf("providerReviewAttemptLedgerForApproval empty id: %v", err)
+	}
+	if emptySummary["status"] != "not_recorded" || emptySummary["attempt_count"] != 0 {
+		t.Fatalf("empty id summary = %#v", emptySummary)
+	}
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)SELECT.*FROM provider_review_attempts.*WHERE operation_approval_id=\$1`).
+		WithArgs("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"operation_name",
+			"endpoint_key",
+			"status",
+			"replay_check",
+			"conflict_policy",
+			"retry_policy",
+			"provider_api_call_made",
+			"provider_api_mutation",
+			"external_call_made",
+		}))
+	zeroSummary, err := server.providerReviewAttemptLedgerForApproval(context.Background(), "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	if err != nil {
+		t.Fatalf("providerReviewAttemptLedgerForApproval zero rows: %v", err)
+	}
+	if zeroSummary["status"] != "not_recorded" || zeroSummary["attempt_count"] != 0 {
+		t.Fatalf("zero rows summary = %#v", zeroSummary)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
 func TestRepoSyncRunFiltersFromRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/repo-sync-runs?asset_id=%20asset-1%20&status=%20failed%20&ref=%20refs/heads/main%20&since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z", nil)
 	got, err := repoSyncRunFiltersFromRequest(req)

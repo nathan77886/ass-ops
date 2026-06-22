@@ -8583,6 +8583,14 @@ func (s *Server) getOperationApproval(w http.ResponseWriter, r *http.Request) {
 	delete(approval, "request_payload")
 	opID := cleanOptionalID(fmt.Sprint(approval["operation_run_id"]))
 	response := map[string]any{"approval": approval, "approval_payload_audit": payloadAudit}
+	if stringFromMap(approval, "action") == templateProviderReviewExecuteApprovalAction {
+		attemptLedger, err := s.providerReviewAttemptLedgerForApproval(r.Context(), chi.URLParam(r, "id"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not load provider review attempts")
+			return
+		}
+		response["provider_review_attempt_ledger"] = attemptLedger
+	}
 	decisions, err := s.operationApprovalDecisions(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load approval decisions")
@@ -8693,6 +8701,32 @@ func operationApprovalPayloadAudit(approval map[string]any) map[string]any {
 	default:
 		return map[string]any{}
 	}
+}
+
+func (s *Server) providerReviewAttemptLedgerForApproval(ctx context.Context, approvalID string) (map[string]any, error) {
+	approvalID = cleanOptionalID(approvalID)
+	if approvalID == "" {
+		return providerReviewAttemptLedgerSummary(nil), nil
+	}
+	attempts, err := queryMaps(ctx, s.store.DB, `
+		SELECT
+			id,
+			operation_name,
+			endpoint_key,
+			status,
+			replay_check,
+			conflict_policy,
+			retry_policy,
+			provider_api_call_made,
+			provider_api_mutation,
+			external_call_made
+		FROM provider_review_attempts
+		WHERE operation_approval_id=$1
+		ORDER BY created_at ASC, operation_name ASC`, approvalID)
+	if err != nil {
+		return nil, err
+	}
+	return providerReviewAttemptLedgerSummary(attempts), nil
 }
 
 func sanitizedProviderReviewExecutionGuardrail(value map[string]any) map[string]any {
