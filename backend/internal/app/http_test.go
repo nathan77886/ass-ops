@@ -1597,6 +1597,66 @@ func TestOperationApprovalRulesSQLIncludesPolicyFields(t *testing.T) {
 	}
 }
 
+func TestApprovalChannelDestinationsPreviewKinds(t *testing.T) {
+	destinations := approvalChannelDestinations([]string{"ui", "webhook", "email:ops@example.com", "slack:#deploys", "pagerduty"})
+	if len(destinations) != 5 {
+		t.Fatalf("destinations = %#v", destinations)
+	}
+	if destinations[0]["kind"] != "ui" || destinations[0]["label"] != "Operations UI" || destinations[0]["needs_config"] != false {
+		t.Fatalf("ui destination = %#v", destinations[0])
+	}
+	if destinations[1]["kind"] != "webhook" || destinations[1]["target"] != "" || destinations[1]["needs_config"] != false {
+		t.Fatalf("webhook destination = %#v", destinations[1])
+	}
+	if destinations[2]["kind"] != "email" || destinations[2]["target"] != "ops@example.com" || destinations[2]["needs_config"] != true {
+		t.Fatalf("email destination = %#v", destinations[2])
+	}
+	if destinations[3]["kind"] != "slack" || destinations[3]["target"] != "#deploys" || destinations[3]["needs_config"] != true {
+		t.Fatalf("slack destination = %#v", destinations[3])
+	}
+	if destinations[4]["kind"] != "pagerduty" || destinations[4]["needs_config"] != true {
+		t.Fatalf("pagerduty destination = %#v", destinations[4])
+	}
+}
+
+func TestApprovalChannelDestinationsHideUnknownTargets(t *testing.T) {
+	destinations := approvalChannelDestinations([]string{" sms:+1234567890 ", "custom:target:extra"})
+	if len(destinations) != 2 {
+		t.Fatalf("destinations = %#v", destinations)
+	}
+	for _, destination := range destinations {
+		if destination["needs_config"] != true {
+			t.Fatalf("destination should need config: %#v", destination)
+		}
+		label := fmt.Sprint(destination["label"])
+		if strings.Contains(label, "+1234567890") || strings.Contains(label, "target") || strings.Contains(label, "extra") {
+			t.Fatalf("unknown destination label leaked target: %#v", destination)
+		}
+	}
+	if len(approvalChannelDestinations(nil)) != 0 {
+		t.Fatal("nil channel list should produce no destinations")
+	}
+}
+
+func TestEnrichOperationApprovalRuleDoesNotExposeWebhookSecretConfig(t *testing.T) {
+	t.Setenv("ASSOPS_APPROVAL_WEBHOOK_URL", "https://example.test/secret-hook")
+	t.Setenv("ASSOPS_APPROVAL_WEBHOOK_TOKEN", "secret-token")
+	item := enrichOperationApprovalRule(map[string]any{
+		"notification_channels": []string{"ui", "webhook"},
+		"escalation_channels":   []string{"email:ops@example.com"},
+	})
+	encoded, _ := json.Marshal(item)
+	if strings.Contains(string(encoded), "secret-hook") || strings.Contains(string(encoded), "secret-token") {
+		t.Fatalf("enriched approval rule leaked webhook config: %s", encoded)
+	}
+	if _, ok := item["notification_destinations"]; !ok {
+		t.Fatalf("notification_destinations missing: %#v", item)
+	}
+	if _, ok := item["escalation_destinations"]; !ok {
+		t.Fatalf("escalation_destinations missing: %#v", item)
+	}
+}
+
 func TestNormalizeRuleStringList(t *testing.T) {
 	got := normalizeRuleStringList([]string{" Admin ", "admin", "OWNER", ""}, []string{"fallback"})
 	want := []string{"admin", "owner"}

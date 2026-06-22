@@ -173,7 +173,7 @@ Implemented as real local code:
 - Gitea/GitHub webhook connection, HMAC verification, event audit asset graph visibility, connection health summaries, RepoSyncAsset enqueue, and GitHub Actions read-model updates
 - RepoSyncAsset archive/restore, filtered sync run history, per-asset sync health analytics, list-level risk summaries, 14-day trend, and provider/capacity signals with visible warning/danger thresholds
 - Background approval expiry sweep with expired-event notifications
-- Approval summary metrics, admin/owner approval rule editing with audit history, reminder-candidate SLA watch, manual and scheduled reminder delivery, escalation routing, approval delegation/revocation, multi-approver progress, per-user decision audit, saved audit views, audit filters for status/action/requester/keyword/time windows, approval detail drilldown, and approval request/rule asset graph visibility
+- Approval summary metrics, admin/owner approval rule editing with audit history, reminder-candidate SLA watch, manual and scheduled reminder delivery, escalation routing with destination previews, approval delegation/revocation, multi-approver progress, per-user decision audit, saved audit views, audit filters for status/action/requester/keyword/time windows, approval detail drilldown, and approval request/rule asset graph visibility
 - SSE live operation log stream for selected operation runs
 - Agent task list, read-only context plan generation from project operational context, agent-task/tool-call, SSH-command-run, and approval-request/rule asset graph entries, canonical asset graph snapshots, asset health snapshots, and tool-call audit visibility
 - ContextBuilder writing ASSOPS context files

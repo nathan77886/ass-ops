@@ -1819,6 +1819,31 @@ function approvalRoles(value: any): string[] {
   return fallback(clean([text]));
 }
 
+function approvalDestinationTags(value: any) {
+  const destinations = Array.isArray(value) ? value : [];
+  if (!destinations.length) return '-';
+  return (
+    <Space wrap size={4}>
+      {destinations.map((destination: AnyRow, index: number) => (
+        <Tag key={`${destination.channel || destination.label || index}`} color={destination.needs_config ? 'gold' : destination.kind === 'webhook' ? 'blue' : 'default'}>
+          {destination.label || destination.channel || destination.kind}
+        </Tag>
+      ))}
+    </Space>
+  );
+}
+
+function approvalEscalationDestinationTags(row: AnyRow) {
+  if (!row.escalation_after_minutes) return '-';
+  const destinations = Array.isArray(row.escalation_destinations) ? row.escalation_destinations : [];
+  return (
+    <Space wrap size={4}>
+      <Tag>{row.escalation_after_minutes}m</Tag>
+      {destinations.length ? approvalDestinationTags(destinations) : <Tag color="gold">No targets</Tag>}
+    </Space>
+  );
+}
+
 function parsePostgresTextArray(value: string): string[] {
   const body = value.slice(1, -1);
   const items: string[] = [];
@@ -2146,8 +2171,8 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
         { title: 'Approvers', render: (_, row) => approvalRoles(row.required_approver_roles).join(', ') },
         { title: 'Count', dataIndex: 'required_approval_count' },
         { title: 'Expires', render: (_, row) => `${row.expires_after_minutes || 0}m` },
-        { title: 'Notify', render: (_, row) => approvalRoles(row.notification_channels).join(', ') },
-        { title: 'Escalate', render: (_, row) => row.escalation_after_minutes ? `${row.escalation_after_minutes}m -> ${approvalRoles(row.escalation_channels).join(', ') || '-'}` : '-' },
+        { title: 'Notify', render: (_, row) => approvalDestinationTags(row.notification_destinations) },
+        { title: 'Escalate', render: (_, row) => approvalEscalationDestinationTags(row) },
         { title: 'Enabled', render: (_, row) => <Tag color={row.enabled ? 'green' : 'default'}>{row.enabled ? 'enabled' : 'disabled'}</Tag> },
         { title: 'Action', render: (_, row) => <Space>{canEditApprovalRules && <Button size="small" onClick={() => openApprovalRule(row)}>Edit</Button>}<Button size="small" onClick={() => setRuleAuditID(row.id)}>History</Button></Space> }
       ]} />

@@ -7190,7 +7190,11 @@ func (s *Server) listOperationApprovalRules(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	items, err := queryMaps(r.Context(), s.store.DB, operationApprovalRulesSQL())
-	writeQueryResult(w, items, err)
+	if err != nil {
+		writeQueryResult(w, items, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": enrichOperationApprovalRules(items)})
 }
 
 func operationApprovalRulesSQL() string {
@@ -7285,7 +7289,7 @@ func (s *Server) createOperationApprovalRule(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "could not commit approval rule")
 		return
 	}
-	writeJSON(w, http.StatusCreated, item)
+	writeJSON(w, http.StatusCreated, enrichOperationApprovalRule(item))
 }
 
 func (s *Server) updateOperationApprovalRule(w http.ResponseWriter, r *http.Request) {
@@ -7356,7 +7360,93 @@ func (s *Server) updateOperationApprovalRule(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "could not commit approval rule")
 		return
 	}
-	writeJSON(w, http.StatusOK, item)
+	writeJSON(w, http.StatusOK, enrichOperationApprovalRule(item))
+}
+
+func enrichOperationApprovalRules(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, enrichOperationApprovalRule(item))
+	}
+	return out
+}
+
+func enrichOperationApprovalRule(item map[string]any) map[string]any {
+	if item == nil {
+		return nil
+	}
+	out := make(map[string]any, len(item)+2)
+	for key, value := range item {
+		out[key] = value
+	}
+	out["notification_destinations"] = approvalChannelDestinations(approvalRolesFromAny(item["notification_channels"]))
+	out["escalation_destinations"] = approvalChannelDestinations(approvalRolesFromAny(item["escalation_channels"]))
+	return out
+}
+
+func approvalChannelDestinations(channels []string) []map[string]any {
+	destinations := make([]map[string]any, 0, len(channels))
+	for _, channel := range channels {
+		raw := strings.ToLower(strings.TrimSpace(channel))
+		if raw == "" {
+			continue
+		}
+		kind, target, _ := strings.Cut(raw, ":")
+		if target == "" {
+			kind = raw
+		}
+		destination := map[string]any{
+			"channel":      raw,
+			"kind":         kind,
+			"target":       target,
+			"label":        approvalDestinationLabel(kind, target),
+			"needs_config": approvalDestinationNeedsConfig(kind, target),
+		}
+		destinations = append(destinations, destination)
+	}
+	return destinations
+}
+
+func approvalDestinationLabel(kind, target string) string {
+	switch kind {
+	case "ui":
+		return "Operations UI"
+	case "webhook":
+		if target != "" {
+			return "Approval webhook: " + target
+		}
+		return "Approval webhook"
+	case "email":
+		if target != "" {
+			return "Email: " + target
+		}
+		return "Email"
+	case "slack":
+		if target != "" {
+			return "Slack: " + target
+		}
+		return "Slack"
+	case "pagerduty":
+		if target != "" {
+			return "PagerDuty: " + target
+		}
+		return "PagerDuty"
+	default:
+		return "Unknown channel: " + kind
+	}
+}
+
+func approvalDestinationNeedsConfig(kind, target string) bool {
+	switch kind {
+	case "ui":
+		return false
+	case "webhook":
+		return false
+	case "email", "slack", "pagerduty":
+		return true
+	default:
+		return true
+	}
 }
 
 func (s *Server) listOperationApprovalRuleAudits(w http.ResponseWriter, r *http.Request) {
