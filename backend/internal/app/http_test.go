@@ -839,15 +839,18 @@ func TestRepoSyncCapacitySignals(t *testing.T) {
 	signals := repoSyncCapacitySignals(
 		map[string]any{"id": "asset-1", "enabled": false},
 		map[string]any{
-			"source_provider":         "gitea",
-			"target_provider":         "github",
-			"source_last_sync_status": "completed",
-			"target_last_sync_status": "failed",
-			"active_runs":             int64(2),
-			"failed_runs_7d":          int64(6),
-			"webhook_failures_7d":     int64(1),
-			"github_runs_24h":         int64(55),
-			"last_webhook_error":      "bad signature",
+			"source_provider":               "gitea",
+			"target_provider":               "github",
+			"source_last_sync_status":       "completed",
+			"target_last_sync_status":       "failed",
+			"active_runs":                   int64(2),
+			"failed_runs_7d":                int64(6),
+			"webhook_failures_7d":           int64(1),
+			"github_runs_24h":               int64(55),
+			"provider_pair_active_runs":     int64(4),
+			"provider_pair_runs_24h":        int64(20),
+			"provider_pair_failed_runs_24h": int64(2),
+			"last_webhook_error":            "bad signature",
 		},
 		"source-1",
 		"target-1",
@@ -871,8 +874,66 @@ func TestRepoSyncCapacitySignals(t *testing.T) {
 	if byName["GitHub Actions volume"]["severity"] != "warning" {
 		t.Fatalf("GitHub Actions volume severity = %v", byName["GitHub Actions volume"]["severity"])
 	}
+	if byName["provider pair pressure"]["severity"] != "warning" || !strings.Contains(fmt.Sprint(byName["provider pair pressure"]["detail"]), "gitea -> github") {
+		t.Fatalf("provider pair pressure signal = %#v", byName["provider pair pressure"])
+	}
 	if byName["asset state"]["status"] != "disabled" {
 		t.Fatalf("asset state signal = %#v", byName["asset state"])
+	}
+}
+
+func TestRepoSyncProviderPairPressureSeverity(t *testing.T) {
+	cases := []struct {
+		name        string
+		active      int64
+		failures24h int64
+		want        string
+	}{
+		{name: "empty", want: "ok"},
+		{name: "failure warning", failures24h: 1, want: "warning"},
+		{name: "failure danger", failures24h: 3, want: "danger"},
+		{name: "active danger", active: 10, want: "danger"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			signals := repoSyncCapacitySignals(
+				map[string]any{"id": "asset-1", "enabled": true},
+				map[string]any{
+					"source_provider":               "gitea",
+					"target_provider":               "github",
+					"source_last_sync_status":       "completed",
+					"target_last_sync_status":       "completed",
+					"provider_pair_active_runs":     tc.active,
+					"provider_pair_runs_24h":        tc.active + tc.failures24h,
+					"provider_pair_failed_runs_24h": tc.failures24h,
+				},
+				"source-1",
+				"target-1",
+			)
+			byName := map[string]map[string]any{}
+			for _, signal := range signals {
+				byName[fmt.Sprint(signal["name"])] = signal
+			}
+			if byName["provider pair pressure"]["severity"] != tc.want {
+				t.Fatalf("provider pair pressure severity = %v, want %s", byName["provider pair pressure"]["severity"], tc.want)
+			}
+		})
+	}
+}
+
+func TestRepoSyncCapacitySignalsSQLIncludesProviderPairPressure(t *testing.T) {
+	sql := repoSyncAssetCapacitySQL()
+	for _, token := range []string{
+		"provider_pair_active_runs",
+		"provider_pair_runs_24h",
+		"provider_pair_failed_runs_24h",
+		"LEFT JOIN LATERAL",
+		"pair_source.provider_type=source.provider_type",
+		"pair_target.provider_type=target.provider_type",
+	} {
+		if !strings.Contains(sql, token) {
+			t.Fatalf("repo sync capacity SQL/source missing %q", token)
+		}
 	}
 }
 

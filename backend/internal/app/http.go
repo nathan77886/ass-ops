@@ -2738,7 +2738,17 @@ func (s *Server) repoSyncAssetCapacitySignals(ctx context.Context, asset map[str
 	assetID := strings.TrimSpace(fmt.Sprint(asset["id"]))
 	sourceID := strings.TrimSpace(fmt.Sprint(asset["source_remote_id"]))
 	targetID := strings.TrimSpace(fmt.Sprint(asset["target_remote_id"]))
-	raw, err := queryOne(ctx, s.store.DB, `
+	raw, err := queryOne(ctx, s.store.DB, repoSyncAssetCapacitySQL(),
+		assetID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return repoSyncCapacitySignals(asset, raw, sourceID, targetID), nil
+}
+
+func repoSyncAssetCapacitySQL() string {
+	return `
 		SELECT
 			source.provider_type AS source_provider,
 			target.provider_type AS target_provider,
@@ -2748,6 +2758,9 @@ func (s *Server) repoSyncAssetCapacitySignals(ctx context.Context, asset map[str
 			count(DISTINCT rsr.id) FILTER (WHERE rsr.status='failed' AND rsr.created_at >= now() - interval '7 days')::int AS failed_runs_7d,
 			count(DISTINCT we.id) FILTER (WHERE we.status IN ('failed', 'rejected') AND we.received_at >= now() - interval '7 days')::int AS webhook_failures_7d,
 			count(DISTINCT gar.id) FILTER (WHERE gar.created_at >= now() - interval '24 hours')::int AS github_runs_24h,
+			COALESCE(pair_pressure.active_runs, 0)::int AS provider_pair_active_runs,
+			COALESCE(pair_pressure.runs_24h, 0)::int AS provider_pair_runs_24h,
+			COALESCE(pair_pressure.failed_runs_24h, 0)::int AS provider_pair_failed_runs_24h,
 			max(we.error_message) FILTER (WHERE we.status IN ('failed', 'rejected') AND we.error_message <> '') AS last_webhook_error
 		FROM repo_sync_assets rsa
 		JOIN git_remotes source ON source.id=rsa.source_remote_id
@@ -2755,14 +2768,21 @@ func (s *Server) repoSyncAssetCapacitySignals(ctx context.Context, asset map[str
 		LEFT JOIN repo_sync_runs rsr ON rsr.repo_sync_asset_id=rsa.id
 		LEFT JOIN webhook_events we ON we.matched_repo_sync_asset_id=rsa.id
 		LEFT JOIN github_action_runs gar ON gar.git_remote_id IN (rsa.source_remote_id, rsa.target_remote_id)
+		LEFT JOIN LATERAL (
+			SELECT
+				count(DISTINCT pair_runs.id) FILTER (WHERE pair_runs.status IN ('queued', 'running', 'provisioning'))::int AS active_runs,
+				count(DISTINCT pair_runs.id) FILTER (WHERE pair_runs.created_at >= now() - interval '24 hours')::int AS runs_24h,
+				count(DISTINCT pair_runs.id) FILTER (WHERE pair_runs.status='failed' AND pair_runs.created_at >= now() - interval '24 hours')::int AS failed_runs_24h
+			FROM repo_sync_assets pair_asset
+			JOIN git_remotes pair_source ON pair_source.id=pair_asset.source_remote_id
+			JOIN git_remotes pair_target ON pair_target.id=pair_asset.target_remote_id
+			LEFT JOIN repo_sync_runs pair_runs ON pair_runs.repo_sync_asset_id=pair_asset.id
+			WHERE pair_source.provider_type=source.provider_type
+				AND pair_target.provider_type=target.provider_type
+		) pair_pressure ON true
 		WHERE rsa.id=$1
-		GROUP BY source.provider_type, target.provider_type, source.last_sync_status, target.last_sync_status`,
-		assetID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return repoSyncCapacitySignals(asset, raw, sourceID, targetID), nil
+		GROUP BY source.provider_type, target.provider_type, source.last_sync_status, target.last_sync_status,
+			pair_pressure.active_runs, pair_pressure.runs_24h, pair_pressure.failed_runs_24h`
 }
 
 func repoSyncCapacitySignals(asset, raw map[string]any, sourceID, targetID string) []map[string]any {
@@ -2815,6 +2835,26 @@ func repoSyncCapacitySignals(asset, raw map[string]any, sourceID, targetID strin
 		"status":   githubRuns,
 		"severity": severityForCount(githubRuns, 50, 200),
 		"detail":   fmt.Sprintf("%d action runs observed on source/target remotes in the last 24 hours", githubRuns),
+	})
+	pairActive := intFromAny(raw["provider_pair_active_runs"], 0)
+	pairRuns24h := intFromAny(raw["provider_pair_runs_24h"], 0)
+	pairFailures24h := intFromAny(raw["provider_pair_failed_runs_24h"], 0)
+	pairSeverity := severityForCount(pairActive, 3, 8)
+	if failureSeverity := severityForCount(pairFailures24h, 1, 3); failureSeverity == "danger" || (failureSeverity == "warning" && pairSeverity == "ok") {
+		pairSeverity = failureSeverity
+	}
+	signals = append(signals, map[string]any{
+		"name":     "provider pair pressure",
+		"status":   pairActive,
+		"severity": pairSeverity,
+		"detail": fmt.Sprintf(
+			"%d active and %d total sync runs in 24h for %s -> %s providers (%d failed)",
+			pairActive,
+			pairRuns24h,
+			firstNonEmptyString(strings.TrimSpace(fmt.Sprint(raw["source_provider"])), "unknown"),
+			firstNonEmptyString(strings.TrimSpace(fmt.Sprint(raw["target_provider"])), "unknown"),
+			pairFailures24h,
+		),
 	})
 	if enabled, ok := asset["enabled"].(bool); ok && !enabled {
 		signals = append(signals, map[string]any{"name": "asset state", "status": "disabled", "severity": "warning", "detail": "disabled sync assets do not enqueue manual or webhook runs"})
