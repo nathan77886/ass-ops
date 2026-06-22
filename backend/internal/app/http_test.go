@@ -222,6 +222,46 @@ func TestRelationProjectID(t *testing.T) {
 	}
 }
 
+func TestCreateAssetRelationRejectsSameAssetBeforeTransaction(t *testing.T) {
+	server := &Server{}
+	body := strings.NewReader(`{"from_asset_id":"asset-1","to_asset_id":"asset-1","relation_type":"depends_on"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/asset-relations", body)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.createAssetRelation(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+}
+
+func TestCreateAssetRelationRollsBackWhenCanonicalSyncFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).WillReturnError(fmt.Errorf("sync failed"))
+	mock.ExpectRollback()
+
+	body := strings.NewReader(`{"from_asset_id":"project:11111111-1111-1111-1111-111111111111","to_asset_id":"repository:22222222-2222-2222-2222-222222222222","relation_type":"depends_on"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/asset-relations", body)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.createAssetRelation(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestProviderAccountsMigrationIncludesTableAndRemoteFK(t *testing.T) {
 	content, err := os.ReadFile("../../migrations/003_provider_accounts.sql")
 	if err != nil {
@@ -1367,6 +1407,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.restore")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "argo_connection.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "ssh_machine.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.create")`,
 		`SyncCanonicalAssetsWith(r.Context(), tx)`,
 	} {
 		if !strings.Contains(string(httpSource), reason) {

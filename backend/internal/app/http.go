@@ -1818,16 +1818,15 @@ func (s *Server) createAssetRelation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "from_asset_id and to_asset_id must differ")
 		return
 	}
-	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not refresh canonical assets")
-		return
-	}
 	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create asset relation")
 		return
 	}
 	defer tx.Rollback()
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.create") {
+		return
+	}
 	fromAsset, err := canonicalAssetForRelation(r.Context(), tx, req.FromAssetID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
