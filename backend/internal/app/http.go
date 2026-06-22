@@ -887,7 +887,13 @@ func (s *Server) createProviderAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid metadata")
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start provider account transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		INSERT INTO provider_accounts(name, provider_type, api_base_url, web_base_url, token_env, default_owner, visibility, enabled, metadata)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
 		RETURNING *`,
@@ -903,6 +909,13 @@ func (s *Server) createProviderAccount(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "could not create provider account")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.create") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit provider account")
 		return
 	}
 	writeJSON(w, http.StatusCreated, sanitizeProviderAccount(item))
@@ -956,7 +969,13 @@ func (s *Server) updateProviderAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid metadata")
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start provider account transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE provider_accounts
 		SET name=$2,
 			provider_type=$3,
@@ -968,7 +987,7 @@ func (s *Server) updateProviderAccount(w http.ResponseWriter, r *http.Request) {
 			enabled=$9,
 			metadata=$10::jsonb,
 			updated_at=now()
-		WHERE id=$1
+		WHERE id=$1 AND token_env=$11
 		RETURNING *`,
 		chi.URLParam(r, "id"),
 		input.Name,
@@ -980,13 +999,25 @@ func (s *Server) updateProviderAccount(w http.ResponseWriter, r *http.Request) {
 		input.Visibility,
 		enabled,
 		metadataJSON,
+		current.TokenEnv,
 	)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusConflict, "provider account changed during update; retry")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "could not update provider account")
 		return
 	}
-	if err := refreshGitRemotesForProviderAccount(r.Context(), s.store.DB, input, chi.URLParam(r, "id")); err != nil {
+	if err := refreshGitRemotesForProviderAccount(r.Context(), tx, input, chi.URLParam(r, "id")); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not refresh provider account remotes")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.update") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit provider account")
 		return
 	}
 	writeJSON(w, http.StatusOK, sanitizeProviderAccount(item))
@@ -1008,17 +1039,35 @@ func (s *Server) checkProviderAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid provider account check")
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start provider account check transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE provider_accounts
 		SET metadata=metadata || jsonb_build_object('provider_check', $2::jsonb),
 			updated_at=now()
-		WHERE id=$1
+		WHERE id=$1 AND token_env=$3
 		RETURNING *`,
 		accountID,
 		checkJSON,
+		account.TokenEnv,
 	)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusConflict, "provider account changed during check; retry")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not store provider account check")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.check") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit provider account check")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"check": check, "account": sanitizeProviderAccount(item)})
@@ -1066,23 +1115,41 @@ func (s *Server) rotateProviderAccountTokenEnv(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid metadata")
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start provider token rotation transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE provider_accounts
 		SET token_env=$2,
 			metadata=$3::jsonb,
 			updated_at=now()
-		WHERE id=$1
+		WHERE id=$1 AND token_env=$4
 		RETURNING *`,
 		accountID,
 		tokenEnv,
 		metadataJSON,
+		account.TokenEnv,
 	)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusConflict, "provider account changed during token rotation; retry")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not rotate provider token env")
 		return
 	}
-	if err := refreshGitRemotesForProviderAccount(r.Context(), s.store.DB, next, accountID); err != nil {
+	if err := refreshGitRemotesForProviderAccount(r.Context(), tx, next, accountID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not refresh provider account remotes")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.rotate_token_env") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit provider token rotation")
 		return
 	}
 	writeJSON(w, http.StatusOK, sanitizeProviderAccount(item))
