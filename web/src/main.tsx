@@ -1952,11 +1952,15 @@ function approvalDestinationTags(value: any) {
   if (!destinations.length) return '-';
   return (
     <Space wrap size={4}>
-      {destinations.map((destination: AnyRow, index: number) => (
-        <Tag key={`${destination.channel || destination.label || index}`} color={destination.needs_config ? 'gold' : destination.kind === 'webhook' ? 'blue' : 'default'}>
-          {destination.label || destination.channel || destination.kind}
-        </Tag>
-      ))}
+      {destinations.map((destination: AnyRow, index: number) => {
+        const status = String(destination.adapter_status || 'unknown');
+        const color = status === 'enabled' ? 'green' : status === 'environment_backed' ? 'blue' : status === 'unknown' ? 'red' : 'gold';
+        return (
+          <Tag key={`${destination.channel || destination.label || index}`} color={color}>
+            {destination.label || destination.channel || destination.kind} · {status.replaceAll('_', ' ')}
+          </Tag>
+        );
+      })}
     </Space>
   );
 }

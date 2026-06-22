@@ -7626,16 +7626,34 @@ func approvalChannelDestinations(channels []string) []map[string]any {
 		if target == "" {
 			kind = raw
 		}
+		known := approvalDestinationKnownKind(kind)
+		exposedTarget := target
+		if !known {
+			exposedTarget = ""
+		}
+		readiness := approvalDestinationAdapterReadiness(kind, target)
 		destination := map[string]any{
 			"channel":      raw,
 			"kind":         kind,
-			"target":       target,
-			"label":        approvalDestinationLabel(kind, target),
+			"target":       exposedTarget,
+			"label":        approvalDestinationLabel(kind, exposedTarget),
 			"needs_config": approvalDestinationNeedsConfig(kind, target),
+		}
+		for key, value := range readiness {
+			destination[key] = value
 		}
 		destinations = append(destinations, destination)
 	}
 	return destinations
+}
+
+func approvalDestinationKnownKind(kind string) bool {
+	switch kind {
+	case "ui", "webhook", "email", "slack", "pagerduty":
+		return true
+	default:
+		return false
+	}
 }
 
 func approvalDestinationLabel(kind, target string) string {
@@ -7664,6 +7682,48 @@ func approvalDestinationLabel(kind, target string) string {
 		return "PagerDuty"
 	default:
 		return "Unknown channel: " + kind
+	}
+}
+
+func approvalDestinationAdapterReadiness(kind, target string) map[string]any {
+	switch kind {
+	case "ui":
+		return map[string]any{
+			"adapter":                "operations_ui",
+			"adapter_status":         "enabled",
+			"delivery_mode":          "in_app",
+			"requires_external_call": false,
+			"blocked_reason":         "",
+			"configuration_scope":    "built_in",
+		}
+	case "webhook":
+		return map[string]any{
+			"adapter":                "approval_webhook",
+			"adapter_status":         "environment_backed",
+			"delivery_mode":          "http_post",
+			"requires_external_call": true,
+			"blocked_reason":         "",
+			"configuration_scope":    "ASSOPS_APPROVAL_WEBHOOK_URL",
+		}
+	case "email", "slack", "pagerduty":
+		return map[string]any{
+			"adapter":                kind,
+			"adapter_status":         "planned",
+			"delivery_mode":          "preview_only",
+			"requires_external_call": true,
+			"blocked_reason":         "adapter delivery is not implemented yet",
+			"configuration_scope":    "future_connector",
+		}
+	default:
+		return map[string]any{
+			"adapter":                "custom",
+			"adapter_status":         "unknown",
+			"delivery_mode":          "preview_only",
+			"requires_external_call": target != "",
+			"blocked_reason":         "unknown approval destination adapter",
+			"configuration_scope":    "custom",
+			"redacted_target":        target != "",
+		}
 	}
 }
 

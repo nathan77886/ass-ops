@@ -1898,8 +1898,14 @@ func TestApprovalChannelDestinationsPreviewKinds(t *testing.T) {
 	if destinations[0]["kind"] != "ui" || destinations[0]["label"] != "Operations UI" || destinations[0]["needs_config"] != false {
 		t.Fatalf("ui destination = %#v", destinations[0])
 	}
+	if destinations[0]["adapter"] != "operations_ui" || destinations[0]["adapter_status"] != "enabled" || destinations[0]["delivery_mode"] != "in_app" {
+		t.Fatalf("ui adapter readiness = %#v", destinations[0])
+	}
 	if destinations[1]["kind"] != "webhook" || destinations[1]["target"] != "" || destinations[1]["needs_config"] != false {
 		t.Fatalf("webhook destination = %#v", destinations[1])
+	}
+	if destinations[1]["adapter"] != "approval_webhook" || destinations[1]["adapter_status"] != "environment_backed" || destinations[1]["delivery_mode"] != "http_post" || destinations[1]["requires_external_call"] != true {
+		t.Fatalf("webhook adapter readiness = %#v", destinations[1])
 	}
 	if destinations[2]["kind"] != "email" || destinations[2]["target"] != "ops@example.com" || destinations[2]["needs_config"] != true {
 		t.Fatalf("email destination = %#v", destinations[2])
@@ -1909,6 +1915,16 @@ func TestApprovalChannelDestinationsPreviewKinds(t *testing.T) {
 	}
 	if destinations[4]["kind"] != "pagerduty" || destinations[4]["needs_config"] != true {
 		t.Fatalf("pagerduty destination = %#v", destinations[4])
+	}
+	for _, index := range []int{2, 3, 4} {
+		if destinations[index]["adapter_status"] != "planned" || destinations[index]["delivery_mode"] != "preview_only" || destinations[index]["requires_external_call"] != true {
+			t.Fatalf("future adapter should be preview-only: %#v", destinations[index])
+		}
+	}
+	for _, kind := range []string{"ui", "webhook", "email", "slack", "pagerduty"} {
+		if !approvalDestinationKnownKind(kind) || approvalDestinationAdapterReadiness(kind, "")["adapter_status"] == "unknown" {
+			t.Fatalf("known destination kind missing adapter readiness: %s", kind)
+		}
 	}
 }
 
@@ -1924,6 +1940,12 @@ func TestApprovalChannelDestinationsHideUnknownTargets(t *testing.T) {
 		label := fmt.Sprint(destination["label"])
 		if strings.Contains(label, "+1234567890") || strings.Contains(label, "target") || strings.Contains(label, "extra") {
 			t.Fatalf("unknown destination label leaked target: %#v", destination)
+		}
+		if fmt.Sprint(destination["target"]) != "" || destination["redacted_target"] != true {
+			t.Fatalf("unknown destination should redact target: %#v", destination)
+		}
+		if destination["adapter_status"] != "unknown" || destination["delivery_mode"] != "preview_only" || destination["requires_external_call"] != true {
+			t.Fatalf("unknown destination should remain preview-only: %#v", destination)
 		}
 	}
 	if len(approvalChannelDestinations(nil)) != 0 {
@@ -1945,8 +1967,20 @@ func TestEnrichOperationApprovalRuleDoesNotExposeWebhookSecretConfig(t *testing.
 	if _, ok := item["notification_destinations"]; !ok {
 		t.Fatalf("notification_destinations missing: %#v", item)
 	}
+	notifications := sliceOfMapsFromAny(item["notification_destinations"])
+	if len(notifications) != 2 ||
+		notifications[1]["adapter"] != "approval_webhook" ||
+		notifications[1]["adapter_status"] != "environment_backed" ||
+		notifications[1]["delivery_mode"] != "http_post" ||
+		notifications[1]["requires_external_call"] != true {
+		t.Fatalf("notification destination adapter readiness missing: %#v", notifications)
+	}
 	if _, ok := item["escalation_destinations"]; !ok {
 		t.Fatalf("escalation_destinations missing: %#v", item)
+	}
+	escalation := sliceOfMapsFromAny(item["escalation_destinations"])
+	if len(escalation) != 1 || escalation[0]["adapter"] != "email" || escalation[0]["adapter_status"] != "planned" {
+		t.Fatalf("escalation destination adapter readiness missing: %#v", escalation)
 	}
 }
 
