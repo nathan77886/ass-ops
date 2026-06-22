@@ -5279,6 +5279,45 @@ func assetInventorySQL() string {
 		FROM operation_runs op
 		UNION ALL
 		SELECT
+			'operation_approval:' || oa.id::text,
+			COALESCE(oa.project_id::text, ''),
+			'operation_approval',
+			oa.title,
+			oa.title,
+			oa.action,
+			'assops_approval',
+			oa.id::text,
+			oa.status,
+			CASE
+				WHEN oa.status IN ('rejected', 'expired') THEN 'high'
+				WHEN oa.status='pending' THEN 'warning'
+				ELSE 'normal'
+			END,
+			'operation_approvals',
+			oa.id::text,
+			jsonb_build_object(
+				'action', oa.action,
+				'resource_type', oa.resource_type,
+				'resource_id', oa.resource_id,
+				'operation_run_id', oa.operation_run_id,
+				'required_approval_count', oa.required_approval_count,
+				'approved_count', COALESCE(decision_counts.approved_count, 0),
+				'rejected_count', COALESCE(decision_counts.rejected_count, 0),
+				'notification_status', oa.notification_status,
+				'escalation_count', oa.escalation_count
+			),
+			oa.created_at,
+			oa.updated_at
+		FROM operation_approvals oa
+		LEFT JOIN LATERAL (
+			SELECT
+				count(*) FILTER (WHERE decision='approved')::int AS approved_count,
+				count(*) FILTER (WHERE decision='rejected')::int AS rejected_count
+			FROM operation_approval_decisions oad
+			WHERE oad.operation_approval_id=oa.id
+		) decision_counts ON true
+		UNION ALL
+		SELECT
 			'repo_sync:' || rsa.id::text,
 			rsa.project_id::text,
 			'repo_sync',
@@ -5575,6 +5614,58 @@ func assetRelationInventorySQL() string {
 			op.created_at
 		FROM projects p
 		JOIN operation_runs op ON op.project_id=p.id
+		UNION ALL
+		SELECT
+			'project:' || p.id::text || ':owns:operation_approval:' || oa.id::text,
+			p.id::text,
+			'project:' || p.id::text,
+			'operation_approval:' || oa.id::text,
+			'owns_approval',
+			jsonb_build_object('action', oa.action, 'status', oa.status),
+			oa.created_at
+		FROM projects p
+		JOIN operation_approvals oa ON oa.project_id=p.id
+		UNION ALL
+		SELECT
+			'operation_approval:' || oa.id::text || ':gates_operation:operation_run:' || op.id::text,
+			COALESCE(oa.project_id::text, op.project_id::text, ''),
+			'operation_approval:' || oa.id::text,
+			'operation_run:' || op.id::text,
+			'gates_operation',
+			jsonb_build_object('action', oa.action, 'status', oa.status),
+			oa.created_at
+		FROM operation_approvals oa
+		JOIN operation_runs op ON op.id=oa.operation_run_id
+		UNION ALL
+		SELECT
+			'operation_approval:' || oa.id::text || ':targets:' || approval_resource.asset_id,
+			COALESCE(oa.project_id::text, ''),
+			'operation_approval:' || oa.id::text,
+			approval_resource.asset_id,
+			'targets',
+			jsonb_build_object('action', oa.action, 'status', oa.status),
+			oa.created_at
+		FROM operation_approvals oa
+		JOIN LATERAL (
+			-- Current approval policy resources use UUID primary keys. If a future resource
+			-- type uses slugs or external IDs, add an explicit mapping here instead of
+			-- letting the UUID filter below silently drop the target relation.
+			SELECT CASE oa.resource_type
+				WHEN 'project' THEN 'project:' || oa.resource_id
+				WHEN 'repository' THEN 'repository:' || oa.resource_id
+				WHEN 'git_remote' THEN 'git_remote:' || oa.resource_id
+				WHEN 'repo_sync' THEN 'repo_sync:' || oa.resource_id
+				WHEN 'webhook_connection' THEN 'webhook_connection:' || oa.resource_id
+				WHEN 'ssh_machine' THEN 'ssh_machine:' || oa.resource_id
+				-- Compatibility alias for older callers that described SSH machines as hosts.
+				WHEN 'host' THEN 'ssh_machine:' || oa.resource_id
+				WHEN 'agent_task' THEN 'agent_task:' || oa.resource_id
+				WHEN 'argo_connection' THEN 'argo_connection:' || oa.resource_id
+				ELSE ''
+			END AS asset_id
+		) approval_resource ON approval_resource.asset_id <> ''
+		WHERE oa.resource_type IN ('project', 'repository', 'git_remote', 'repo_sync', 'webhook_connection', 'host', 'ssh_machine', 'agent_task', 'argo_connection')
+			AND oa.resource_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 		UNION ALL
 		SELECT
 			'git_remote:' || gr.id::text || ':triggered:operation_run:' || op.id::text,
@@ -7558,6 +7649,9 @@ func (s *Server) approveOperationApproval(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusInternalServerError, "could not update approval progress")
 			return
 		}
+		if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.progress") {
+			return
+		}
 		if err := tx.Commit(); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not commit approval progress")
 			return
@@ -7654,6 +7748,9 @@ func (s *Server) rejectOperationApproval(w http.ResponseWriter, r *http.Request)
 		RETURNING *`, chi.URLParam(r, "id"), currentUser(r).ID, strings.TrimSpace(req.Reason))
 	if err != nil {
 		writeQueryOne(w, item, err)
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.reject") {
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -8013,7 +8110,12 @@ func (s *Server) createOperationApproval(ctx context.Context, resource PolicyRes
 	if expiresAfter <= 0 {
 		expiresAfter = 1440
 	}
-	approval, err := queryOne(ctx, s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	approval, err := queryOne(ctx, tx, `
 		INSERT INTO operation_approvals(
 			project_id,
 			approval_rule_id,
@@ -8048,6 +8150,12 @@ func (s *Server) createOperationApproval(ctx context.Context, resource PolicyRes
 		)
 		RETURNING *`, cleanOptionalID(resource.ProjectID), rule.ID, resource.Type, resource.ID, action, title, payloadJSON, pq.Array(rule.RequiredApproverRoles), rule.RequiredApprovalCount, pq.Array(rule.NotificationChannels), rule.EscalationAfterMinutes, pq.Array(rule.EscalationChannels), expiresAfter, requestedBy)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		return nil, fmt.Errorf("syncing canonical assets for operation approval create: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return s.dispatchApprovalNotification(ctx, approval, "pending"), nil
@@ -8117,6 +8225,11 @@ func (s *Server) expirePendingOperationApprovals(ctx context.Context, db sqlx.Ex
 	if err != nil {
 		return err
 	}
+	if len(items) > 0 {
+		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+			return fmt.Errorf("syncing canonical assets for expired operation approvals: %w", err)
+		}
+	}
 	for _, item := range items {
 		s.dispatchApprovalNotification(ctx, item, "expired")
 	}
@@ -8168,6 +8281,13 @@ func (s *Server) dispatchApprovalNotification(ctx context.Context, approval map[
 		RETURNING *`, approval["id"], status, lastError)
 	if err != nil {
 		return approval
+	}
+	if s.store != nil && s.store.DB != nil {
+		// Notification dispatch happens after the approval transaction commits, so this
+		// refresh is intentionally best-effort; the next canonical sync will repair it.
+		if _, syncErr := SyncCanonicalAssetsWith(ctx, s.store.DB); syncErr != nil {
+			s.log.Debug("could not sync canonical assets after approval notification", "error", syncErr)
+		}
 	}
 	return updated
 }
