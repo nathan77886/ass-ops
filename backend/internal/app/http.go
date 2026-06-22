@@ -3412,7 +3412,13 @@ func (s *Server) createWebhookConnection(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid metadata")
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start webhook connection transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		INSERT INTO webhook_connections(project_id, provider, name, source_remote_id, secret_token, secret_ciphertext, enabled, event_types, metadata)
 		VALUES ($1, $2, $3, $4, '', $5, $6, $7::jsonb, $8::jsonb)
 		RETURNING id, project_id, provider, name, source_remote_id, enabled, event_types,
@@ -3431,6 +3437,13 @@ func (s *Server) createWebhookConnection(w http.ResponseWriter, r *http.Request)
 	)
 	if err != nil {
 		writeQueryOne(w, item, err)
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "webhook_connection.create") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit webhook connection")
 		return
 	}
 	if generated {
@@ -3477,12 +3490,18 @@ func (s *Server) rotateWebhookConnectionSecret(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "could not encrypt webhook secret")
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start webhook secret rotation transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE webhook_connections
 		SET secret_token='',
 			secret_ciphertext=$2,
 			updated_at=now()
-		WHERE id=$1
+		WHERE id=$1 AND project_id=$4
 		RETURNING id, project_id, provider, name, source_remote_id, enabled, event_types,
 			last_delivery_status, last_delivery_error, metadata, created_at, updated_at,
 			('/api/webhooks/' || provider || '/' || id::text) AS webhook_path,
@@ -3490,9 +3509,21 @@ func (s *Server) rotateWebhookConnectionSecret(w http.ResponseWriter, r *http.Re
 		connectionID,
 		secretCiphertext,
 		s.publicBaseURL(),
+		projectID,
 	)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusConflict, "webhook connection changed during secret rotation; retry")
+			return
+		}
 		writeQueryOne(w, item, err)
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "webhook_connection.rotate_secret") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit webhook secret rotation")
 		return
 	}
 	if generated {
