@@ -1204,6 +1204,9 @@ func createProjectFromTemplateTx(ctx context.Context, tx *sqlx.Tx, opID string) 
 		return nil, nil, nil, nil, nil, nil, err
 	}
 	steps := completeTemplateSteps(run["steps"], project, repo, remotes, syncAsset, files)
+	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("syncing canonical assets for project template creation: %w", err)
+	}
 	return project, repo, remotes, syncAsset, files, steps, nil
 }
 
