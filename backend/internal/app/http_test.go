@@ -98,7 +98,7 @@ func TestSensitiveArgoConfigRequiresElevatedRole(t *testing.T) {
 }
 
 func TestRollbackPointReadinessSQLIncludesPreviewOnlyFields(t *testing.T) {
-	sql := rollbackPointReadinessSQL()
+	sql := rollbackPointReadinessSQL(20)
 	for _, token := range []string{
 		"false AS rollback_executable",
 		"'read_only_preview' AS rollback_execution_mode",
@@ -110,6 +110,7 @@ func TestRollbackPointReadinessSQLIncludesPreviewOnlyFields(t *testing.T) {
 		"rollback point has revision metadata; execution remains disabled in this first version",
 		"dt.namespace AS deployment_namespace",
 		"dt.cluster_name AS deployment_cluster_name",
+		"LIMIT 20",
 	} {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("rollbackPointReadinessSQL missing %s", token)
@@ -1443,6 +1444,10 @@ func TestAgentPlanContentUsesContextSnapshot(t *testing.T) {
 				"deployment_targets": []any{
 					map[string]any{"name": "prod"},
 				},
+				"rollback_points": []any{
+					map[string]any{"name": "prod@abc123", "rollback_readiness": "previewable"},
+					map[string]any{"name": "prod@old", "rollback_readiness": "blocked"},
+				},
 				"ssh_machines":       []any{map[string]any{"name": "deploy-host"}},
 				"github_action_runs": []any{map[string]any{"status": "completed"}},
 				"asset_graph": map[string]any{
@@ -1469,6 +1474,8 @@ func TestAgentPlanContentUsesContextSnapshot(t *testing.T) {
 		"Git remotes: 2",
 		"Recent operations: 1",
 		"Deployment targets: 1",
+		"Rollback points: 2",
+		"Rollback readiness: blocked=1, previewable=1",
 		"SSH machines: 1",
 		"GitHub Actions runs: 1",
 		"Asset graph assets: 2",

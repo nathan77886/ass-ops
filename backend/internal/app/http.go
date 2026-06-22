@@ -8779,6 +8779,7 @@ func agentPlanContent(task, snapshot map[string]any) string {
 	operations := mapSliceFromAny(contextJSON["operations"])
 	approvals := mapSliceFromAny(contextJSON["approvals"])
 	deploymentTargets := mapSliceFromAny(contextJSON["deployment_targets"])
+	rollbackPoints := mapSliceFromAny(contextJSON["rollback_points"])
 	sshMachines := mapSliceFromAny(contextJSON["ssh_machines"])
 	githubRuns := mapSliceFromAny(contextJSON["github_action_runs"])
 	assetGraph := mapFromAny(contextJSON["asset_graph"])
@@ -8793,6 +8794,10 @@ func agentPlanContent(task, snapshot map[string]any) string {
 	if assetHealthSummary == "" {
 		assetHealthSummary = "none"
 	}
+	rollbackReadinessSummary := formatCountMap(countByStringField(rollbackPoints, "rollback_readiness"))
+	if rollbackReadinessSummary == "" {
+		rollbackReadinessSummary = "none"
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Agent Read-Only Plan\n\n")
 	fmt.Fprintf(&b, "Task: %s\n\n", strings.TrimSpace(fmt.Sprint(task["title"])))
@@ -8806,6 +8811,8 @@ func agentPlanContent(task, snapshot map[string]any) string {
 	fmt.Fprintf(&b, "- Recent operations: %d\n", len(operations))
 	fmt.Fprintf(&b, "- Pending/Recent approvals: %d\n", len(approvals))
 	fmt.Fprintf(&b, "- Deployment targets: %d\n", len(deploymentTargets))
+	fmt.Fprintf(&b, "- Rollback points: %d\n", len(rollbackPoints))
+	fmt.Fprintf(&b, "- Rollback readiness: %s\n", rollbackReadinessSummary)
 	fmt.Fprintf(&b, "- SSH machines: %d\n", len(sshMachines))
 	fmt.Fprintf(&b, "- GitHub Actions runs: %d\n", len(githubRuns))
 	fmt.Fprintf(&b, "- Asset graph assets: %d\n", len(assets))
@@ -9276,12 +9283,15 @@ func (s *Server) listRollbackPoints(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "rollback_point", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, rollbackPointReadinessSQL(), projectID)
+	items, err := queryMaps(r.Context(), s.store.DB, rollbackPointReadinessSQL(500), projectID)
 	writeQueryResult(w, items, err)
 }
 
-func rollbackPointReadinessSQL() string {
-	return `
+func rollbackPointReadinessSQL(limit int) string {
+	if limit <= 0 {
+		limit = 20
+	}
+	return fmt.Sprintf(`
 		SELECT rp.*,
 			dt.name AS deployment_target_name,
 			dt.namespace AS deployment_namespace,
@@ -9306,7 +9316,7 @@ func rollbackPointReadinessSQL() string {
 		LEFT JOIN deployment_records dr ON dr.id=rp.deployment_record_id
 		WHERE rp.project_id=$1
 		ORDER BY rp.captured_at DESC
-		LIMIT 500`
+		LIMIT %d`, limit)
 }
 
 func validPublicHTTPURL(ctx context.Context, value string) bool {
@@ -9864,12 +9874,7 @@ func (s *Server) BuildContextFiles(ctx context.Context, projectID string) (map[s
 	if err != nil {
 		return nil, nil, err
 	}
-	rollbackPoints, err := queryMaps(ctx, s.store.DB, `
-		SELECT id, deployment_record_id, deployment_target_id, name, environment, revision, source, status, captured_at
-		FROM rollback_points
-		WHERE project_id=$1
-		ORDER BY captured_at DESC
-		LIMIT 20`, projectID)
+	rollbackPoints, err := queryMaps(ctx, s.store.DB, rollbackPointReadinessSQL(20), projectID)
 	if err != nil {
 		return nil, nil, err
 	}
