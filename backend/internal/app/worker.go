@@ -198,7 +198,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "repo.sync", "repo.sync_remote", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry":
+	case "repo.sync", "repo.sync_remote", "repo.tag", "repo.create_tag", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry":
 		return true
 	default:
 		return false
@@ -795,7 +795,13 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 			UPDATE git_remotes
 			SET updated_at=now()
 			WHERE id=(SELECT target_remote_id FROM repo_tag_runs WHERE operation_run_id=$1 LIMIT 1)`, opID)
-		return err
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed repo tag: %w", err)
+		}
+		return nil
 	case "github.actions.sync":
 		if err := w.recordGitHubActionsAdapterRun(ctx, tx, opID, result); err != nil {
 			return err
