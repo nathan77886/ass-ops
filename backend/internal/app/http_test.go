@@ -395,6 +395,7 @@ func TestProviderAccountSanitizeDoesNotReturnRawTokenEnv(t *testing.T) {
 		"name":          "github-main",
 		"provider_type": "github",
 		"token_env":     "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_MAIN",
+		"created_at":    time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC),
 	})
 	if _, ok := item["token_env"]; ok {
 		t.Fatal("sanitizeProviderAccount should remove token_env")
@@ -404,6 +405,83 @@ func TestProviderAccountSanitizeDoesNotReturnRawTokenEnv(t *testing.T) {
 	}
 	if got := fmt.Sprint(item["masked_token_env"]); strings.Contains(got, "GITHUB_MAIN") {
 		t.Fatalf("masked token env leaked suffix: %q", got)
+	}
+	encoded, _ := json.Marshal(item)
+	if strings.Contains(string(encoded), "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_MAIN") {
+		t.Fatalf("sanitized account leaked token env: %s", encoded)
+	}
+	if status := mapFromAny(item["token_rotation_status"]); status["status"] == "" {
+		t.Fatalf("token_rotation_status missing: %#v", item)
+	}
+}
+
+func TestProviderAccountTokenRotationStatus(t *testing.T) {
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		item map[string]any
+		want string
+		src  string
+	}{
+		{
+			name: "fresh from rotation metadata",
+			item: map[string]any{
+				"token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_MAIN",
+				"metadata": map[string]any{"token_rotation": map[string]any{"rotated_at": now.AddDate(0, 0, -10).Format(time.RFC3339)}},
+			},
+			want: "fresh",
+			src:  "token_rotation",
+		},
+		{
+			name: "soon from created at fallback",
+			item: map[string]any{
+				"token_env":  "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITEA_MAIN",
+				"metadata":   map[string]any{},
+				"created_at": now.AddDate(0, 0, -80),
+			},
+			want: "soon",
+			src:  "created_at",
+		},
+		{
+			name: "due from created at fallback",
+			item: map[string]any{
+				"token_env":  "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_MAIN",
+				"metadata":   map[string]any{},
+				"created_at": now.AddDate(0, 0, -120),
+			},
+			want: "due",
+			src:  "created_at",
+		},
+		{
+			name: "missing token env",
+			item: map[string]any{
+				"metadata":   map[string]any{},
+				"created_at": now.AddDate(0, 0, -120),
+			},
+			want: "missing",
+			src:  "unknown",
+		},
+		{
+			name: "unknown without timestamps",
+			item: map[string]any{
+				"token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_MAIN",
+				"metadata":  map[string]any{},
+			},
+			want: "unknown",
+			src:  "unknown",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := providerAccountTokenRotationStatus(tt.item, now)
+			if got["status"] != tt.want || got["source"] != tt.src {
+				t.Fatalf("status = %#v, want status=%s source=%s", got, tt.want, tt.src)
+			}
+			encoded, _ := json.Marshal(got)
+			if strings.Contains(string(encoded), "ASSOPS_TEMPLATE_PROVIDER_TOKEN") {
+				t.Fatalf("rotation status leaked token env: %s", encoded)
+			}
+		})
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -1452,7 +1453,82 @@ func sanitizeProviderAccount(item map[string]any) map[string]any {
 	tokenEnv := rawStringFromMap(item, "token_env")
 	out["token_configured"] = tokenEnv != ""
 	out["masked_token_env"] = maskProviderTokenEnv(tokenEnv)
+	out["token_rotation_status"] = providerAccountTokenRotationStatus(item, time.Now().UTC())
 	return out
+}
+
+const (
+	providerTokenRotationDueDays  = 90
+	providerTokenRotationSoonDays = 75
+)
+
+func providerAccountTokenRotationStatus(item map[string]any, now time.Time) map[string]any {
+	status := map[string]any{
+		"status": "unknown",
+		"source": "unknown",
+	}
+	if rawStringFromMap(item, "token_env") == "" {
+		status["status"] = "missing"
+		return status
+	}
+	metadata := mapFromAny(item["metadata"])
+	rotation := mapFromAny(metadata["token_rotation"])
+	lastRotatedAt, source := providerAccountRotationTime(item, rotation)
+	if lastRotatedAt.IsZero() {
+		return status
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	lastRotatedAt = lastRotatedAt.UTC()
+	daysSince := int(now.Sub(lastRotatedAt).Hours() / 24)
+	if daysSince < 0 {
+		daysSince = 0
+	}
+	dueAt := lastRotatedAt.Add(providerTokenRotationDueDays * 24 * time.Hour)
+	daysUntilDue := int(math.Ceil(dueAt.Sub(now).Hours() / 24))
+	tokenStatus := "fresh"
+	if !now.Before(dueAt) {
+		tokenStatus = "due"
+		daysUntilDue = 0
+	} else if daysSince >= providerTokenRotationSoonDays {
+		tokenStatus = "soon"
+	}
+	status["status"] = tokenStatus
+	status["source"] = source
+	status["last_rotated_at"] = lastRotatedAt.Format(time.RFC3339)
+	status["next_rotation_due_at"] = dueAt.Format(time.RFC3339)
+	status["days_since_rotation"] = daysSince
+	status["days_until_due"] = daysUntilDue
+	return status
+}
+
+func providerAccountRotationTime(item, rotation map[string]any) (time.Time, string) {
+	if rotatedAt := parseProviderAccountTime(rotation["rotated_at"]); !rotatedAt.IsZero() {
+		return rotatedAt, "token_rotation"
+	}
+	if createdAt := parseProviderAccountTime(item["created_at"]); !createdAt.IsZero() {
+		return createdAt, "created_at"
+	}
+	return time.Time{}, "unknown"
+}
+
+func parseProviderAccountTime(value any) time.Time {
+	switch typed := value.(type) {
+	case time.Time:
+		return typed
+	case string:
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(typed))
+		if err == nil {
+			return parsed
+		}
+	case []byte:
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(string(typed)))
+		if err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 func maskProviderTokenEnv(value string) string {

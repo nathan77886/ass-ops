@@ -302,6 +302,26 @@ function templateProvisionSummary(row: AnyRow) {
   return { color: 'default', label: 'pending', detail: '' };
 }
 
+function providerTokenRotationSummary(row: AnyRow) {
+  const rotation = row.token_rotation_status || {};
+  const status = String(rotation.status || 'unknown');
+  const colors: Record<string, string> = {
+    fresh: 'green',
+    soon: 'gold',
+    due: 'red',
+    missing: 'red',
+    unknown: 'default'
+  };
+  const daysUntilDue = Number(rotation.days_until_due);
+  const dueText = Number.isFinite(daysUntilDue) && status !== 'due' ? `${daysUntilDue}d left` : '';
+  const lastText = rotation.last_rotated_at ? `since ${String(rotation.last_rotated_at).slice(0, 10)}` : '';
+  return {
+    color: colors[status] || 'default',
+    label: status,
+    detail: [dueText, lastText].filter(Boolean).join(' · ')
+  };
+}
+
 function cleanedList(values: string[] = []) {
   return values.map((value) => value.trim()).filter(Boolean);
 }
@@ -748,6 +768,18 @@ function ProviderAccounts() {
         { title: 'Owner', dataIndex: 'default_owner' },
         { title: 'Visibility', dataIndex: 'visibility' },
         { title: 'Token env', dataIndex: 'masked_token_env' },
+        {
+          title: 'Rotation',
+          render: (_, row) => {
+            const rotation = providerTokenRotationSummary(row);
+            return (
+              <Space direction="vertical" size={2}>
+                <Tag color={rotation.color}>{rotation.label}</Tag>
+                {rotation.detail ? <Typography.Text type="secondary">{rotation.detail}</Typography.Text> : null}
+              </Space>
+            );
+          }
+        },
         {
           title: 'Check',
           render: (_, row) => {
