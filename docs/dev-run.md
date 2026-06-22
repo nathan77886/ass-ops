@@ -35,6 +35,11 @@ go run ./backend/cmd/assops-tool db sync-assets
 ```
 
 The demo seed command applies migrations, ensures the admin user exists, and idempotently creates a demo project, repository pair, Gitea/GitHub remotes, a disabled RepoSyncAsset, webhook connection/events, sample sync and GitHub Actions history, Argo deployment/rollback read models, SSH/AI examples, a pending multi-approver request, a read-only agent task, and a manual asset relation. It also refreshes the canonical asset ledger so the Asset Center can show the seeded graph immediately; `db sync-assets` remains available for later imports and repairs.
+After logging in, the same first-version readiness evidence shown on the Dashboard can be printed from the gateway:
+
+```bash
+go run ./backend/cmd/assops-tool --token "$TOKEN" project readiness
+```
 
 Local backup smoke:
 

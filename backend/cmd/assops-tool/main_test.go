@@ -229,6 +229,39 @@ func TestWriteTextFileCreatesParentDirectory(t *testing.T) {
 	}
 }
 
+func TestFirstVersionReadinessReportRequiresArgoSync(t *testing.T) {
+	partial := firstVersionReadinessReport([]map[string]any{
+		{"asset_type": "deployment_target"},
+	}, nil, nil)
+	if got := readinessByKey(t, partial, "argo"); got.Status != "partial" {
+		t.Fatalf("argo status with target only = %q, want partial", got.Status)
+	}
+
+	ready := firstVersionReadinessReport([]map[string]any{
+		{"asset_type": "deployment_target"},
+		{"asset_type": "argo_connection"},
+	}, []map[string]any{
+		{"operation_type": "argo.apps.sync"},
+	}, nil)
+	if got := readinessByKey(t, ready, "argo"); got.Status != "ready" {
+		t.Fatalf("argo status with connection, target, and sync = %q, want ready", got.Status)
+	}
+}
+
+func TestFirstVersionReadinessReportUsesApprovalSummary(t *testing.T) {
+	withoutSummary := firstVersionReadinessReport(nil, []map[string]any{
+		{"operation_type": "approval.notify", "status": "completed"},
+	}, nil)
+	if got := readinessByKey(t, withoutSummary, "approval"); got.Status != "missing" {
+		t.Fatalf("approval status from operation_type alone = %q, want missing", got.Status)
+	}
+
+	withSummary := firstVersionReadinessReport(nil, nil, map[string]any{"total": float64(1)})
+	if got := readinessByKey(t, withSummary, "approval"); got.Status != "ready" {
+		t.Fatalf("approval status from summary = %q, want ready", got.Status)
+	}
+}
+
 func TestReleasePromotionPlanIncludesVerificationAndRollout(t *testing.T) {
 	artifactDir := t.TempDir()
 	files := map[string]string{
@@ -427,6 +460,21 @@ func TestListManagedBackupsSkipsSymlinks(t *testing.T) {
 	if len(backups) != 1 || backups[0].name != filepath.Base(backupPath) {
 		t.Fatalf("backups = %#v", backups)
 	}
+}
+
+func readinessByKey(t *testing.T, report map[string]any, key string) readinessRow {
+	t.Helper()
+	items, ok := report["items"].([]readinessRow)
+	if !ok {
+		t.Fatalf("report items type = %T", report["items"])
+	}
+	for _, item := range items {
+		if item.Key == key {
+			return item
+		}
+	}
+	t.Fatalf("readiness item %q not found", key)
+	return readinessRow{}
 }
 
 func writeSHA256SUMS(t *testing.T, dir string, files map[string]string) {

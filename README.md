@@ -92,6 +92,7 @@ The CLI can read those files:
 
 ```bash
 go run ./backend/cmd/assops-tool project brief
+go run ./backend/cmd/assops-tool --token "$ASSOPS_TOKEN" project readiness
 go run ./backend/cmd/assops-tool repo remotes
 go run ./backend/cmd/assops-tool remote actions
 go run ./backend/cmd/assops-tool plan validate

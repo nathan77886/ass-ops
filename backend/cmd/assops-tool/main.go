@@ -45,6 +45,9 @@ func run() error {
 		if len(args) == 2 && args[1] == "brief" {
 			return readContextBrief(*contextDir)
 		}
+		if len(args) == 2 && args[1] == "readiness" {
+			return getProjectReadiness(*api, *token)
+		}
 	case "repo":
 		if len(args) == 2 && args[1] == "remotes" {
 			return readContextKey(*contextDir, "remotes")
@@ -96,7 +99,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -1049,30 +1052,187 @@ func firstContextFile(root, name string) (string, error) {
 	return found, nil
 }
 
-func getAPI(base, token, path string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+type readinessRow struct {
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Status   string `json:"status"`
+	Evidence any    `json:"evidence"`
+	Next     string `json:"next"`
+}
+
+func getProjectReadiness(base, token string) error {
+	assets, err := getAPIJSON(base, token, "/api/assets")
 	if err != nil {
 		return err
+	}
+	operations, err := getAPIJSON(base, token, "/api/operations")
+	if err != nil {
+		return err
+	}
+	warnings := []string{}
+	approvals, err := getAPIJSON(base, token, "/api/operation-approvals/summary")
+	if err != nil {
+		warnings = append(warnings, "approval summary unavailable: "+err.Error())
+		approvals = map[string]any{}
+	}
+	report := firstVersionReadinessReport(apiItems(assets), apiItems(operations), approvals)
+	if len(warnings) > 0 {
+		report["warnings"] = warnings
+	}
+	return printJSON(report)
+}
+
+func firstVersionReadinessReport(assets, operations []map[string]any, approvals map[string]any) map[string]any {
+	assetCounts := countAPIField(assets, "asset_type")
+	operationCounts := countAPIField(operations, "operation_type")
+	syncTriggered := operationCounts["repo.sync"] + operationCounts["repo.sync_remote"]
+	webhookReady := assetCounts["webhook_connection"] > 0
+	sshRuns := operationCounts["ssh.exec"] + operationCounts["ssh.command"]
+	argoEvidence := assetCounts["argo_connection"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"]
+	approvalEvidence := intFromAPI(approvals["total"])
+	pendingApprovalOps := countAPIStatus(operations, "pending_approval")
+	contextEvidence := assetCounts["agent_task"] + assetCounts["ai_runtime"]
+
+	rows := []readinessRow{
+		readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0, assetCounts["project"], false),
+		readinessItem("repositories", "Attach source and mirror repositories", "Add repository metadata and at least two Git remotes.", assetCounts["repository"] > 0 && assetCounts["git_remote"] >= 2, fmt.Sprintf("%d repos / %d remotes", assetCounts["repository"], assetCounts["git_remote"]), assetCounts["repository"] > 0 || assetCounts["git_remote"] > 0),
+		readinessItem("repo_sync", "Define RepoSyncAsset", "Create a RepoSyncAsset between source and mirror remotes.", assetCounts["repo_sync"] > 0, assetCounts["repo_sync"], false),
+		readinessItem("sync_trigger", "Trigger sync manually and from webhook", "Run a manual sync and configure a Gitea webhook connection.", syncTriggered > 0 && webhookReady, fmt.Sprintf("%d sync ops / %d webhooks", syncTriggered, assetCounts["webhook_connection"]), syncTriggered > 0 || webhookReady),
+		readinessItem("github_actions", "See GitHub Actions state", "Sync GitHub Actions for the mirror remote or receive workflow_run webhooks.", assetCounts["pipeline_run"] > 0, assetCounts["pipeline_run"], false),
+		readinessItem("ssh", "Register SSH machines and audited commands", "Register an SSH machine and run an approval-gated command.", assetCounts["host"] > 0 && sshRuns > 0, fmt.Sprintf("%d hosts / %d commands", assetCounts["host"], sshRuns), assetCounts["host"] > 0 || sshRuns > 0),
+		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0, fmt.Sprintf("%d targets / %d Argo connections / %d sync ops", assetCounts["deployment_target"], assetCounts["argo_connection"], operationCounts["argo.apps.sync"]), argoEvidence > 0),
+		readinessItem("operations", "View operation history and logs", "Run any controlled operation and inspect its logs.", assetCounts["operation_run"] > 0 || len(operations) > 0, max(assetCounts["operation_run"], len(operations)), false),
+		readinessItem("approval", "Enforce approval for high-risk operations", "Queue a high-risk action that creates an approval request.", approvalEvidence > 0 || pendingApprovalOps > 0, fmt.Sprintf("%d approvals / %d pending ops", approvalEvidence, pendingApprovalOps), approvalEvidence > 0 || pendingApprovalOps > 0),
+		readinessItem("context", "Generate AI-readable context from graph", "Create an agent task or AI runtime after syncing the canonical asset ledger.", contextEvidence > 0, contextEvidence, false),
+	}
+
+	counts := map[string]int{"ready": 0, "partial": 0, "missing": 0}
+	for _, row := range rows {
+		counts[row.Status]++
+	}
+	return map[string]any{
+		"ready":   counts["ready"],
+		"partial": counts["partial"],
+		"missing": counts["missing"],
+		"total":   len(rows),
+		"items":   rows,
+	}
+}
+
+func readinessItem(key, label, next string, done bool, evidence any, partial bool) readinessRow {
+	status := "missing"
+	if done {
+		status = "ready"
+	} else if partial {
+		status = "partial"
+	}
+	return readinessRow{Key: key, Label: label, Status: status, Evidence: evidence, Next: next}
+}
+
+func apiItems(payload map[string]any) []map[string]any {
+	rawItems, ok := payload["items"].([]any)
+	if !ok {
+		return nil
+	}
+	items := make([]map[string]any, 0, len(rawItems))
+	for _, raw := range rawItems {
+		item := mapFromAPI(raw)
+		if item != nil {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func mapFromAPI(value any) map[string]any {
+	item, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return item
+}
+
+func countAPIField(rows []map[string]any, field string) map[string]int {
+	counts := map[string]int{}
+	for _, row := range rows {
+		key := strings.TrimSpace(fmt.Sprint(row[field]))
+		if key != "" && key != "<nil>" {
+			counts[key]++
+		}
+	}
+	return counts
+}
+
+func countAPIStatus(rows []map[string]any, status string) int {
+	count := 0
+	for _, row := range rows {
+		if fmt.Sprint(row["status"]) == status {
+			count++
+		}
+	}
+	return count
+}
+
+func intFromAPI(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		i, _ := typed.Int64()
+		return int(i)
+	default:
+		return 0
+	}
+}
+
+func getAPI(base, token, path string) error {
+	payload, err := getAPIBytes(base, token, path)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(payload))
+	return nil
+}
+
+func getAPIJSON(base, token, path string) (map[string]any, error) {
+	body, err := getAPIBytes(base, token, path)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decoding %s response: %w", path, err)
+	}
+	return out, nil
+}
+
+func getAPIBytes(base, token, path string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+path, nil)
+	if err != nil {
+		return nil, err
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer res.Body.Close()
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if res.StatusCode >= 300 {
-		return fmt.Errorf("gateway returned %s: %s", res.Status, string(body))
+		return nil, fmt.Errorf("gateway returned %s: %s", res.Status, strings.TrimSpace(string(body)))
 	}
-	fmt.Println(string(body))
-	return nil
+	return body, nil
 }
 
 func printJSON(value any) error {
