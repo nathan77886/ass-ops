@@ -9125,7 +9125,13 @@ func (s *Server) registerNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metadata, _ := jsonParam(req.Metadata)
-	node, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start worker node registration transaction")
+		return
+	}
+	defer tx.Rollback()
+	node, err := queryOne(r.Context(), tx, `
 		INSERT INTO worker_nodes(name, kind, capabilities, metadata)
 		VALUES ($1, $2, $3, $4::jsonb)
 		ON CONFLICT(name) DO UPDATE SET kind=EXCLUDED.kind, capabilities=EXCLUDED.capabilities, metadata=EXCLUDED.metadata, status='online', last_heartbeat_at=now(), updated_at=now()
@@ -9135,11 +9141,18 @@ func (s *Server) registerNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := newToken()
-	_, err = s.store.DB.ExecContext(r.Context(), `
+	_, err = tx.ExecContext(r.Context(), `
 		INSERT INTO worker_node_tokens(worker_node_id, token_hash)
 		VALUES ($1, $2)`, node["id"], tokenHash(token))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create node token")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "worker_node.register") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit worker node registration")
 		return
 	}
 	node["token"] = token
