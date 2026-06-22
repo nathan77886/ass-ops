@@ -1031,6 +1031,7 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
   if (!value || value.kind !== 'project_template_provider_review_execute') return null;
   const request = value.execution_request || {};
   const guardrail = value.execution_guardrail || {};
+  const credential = value.credential_strategy || {};
   const starter = value.starter_file_payload || {};
   const apiPlan = value.provider_api_request_plan || {};
   const reconciliation = value.provider_review_reconciliation || {};
@@ -1051,6 +1052,14 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
         <Tag>{String(value.provider_api_mutation || 'disabled')}</Tag>
       </Space>
       <Typography.Text type="secondary">Run: {String(value.project_template_run_id || '-')}</Typography.Text>
+      {credential.mode ? (
+        <Space size={4} wrap>
+          <Tag>credential {String(credential.mode).replaceAll('_', ' ')}</Tag>
+          <Tag color={credential.token_env_configured === true ? 'green' : 'gold'}>{credential.token_env_configured === true ? 'token env configured' : 'token env missing'}</Tag>
+          <Tag color={credential.token_env_present === true ? 'green' : 'gold'}>{credential.token_env_present === true ? 'runtime token present' : 'runtime token missing'}</Tag>
+          <Tag>{credential.token_stored === true ? 'token stored' : 'token not stored'}</Tag>
+        </Space>
+      ) : null}
       <Space size={4} wrap>
         <Tag color="gold">guardrail {String(guardrail.execution_mode || 'disabled').replaceAll('_', ' ')}</Tag>
         {Array.isArray(guardrail.blocked_reasons) && guardrail.blocked_reasons.map((reason: unknown) => (

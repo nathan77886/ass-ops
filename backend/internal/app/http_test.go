@@ -1410,6 +1410,7 @@ func TestApprovalNotificationStatusSuccessAndFailure(t *testing.T) {
 }
 
 func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
+	t.Setenv("ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_ACCOUNT", "account-token")
 	plan := templateProviderReviewExecutionPlan("github", map[string]any{
 		"mode":            "pull_request",
 		"provider_type":   "github",
@@ -1425,6 +1426,14 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 			},
 			"details": map[string]any{
 				"repository_reconciliation": map[string]any{
+					"credential_strategy": map[string]any{
+						"mode":                      "provider_account_token_env",
+						"provider_account_attached": true,
+						"token_env_configured":      true,
+						"token_env_present":         true,
+						"token_stored":              false,
+						"external_call_made":        false,
+					},
 					"provider_review_readiness": map[string]any{
 						"execution_plan": plan,
 					},
@@ -1454,6 +1463,14 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 	}
 	if containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "starter_file_payload_staged") {
 		t.Fatalf("starter file staging should be ready in approval payload: %#v", guardrail)
+	}
+	credential := mapFromAny(payload["credential_strategy"])
+	if credential["mode"] != "provider_account_token_env" ||
+		credential["provider_account_attached"] != true ||
+		credential["token_env_configured"] != true ||
+		credential["token_env_present"] != true ||
+		credential["token_stored"] != false {
+		t.Fatalf("credential strategy = %#v", credential)
 	}
 	starterPayload := mapFromAny(payload["starter_file_payload"])
 	if starterPayload["status"] != "ready" || starterPayload["file_count"] != 1 || starterPayload["content_included"] != false {
@@ -1492,8 +1509,10 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 		t.Fatalf("provider review reconciliation blocked reasons = %#v", reconciliation)
 	}
 	if containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "starter_file_payload_staged") ||
-		containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_api_request_plan_ready") {
-		t.Fatalf("provider review reconciliation should see staged payload and ready request plan: %#v", reconciliation)
+		containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_api_request_plan_ready") ||
+		containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_credential_configured") ||
+		containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_token_env_present") {
+		t.Fatalf("provider review reconciliation should see staged payload, ready request plan, and credential preflight: %#v", reconciliation)
 	}
 	reconcileOperations := sliceOfMapsFromAny(reconciliation["operations"])
 	if len(reconcileOperations) != 3 || reconcileOperations[0]["endpoint_key"] != "github.create_branch_ref" {
@@ -1606,6 +1625,14 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 				"target_branch":         "main",
 				"provider_api_mutation": "disabled",
 			},
+			"credential_strategy": map[string]any{
+				"mode":                      "provider_account_token_env",
+				"provider_account_attached": true,
+				"token_env_configured":      true,
+				"token_env_present":         true,
+				"token_stored":              false,
+				"external_call_made":        false,
+			},
 			"starter_file_payload": map[string]any{
 				"status":           "ready",
 				"file_count":       1,
@@ -1660,6 +1687,10 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 	if !containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_api_adapter") {
 		t.Fatalf("provider review execution reconciliation blocked reasons = %#v", reconciliation)
 	}
+	if containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_credential_configured") ||
+		containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_token_env_present") {
+		t.Fatalf("provider review execution reconciliation should preserve credential preflight: %#v", reconciliation)
+	}
 	encoded, _ := json.Marshal(result)
 	for _, leak := range []string{"forged-content", "api_base_url", "secret-token"} {
 		if strings.Contains(string(encoded), leak) {
@@ -1696,6 +1727,16 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 				"gates": []map[string]any{
 					{"gate": "provider_review_api_adapter", "status": "blocked", "message": "adapter blocked", "token": "secret-token"},
 				},
+			},
+			"credential_strategy": map[string]any{
+				"mode":                      "provider_account_token_env",
+				"provider_account_attached": true,
+				"token_env_configured":      true,
+				"token_env_present":         true,
+				"token_stored":              true,
+				"external_call_made":        true,
+				"token_env":                 "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET",
+				"token":                     "secret-token",
 			},
 			"starter_file_payload": map[string]any{
 				"status":           "ready",
@@ -1738,6 +1779,7 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 				"execution_enabled":         true,
 				"provider_api_call_made":    true,
 				"provider_api_mutation":     "enabled",
+				"credential_strategy":       map[string]any{"token_stored": true, "external_call_made": true, "token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", "token": "secret-token"},
 				"starter_file_payload":      map[string]any{"files": []map[string]any{{"path": "README.md", "content": "do-not-include"}}},
 				"provider_api_request_plan": map[string]any{"operations": []map[string]any{{"url": "https://api.github.example.test", "content": "do-not-include", "api_call": true}}},
 				"provider_review_reconciliation": map[string]any{
@@ -1764,12 +1806,30 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 	if reconciliation["external_call_made"] != false || reconciliation["provider_api_mutation"] != "disabled" {
 		t.Fatalf("provider review reconciliation audit should force disabled/no-call: %#v", reconciliation)
 	}
+	credential := mapFromAny(audit["credential_strategy"])
+	if credential["token_stored"] != false || credential["external_call_made"] != false || credential["token_env_present"] != true {
+		t.Fatalf("credential audit should force no stored token/no external call while preserving safe presence: %#v", credential)
+	}
+	injectedCredential := sanitizedProviderReviewCredentialStrategy(map[string]any{
+		"provider_account_attached": "yes",
+		"token_env_configured":      "true",
+		"token_env_present":         1,
+		"token_stored":              true,
+		"external_call_made":        true,
+	})
+	if injectedCredential["provider_account_attached"] != false ||
+		injectedCredential["token_env_configured"] != false ||
+		injectedCredential["token_env_present"] != false ||
+		injectedCredential["token_stored"] != false ||
+		injectedCredential["external_call_made"] != false {
+		t.Fatalf("credential sanitizer should only trust bool values and force safe flags: %#v", injectedCredential)
+	}
 	resultReconciliation := mapFromAny(result["provider_review_reconciliation"])
 	if resultReconciliation["external_call_made"] != false || resultReconciliation["provider_api_mutation"] != "disabled" {
 		t.Fatalf("approval result reconciliation audit should force disabled/no-call: %#v", resultReconciliation)
 	}
 	encoded, _ := json.Marshal(audit)
-	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", `"api_call":true`, `"enabled"`} {
+	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
 		}

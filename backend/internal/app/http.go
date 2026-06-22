@@ -913,12 +913,17 @@ func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, p
 		stringFromMap(executionRequest, "target_branch"),
 		starterFilePayload,
 	)
+	credentialStrategy := sanitizedProviderReviewCredentialStrategy(mapFromAny(repositoryReconciliation["credential_strategy"]))
+	if len(mapFromAny(repositoryReconciliation["credential_strategy"])) == 0 {
+		credentialStrategy = sanitizedProviderReviewCredentialStrategy(mapFromAny(executionPlan["credential_strategy"]))
+	}
 	reconciliation := templateProviderReviewExecutionReconciliation(
 		stringFromMap(executionRequest, "provider_type"),
 		stringFromMap(executionRequest, "review_kind"),
 		starterFilePayload,
 		executionGuardrail,
 		providerAPIRequestPlan,
+		credentialStrategy,
 	)
 	projectTemplateRunID := cleanOptionalID(fmt.Sprint(run["id"]))
 	if projectTemplateRunID == "" {
@@ -943,6 +948,7 @@ func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, p
 		"project_id":                     cleanOptionalID(fmt.Sprint(run["project_id"])),
 		"execution_request":              request,
 		"execution_guardrail":            executionGuardrail,
+		"credential_strategy":            credentialStrategy,
 		"starter_file_payload":           starterFilePayload,
 		"provider_api_request_plan":      providerAPIRequestPlan,
 		"provider_review_reconciliation": reconciliation,
@@ -8664,6 +8670,7 @@ func operationApprovalPayloadAudit(approval map[string]any) map[string]any {
 			}
 		}
 		out["execution_guardrail"] = sanitizedProviderReviewExecutionGuardrail(mapFromAny(payload["execution_guardrail"]))
+		out["credential_strategy"] = sanitizedProviderReviewCredentialStrategy(mapFromAny(payload["credential_strategy"]))
 		out["starter_file_payload"] = sanitizedStarterFilePayloadSummary(mapFromAny(payload["starter_file_payload"]))
 		out["provider_api_request_plan"] = sanitizedProviderAPIRequestPlan(mapFromAny(payload["provider_api_request_plan"]))
 		out["provider_review_reconciliation"] = sanitizedProviderReviewReconciliation(mapFromAny(payload["provider_review_reconciliation"]))
@@ -8672,6 +8679,7 @@ func operationApprovalPayloadAudit(approval map[string]any) map[string]any {
 				"project_template_run_id":        cleanOptionalID(stringFromMap(result, "project_template_run_id")),
 				"execution_request":              out["execution_request"],
 				"execution_guardrail":            sanitizedProviderReviewExecutionGuardrail(mapFromAny(result["execution_guardrail"])),
+				"credential_strategy":            sanitizedProviderReviewCredentialStrategy(mapFromAny(result["credential_strategy"])),
 				"starter_file_payload":           sanitizedStarterFilePayloadSummary(mapFromAny(result["starter_file_payload"])),
 				"provider_api_request_plan":      sanitizedProviderAPIRequestPlan(mapFromAny(result["provider_api_request_plan"])),
 				"provider_review_reconciliation": sanitizedProviderReviewReconciliation(mapFromAny(result["provider_review_reconciliation"])),
@@ -8783,6 +8791,7 @@ func sanitizedProviderReviewReconciliation(value map[string]any) map[string]any 
 		"mode":                   cleanOptionalText(stringFromMap(value, "mode")),
 		"provider_type":          cleanOptionalText(stringFromMap(value, "provider_type")),
 		"review_kind":            cleanOptionalText(stringFromMap(value, "review_kind")),
+		"credential_strategy":    sanitizedProviderReviewCredentialStrategy(mapFromAny(value["credential_strategy"])),
 		"adapter_status":         cleanOptionalText(stringFromMap(value, "adapter_status")),
 		"external_call_made":     false,
 		"provider_api_call_made": false,
@@ -9868,17 +9877,23 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			s.cfg.ProviderReviewExecutionEnabled,
 			starterFilePayloadReady(starterFilePayload),
 		)
+		credentialStrategy := sanitizedProviderReviewCredentialStrategy(mapFromAny(payload["credential_strategy"]))
+		if len(mapFromAny(payload["credential_strategy"])) == 0 {
+			credentialStrategy = sanitizedProviderReviewCredentialStrategy(mapFromAny(mapFromAny(payload["provider_review_reconciliation"])["credential_strategy"]))
+		}
 		reconciliation := templateProviderReviewExecutionReconciliation(
 			stringFromMap(request, "provider_type"),
 			stringFromMap(request, "review_kind"),
 			starterFilePayload,
 			guardrail,
 			providerAPIRequestPlan,
+			credentialStrategy,
 		)
 		return map[string]any{
 			"project_template_run_id":        stringFromMap(payload, "project_template_run_id"),
 			"execution_request":              request,
 			"execution_guardrail":            guardrail,
+			"credential_strategy":            credentialStrategy,
 			"starter_file_payload":           starterFilePayload,
 			"provider_api_request_plan":      providerAPIRequestPlan,
 			"provider_review_reconciliation": reconciliation,

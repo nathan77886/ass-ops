@@ -468,7 +468,10 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	}
 	if !containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_api_adapter") ||
 		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "starter_file_payload_staged") ||
-		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_api_request_plan_ready") {
+		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_api_request_plan_ready") ||
+		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_execution_enabled") ||
+		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_credential_configured") ||
+		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_token_env_present") {
 		t.Fatalf("github provider review reconciliation blocked reasons = %#v", reconciliation)
 	}
 	reconcileOperations := sliceOfMapsFromAny(reconciliation["operations"])
@@ -660,6 +663,28 @@ func TestBuildExternalTemplateProviderSpecUsesProviderAccountTokenEnv(t *testing
 	}
 	if spec.Private {
 		t.Fatal("public visibility should create a non-private repository")
+	}
+	credential := templateProviderReviewCredentialStrategy("github", map[string]any{
+		"provider_type":     "github",
+		"source_account_id": "account-1",
+		"metadata": map[string]any{
+			"provider_account_id": "account-1",
+			"token_env":           "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_ACCOUNT",
+		},
+	})
+	if credential["mode"] != "provider_account_token_env" ||
+		credential["provider_account_attached"] != true ||
+		credential["token_env_configured"] != true ||
+		credential["token_env_present"] != true ||
+		credential["token_stored"] != false ||
+		credential["external_call_made"] != false {
+		t.Fatalf("credential strategy = %#v", credential)
+	}
+	encoded, _ := json.Marshal(credential)
+	for _, leak := range []string{"ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_ACCOUNT", "account-token"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("credential strategy leaked %q: %s", leak, encoded)
+		}
 	}
 }
 

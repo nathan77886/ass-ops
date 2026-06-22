@@ -511,19 +511,17 @@ func templateRepositoryReconciliation(kind string, repo, remote map[string]any, 
 		stringFromMap(remote, "kind"),
 	)))
 	branchStrategy := templateProtectedBranchStrategy(repo, remote, defaultBranch)
-	reviewReadiness := templateProviderReviewReadiness(kind, provider, branchStrategy)
+	credentialStrategy := templateProviderReviewCredentialStrategy(provider, remote)
+	reviewReadiness := templateProviderReviewReadiness(kind, provider, branchStrategy, credentialStrategy)
 	summary := map[string]any{
-		"kind":               kind,
-		"provider_type":      provider,
-		"remote_id":          remote["id"],
-		"repository_key":     repo["repo_key"],
-		"default_branch":     defaultBranch,
-		"file_count":         fileCount,
-		"starter_push_state": "skipped",
-		"credential_strategy": map[string]any{
-			"mode":         "provider_account_token_env",
-			"token_stored": false,
-		},
+		"kind":                      kind,
+		"provider_type":             provider,
+		"remote_id":                 remote["id"],
+		"repository_key":            repo["repo_key"],
+		"default_branch":            defaultBranch,
+		"file_count":                fileCount,
+		"starter_push_state":        "skipped",
+		"credential_strategy":       credentialStrategy,
 		"provider_review_readiness": reviewReadiness,
 	}
 	switch kind {
@@ -554,7 +552,23 @@ func templateRepositoryReconciliation(kind string, repo, remote map[string]any, 
 	return summary
 }
 
-func templateProviderReviewReadiness(kind, provider string, branchStrategy map[string]any) map[string]any {
+func templateProviderReviewCredentialStrategy(provider string, remote map[string]any) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	metadata := mapFromAny(remote["metadata"])
+	tokenEnv := firstNonEmptyString(stringFromMap(metadata, "token_env"), stringFromMap(metadata, "provider_account_env"), defaultTemplateProviderTokenEnv(provider))
+	tokenEnvConfigured := strings.TrimSpace(tokenEnv) != "" && safeTemplateProviderTokenEnv(provider, tokenEnv)
+	return map[string]any{
+		"mode":                      map[bool]string{true: "provider_account_token_env", false: "template_remote_token_env"}[templateRemoteUsesProviderAccount(remote, metadata)],
+		"provider_account_attached": templateRemoteUsesProviderAccount(remote, metadata),
+		"token_env_configured":      tokenEnvConfigured,
+		"token_env_present":         tokenEnvConfigured && strings.TrimSpace(os.Getenv(tokenEnv)) != "",
+		"token_stored":              false,
+		"external_call_made":        false,
+	}
+}
+
+func templateProviderReviewReadiness(kind, provider string, branchStrategy map[string]any, credentialStrategies ...map[string]any) map[string]any {
+	credentialStrategy := firstProviderReviewCredentialStrategy(credentialStrategies...)
 	readiness := map[string]any{
 		"status":             "blocked",
 		"provider_type":      provider,
@@ -574,7 +588,7 @@ func templateProviderReviewReadiness(kind, provider string, branchStrategy map[s
 			readiness["branch_creation"] = "locally_planned"
 			readiness["review_request"] = "locally_planned"
 			readiness["provider_next_action"] = branchStrategy["provider_next_action"]
-			readiness["execution_plan"] = templateProviderReviewExecutionPlan(provider, branchStrategy)
+			readiness["execution_plan"] = templateProviderReviewExecutionPlan(provider, branchStrategy, credentialStrategy)
 			readiness["message"] = "Local branch/review plan is ready; provider API-backed branch creation and PR/MR execution remain disabled."
 			return readiness
 		}
@@ -591,8 +605,9 @@ func templateProviderReviewReadiness(kind, provider string, branchStrategy map[s
 
 const templateProviderReviewExecuteApprovalAction = "project_template.provider_review.execute"
 
-func templateProviderReviewExecutionPlan(provider string, branchStrategy map[string]any) map[string]any {
+func templateProviderReviewExecutionPlan(provider string, branchStrategy map[string]any, credentialStrategies ...map[string]any) map[string]any {
 	provider = strings.ToLower(strings.TrimSpace(firstNonEmptyString(provider, stringFromMap(branchStrategy, "provider_type"))))
+	credentialStrategy := firstProviderReviewCredentialStrategy(credentialStrategies...)
 	mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(branchStrategy["mode"])))
 	sourceBranch := strings.TrimSpace(fmt.Sprint(branchStrategy["proposed_branch"]))
 	targetBranch := strings.TrimSpace(fmt.Sprint(branchStrategy["target_branch"]))
@@ -601,7 +616,7 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 	guardrail := templateProviderReviewExecutionGuardrail(provider, reviewKind, sourceBranch, targetBranch, false)
 	// Starter files are staged later when the approval payload is built.
 	apiRequestPlan := templateProviderReviewAPIRequestPlan(provider, reviewKind, sourceBranch, targetBranch, nil)
-	reconciliation := templateProviderReviewExecutionReconciliation(provider, reviewKind, nil, guardrail, apiRequestPlan)
+	reconciliation := templateProviderReviewExecutionReconciliation(provider, reviewKind, nil, guardrail, apiRequestPlan, credentialStrategy)
 	steps := []map[string]any{
 		{
 			"name":      "create_branch",
@@ -645,6 +660,7 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 		"provider_api_mutation":          "disabled",
 		"execution_request":              executionRequest,
 		"execution_guardrail":            guardrail,
+		"credential_strategy":            credentialStrategy,
 		"provider_api_request_plan":      apiRequestPlan,
 		"provider_review_reconciliation": reconciliation,
 		"steps":                          steps,
@@ -724,16 +740,19 @@ func templateProviderReviewAPIRequestPlan(provider, reviewKind, sourceBranch, ta
 	}
 }
 
-func templateProviderReviewExecutionReconciliation(provider, reviewKind string, starterFilePayload, guardrail, apiRequestPlan map[string]any) map[string]any {
+func templateProviderReviewExecutionReconciliation(provider, reviewKind string, starterFilePayload, guardrail, apiRequestPlan map[string]any, credentialStrategies ...map[string]any) map[string]any {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	credentialStrategy := firstProviderReviewCredentialStrategy(credentialStrategies...)
 	providerSupported := provider == "github" || provider == "gitea"
 	starterReady := starterFilePayloadReady(starterFilePayload)
 	planReady := fmt.Sprint(apiRequestPlan["status"]) == "ready"
+	credentialConfigured := boolValueFromAny(credentialStrategy["token_env_configured"])
+	credentialPresent := boolValueFromAny(credentialStrategy["token_env_present"])
 	// Keep this false until branch/ref, starter-file commit, and review-request
 	// adapters are implemented together with matching adapter status and gates.
 	adapterReady := false
-	enabled := boolValueFromAny(guardrail["execution_enabled"])
+	executionEnabledConfig := boolValueFromAny(guardrail["execution_enabled_config"])
 	gates := []map[string]any{
 		{
 			"gate":              "provider_supported",
@@ -755,6 +774,26 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 			"sensitive_payload": false,
 		},
 		{
+			"gate":              "provider_review_execution_enabled",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[executionEnabledConfig],
+			"required_config":   "ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION",
+			"message":           "Provider review execution must be explicitly enabled before provider API mutation can be considered.",
+			"sensitive_payload": false,
+		},
+		{
+			"gate":              "provider_credential_configured",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[credentialConfigured],
+			"mode":              cleanOptionalText(stringFromMap(credentialStrategy, "mode")),
+			"message":           "Provider account token environment must be configured using an allowed ASSOPS provider token env name.",
+			"sensitive_payload": false,
+		},
+		{
+			"gate":              "provider_token_env_present",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[credentialPresent],
+			"message":           "Provider token environment variable must be present at runtime before provider API mutation can be enabled.",
+			"sensitive_payload": false,
+		},
+		{
 			"gate":              "provider_review_api_adapter",
 			"status":            "blocked",
 			"provider_type":     provider,
@@ -770,10 +809,11 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		}
 	}
 	return map[string]any{
-		"status":                 map[bool]string{true: "ready", false: "blocked"}[enabled && providerSupported && starterReady && planReady && adapterReady],
+		"status":                 map[bool]string{true: "ready", false: "blocked"}[executionEnabledConfig && providerSupported && starterReady && planReady && credentialConfigured && credentialPresent && adapterReady],
 		"mode":                   "preflight_reconciliation",
 		"provider_type":          provider,
 		"review_kind":            reviewKind,
+		"credential_strategy":    sanitizedProviderReviewCredentialStrategy(credentialStrategy),
 		"adapter_status":         "missing",
 		"external_call_made":     false,
 		"provider_api_call_made": false,
@@ -805,6 +845,41 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		},
 		"next_step": "Implement provider branch/ref, starter-file commit, and review-request adapters behind the existing approval and guardrail contract.",
 	}
+}
+
+func firstProviderReviewCredentialStrategy(items ...map[string]any) map[string]any {
+	for _, item := range items {
+		if len(item) > 0 {
+			return item
+		}
+	}
+	return map[string]any{
+		"mode":                      "unknown",
+		"provider_account_attached": false,
+		"token_env_configured":      false,
+		"token_env_present":         false,
+		"token_stored":              false,
+		"external_call_made":        false,
+	}
+}
+
+func sanitizedProviderReviewCredentialStrategy(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return firstProviderReviewCredentialStrategy()
+	}
+	return map[string]any{
+		"mode":                      cleanOptionalText(stringFromMap(value, "mode")),
+		"provider_account_attached": boolOnlyFromAny(value["provider_account_attached"]),
+		"token_env_configured":      boolOnlyFromAny(value["token_env_configured"]),
+		"token_env_present":         boolOnlyFromAny(value["token_env_present"]),
+		"token_stored":              false,
+		"external_call_made":        false,
+	}
+}
+
+func boolOnlyFromAny(value any) bool {
+	typed, ok := value.(bool)
+	return ok && typed
 }
 
 func providerReviewEndpointKey(provider, operation string) string {
