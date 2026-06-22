@@ -250,6 +250,46 @@ function signalSeverityColor(value: any) {
   }
 }
 
+const githubActionSuccessStates = ['success', 'completed'];
+const githubActionFailureStates = ['failure', 'failed', 'cancelled', 'timed_out', 'action_required', 'startup_failure'];
+const githubActionActiveStates = ['in_progress', 'queued', 'requested', 'waiting', 'pending'];
+
+function githubActionState(row: AnyRow) {
+  return String(row.conclusion || row.status || '').toLowerCase();
+}
+
+function githubActionStatusColor(row: AnyRow) {
+  const value = githubActionState(row);
+  if (githubActionSuccessStates.includes(value)) return 'green';
+  if (githubActionFailureStates.includes(value)) return value === 'action_required' ? 'orange' : 'red';
+  if (githubActionActiveStates.includes(value)) return 'blue';
+  return 'default';
+}
+
+function githubActionRemoteDescription(sourceRemote: AnyRow | undefined, repo: AnyRow | undefined, project: AnyRow | undefined, summary: ReturnType<typeof githubActionsSummary>) {
+  if (!sourceRemote) return 'Select a GitHub remote to tie pipeline state back to this repository.';
+  const provider = String(sourceRemote.provider_type || sourceRemote.kind || '').toLowerCase();
+  const remoteName = sourceRemote.name || sourceRemote.remote_key || sourceRemote.id;
+  if (provider !== 'github') return `Remote ${remoteName} is a ${provider || 'non-GitHub'} remote, so GitHub Actions are unavailable for this selection.`;
+  const failureNote = summary.failures > 0 ? ` ${summary.failures} problem run${summary.failures === 1 ? '' : 's'} in this batch.` : '';
+  return `Remote ${remoteName} is attached to ${repo?.display_name || repo?.name || 'the selected repository'} in ${project?.name || 'the selected project'}. Latest status: ${summary.latestStatus}.${failureNote}`;
+}
+
+function githubActionsSummary(rows: AnyRow[]) {
+  const failures = rows.filter((row) => githubActionFailureStates.includes(githubActionState(row))).length;
+  const successes = rows.filter((row) => githubActionSuccessStates.includes(githubActionState(row))).length;
+  const active = rows.filter((row) => githubActionActiveStates.includes(String(row.status || '').toLowerCase())).length;
+  const latest = rows[0];
+  return {
+    total: rows.length,
+    successes,
+    failures,
+    active,
+    latestLabel: latest ? `${latest.workflow_name || 'GitHub Actions'} on ${latest.branch || 'unknown branch'}` : 'No GitHub Actions runs synced',
+    latestStatus: latest ? String(latest.conclusion || latest.status || 'unknown') : 'none'
+  };
+}
+
 function templateProvisionSummary(row: AnyRow) {
   const details = row.result?.details || {};
   if (row.result?.repository_provisioned) return { color: 'green', label: 'provisioned', detail: '' };
@@ -1069,6 +1109,7 @@ function GitRemotes() {
   const sourceRemote = sourcePick.selected;
   const targetPick = useSelectedRow(remoteRows.filter((row: AnyRow) => row.id !== sourcePick.selectedID));
   const actions = useLoad(() => sourcePick.selectedID ? api(`/api/git-remotes/${sourcePick.selectedID}/github-actions`) : Promise.resolve({ items: [] }), [sourcePick.selectedID]);
+  const actionsSummary = githubActionsSummary(actions.data?.items || []);
   const [includeArchivedSyncAssets, setIncludeArchivedSyncAssets] = useState(false);
   const [runStatusFilter, setRunStatusFilter] = useState('');
   const runs = useLoad(() => {
@@ -1381,13 +1422,27 @@ function GitRemotes() {
           { title: 'Target', dataIndex: 'target_remote_id' },
           { title: 'Created', dataIndex: 'created_at' }
         ]} /> },
-        { key: 'actions', label: 'GitHub Actions', children: <Table<AnyRow> rowKey="id" dataSource={actions.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-          { title: 'Workflow', dataIndex: 'workflow_name' },
-          { title: 'Branch', dataIndex: 'branch' },
-          { title: 'Status', render: (_, row) => <Tag>{row.conclusion || row.status}</Tag> },
-          { title: 'SHA', dataIndex: 'commit_sha' },
-          { title: 'Synced', dataIndex: 'synced_at' }
-        ]} /> }
+        { key: 'actions', label: 'GitHub Actions', children: <Space direction="vertical" size={12} className="full">
+          <Alert
+            showIcon
+            type={actionsSummary.failures > 0 ? 'warning' : actionsSummary.total > 0 ? 'success' : 'info'}
+            message={actionsSummary.latestLabel}
+            description={githubActionRemoteDescription(sourceRemote, repo, project, actionsSummary)}
+          />
+          <div className="metricGrid">
+            <Card><Typography.Text type="secondary">Runs</Typography.Text><Typography.Title level={4}>{actionsSummary.total}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">Success</Typography.Text><Typography.Title level={4}>{actionsSummary.successes}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">Failures</Typography.Text><Typography.Title level={4}>{actionsSummary.failures}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">Active</Typography.Text><Typography.Title level={4}>{actionsSummary.active}</Typography.Title></Card>
+          </div>
+          <Table<AnyRow> rowKey="id" dataSource={actions.data?.items || []} pagination={{ pageSize: 6 }} columns={[
+            { title: 'Workflow', dataIndex: 'workflow_name' },
+            { title: 'Branch', dataIndex: 'branch' },
+            { title: 'Status', render: (_, row) => <Tag color={githubActionStatusColor(row)}>{row.conclusion || row.status}</Tag> },
+            { title: 'SHA', dataIndex: 'commit_sha' },
+            { title: 'Synced', dataIndex: 'synced_at' }
+          ]} />
+        </Space> }
       ]} />
       <Modal title={syncAssetDetail.data?.asset?.name || 'Sync asset'} open={Boolean(syncAssetID)} onCancel={() => setSyncAssetID(undefined)} footer={null} width={980} destroyOnHidden>
         {syncAssetDetail.data && <Space direction="vertical" size={16} className="full">

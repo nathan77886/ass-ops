@@ -54,7 +54,7 @@ The staged plan in Notion starts with an asset ledger, then provider sync, then 
 
 - Dashboard and operation list.
 - Project/repository detail and read-only project template catalog.
-- Repo Sync page with source/target remotes, branches/tags, GitHub Actions list, and run tables.
+- Repo Sync page with source/target remotes, branches/tags, GitHub Actions project/repository linkage summary, and run tables.
 - Worker node page with queue health, stale-node, stale-running-job, queued-by-tool, and recent-failure visibility.
 - AI runtime/task pages.
 - Argo connection/app page with sync polling and deployment target table.
@@ -94,7 +94,7 @@ Notion treats RepoSyncAsset as the key model for Gitea -> GitHub SSH sync. The i
 Impact:
 
 - RepoSyncAsset lifecycle basics are now covered, and webhook-triggered sync policies now have replay and one-time secret rotation controls.
-- Operators can inspect per-asset sync health, list-level risk summaries, recent trend, active queue pressure, provider-pair pressure, provider status, webhook failures, and GitHub Actions volume without opening every individual run.
+- Operators can inspect per-asset sync health, list-level risk summaries, recent trend, active queue pressure, provider-pair pressure, provider status, webhook failures, and GitHub Actions volume/status tied to the selected repository and project without opening every individual run.
 - Webhook shared secrets are now encrypted at rest for new/rotated connections, with legacy plaintext fallback for existing rows.
 - The UI now shows a copyable fully qualified webhook URL generated from `ASSOPS_GATEWAY_URL`.
 - GitHub `workflow_run` webhooks can now update the `github_action_runs` read model for the connected GitHub remote.
