@@ -661,6 +661,33 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	if armedReconciliation["status"] != "ready" || armedReconciliation["provider_api_mutation"] != "disabled" {
 		t.Fatalf("armed reconciliation should be preflight-ready but mutation-disabled: %#v", armedReconciliation)
 	}
+	executionBlueprint := mapFromAny(armedReconciliation["execution_blueprint"])
+	if executionBlueprint["status"] != "ready_for_adapter_implementation" ||
+		executionBlueprint["mode"] != "redacted_adapter_execution_blueprint" ||
+		executionBlueprint["live_adapter_implemented"] != false ||
+		executionBlueprint["requires_provider_client"] != true ||
+		executionBlueprint["requires_request_builder"] != true ||
+		executionBlueprint["requires_response_handler"] != true ||
+		executionBlueprint["requires_idempotency_ledger"] != true ||
+		executionBlueprint["provider_api_call_made"] != false ||
+		executionBlueprint["provider_api_mutation"] != "disabled" ||
+		executionBlueprint["contains_token"] != false ||
+		executionBlueprint["contains_provider_url"] != false ||
+		executionBlueprint["contains_repository_ref"] != false ||
+		executionBlueprint["contains_file_content"] != false {
+		t.Fatalf("armed execution blueprint should be ready for implementation but no-call: %#v", executionBlueprint)
+	}
+	blueprintOperations := sliceOfMapsFromAny(executionBlueprint["operations"])
+	if len(blueprintOperations) != 3 ||
+		blueprintOperations[0]["payload_builder"] != "build_redacted_branch_ref_request" ||
+		blueprintOperations[1]["payload_builder"] != "build_redacted_file_batch_request" ||
+		blueprintOperations[2]["response_handler"] != "handle_review_request_response" ||
+		blueprintOperations[0]["execution_status"] != "ready_for_adapter_implementation" ||
+		blueprintOperations[1]["api_call"] != false ||
+		blueprintOperations[1]["contains_file_content"] != false ||
+		blueprintOperations[1]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("armed execution blueprint operations = %#v", blueprintOperations)
+	}
 	for _, operation := range sliceOfMapsFromAny(armedReconciliation["operations"]) {
 		if operation["external_call_made"] != false {
 			t.Fatalf("armed reconciliation operation should remain local-only: %#v", operation)

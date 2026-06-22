@@ -1058,6 +1058,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
     : (Array.isArray(adapterContract.request_envelopes) ? adapterContract.request_envelopes : []);
   const responseDiagnostics = reconciliation.response_diagnostics || adapterContract.response_diagnostics || {};
   const responseDiagnosticOperations = Array.isArray(responseDiagnostics.operations) ? responseDiagnostics.operations : [];
+  const executionBlueprint = reconciliation.execution_blueprint || adapterContract.execution_blueprint || {};
+  const executionBlueprintOperations = Array.isArray(executionBlueprint.operations) ? executionBlueprint.operations : [];
   const idempotencyPlan = reconciliation.idempotency_plan || adapterContract.idempotency_plan || {};
   const idempotencyOperations = Array.isArray(idempotencyPlan.operations) ? idempotencyPlan.operations : [];
   const attemptLedger = result.provider_review_attempt_ledger?.status ? result.provider_review_attempt_ledger : (persistedAttemptLedger || {});
@@ -1221,6 +1223,24 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
               </Tag>
             ));
           })}
+        </Space>
+      ) : null}
+      {executionBlueprint.status ? (
+        <Space size={4} wrap>
+          <Tag color={executionBlueprint.status === 'ready_for_adapter_implementation' ? 'green' : 'gold'}>blueprint {String(executionBlueprint.status).replaceAll('_', ' ')}</Tag>
+          <Tag>{String(executionBlueprint.mode || 'redacted_adapter_execution_blueprint').replaceAll('_', ' ')}</Tag>
+          <Tag>{executionBlueprint.live_adapter_implemented === true ? 'live adapter ready' : 'adapter implementation required'}</Tag>
+          <Tag>{executionBlueprint.requires_idempotency_ledger === true ? 'ledger required' : 'ledger missing'}</Tag>
+          <Tag color={executionBlueprint.adapter_mutation_currently_off === true ? 'blue' : 'gold'}>{executionBlueprint.adapter_mutation_currently_off === true ? 'mutation off' : 'mutation armed'}</Tag>
+        </Space>
+      ) : null}
+      {executionBlueprintOperations.length ? (
+        <Space size={4} wrap>
+          {executionBlueprintOperations.map((operation: AnyRow, index: number) => (
+            <Tag key={String(operation.endpoint_key || operation.name || `execution-blueprint-${index}`)} color={operation.execution_status === 'ready_for_adapter_implementation' ? 'green' : 'gold'}>
+              {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.payload_builder || operation.execution_status || 'blocked')}
+            </Tag>
+          ))}
         </Space>
       ) : null}
       {responseDiagnostics.status ? (

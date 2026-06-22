@@ -2185,6 +2185,60 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 					"url":                            "https://api.github.example.test/repos/acme/secret-repo",
 					"content":                        "do-not-include",
 				},
+				"execution_blueprint": map[string]any{
+					"status":                   "ready_for_adapter_implementation",
+					"mode":                     "raw_adapter_execution_blueprint",
+					"provider_type":            "github",
+					"review_kind":              "pull_request",
+					"adapter_status":           "ready",
+					"operation_count":          99,
+					"execution_stage":          "raw_stage",
+					"live_adapter_implemented": true,
+					"external_call_made":       true,
+					"provider_api_call_made":   true,
+					"provider_api_mutation":    "enabled",
+					"payload_redacted":         false,
+					"contains_token":           true,
+					"contains_provider_url":    true,
+					"contains_repository_ref":  true,
+					"contains_branch_name":     true,
+					"contains_file_content":    true,
+					"token":                    "secret-token",
+					"url":                      "https://api.github.example.test/repos/acme/secret-repo",
+					"content":                  "do-not-include",
+					"operations": []map[string]any{
+						{
+							"name":                        "open_review_request",
+							"endpoint_key":                "github.open_review",
+							"method":                      "POST",
+							"payload_shape":               "pull_request",
+							"execution_status":            "ready_for_adapter_implementation",
+							"payload_builder":             "raw_builder",
+							"response_handler":            "raw_handler",
+							"idempotency_scope":           "raw_key",
+							"request_body_included":       true,
+							"response_body_included":      true,
+							"headers_included":            true,
+							"payload_redacted":            false,
+							"contains_token":              true,
+							"contains_provider_url":       true,
+							"contains_repository_ref":     true,
+							"contains_branch_name":        true,
+							"contains_file_content":       true,
+							"api_call":                    true,
+							"external_call_made":          true,
+							"provider_api_call_made":      true,
+							"provider_api_mutation":       "enabled",
+							"requires_provider_client":    false,
+							"requires_request_builder":    false,
+							"requires_response_handler":   false,
+							"requires_idempotency_ledger": false,
+							"token":                       "secret-token",
+							"url":                         "https://api.github.example.test/repos/acme/secret-repo/pulls",
+							"content":                     "do-not-include",
+						},
+					},
+				},
 				"response_diagnostics": map[string]any{
 					"status":                 "ready",
 					"mode":                   "raw_response_diagnostics",
@@ -2579,6 +2633,39 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		containsString(mutationArmingReasons, "<script>alert(1)</script>") {
 		t.Fatalf("mutation arming reasons should be allowlisted: %#v", mutationArmingReasons)
 	}
+	executionBlueprint := mapFromAny(reconciliation["execution_blueprint"])
+	if executionBlueprint["mode"] != "redacted_adapter_execution_blueprint" ||
+		executionBlueprint["status"] != "ready_for_adapter_implementation" ||
+		executionBlueprint["operation_count"] != 1 ||
+		executionBlueprint["execution_stage"] != "adapter_implementation_required" ||
+		executionBlueprint["live_adapter_implemented"] != false ||
+		executionBlueprint["requires_provider_client"] != true ||
+		executionBlueprint["requires_request_builder"] != true ||
+		executionBlueprint["requires_response_handler"] != true ||
+		executionBlueprint["requires_idempotency_ledger"] != true ||
+		executionBlueprint["provider_api_call_made"] != false ||
+		executionBlueprint["provider_api_mutation"] != "disabled" ||
+		executionBlueprint["payload_redacted"] != true ||
+		executionBlueprint["contains_token"] != false ||
+		executionBlueprint["contains_provider_url"] != false ||
+		executionBlueprint["contains_repository_ref"] != false ||
+		executionBlueprint["contains_branch_name"] != false ||
+		executionBlueprint["contains_file_content"] != false ||
+		executionBlueprint["adapter_mutation_currently_off"] != true {
+		t.Fatalf("execution blueprint should be sanitized: %#v", executionBlueprint)
+	}
+	executionBlueprintOperations := sliceOfMapsFromAny(executionBlueprint["operations"])
+	if len(executionBlueprintOperations) != 1 ||
+		executionBlueprintOperations[0]["payload_builder"] != "build_redacted_provider_request" ||
+		executionBlueprintOperations[0]["response_handler"] != "handle_provider_response" ||
+		executionBlueprintOperations[0]["request_body_included"] != false ||
+		executionBlueprintOperations[0]["headers_included"] != false ||
+		executionBlueprintOperations[0]["api_call"] != false ||
+		executionBlueprintOperations[0]["provider_api_mutation"] != "disabled" ||
+		executionBlueprintOperations[0]["contains_file_content"] != false ||
+		executionBlueprintOperations[0]["requires_idempotency_ledger"] != true {
+		t.Fatalf("execution blueprint operations should be sanitized: %#v", executionBlueprintOperations)
+	}
 	responseDiagnostics := mapFromAny(reconciliation["response_diagnostics"])
 	if responseDiagnostics["external_call_made"] != false ||
 		responseDiagnostics["mode"] != "redacted_response_diagnostics" ||
@@ -2714,7 +2801,7 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		}
 	}
 	encoded, _ := json.Marshal(audit)
-	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_adapter_rehearsal", "raw_mutation_arming_plan", "SECRET_CONFIG", "raw_attempt_ledger", "raw_attempt_orchestration", "raw_key"} {
+	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_adapter_rehearsal", "raw_mutation_arming_plan", "raw_adapter_execution_blueprint", "raw_builder", "raw_handler", "raw_stage", "SECRET_CONFIG", "raw_attempt_ledger", "raw_attempt_orchestration", "raw_key"} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
 		}

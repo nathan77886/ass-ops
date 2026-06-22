@@ -837,6 +837,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 	requestEnvelopes := providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload)
 	adapterRehearsal := providerReviewAdapterRehearsal(provider, reviewKind, adapterStatus, credentialStrategy, requestEnvelopes)
 	mutationArmingPlan := providerReviewMutationArmingPlan(provider, reviewKind, executionEnabledConfig, mutationArmed, adapterRehearsal)
+	executionBlueprint := providerReviewAdapterExecutionBlueprint(provider, reviewKind, adapterStatus, requestEnvelopes, mutationArmingPlan)
 	gates := []map[string]any{
 		{
 			"gate":              "provider_supported",
@@ -913,6 +914,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		"request_envelopes":      requestEnvelopes,
 		"adapter_rehearsal":      adapterRehearsal,
 		"mutation_arming_plan":   mutationArmingPlan,
+		"execution_blueprint":    executionBlueprint,
 		"response_diagnostics":   providerReviewAdapterResponseDiagnostics(provider, reviewKind),
 		"idempotency_plan":       providerReviewAdapterIdempotencyPlan(provider, reviewKind),
 		"adapter_status":         adapterStatus,
@@ -991,6 +993,121 @@ func providerReviewMutationArmingPlan(provider, reviewKind string, executionEnab
 		"requires_adapter_rehearsal":     true,
 		"adapter_mutation_currently_off": true,
 		"next_step":                      "Only arm provider review mutation after rehearsal evidence, operator approval, and environment-specific rollout controls are reviewed.",
+	}
+}
+
+func providerReviewAdapterExecutionBlueprint(provider, reviewKind, adapterStatus string, requestEnvelopes []map[string]any, mutationArmingPlan map[string]any) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	mutationArmed := stringFromMap(mutationArmingPlan, "status") == "armed" && boolValueFromAny(mutationArmingPlan["mutation_armed"])
+	status := "blocked"
+	if adapterStatus == "planned" && mutationArmed {
+		status = "ready_for_adapter_implementation"
+	}
+	operations := make([]map[string]any, 0, len(requestEnvelopes))
+	for _, envelope := range requestEnvelopes {
+		ready := providerReviewAdapterRequestEnvelopeReady(envelope) && mutationArmed
+		operations = append(operations, providerReviewAdapterExecutionBlueprintOperation(envelope, ready))
+	}
+	return map[string]any{
+		"status":                         status,
+		"mode":                           "redacted_adapter_execution_blueprint",
+		"provider_type":                  provider,
+		"review_kind":                    reviewKind,
+		"adapter_status":                 adapterStatus,
+		"operation_count":                len(operations),
+		"operations":                     operations,
+		"execution_stage":                "adapter_implementation_required",
+		"live_adapter_implemented":       false,
+		"requires_provider_client":       true,
+		"requires_request_builder":       true,
+		"requires_response_handler":      true,
+		"requires_idempotency_ledger":    true,
+		"requires_operator_review":       true,
+		"requires_mutation_arming":       true,
+		"external_call_made":             false,
+		"provider_api_call_made":         false,
+		"provider_api_mutation":          "disabled",
+		"payload_redacted":               true,
+		"contains_token":                 false,
+		"contains_provider_url":          false,
+		"contains_repository_ref":        false,
+		"contains_branch_name":           false,
+		"contains_file_content":          false,
+		"adapter_mutation_currently_off": true,
+		"next_step":                      "Implement provider-specific request builder, response handler, and persisted attempt execution before live API mutation is enabled.",
+	}
+}
+
+func providerReviewAdapterRequestEnvelopeReady(envelope map[string]any) bool {
+	for _, item := range mapSliceFromAny(envelope["readiness"]) {
+		if cleanOptionalText(stringFromMap(item, "status")) != "ready" {
+			return false
+		}
+	}
+	return len(mapSliceFromAny(envelope["readiness"])) > 0
+}
+
+func providerReviewAdapterExecutionBlueprintOperation(envelope map[string]any, ready bool) map[string]any {
+	name := cleanOptionalText(stringFromMap(envelope, "name"))
+	endpointKey := cleanOptionalText(stringFromMap(envelope, "endpoint_key"))
+	payloadShape := cleanOptionalText(stringFromMap(envelope, "payload_shape"))
+	executionStatus := "blocked"
+	if ready {
+		executionStatus = "ready_for_adapter_implementation"
+	}
+	return map[string]any{
+		"name":                        name,
+		"endpoint_key":                endpointKey,
+		"method":                      cleanOptionalText(stringFromMap(envelope, "method")),
+		"payload_shape":               payloadShape,
+		"execution_status":            executionStatus,
+		"payload_builder":             providerReviewPayloadBuilderName(name),
+		"response_handler":            providerReviewResponseHandlerName(name),
+		"idempotency_scope":           "operation_scope_hash",
+		"request_body_included":       false,
+		"response_body_included":      false,
+		"headers_included":            false,
+		"payload_redacted":            true,
+		"contains_token":              false,
+		"contains_provider_url":       false,
+		"contains_repository_ref":     false,
+		"contains_branch_name":        false,
+		"contains_file_content":       false,
+		"api_call":                    false,
+		"external_call_made":          false,
+		"provider_api_call_made":      false,
+		"provider_api_mutation":       "disabled",
+		"requires_provider_client":    true,
+		"requires_request_builder":    true,
+		"requires_response_handler":   true,
+		"requires_idempotency_ledger": true,
+	}
+}
+
+func providerReviewPayloadBuilderName(operation string) string {
+	switch cleanOptionalText(operation) {
+	case "create_branch_ref":
+		return "build_redacted_branch_ref_request"
+	case "commit_starter_files":
+		return "build_redacted_file_batch_request"
+	case "open_review_request":
+		return "build_redacted_review_request"
+	default:
+		return "build_redacted_provider_request"
+	}
+}
+
+func providerReviewResponseHandlerName(operation string) string {
+	switch cleanOptionalText(operation) {
+	case "create_branch_ref":
+		return "handle_branch_ref_response"
+	case "commit_starter_files":
+		return "handle_commit_files_response"
+	case "open_review_request":
+		return "handle_review_request_response"
+	default:
+		return "handle_provider_response"
 	}
 }
 
