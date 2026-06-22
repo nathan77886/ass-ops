@@ -324,6 +324,25 @@ func TestProvisionTemplateRepositoryReportsProtectedBranchStrategy(t *testing.T)
 	if readiness["branch_creation"] != "locally_planned" || readiness["review_request"] != "locally_planned" {
 		t.Fatalf("provider review branch/review readiness = %#v", readiness)
 	}
+	executionPlan := mapFromAny(readiness["execution_plan"])
+	if executionPlan["mode"] != "dry_run" || executionPlan["execution_enabled"] != false || executionPlan["external_call_made"] != false {
+		t.Fatalf("execution plan should be dry-run only: %#v", executionPlan)
+	}
+	if executionPlan["provider_api_mutation"] != "disabled" || executionPlan["requires_approval"] != true {
+		t.Fatalf("execution plan guardrails = %#v", executionPlan)
+	}
+	if executionPlan["source_branch"] != "assops/starter/protected-service-release-main" || executionPlan["target_branch"] != "release/main" {
+		t.Fatalf("execution plan branches = %#v", executionPlan)
+	}
+	steps := sliceOfMapsFromAny(executionPlan["steps"])
+	if len(steps) != 3 || steps[0]["name"] != "create_branch" || steps[1]["name"] != "commit_starter_files" || steps[2]["name"] != "open_review" {
+		t.Fatalf("execution plan steps = %#v", steps)
+	}
+	for _, step := range steps {
+		if step["api_call"] != false {
+			t.Fatalf("execution plan step should not call provider API: %#v", step)
+		}
+	}
 	if strategy["proposed_branch"] != "assops/starter/protected-service-release-main" || strategy["target_branch"] != "release/main" {
 		t.Fatalf("branch strategy branches = %#v", strategy)
 	}
@@ -347,6 +366,9 @@ func TestTemplateProviderReviewReadinessBlocksWithoutPlan(t *testing.T) {
 	if existing["status"] != "blocked" || existing["execution_enabled"] != false || existing["external_call_made"] != false {
 		t.Fatalf("existing repository readiness = %#v", existing)
 	}
+	if _, ok := existing["execution_plan"]; ok {
+		t.Fatalf("blocked existing repository readiness should not include execution_plan: %#v", existing)
+	}
 	if !strings.Contains(fmt.Sprint(existing["message"]), "Review existing repository") {
 		t.Fatalf("existing repository message = %#v", existing)
 	}
@@ -355,10 +377,16 @@ func TestTemplateProviderReviewReadinessBlocksWithoutPlan(t *testing.T) {
 	if missingToken["status"] != "blocked" || !strings.Contains(fmt.Sprint(missingToken["message"]), "token") {
 		t.Fatalf("missing token readiness = %#v", missingToken)
 	}
+	if _, ok := missingToken["execution_plan"]; ok {
+		t.Fatalf("missing token readiness should not include execution_plan: %#v", missingToken)
+	}
 
 	unsupportedProtected := templateProviderReviewReadiness("protected_branch", "github", map[string]any{"mode": "custom", "strategy_status": "unsupported"})
 	if unsupportedProtected["status"] != "blocked" || unsupportedProtected["execution_enabled"] != false {
 		t.Fatalf("unsupported protected readiness = %#v", unsupportedProtected)
+	}
+	if _, ok := unsupportedProtected["execution_plan"]; ok {
+		t.Fatalf("unsupported protected readiness should not include execution_plan: %#v", unsupportedProtected)
 	}
 	if !strings.Contains(fmt.Sprint(unsupportedProtected["message"]), "supported branch strategy") {
 		t.Fatalf("unsupported protected message = %#v", unsupportedProtected)
@@ -368,8 +396,32 @@ func TestTemplateProviderReviewReadinessBlocksWithoutPlan(t *testing.T) {
 	if unknown["status"] != "blocked" || unknown["execution_enabled"] != false {
 		t.Fatalf("unknown readiness = %#v", unknown)
 	}
+	if _, ok := unknown["execution_plan"]; ok {
+		t.Fatalf("unknown readiness should not include execution_plan: %#v", unknown)
+	}
 	if !strings.Contains(fmt.Sprint(unknown["message"]), "Manual repository reconciliation") {
 		t.Fatalf("unknown message = %#v", unknown)
+	}
+}
+
+func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
+	githubPlan := templateProviderReviewExecutionPlan("github", map[string]any{
+		"mode":            "pull_request",
+		"provider_type":   "github",
+		"proposed_branch": "assops/template/demo-main",
+		"target_branch":   "main",
+	})
+	if githubPlan["review_kind"] != "pull_request" || githubPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("github execution plan = %#v", githubPlan)
+	}
+	giteaPlan := templateProviderReviewExecutionPlan("gitea", map[string]any{
+		"mode":            "merge_request",
+		"provider_type":   "gitea",
+		"proposed_branch": "assops/template/demo-main",
+		"target_branch":   "main",
+	})
+	if giteaPlan["review_kind"] != "merge_request" || giteaPlan["execution_enabled"] != false {
+		t.Fatalf("gitea execution plan = %#v", giteaPlan)
 	}
 }
 

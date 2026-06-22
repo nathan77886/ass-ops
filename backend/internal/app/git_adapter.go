@@ -574,6 +574,7 @@ func templateProviderReviewReadiness(kind, provider string, branchStrategy map[s
 			readiness["branch_creation"] = "locally_planned"
 			readiness["review_request"] = "locally_planned"
 			readiness["provider_next_action"] = branchStrategy["provider_next_action"]
+			readiness["execution_plan"] = templateProviderReviewExecutionPlan(provider, branchStrategy)
 			readiness["message"] = "Local branch/review plan is ready; provider API-backed branch creation and PR/MR execution remain disabled."
 			return readiness
 		}
@@ -586,6 +587,71 @@ func templateProviderReviewReadiness(kind, provider string, branchStrategy map[s
 		readiness["message"] = "Manual repository reconciliation is required before provider review execution can be planned."
 	}
 	return readiness
+}
+
+func templateProviderReviewExecutionPlan(provider string, branchStrategy map[string]any) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(firstNonEmptyString(provider, stringFromMap(branchStrategy, "provider_type"))))
+	mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(branchStrategy["mode"])))
+	sourceBranch := strings.TrimSpace(fmt.Sprint(branchStrategy["proposed_branch"]))
+	targetBranch := strings.TrimSpace(fmt.Sprint(branchStrategy["target_branch"]))
+	reviewKind := templateProviderReviewKind(provider, mode)
+	steps := []map[string]any{
+		{
+			"name":      "create_branch",
+			"status":    "planned",
+			"provider":  provider,
+			"from":      targetBranch,
+			"to":        sourceBranch,
+			"api_call":  false,
+			"guardrail": "provider API execution disabled",
+		},
+		{
+			"name":       "commit_starter_files",
+			"status":     "planned",
+			"branch":     sourceBranch,
+			"api_call":   false,
+			"repository": "external provider repository",
+			"guardrail":  "external repository mutation disabled",
+		},
+		{
+			"name":          "open_review",
+			"status":        "planned",
+			"provider":      provider,
+			"review_kind":   reviewKind,
+			"source_branch": sourceBranch,
+			"target_branch": targetBranch,
+			"api_call":      false,
+			"guardrail":     "provider review request execution disabled",
+		},
+	}
+	return map[string]any{
+		"mode":                  "dry_run",
+		"provider_type":         provider,
+		"strategy_mode":         mode,
+		"review_kind":           reviewKind,
+		"source_branch":         sourceBranch,
+		"target_branch":         targetBranch,
+		"execution_enabled":     false,
+		"external_call_made":    false,
+		"requires_approval":     true,
+		"approval_action":       "project_template.provider_review.execute",
+		"provider_api_mutation": "disabled",
+		"steps":                 steps,
+		"message":               "Dry-run provider review execution plan only; branch creation, starter-file commits, and PR/MR creation remain disabled.",
+	}
+}
+
+func templateProviderReviewKind(provider, mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	switch mode {
+	case "merge_request":
+		return "merge_request"
+	case "pull_request":
+		return "pull_request"
+	default:
+		return "pull_request"
+	}
 }
 
 func templateBranchStrategyActionRequired(strategy map[string]any, defaultBranch string) string {

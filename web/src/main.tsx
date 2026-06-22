@@ -314,12 +314,24 @@ type TemplateProvisionGuidance = {
   next: string;
   reviewStatus: string;
   reviewExecution: string;
+  reviewPlanMode: string;
+  reviewKind: string;
+  sourceBranch: string;
+  targetBranch: string;
+  approvalAction: string;
+  reviewSteps: AnyRow[];
 };
 
-function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution'> & Partial<Pick<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution'>>): TemplateProvisionGuidance {
+function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'reviewSteps'> & Partial<Pick<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'reviewSteps'>>): TemplateProvisionGuidance {
   return {
     reviewStatus: '',
     reviewExecution: '',
+    reviewPlanMode: '',
+    reviewKind: '',
+    sourceBranch: '',
+    targetBranch: '',
+    approvalAction: '',
+    reviewSteps: [],
     ...value
   };
 }
@@ -348,6 +360,7 @@ function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
   if (reconciliation.kind) {
     const branchStrategy = reconciliation.branch_strategy || {};
     const providerReview = reconciliation.provider_review_readiness || {};
+    const executionPlan = providerReview.execution_plan || {};
     const branchStrategyReady = reconciliation.kind === 'protected_branch' && branchStrategy.strategy_status === 'planned';
     const titles: Record<string, string> = {
       existing_repository: 'Existing repository needs reconciliation',
@@ -361,7 +374,13 @@ function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
       detail: String((branchStrategyReady ? reconciliation.action_required : branchStrategy.message) || reconciliation.action_required || details.reason || row.result?.repository_provision_reason || 'Repository provisioning needs operator review.'),
       next: String(providerReview.message || reconciliation.retry_after || 'Retry after the missing provider condition is fixed.'),
       reviewStatus: String(providerReview.status || ''),
-      reviewExecution: providerReview.execution_enabled === true ? 'enabled' : 'disabled'
+      reviewExecution: providerReview.execution_enabled === true ? 'enabled' : 'disabled',
+      reviewPlanMode: String(executionPlan.mode || ''),
+      reviewKind: String(executionPlan.review_kind || ''),
+      sourceBranch: String(executionPlan.source_branch || ''),
+      targetBranch: String(executionPlan.target_branch || ''),
+      approvalAction: String(executionPlan.approval_action || ''),
+      reviewSteps: Array.isArray(executionPlan.steps) ? executionPlan.steps : []
     });
   }
   if (details.repository_exists && details.starter_push_skipped) {
@@ -880,6 +899,7 @@ function templateProvisionGuidanceView(row: AnyRow, compact = false) {
         <Space size={4} wrap>
           <Tag color={guidance.color}>{guidance.status}</Tag>
           {guidance.reviewStatus ? <Tag>{guidance.reviewStatus}</Tag> : null}
+          {guidance.reviewPlanMode ? <Tag color="blue">{guidance.reviewPlanMode}</Tag> : null}
         </Space>
         <Typography.Text type="secondary">{shortText(guidance.next, 96)}</Typography.Text>
       </Space>
@@ -893,9 +913,34 @@ function templateProvisionGuidanceView(row: AnyRow, compact = false) {
       description={<Space direction="vertical" size={4}>
         <Typography.Text>{guidance.detail}</Typography.Text>
         {guidance.reviewStatus ? <Space size={4} wrap><Tag>{guidance.reviewStatus}</Tag><Tag>provider execution: {guidance.reviewExecution}</Tag></Space> : null}
+        {guidance.reviewPlanMode ? <TemplateProviderReviewPlan guidance={guidance} /> : null}
         <Typography.Text strong>{guidance.next}</Typography.Text>
       </Space>}
     />
+  );
+}
+
+function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionGuidance }) {
+  return (
+    <Space direction="vertical" size={4}>
+      <Space size={4} wrap>
+        <Tag color="blue">{guidance.reviewPlanMode}</Tag>
+        {guidance.reviewKind ? <Tag>{guidance.reviewKind}</Tag> : null}
+        {guidance.approvalAction ? <Tag>{guidance.approvalAction}</Tag> : null}
+      </Space>
+      {guidance.sourceBranch || guidance.targetBranch ? (
+        <Typography.Text type="secondary">{guidance.sourceBranch || '-'} -&gt; {guidance.targetBranch || '-'}</Typography.Text>
+      ) : null}
+      {guidance.reviewSteps.length ? (
+        <Space size={4} wrap>
+          {guidance.reviewSteps.map((step, index) => (
+            <Tag key={`${step.name || 'step'}-${index}`} color={step.api_call === true ? 'red' : 'default'}>
+              {String(step.name || 'step')}: {String(step.status || 'planned')}
+            </Tag>
+          ))}
+        </Space>
+      ) : null}
+    </Space>
   );
 }
 
