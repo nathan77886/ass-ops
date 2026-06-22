@@ -166,6 +166,35 @@ function useOperationLogStream(operationID?: string) {
   return { logs, status, connected, error };
 }
 
+function operationLogStreamTag(stream: ReturnType<typeof useOperationLogStream>) {
+  if (stream.connected) return { color: 'green', label: 'live' };
+  if (stream.error) return { color: 'red', label: 'error' };
+  if (stream.status) return { color: operationStatusColor(stream.status), label: stream.status };
+  return { color: 'default', label: 'waiting' };
+}
+
+function emptyOperationLogMessage(stream: ReturnType<typeof useOperationLogStream>) {
+  if (stream.connected) return 'Waiting for operation logs';
+  if (String(stream.status || '').toLowerCase() === 'completed') return 'Operation completed with no logs';
+  return 'No operation logs received';
+}
+
+function operationStatusColor(status: any) {
+  switch (String(status || '').toLowerCase()) {
+    case 'completed':
+      return 'green';
+    case 'failed':
+    case 'canceled':
+    case 'cancelled':
+      return 'red';
+    case 'running':
+    case 'queued':
+      return 'blue';
+    default:
+      return 'default';
+  }
+}
+
 function rowOptions(rows: AnyRow[] = [], labelKey = 'name') {
   return rows.map((row) => ({ value: row.id, label: row[labelKey] || row.name || row.id }));
 }
@@ -1577,6 +1606,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const ruleAudits = useLoad(() => ruleAuditID ? api(`/api/operation-approval-rules/${ruleAuditID}/audits`) : Promise.resolve({ items: [] }), [ruleAuditID]);
   const liveLogs = useOperationLogStream(liveOperationID);
   const liveOperation = (ops.data?.items || []).find((row: AnyRow) => row.id === liveOperationID);
+  const liveLogTag = operationLogStreamTag(liveLogs);
   const currentRole = String(me.data?.user?.role || '').toLowerCase();
   const canEditApprovalRules = ['admin', 'owner'].includes(currentRole);
   useEffect(() => {
@@ -1859,7 +1889,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
       <Table<AnyRow> rowKey="id" dataSource={ops.data?.items || []} pagination={{ pageSize: 8 }} columns={[
         { title: 'Type', dataIndex: 'operation_type' },
         { title: 'Title', dataIndex: 'title' },
-        { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{row.status}</Tag> },
+        { title: 'Status', render: (_, row) => <Tag color={operationStatusColor(row.status)}>{row.status}</Tag> },
         { title: 'Created', dataIndex: 'created_at' },
         { title: 'Logs', render: (_, row) => <Button size="small" onClick={() => setLiveOperationID(row.id)}>Live</Button> }
       ]} />
@@ -1868,10 +1898,12 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
           <Space direction="vertical" size={12} className="full">
             <Space wrap>
               <Typography.Title level={5} style={{ margin: 0 }}>{liveOperation?.title || liveOperationID}</Typography.Title>
-              <Tag color={liveLogs.connected ? 'green' : liveLogs.status ? 'blue' : 'default'}>{liveLogs.connected ? 'live' : liveLogs.status || 'disconnected'}</Tag>
+              <Tag color={liveLogTag.color}>{liveLogTag.label}</Tag>
+              <Tag>{liveLogs.logs.length} log{liveLogs.logs.length === 1 ? '' : 's'}</Tag>
               <Button size="small" onClick={() => setLiveOperationID(undefined)}>Close</Button>
             </Space>
             {liveLogs.error && <Alert type="error" showIcon message={liveLogs.error} />}
+            {!liveLogs.error && liveLogs.logs.length === 0 && <Alert type="info" showIcon message={emptyOperationLogMessage(liveLogs)} />}
             <Table<AnyRow> rowKey="id" size="small" dataSource={liveLogs.logs} pagination={{ pageSize: 8 }} columns={[
               { title: 'Level', dataIndex: 'level', width: 110 },
               { title: 'Message', dataIndex: 'message' },
