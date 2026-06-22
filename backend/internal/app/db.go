@@ -35,6 +35,7 @@ type MigrationRecord struct {
 type AssetSyncResult struct {
 	SyncedAssets            int `db:"synced_assets" json:"synced_assets"`
 	InsertedRelations       int `db:"inserted_relations" json:"inserted_relations"`
+	PrunedRelations         int `db:"pruned_relations" json:"pruned_relations"`
 	InsertedStatusSnapshots int `db:"inserted_status_snapshots" json:"inserted_status_snapshots"`
 }
 
@@ -540,6 +541,18 @@ func canonicalAssetSyncSQL() string {
 		WHERE from_inv.source_table <> '' AND from_inv.source_id <> ''
 			AND to_inv.source_table <> '' AND to_inv.source_id <> ''
 	),
+	relation_prunes AS (
+		DELETE FROM asset_relations existing
+		WHERE COALESCE(existing.metadata->>'source', '') <> 'manual'
+			AND NOT EXISTS (
+				SELECT 1
+				FROM relation_candidates rc
+				WHERE rc.from_asset_id=existing.from_asset_id
+					AND rc.to_asset_id=existing.to_asset_id
+					AND rc.relation_type=existing.relation_type
+			)
+		RETURNING id
+	),
 	relation_inserts AS (
 		INSERT INTO asset_relations(project_id, from_asset_id, to_asset_id, relation_type, metadata, created_at)
 		SELECT project_id, from_asset_id, to_asset_id, relation_type, metadata, created_at
@@ -558,6 +571,7 @@ func canonicalAssetSyncSQL() string {
 	SELECT
 		(SELECT count(*) FROM asset_upserts) AS synced_assets,
 		(SELECT count(*) FROM relation_inserts) AS inserted_relations,
+		(SELECT count(*) FROM relation_prunes) AS pruned_relations,
 		(SELECT count(*) FROM status_snapshot_inserts) AS inserted_status_snapshots`
 }
 
@@ -654,6 +668,7 @@ func workerNodeCanonicalAssetSyncSQL() string {
 	SELECT
 		(SELECT count(*) FROM asset_upserts) AS synced_assets,
 		0 AS inserted_relations,
+		0 AS pruned_relations,
 		(SELECT count(*) FROM status_snapshot_inserts) AS inserted_status_snapshots`
 }
 

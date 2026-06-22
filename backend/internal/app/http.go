@@ -10781,7 +10781,7 @@ func (s *Server) syncCanonicalAssetsInTransaction(w http.ResponseWriter, r *http
 		return false
 	}
 	if s.log != nil {
-		s.log.Debug("canonical assets synced in transaction", "reason", reason, "synced_assets", result.SyncedAssets, "inserted_relations", result.InsertedRelations, "inserted_status_snapshots", result.InsertedStatusSnapshots)
+		s.log.Debug("canonical assets synced in transaction", "reason", reason, "synced_assets", result.SyncedAssets, "inserted_relations", result.InsertedRelations, "pruned_relations", result.PrunedRelations, "inserted_status_snapshots", result.InsertedStatusSnapshots)
 	}
 	return true
 }

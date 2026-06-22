@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jmoiron/sqlx"
 )
 
 func TestJSONValueScanAndMarshal(t *testing.T) {
@@ -111,8 +115,13 @@ func TestCanonicalAssetSyncSQLIncludesUpsertAndRelationDedupe(t *testing.T) {
 		"WHERE NOT EXISTS",
 		"existing.project_id IS NOT DISTINCT FROM rc.project_id",
 		"ON CONFLICT (from_asset_id, to_asset_id, relation_type) DO NOTHING",
+		"relation_prunes AS",
+		"DELETE FROM asset_relations existing",
+		"COALESCE(existing.metadata->>'source', '') <> 'manual'",
+		"rc.relation_type=existing.relation_type",
 		"synced_assets",
 		"inserted_relations",
+		"pruned_relations",
 	} {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("canonicalAssetSyncSQL missing %s", token)
@@ -138,6 +147,7 @@ func TestWorkerNodeCanonicalAssetSyncSQLIsNarrow(t *testing.T) {
 		"INSERT INTO asset_status_snapshots",
 		"'source_id', source_id::text",
 		"0 AS inserted_relations",
+		"0 AS pruned_relations",
 	} {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("workerNodeCanonicalAssetSyncSQL missing %s", token)
@@ -145,6 +155,32 @@ func TestWorkerNodeCanonicalAssetSyncSQLIsNarrow(t *testing.T) {
 	}
 	if strings.Contains(sql, "asset_inventory AS") {
 		t.Fatal("workerNodeCanonicalAssetSyncSQL should not run full asset inventory")
+	}
+}
+
+func TestSyncCanonicalAssetsWithScansPrunedRelations(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	sqlDB := sqlx.NewDb(db, "sqlmock")
+	rows := sqlmock.NewRows([]string{
+		"synced_assets",
+		"inserted_relations",
+		"pruned_relations",
+		"inserted_status_snapshots",
+	}).AddRow(3, 2, 1, 4)
+	mock.ExpectQuery(regexp.QuoteMeta(canonicalAssetSyncSQL())).WillReturnRows(rows)
+	result, err := SyncCanonicalAssetsWith(t.Context(), sqlDB)
+	if err != nil {
+		t.Fatalf("SyncCanonicalAssetsWith: %v", err)
+	}
+	if result.SyncedAssets != 3 || result.InsertedRelations != 2 || result.PrunedRelations != 1 || result.InsertedStatusSnapshots != 4 {
+		t.Fatalf("result = %+v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 
