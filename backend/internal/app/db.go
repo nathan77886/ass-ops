@@ -160,6 +160,14 @@ func SyncCanonicalAssetsWith(ctx context.Context, db sqlx.QueryerContext) (Asset
 	return result, nil
 }
 
+func SyncWorkerNodeCanonicalAssetWith(ctx context.Context, db sqlx.QueryerContext, workerNodeID any) (AssetSyncResult, error) {
+	var result AssetSyncResult
+	if err := sqlx.GetContext(ctx, db, &result, workerNodeCanonicalAssetSyncSQL(), workerNodeID); err != nil {
+		return result, fmt.Errorf("syncing worker node canonical asset: %w", err)
+	}
+	return result, nil
+}
+
 const migrationAdvisoryLockID int64 = 451127631724519
 
 func migrationFiles(dir string) ([]string, error) {
@@ -547,6 +555,102 @@ func canonicalAssetSyncSQL() string {
 	SELECT
 		(SELECT count(*) FROM asset_upserts) AS synced_assets,
 		(SELECT count(*) FROM relation_inserts) AS inserted_relations,
+		(SELECT count(*) FROM status_snapshot_inserts) AS inserted_status_snapshots`
+}
+
+func workerNodeCanonicalAssetSyncSQL() string {
+	return `
+	WITH worker_node_inventory AS (
+		SELECT
+			'worker_node:' || wn.id::text AS id,
+			'' AS project_id,
+			'node_agent' AS asset_type,
+			'worker_nodes' AS source_table,
+			wn.id::text AS source_id,
+			wn.name AS name,
+			wn.name AS display_name,
+			wn.kind AS description,
+			'local' AS source,
+			wn.name AS external_id,
+			wn.status AS status,
+			'normal' AS risk_level,
+			jsonb_build_object('kind', wn.kind, 'capabilities', wn.capabilities, 'last_heartbeat_at', wn.last_heartbeat_at) AS metadata,
+			wn.created_at AS created_at,
+			wn.updated_at AS updated_at
+		FROM worker_nodes wn
+		WHERE wn.id=$1
+	),
+	asset_upserts AS (
+		INSERT INTO assets(
+			project_id, asset_type, source_table, source_id, name, display_name, description,
+			source, external_id, status, risk_level, metadata, created_at, updated_at
+		)
+		SELECT
+			NULLIF(project_id, '')::uuid,
+			asset_type,
+			source_table,
+			NULLIF(source_id, '')::uuid,
+			name,
+			display_name,
+			description,
+			source,
+			external_id,
+			status,
+			risk_level,
+			metadata,
+			created_at,
+			updated_at
+		FROM worker_node_inventory
+		ON CONFLICT (asset_type, source_table, source_id) DO UPDATE SET
+			project_id=EXCLUDED.project_id,
+			name=EXCLUDED.name,
+			display_name=EXCLUDED.display_name,
+			description=EXCLUDED.description,
+			source=EXCLUDED.source,
+			external_id=EXCLUDED.external_id,
+			status=EXCLUDED.status,
+			risk_level=EXCLUDED.risk_level,
+			metadata=EXCLUDED.metadata,
+			updated_at=EXCLUDED.updated_at
+		RETURNING id, asset_type, source_table, source_id, name, status, risk_level, metadata
+	),
+	status_snapshot_candidates AS (
+		SELECT
+			id AS asset_id,
+			status,
+			risk_level AS health,
+			concat(asset_type, ' ', name, ' is ', status) AS summary,
+			jsonb_build_object(
+				'asset_type', asset_type,
+				'source_table', source_table,
+				'source_id', source_id::text,
+				'name', name,
+				'metadata', metadata
+			) AS raw
+		FROM asset_upserts
+	),
+	status_snapshot_inserts AS (
+		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
+		SELECT asset_id, status, health, summary, raw
+		FROM status_snapshot_candidates candidate
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM asset_status_snapshots latest
+			WHERE latest.asset_id=candidate.asset_id
+				AND latest.status=candidate.status
+				AND latest.health=candidate.health
+				AND latest.raw=candidate.raw
+				AND latest.collected_at=(
+					SELECT max(collected_at)
+					FROM asset_status_snapshots newest
+					WHERE newest.asset_id=candidate.asset_id
+				)
+		)
+		RETURNING id
+	)
+	SELECT
+		(SELECT count(*) FROM asset_upserts) AS synced_assets,
+		0 AS inserted_relations,
 		(SELECT count(*) FROM status_snapshot_inserts) AS inserted_status_snapshots`
 }
 

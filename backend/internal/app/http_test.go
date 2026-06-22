@@ -1421,6 +1421,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "ai_runtime.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "ai_runtime.verify")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "worker_node.register")`,
+		`SyncWorkerNodeCanonicalAssetWith(r.Context(), tx, node["id"])`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "argo_connection.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "ssh_machine.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.create")`,

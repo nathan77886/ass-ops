@@ -113,6 +113,34 @@ func TestCanonicalAssetSyncSQLIncludesUpsertAndRelationDedupe(t *testing.T) {
 	}
 }
 
+func TestWorkerNodeCanonicalAssetSyncSQLIsNarrow(t *testing.T) {
+	sql := workerNodeCanonicalAssetSyncSQL()
+	for _, token := range []string{
+		"WITH worker_node_inventory AS",
+		"FROM worker_nodes wn",
+		"WHERE wn.id=$1",
+		"'' AS project_id",
+		"wn.id::text AS source_id",
+		"'node_agent' AS asset_type",
+		"INSERT INTO assets",
+		"project_id, asset_type, source_table, source_id",
+		"NULLIF(project_id, '')::uuid",
+		"NULLIF(source_id, '')::uuid",
+		"ON CONFLICT (asset_type, source_table, source_id) DO UPDATE",
+		"project_id=EXCLUDED.project_id",
+		"INSERT INTO asset_status_snapshots",
+		"'source_id', source_id::text",
+		"0 AS inserted_relations",
+	} {
+		if !strings.Contains(sql, token) {
+			t.Fatalf("workerNodeCanonicalAssetSyncSQL missing %s", token)
+		}
+	}
+	if strings.Contains(sql, "asset_inventory AS") {
+		t.Fatal("workerNodeCanonicalAssetSyncSQL should not run full asset inventory")
+	}
+}
+
 func TestCTEWithoutLeadingWith(t *testing.T) {
 	got := cteWithoutLeadingWith(" \n WITH sample AS (SELECT 1)")
 	if !strings.HasPrefix(got, "sample AS") {

@@ -9201,10 +9201,28 @@ func (s *Server) nodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start worker node heartbeat transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE worker_nodes SET status='online', last_heartbeat_at=now(), updated_at=now()
 		WHERE id=$1 RETURNING *`, node["id"])
-	writeQueryOne(w, item, err)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if _, err := SyncWorkerNodeCanonicalAssetWith(r.Context(), tx, node["id"]); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync worker node canonical asset")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit worker node heartbeat")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) claimJob(w http.ResponseWriter, r *http.Request) {
