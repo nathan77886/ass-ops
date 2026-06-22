@@ -3191,6 +3191,8 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 	}
 	candidateTransportPlan := mapFromAny(candidateDispatchPlan["transport_plan"])
 	if candidateTransportPlan["mode"] != "redacted_attempt_adapter_transport_plan" ||
+		candidateTransportPlan["transport_ready"] != true ||
+		candidateTransportPlan["transport_ready_reason"] != "ready" ||
 		candidateTransportPlan["provider_type"] != "github" ||
 		candidateTransportPlan["operation_name"] != "create_branch_ref" ||
 		candidateTransportPlan["method"] != "POST" ||
@@ -3376,6 +3378,83 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateCredentialBlockedReasons[1] != "provider_review_adapter_not_implemented" ||
 		candidateCredentialBlockedReasons[2] != "provider_review_mutation_not_armed" {
 		t.Fatalf("attempt execution candidate credential blocked reasons = %#v", candidateCredentialBlockedReasons)
+	}
+	candidateInvocationPlan := mapFromAny(candidateDispatchPlan["invocation_plan"])
+	if candidateInvocationPlan["mode"] != "redacted_attempt_adapter_invocation_plan" ||
+		candidateInvocationPlan["invocation_state"] != "blocked" ||
+		candidateInvocationPlan["invocation_ready"] != false ||
+		candidateInvocationPlan["invocation_ready_reason"] != "provider_api_invocation_not_armed" ||
+		candidateInvocationPlan["operation_name"] != "create_branch_ref" ||
+		candidateInvocationPlan["endpoint_key"] != "github.create_branch_ref" ||
+		candidateInvocationPlan["operation_order"] != 10 ||
+		candidateInvocationPlan["claim_metadata_ready"] != true ||
+		candidateInvocationPlan["credential_binding_ready"] != false ||
+		candidateInvocationPlan["request_materialization_ready"] != false ||
+		candidateInvocationPlan["transport_metadata_ready"] != true ||
+		candidateInvocationPlan["response_recording_ready"] != false ||
+		candidateInvocationPlan["claim_metadata_ready_reason"] != "ready" ||
+		candidateInvocationPlan["transport_metadata_ready_reason"] != "ready" ||
+		candidateInvocationPlan["requires_attempt_claim"] != true ||
+		candidateInvocationPlan["requires_idempotency_claim"] != true ||
+		candidateInvocationPlan["requires_credential_binding"] != true ||
+		candidateInvocationPlan["requires_request_materialization"] != true ||
+		candidateInvocationPlan["requires_transport"] != true ||
+		candidateInvocationPlan["requires_response_recording"] != true ||
+		candidateInvocationPlan["attempt_claim_recorded"] != false ||
+		candidateInvocationPlan["idempotency_claim_recorded"] != false ||
+		candidateInvocationPlan["credential_bound"] != false ||
+		candidateInvocationPlan["request_materialized"] != false ||
+		candidateInvocationPlan["provider_request_sent"] != false ||
+		candidateInvocationPlan["response_recorded"] != false ||
+		candidateInvocationPlan["dependency_update_recorded"] != false ||
+		candidateInvocationPlan["adapter_implemented"] != false ||
+		candidateInvocationPlan["mutation_armed"] != false ||
+		candidateInvocationPlan["external_call_made"] != false ||
+		candidateInvocationPlan["provider_api_call_made"] != false ||
+		candidateInvocationPlan["provider_api_mutation"] != "disabled" ||
+		candidateInvocationPlan["request_body_included"] != false ||
+		candidateInvocationPlan["response_body_included"] != false ||
+		candidateInvocationPlan["headers_included"] != false ||
+		candidateInvocationPlan["authorization_header_included"] != false ||
+		candidateInvocationPlan["provider_url_included"] != false ||
+		candidateInvocationPlan["idempotency_key_included"] != false ||
+		candidateInvocationPlan["contains_token"] != false ||
+		candidateInvocationPlan["contains_provider_url"] != false ||
+		candidateInvocationPlan["contains_repository_ref"] != false ||
+		candidateInvocationPlan["contains_branch_name"] != false ||
+		candidateInvocationPlan["contains_file_content"] != false ||
+		candidateInvocationPlan["invocation_boundary_redacted"] != true {
+		t.Fatalf("attempt execution candidate invocation plan = %#v", candidateInvocationPlan)
+	}
+	candidateInvocationSequence := stringSliceFromAny(candidateInvocationPlan["invocation_sequence"])
+	if len(candidateInvocationSequence) != 7 ||
+		candidateInvocationSequence[0] != "claim_attempt" ||
+		candidateInvocationSequence[1] != "claim_idempotency" ||
+		candidateInvocationSequence[2] != "bind_credential" ||
+		candidateInvocationSequence[3] != "materialize_request" ||
+		candidateInvocationSequence[4] != "send_provider_request" ||
+		candidateInvocationSequence[5] != "record_response" ||
+		candidateInvocationSequence[6] != "unlock_dependency" {
+		t.Fatalf("attempt execution candidate invocation sequence = %#v", candidateInvocationSequence)
+	}
+	candidateInvocationSubplans := stringSliceFromAny(candidateInvocationPlan["required_subplans"])
+	if len(candidateInvocationSubplans) != 5 ||
+		candidateInvocationSubplans[0] != "claim_plan" ||
+		candidateInvocationSubplans[1] != "credential_binding_plan" ||
+		candidateInvocationSubplans[2] != "request_materialization_plan" ||
+		candidateInvocationSubplans[3] != "transport_plan" ||
+		candidateInvocationSubplans[4] != "response_plan" {
+		t.Fatalf("attempt execution candidate invocation subplans = %#v", candidateInvocationSubplans)
+	}
+	candidateInvocationBlockedReasons := stringSliceFromAny(candidateInvocationPlan["blocked_reasons"])
+	if len(candidateInvocationBlockedReasons) != 6 ||
+		candidateInvocationBlockedReasons[0] != "provider_review_attempt_claim_not_recorded" ||
+		candidateInvocationBlockedReasons[1] != "provider_credential_runtime_binding_not_armed" ||
+		candidateInvocationBlockedReasons[2] != "provider_request_not_materialized" ||
+		candidateInvocationBlockedReasons[3] != "provider_api_call_not_made" ||
+		candidateInvocationBlockedReasons[4] != "provider_review_adapter_not_implemented" ||
+		candidateInvocationBlockedReasons[5] != "provider_review_mutation_not_armed" {
+		t.Fatalf("attempt execution candidate invocation blocked reasons = %#v", candidateInvocationBlockedReasons)
 	}
 	candidateGates := sliceOfMapsFromAny(candidate["gates"])
 	if len(candidateGates) != 5 ||
@@ -3819,6 +3898,8 @@ func TestProviderReviewAttemptResponseDiagnosticSanitizers(t *testing.T) {
 	} {
 		transportPlan := providerReviewAttemptAdapterTransportPlan(item.provider, item.operation)
 		if transportPlan["mode"] != "redacted_attempt_adapter_transport_plan" ||
+			transportPlan["transport_ready"] != true ||
+			transportPlan["transport_ready_reason"] != "ready" ||
 			transportPlan["provider_type"] != item.provider ||
 			transportPlan["operation_name"] != item.operation ||
 			transportPlan["endpoint_key"] != item.endpoint ||
@@ -4208,6 +4289,121 @@ func TestProviderReviewAttemptAdapterRequestMaterializationPlan(t *testing.T) {
 	}
 }
 
+func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
+	operation := map[string]any{
+		"name":            "create_branch_ref",
+		"endpoint_key":    "github.create_branch_ref",
+		"operation_order": 10,
+	}
+	claimPlan := map[string]any{"claim_metadata_ready": true}
+	requestPlan := map[string]any{"request_materialization_ready": false}
+	credentialPlan := map[string]any{"credential_binding_ready": false}
+	transportPlan := map[string]any{"mode": "redacted_attempt_adapter_transport_plan", "transport_ready": true}
+	responsePlan := map[string]any{"response_recording_ready": false}
+	plan := providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, transportPlan, responsePlan)
+	if plan["mode"] != "redacted_attempt_adapter_invocation_plan" ||
+		plan["invocation_state"] != "blocked" ||
+		plan["invocation_ready"] != false ||
+		plan["invocation_ready_reason"] != "provider_api_invocation_not_armed" ||
+		plan["operation_name"] != "create_branch_ref" ||
+		plan["endpoint_key"] != "github.create_branch_ref" ||
+		plan["operation_order"] != 10 ||
+		plan["claim_metadata_ready"] != true ||
+		plan["credential_binding_ready"] != false ||
+		plan["request_materialization_ready"] != false ||
+		plan["transport_metadata_ready"] != true ||
+		plan["response_recording_ready"] != false ||
+		plan["claim_metadata_ready_reason"] != "ready" ||
+		plan["transport_metadata_ready_reason"] != "ready" ||
+		plan["requires_attempt_claim"] != true ||
+		plan["requires_idempotency_claim"] != true ||
+		plan["requires_credential_binding"] != true ||
+		plan["requires_request_materialization"] != true ||
+		plan["requires_transport"] != true ||
+		plan["requires_response_recording"] != true ||
+		plan["attempt_claim_recorded"] != false ||
+		plan["idempotency_claim_recorded"] != false ||
+		plan["credential_bound"] != false ||
+		plan["request_materialized"] != false ||
+		plan["provider_request_sent"] != false ||
+		plan["response_recorded"] != false ||
+		plan["dependency_update_recorded"] != false ||
+		plan["adapter_implemented"] != false ||
+		plan["mutation_armed"] != false ||
+		plan["external_call_made"] != false ||
+		plan["provider_api_call_made"] != false ||
+		plan["provider_api_mutation"] != "disabled" ||
+		plan["request_body_included"] != false ||
+		plan["response_body_included"] != false ||
+		plan["headers_included"] != false ||
+		plan["authorization_header_included"] != false ||
+		plan["provider_url_included"] != false ||
+		plan["idempotency_key_included"] != false ||
+		plan["contains_token"] != false ||
+		plan["contains_provider_url"] != false ||
+		plan["contains_repository_ref"] != false ||
+		plan["contains_branch_name"] != false ||
+		plan["contains_file_content"] != false ||
+		plan["invocation_boundary_redacted"] != true {
+		t.Fatalf("providerReviewAttemptAdapterInvocationPlan() = %#v", plan)
+	}
+	sequence := stringSliceFromAny(plan["invocation_sequence"])
+	if len(sequence) != 7 ||
+		sequence[0] != "claim_attempt" ||
+		sequence[6] != "unlock_dependency" {
+		t.Fatalf("invocation sequence = %#v", sequence)
+	}
+	blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
+	if len(blockedReasons) != 6 ||
+		blockedReasons[0] != "provider_review_attempt_claim_not_recorded" ||
+		blockedReasons[5] != "provider_review_mutation_not_armed" {
+		t.Fatalf("invocation blocked reasons = %#v", blockedReasons)
+	}
+	encoded, _ := json.Marshal(plan)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("invocation plan leaked %q: %s", leak, encoded)
+		}
+	}
+	if got := providerReviewAttemptAdapterInvocationPlan(nil, nil, nil, nil, nil, nil); len(got) != 0 {
+		t.Fatalf("empty operation invocation plan = %#v", got)
+	}
+	got := providerReviewAttemptAdapterInvocationPlan(
+		map[string]any{"name": "raw_operation", "endpoint_key": "github.create_branch_ref"},
+		claimPlan,
+		requestPlan,
+		credentialPlan,
+		transportPlan,
+		responsePlan,
+	)
+	if len(got) != 0 {
+		t.Fatalf("invalid operation invocation plan should be empty: %#v", got)
+	}
+	got = providerReviewAttemptAdapterInvocationPlan(
+		map[string]any{"name": "create_branch_ref", "endpoint_key": "github.secret"},
+		claimPlan,
+		requestPlan,
+		credentialPlan,
+		transportPlan,
+		responsePlan,
+	)
+	if len(got) != 0 {
+		t.Fatalf("invalid endpoint invocation plan should be empty: %#v", got)
+	}
+	notReadyTransportPlan := providerReviewAttemptAdapterInvocationPlan(
+		operation,
+		claimPlan,
+		requestPlan,
+		credentialPlan,
+		map[string]any{"mode": "raw_transport_plan", "transport_ready": false},
+		responsePlan,
+	)
+	if notReadyTransportPlan["transport_metadata_ready"] != false ||
+		notReadyTransportPlan["transport_metadata_ready_reason"] != "provider_review_transport_metadata_not_ready" {
+		t.Fatalf("not ready transport invocation plan = %#v", notReadyTransportPlan)
+	}
+}
+
 func TestProviderReviewAttemptAdapterCredentialBindingPlan(t *testing.T) {
 	for _, item := range []struct {
 		name         string
@@ -4360,6 +4556,9 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 		}
 		if credentialPlan := mapFromAny(dispatchPlan["credential_binding_plan"]); len(credentialPlan) != 0 {
 			t.Fatalf("unknown operation credential binding plan should be empty: %#v", credentialPlan)
+		}
+		if invocationPlan := mapFromAny(dispatchPlan["invocation_plan"]); len(invocationPlan) != 0 {
+			t.Fatalf("unknown operation invocation plan should be empty: %#v", invocationPlan)
 		}
 		blockedReasons := stringSliceFromAny(dispatchPlan["blocked_reasons"])
 		if len(blockedReasons) != 5 ||

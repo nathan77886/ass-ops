@@ -1107,6 +1107,9 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptResponsePlanMode = typeof attemptResponsePlan.mode === 'string' ? attemptResponsePlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter response plan';
   const attemptCredentialPlan = attemptDispatchPlan.credential_binding_plan || {};
   const attemptCredentialPlanMode = typeof attemptCredentialPlan.mode === 'string' ? attemptCredentialPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter credential binding plan';
+  const attemptInvocationPlan = attemptDispatchPlan.invocation_plan || {};
+  const attemptInvocationPlanMode = typeof attemptInvocationPlan.mode === 'string' ? attemptInvocationPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter invocation plan';
+  const attemptInvocationSequence = Array.isArray(attemptInvocationPlan.invocation_sequence) ? attemptInvocationPlan.invocation_sequence : [];
   const attemptExecutionCandidateGates = Array.isArray(attemptExecutionCandidate.gates) ? attemptExecutionCandidate.gates : [];
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
   return (
@@ -1469,6 +1472,18 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>{attemptCredentialPlan.token_env_name_included === true ? 'env name included' : 'env name redacted'}</Tag>
           <Tag>{attemptCredentialPlan.token_value_included === true ? 'token included' : 'token redacted'}</Tag>
           <Tag>{String(attemptCredentialPlan.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {attemptInvocationPlan.mode ? (
+        <Space size={4} wrap>
+          <Tag>{attemptInvocationPlanMode}</Tag>
+          <Tag color={attemptInvocationPlan.invocation_state === 'blocked' ? 'red' : 'gold'}>
+            invocation {String(attemptInvocationPlan.invocation_state || 'blocked')}
+          </Tag>
+          <Tag>{String(attemptInvocationPlan.invocation_ready_reason || 'provider_api_invocation_not_armed')}</Tag>
+          <Tag>steps {attemptInvocationSequence.length}</Tag>
+          <Tag>{attemptInvocationPlan.provider_api_call_made === true ? 'api called' : 'no api call'}</Tag>
+          <Tag>{String(attemptInvocationPlan.provider_api_mutation || 'disabled')}</Tag>
         </Space>
       ) : null}
       {attemptExecutionCandidateGates.length ? (
