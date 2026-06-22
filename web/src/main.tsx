@@ -1110,6 +1110,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptRuntimePlan = attemptDispatchPlan.adapter_runtime_plan || {};
   const attemptRuntimePlanMode = typeof attemptRuntimePlan.mode === 'string' ? attemptRuntimePlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter runtime plan';
   const attemptRuntimeRequestBuilderPlan = attemptRuntimePlan.request_builder_plan || {};
+  const attemptRuntimeProviderClientPlan = attemptRuntimePlan.provider_client_plan || {};
   const attemptRuntimeResponseHandlerPlan = attemptRuntimePlan.response_handler_plan || {};
   const attemptTransactionPlan = attemptDispatchPlan.transaction_plan || {};
   const attemptTransactionPlanMode = typeof attemptTransactionPlan.mode === 'string' ? attemptTransactionPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter transaction plan';
@@ -1487,6 +1488,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
             runtime {String(attemptRuntimePlan.runtime_state ?? 'blocked')}
           </Tag>
           <Tag>{String(attemptRuntimePlan.adapter_kind ?? 'redacted adapter')}</Tag>
+          <Tag>{String(attemptRuntimeProviderClientPlan.client_kind ?? 'redacted provider client')}</Tag>
           <Tag>{String(attemptRuntimeRequestBuilderPlan.builder_name ?? 'redacted builder')}</Tag>
           <Tag>{String(attemptRuntimeResponseHandlerPlan.handler_name ?? 'redacted response handler')}</Tag>
           <Tag>{attemptRuntimePlan.adapter_interface_registered === true ? 'interface registered' : 'interface missing'}</Tag>
