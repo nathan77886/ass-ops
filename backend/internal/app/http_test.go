@@ -2370,9 +2370,40 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 	if len(blockedReasons) < 3 {
 		t.Fatalf("patch guardrail should expose blocked reasons: %#v", patchGuardrail)
 	}
+	readiness := sliceOfMapsFromAny(patchGuardrail["execution_readiness"])
+	if len(readiness) < 5 {
+		t.Fatalf("patch guardrail should expose execution readiness gates: %#v", patchGuardrail)
+	}
+	if statusByGate(readiness, "codex_cli_process") != "blocked" ||
+		statusByGate(readiness, "repository_mutation") != "blocked" ||
+		statusByGate(readiness, "pull_request_workflow") != "blocked" {
+		t.Fatalf("mutation-related readiness gates should remain blocked: %#v", readiness)
+	}
+	if statusByGate(readiness, "agent_execute_approval") != "audit_ready" ||
+		statusByGate(readiness, "runtime_metadata") != "audit_checked" {
+		t.Fatalf("audit readiness gates missing approved/check states: %#v", readiness)
+	}
 	planInput := mapFromAny(steps[1]["input"])
 	if planInput["plan_bytes"] != len("approved plan") {
 		t.Fatalf("plan_bytes = %v, want %d", planInput["plan_bytes"], len("approved plan"))
+	}
+}
+
+func TestAgentExecutionReadinessGatesKeepMutationBlocked(t *testing.T) {
+	gates := agentExecutionReadinessGates()
+	if len(gates) != 5 {
+		t.Fatalf("gates = %#v", gates)
+	}
+	for _, gate := range []string{"codex_cli_process", "repository_mutation", "pull_request_workflow"} {
+		if statusByGate(gates, gate) != "blocked" {
+			t.Fatalf("%s gate should be blocked: %#v", gate, gates)
+		}
+	}
+	encoded, _ := json.Marshal(gates)
+	for _, forbidden := range []string{"ASSOPS_", "OPENAI_", "GITHUB_TOKEN", "PRIVATE KEY"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("readiness gates should not expose sensitive config hints: %s", encoded)
+		}
 	}
 }
 
@@ -2391,6 +2422,9 @@ func TestAgentPatchWorkflowGuardrail(t *testing.T) {
 			t.Fatalf("guardrail should not include sensitive config hints: %s", encoded)
 		}
 	}
+	if statusByGate(sliceOfMapsFromAny(got["execution_readiness"]), "repository_mutation") != "blocked" {
+		t.Fatalf("execution_readiness should keep repository mutation blocked: %#v", got["execution_readiness"])
+	}
 }
 
 func containsString(items []string, target string) bool {
@@ -2400,6 +2434,30 @@ func containsString(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func sliceOfMapsFromAny(value any) []map[string]any {
+	switch typed := value.(type) {
+	case []map[string]any:
+		return typed
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, mapFromAny(item))
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func statusByGate(gates []map[string]any, gate string) string {
+	for _, item := range gates {
+		if fmt.Sprint(item["gate"]) == gate {
+			return fmt.Sprint(item["status"])
+		}
+	}
+	return ""
 }
 
 func TestAgentToolCallAuditMigrationAndFreshInit(t *testing.T) {

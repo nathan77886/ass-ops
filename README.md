@@ -86,7 +86,7 @@ Generated files are written under `.assops/context/<project-id>/`:
 - `assops-context.json`
 - `tool-manifest.json`
 
-When the canonical ledger has been backfilled with `assops-tool db sync-assets`, the generated context also includes an `asset_graph` snapshot with canonical assets, relations, recent status snapshots, type counts, and health counts for read-only agent planning. Rollback points include a `rollback_guardrail` summary that keeps preview-only execution mode visible in generated context and agent plans. Approved agent execution currently records a simulation-only tool-call audit (`context.generate`, `plan.review`, `runtime.check`, and `patch.prepare`) tied to the operation run. The runtime check records the selected project/global AI runtime readiness without exposing runtime config, and patch preparation records a structured guardrail showing that Codex CLI invocation, repository mutation, and pull request creation remain disabled.
+When the canonical ledger has been backfilled with `assops-tool db sync-assets`, the generated context also includes an `asset_graph` snapshot with canonical assets, relations, recent status snapshots, type counts, and health counts for read-only agent planning. Rollback points include a `rollback_guardrail` summary that keeps preview-only execution mode visible in generated context and agent plans. Approved agent execution currently records a simulation-only tool-call audit (`context.generate`, `plan.review`, `runtime.check`, and `patch.prepare`) tied to the operation run. The runtime check records the selected project/global AI runtime readiness without exposing runtime config, and patch preparation records structured readiness gates showing that Codex CLI invocation, repository mutation, and pull request creation remain disabled.
 
 The CLI can read those files:
 
@@ -164,7 +164,7 @@ Implemented as real local code:
 - Node-worker register, heartbeat, claim, log upload, complete/fail
 - Gateway, control-worker, and node-worker `/healthz` endpoints for Compose healthchecks
 - AI runtime CRUD and verify marker
-- Agent task, generated plan, approve plan, approval-gated execute-plan operation enqueue, and simulation-only tool-call audit with patch workflow guardrails
+- Agent task, generated plan, approve plan, approval-gated execute-plan operation enqueue, and simulation-only tool-call audit with patch workflow guardrails and execution readiness gates
 - Argo connection CRUD, Argo app sync/list, deployment posture summary, and rollback point visibility
 - SSH machine CRUD and controlled SSH command runs
 - Asset Center inventory search, relation-degree ranked cross-project graph search, saved graph views, selected-asset relation graph, status history, manual graph relation edits, operation-run, worker-job, and project-template-run asset visibility with target/output links, and upstream/downstream dependency path queries

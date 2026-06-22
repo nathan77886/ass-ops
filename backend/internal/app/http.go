@@ -9967,8 +9967,39 @@ func agentPatchWorkflowGuardrail() map[string]any {
 			"repository mutation requires a future approval-gated patch apply operation",
 			"pull request creation is not wired to a provider account workflow yet",
 		},
-		"next_step": "Keep execution audit-only until Codex CLI runs, patch application, and PR creation are individually approval-gated.",
-		"message":   "Agent patch workflow is audit-only: Codex CLI, repository mutation, and pull request creation are disabled.",
+		"execution_readiness": agentExecutionReadinessGates(),
+		"next_step":           "Keep execution audit-only until Codex CLI runs, patch application, and PR creation are individually approval-gated.",
+		"message":             "Agent patch workflow is audit-only: Codex CLI, repository mutation, and pull request creation are disabled.",
+	}
+}
+
+func agentExecutionReadinessGates() []map[string]any {
+	return []map[string]any{
+		{
+			"gate":    "agent_execute_approval",
+			"status":  "audit_ready",
+			"message": "agent.execute approval only permits audit rows; real Codex CLI execution remains blocked",
+		},
+		{
+			"gate":    "runtime_metadata",
+			"status":  "audit_checked",
+			"message": "AI runtime metadata is reviewed for audit without exposing runtime secrets",
+		},
+		{
+			"gate":    "codex_cli_process",
+			"status":  "blocked",
+			"message": "Codex CLI process execution is not enabled",
+		},
+		{
+			"gate":    "repository_mutation",
+			"status":  "blocked",
+			"message": "repository mutation requires a future approval-gated patch apply operation",
+		},
+		{
+			"gate":    "pull_request_workflow",
+			"status":  "blocked",
+			"message": "pull request creation is not wired to a provider account workflow",
+		},
 	}
 }
 

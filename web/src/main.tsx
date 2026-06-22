@@ -1844,6 +1844,20 @@ function approvalEscalationDestinationTags(row: AnyRow) {
   );
 }
 
+function agentReadinessGateTags(value: any) {
+  const gates = Array.isArray(value) ? value : [];
+  if (!gates.length) return null;
+  return (
+    <Space wrap size={4}>
+      {gates.map((gate: AnyRow, index: number) => {
+        const status = String(gate.status || 'unknown');
+        const color = status === 'blocked' ? 'red' : status.startsWith('audit_') ? 'blue' : status === 'unknown' ? 'default' : 'gold';
+        return <Tag key={`${gate.gate || index}`} color={color}>{String(gate.gate || 'gate').replaceAll('_', ' ')}: {status}</Tag>;
+      })}
+    </Space>
+  );
+}
+
 function parsePostgresTextArray(value: string): string[] {
   const body = value.slice(1, -1);
   const items: string[] = [];
@@ -2476,9 +2490,11 @@ function AgentTasks() {
     if (row.tool_name === 'patch.prepare') {
       const guardrail = output.patch_workflow_guardrail || {};
       const reasons = Array.isArray(guardrail.blocked_reasons) ? guardrail.blocked_reasons : [];
+      const readiness = agentReadinessGateTags(guardrail.execution_readiness);
       return <Space size={4} wrap>
         <Tag color="gold">{guardrail.execution_mode || input.mode || 'simulation_only'}</Tag>
         <Tag color={guardrail.repository_mutation_allowed === true ? 'red' : 'green'}>{guardrail.repository_mutation_allowed === true ? 'Repo mutation allowed' : 'Repo mutation blocked'}</Tag>
+        {readiness}
         {reasons.length ? <Typography.Text>{reasons.length} blocked reason{reasons.length === 1 ? '' : 's'}</Typography.Text> : <Typography.Text>{output.message || 'Mutation disabled'}</Typography.Text>}
         {guardrail.next_step ? <Typography.Text type="secondary">{shortText(guardrail.next_step, 96)}</Typography.Text> : null}
       </Space>;
