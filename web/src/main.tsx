@@ -1067,6 +1067,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptExecutionCandidate = attemptOrchestration.execution_candidate || {};
   const attemptAdapterContract = attemptExecutionCandidate.adapter_contract || {};
   const attemptAdapterContractMode = typeof attemptAdapterContract.mode === 'string' ? attemptAdapterContract.mode.replaceAll('_', ' ') : 'redacted attempt adapter contract';
+  const attemptClaimPlan = attemptExecutionCandidate.claim_plan || {};
+  const attemptClaimPlanMode = typeof attemptClaimPlan.mode === 'string' ? attemptClaimPlan.mode.replaceAll('_', ' ') : 'redacted attempt execution claim plan';
   const attemptExecutionCandidateGates = Array.isArray(attemptExecutionCandidate.gates) ? attemptExecutionCandidate.gates : [];
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
   return (
@@ -1342,6 +1344,26 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag color={attemptAdapterContract.adapter_call_state === 'blocked' ? 'red' : 'gold'}>
             adapter {String(attemptAdapterContract.adapter_call_state || 'blocked')}
           </Tag>
+        </Space>
+      ) : null}
+      {attemptClaimPlan.mode ? (
+        <Space size={4} wrap>
+          <Tag>{attemptClaimPlanMode}</Tag>
+          <Tag color={attemptClaimPlan.claim_state === 'blocked' ? 'red' : 'gold'}>
+            claim {String(attemptClaimPlan.claim_state || 'blocked')}
+          </Tag>
+          <Tag color={attemptClaimPlan.claim_metadata_ready === true ? 'green' : 'gold'}>
+            metadata {attemptClaimPlan.claim_metadata_ready === true ? 'ready' : 'blocked'}
+          </Tag>
+          <Tag>
+            {String(attemptClaimPlan.claim_status_from || 'planned')} -&gt; {String(attemptClaimPlan.claim_status_to || 'running')}
+          </Tag>
+          <Tag color={attemptClaimPlan.dependency_ready === true ? 'green' : 'gold'}>
+            dependency {String(attemptClaimPlan.dependency_status || 'unknown').replaceAll('_', ' ')}
+          </Tag>
+          <Tag>{String(attemptClaimPlan.replay_check || 'redacted replay')}</Tag>
+          <Tag>{String(attemptClaimPlan.conflict_policy || 'redacted conflict')}</Tag>
+          <Tag>{String(attemptClaimPlan.retry_policy || 'redacted retry')}</Tag>
         </Space>
       ) : null}
       {attemptExecutionCandidateGates.length ? (

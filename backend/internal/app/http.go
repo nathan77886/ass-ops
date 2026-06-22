@@ -10761,10 +10761,10 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 			"id":                       cleanOptionalID(fmt.Sprint(attempt["id"])),
 			"name":                     cleanOptionalText(stringFromMap(attempt, "operation_name")),
 			"endpoint_key":             cleanOptionalText(stringFromMap(attempt, "endpoint_key")),
-			"status":                   cleanOptionalText(stringFromMap(attempt, "status")),
-			"replay_check":             cleanOptionalText(stringFromMap(attempt, "replay_check")),
-			"conflict_policy":          cleanOptionalText(stringFromMap(attempt, "conflict_policy")),
-			"retry_policy":             cleanOptionalText(stringFromMap(attempt, "retry_policy")),
+			"status":                   safeProviderReviewAttemptStatus(stringFromMap(attempt, "status")),
+			"replay_check":             safeProviderReviewReplayCheck(stringFromMap(attempt, "replay_check")),
+			"conflict_policy":          safeProviderReviewConflictPolicy(stringFromMap(attempt, "conflict_policy")),
+			"retry_policy":             safeProviderReviewRetryPolicy(stringFromMap(attempt, "retry_policy")),
 			"operation_order":          intFromAny(attempt["operation_order"], 0),
 			"depends_on_operation":     safeProviderReviewAttemptDependencyName(stringFromMap(attempt, "depends_on_operation")),
 			"dependency_status":        safeProviderReviewAttemptDependencyStatus(stringFromMap(attempt, "dependency_status")),
@@ -10859,6 +10859,42 @@ func safeProviderReviewAttemptResponseStatus(value string) string {
 	}
 }
 
+func safeProviderReviewAttemptStatus(value string) string {
+	switch cleanOptionalText(value) {
+	case "planned", "running", "completed", "failed", "blocked":
+		return cleanOptionalText(value)
+	default:
+		return "blocked"
+	}
+}
+
+func safeProviderReviewReplayCheck(value string) string {
+	switch cleanOptionalText(value) {
+	case "detect_existing_branch_ref", "detect_existing_commit_batch", "detect_existing_open_review":
+		return cleanOptionalText(value)
+	default:
+		return ""
+	}
+}
+
+func safeProviderReviewConflictPolicy(value string) string {
+	switch cleanOptionalText(value) {
+	case "treat_existing_matching_ref_as_success", "block_on_content_or_parent_conflict", "reuse_existing_review_request":
+		return cleanOptionalText(value)
+	default:
+		return ""
+	}
+}
+
+func safeProviderReviewRetryPolicy(value string) string {
+	switch cleanOptionalText(value) {
+	case "retry_only_after_response_diagnostics":
+		return cleanOptionalText(value)
+	default:
+		return ""
+	}
+}
+
 func safeProviderReviewStatusClass(value string) string {
 	switch cleanOptionalText(value) {
 	case "2xx", "4xx", "5xx":
@@ -10921,8 +10957,8 @@ func providerReviewAttemptOrchestrationSummary(operations []map[string]any) map[
 	failed := false
 	for _, operation := range operations {
 		name := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
-		status := cleanOptionalText(stringFromMap(operation, "status"))
-		dependencyStatus := safeProviderReviewAttemptDependencyStatus(stringFromMap(operation, "dependency_status"))
+		status := safeProviderReviewAttemptStatus(stringFromMap(operation, "status"))
+		dependencyStatus := safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(operation, "dependency_status"))
 		switch {
 		case dependencyStatus == "dependency_failed" || status == "failed" || status == "blocked":
 			blockedCount++
@@ -10973,6 +11009,7 @@ func providerReviewAttemptExecutionCandidate(operations []map[string]any, nextOp
 		"requires_response_diagnostics": true,
 		"requires_mutation_arming":      true,
 		"adapter_contract":              map[string]any{},
+		"claim_plan":                    map[string]any{},
 		"adapter_implemented":           false,
 		"mutation_armed":                false,
 		"external_call_made":            false,
@@ -11009,6 +11046,7 @@ func providerReviewAttemptExecutionCandidate(operations []map[string]any, nextOp
 		candidate["operation_order"] = intFromAny(operation["operation_order"], 0)
 		candidate["status"] = "blocked"
 		candidate["adapter_contract"] = providerReviewAttemptCandidateAdapterContract(operation, requestSummary, responseDiagnostics)
+		candidate["claim_plan"] = providerReviewAttemptExecutionClaimPlan(operation, idempotencyReady, responseReady)
 		candidate["gates"] = providerReviewAttemptExecutionCandidateGates(true, idempotencyReady, responseReady)
 		return candidate
 	}
@@ -11054,6 +11092,91 @@ func providerReviewAttemptCandidateAdapterContract(operation, requestSummary, re
 		"contains_file_content":           false,
 		"activation_requirements":         []string{"provider_api_adapter_implemented", "provider_review_mutation_armed", "operator_approval_still_valid", "idempotency_ledger_claim"},
 		"adapter_input_boundary_redacted": true,
+	}
+}
+
+func providerReviewAttemptExecutionClaimPlan(operation map[string]any, idempotencyReady, responseDiagnosticsReady bool) map[string]any {
+	if len(operation) == 0 {
+		return map[string]any{}
+	}
+	status := safeProviderReviewAttemptStatus(stringFromMap(operation, "status"))
+	rawDependencyStatus := cleanOptionalText(stringFromMap(operation, "dependency_status"))
+	dependencyStatus := safeProviderReviewAttemptClaimDependencyStatus(rawDependencyStatus)
+	dependencyReady := providerReviewAttemptClaimDependencyReady(dependencyStatus)
+	claimMetadataReady := status == "planned" && dependencyReady && idempotencyReady && responseDiagnosticsReady
+	blockedReasons := []string{
+		"provider_review_adapter_not_implemented",
+		"provider_review_mutation_not_armed",
+	}
+	if status != "planned" {
+		blockedReasons = append([]string{"provider_review_attempt_status_not_planned"}, blockedReasons...)
+	}
+	if !dependencyReady {
+		blockedReasons = append([]string{"provider_review_dependency_not_ready"}, blockedReasons...)
+	}
+	if !idempotencyReady {
+		blockedReasons = append([]string{"provider_review_idempotency_metadata_missing"}, blockedReasons...)
+	}
+	if !responseDiagnosticsReady {
+		blockedReasons = append([]string{"provider_review_response_diagnostics_missing"}, blockedReasons...)
+	}
+	return map[string]any{
+		"mode":                            "redacted_attempt_execution_claim_plan",
+		"claim_state":                     "blocked",
+		"claim_ready":                     false,
+		"claim_metadata_ready":            claimMetadataReady,
+		"operation_name":                  safeProviderReviewAttemptOperationName(stringFromMap(operation, "name")),
+		"endpoint_key":                    safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key")),
+		"operation_order":                 intFromAny(operation["operation_order"], 0),
+		"attempt_status":                  status,
+		"dependency_status":               dependencyStatus,
+		"dependency_ready":                dependencyReady,
+		"claim_status_from":               "planned",
+		"claim_status_to":                 "running",
+		"replay_check":                    safeProviderReviewReplayCheck(stringFromMap(operation, "replay_check")),
+		"conflict_policy":                 safeProviderReviewConflictPolicy(stringFromMap(operation, "conflict_policy")),
+		"retry_policy":                    safeProviderReviewRetryPolicy(stringFromMap(operation, "retry_policy")),
+		"requires_attempt_status_planned": true,
+		"requires_dependency_ready":       true,
+		"requires_idempotency_ledger":     true,
+		"requires_response_diagnostics":   true,
+		"requires_optimistic_lock":        true,
+		"requires_provider_adapter":       true,
+		"requires_mutation_arming":        true,
+		"idempotency_metadata_ready":      idempotencyReady,
+		"response_diagnostics_ready":      responseDiagnosticsReady,
+		"claim_recorded":                  false,
+		"idempotency_claim_recorded":      false,
+		"adapter_implemented":             false,
+		"mutation_armed":                  false,
+		"external_call_made":              false,
+		"provider_api_call_made":          false,
+		"provider_api_mutation":           "disabled",
+		"idempotency_key_included":        false,
+		"contains_token":                  false,
+		"contains_provider_url":           false,
+		"contains_repository_ref":         false,
+		"contains_branch_name":            false,
+		"contains_file_content":           false,
+		"blocked_reasons":                 blockedReasons,
+	}
+}
+
+func safeProviderReviewAttemptClaimDependencyStatus(value string) string {
+	switch cleanOptionalText(value) {
+	case "independent", "waiting_for_dependency", "dependency_satisfied", "dependency_failed":
+		return cleanOptionalText(value)
+	default:
+		return "blocked"
+	}
+}
+
+func providerReviewAttemptClaimDependencyReady(status string) bool {
+	switch safeProviderReviewAttemptClaimDependencyStatus(status) {
+	case "independent", "dependency_satisfied":
+		return true
+	default:
+		return false
 	}
 }
 

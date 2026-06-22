@@ -3115,6 +3115,43 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateActivationRequirements[3] != "idempotency_ledger_claim" {
 		t.Fatalf("attempt execution candidate activation requirements = %#v", candidateActivationRequirements)
 	}
+	candidateClaimPlan := mapFromAny(candidate["claim_plan"])
+	if candidateClaimPlan["mode"] != "redacted_attempt_execution_claim_plan" ||
+		candidateClaimPlan["claim_state"] != "blocked" ||
+		candidateClaimPlan["claim_ready"] != false ||
+		candidateClaimPlan["claim_metadata_ready"] != true ||
+		candidateClaimPlan["operation_name"] != "create_branch_ref" ||
+		candidateClaimPlan["endpoint_key"] != "github.create_branch_ref" ||
+		candidateClaimPlan["operation_order"] != 10 ||
+		candidateClaimPlan["attempt_status"] != "planned" ||
+		candidateClaimPlan["dependency_status"] != "independent" ||
+		candidateClaimPlan["dependency_ready"] != true ||
+		candidateClaimPlan["claim_status_from"] != "planned" ||
+		candidateClaimPlan["claim_status_to"] != "running" ||
+		candidateClaimPlan["replay_check"] != "detect_existing_branch_ref" ||
+		candidateClaimPlan["conflict_policy"] != "treat_existing_matching_ref_as_success" ||
+		candidateClaimPlan["retry_policy"] != "retry_only_after_response_diagnostics" ||
+		candidateClaimPlan["requires_optimistic_lock"] != true ||
+		candidateClaimPlan["idempotency_metadata_ready"] != true ||
+		candidateClaimPlan["response_diagnostics_ready"] != true ||
+		candidateClaimPlan["claim_recorded"] != false ||
+		candidateClaimPlan["idempotency_claim_recorded"] != false ||
+		candidateClaimPlan["provider_api_call_made"] != false ||
+		candidateClaimPlan["provider_api_mutation"] != "disabled" ||
+		candidateClaimPlan["idempotency_key_included"] != false ||
+		candidateClaimPlan["contains_token"] != false ||
+		candidateClaimPlan["contains_provider_url"] != false ||
+		candidateClaimPlan["contains_repository_ref"] != false ||
+		candidateClaimPlan["contains_branch_name"] != false ||
+		candidateClaimPlan["contains_file_content"] != false {
+		t.Fatalf("attempt execution candidate claim plan = %#v", candidateClaimPlan)
+	}
+	candidateClaimBlockedReasons := stringSliceFromAny(candidateClaimPlan["blocked_reasons"])
+	if len(candidateClaimBlockedReasons) != 2 ||
+		candidateClaimBlockedReasons[0] != "provider_review_adapter_not_implemented" ||
+		candidateClaimBlockedReasons[1] != "provider_review_mutation_not_armed" {
+		t.Fatalf("attempt execution candidate claim blocked reasons = %#v", candidateClaimBlockedReasons)
+	}
 	candidateGates := sliceOfMapsFromAny(candidate["gates"])
 	if len(candidateGates) != 5 ||
 		candidateGates[0]["gate"] != "attempt_operation_ready" ||
@@ -3445,6 +3482,25 @@ func TestProviderReviewAttemptDependencySanitizers(t *testing.T) {
 	for _, item := range []struct {
 		input string
 		want  string
+		ready bool
+	}{
+		{"independent", "independent", true},
+		{"dependency_satisfied", "dependency_satisfied", true},
+		{"waiting_for_dependency", "waiting_for_dependency", false},
+		{"dependency_failed", "dependency_failed", false},
+		{"raw_dependency", "blocked", false},
+		{"", "blocked", false},
+	} {
+		if got := safeProviderReviewAttemptClaimDependencyStatus(item.input); got != item.want {
+			t.Fatalf("safeProviderReviewAttemptClaimDependencyStatus(%q) = %q, want %q", item.input, got, item.want)
+		}
+		if got := providerReviewAttemptClaimDependencyReady(item.input); got != item.ready {
+			t.Fatalf("providerReviewAttemptClaimDependencyReady(%q) = %v, want %v", item.input, got, item.ready)
+		}
+	}
+	for _, item := range []struct {
+		input string
+		want  string
 	}{
 		{"not_recorded", "not_recorded"},
 		{"ready", "ready"},
@@ -3512,6 +3568,57 @@ func TestProviderReviewAttemptOrchestrationSummaryBlocksUnknownStatus(t *testing
 }
 
 func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T) {
+	t.Run("redacts unknown attempt claim plan fields", func(t *testing.T) {
+		claimPlan := providerReviewAttemptExecutionClaimPlan(
+			map[string]any{
+				"name":              "raw_operation",
+				"endpoint_key":      "github.secret_endpoint",
+				"status":            "retrying",
+				"dependency_status": "raw_dependency",
+				"replay_check":      "raw_replay",
+				"conflict_policy":   "raw_conflict",
+				"retry_policy":      "raw_retry",
+				"operation_order":   99,
+			},
+			false,
+			false,
+		)
+		if claimPlan["mode"] != "redacted_attempt_execution_claim_plan" ||
+			claimPlan["claim_state"] != "blocked" ||
+			claimPlan["claim_ready"] != false ||
+			claimPlan["claim_metadata_ready"] != false ||
+			claimPlan["operation_name"] != "" ||
+			claimPlan["endpoint_key"] != "" ||
+			claimPlan["attempt_status"] != "blocked" ||
+			claimPlan["dependency_status"] != "blocked" ||
+			claimPlan["dependency_ready"] != false ||
+			claimPlan["replay_check"] != "" ||
+			claimPlan["conflict_policy"] != "" ||
+			claimPlan["retry_policy"] != "" ||
+			claimPlan["idempotency_metadata_ready"] != false ||
+			claimPlan["response_diagnostics_ready"] != false ||
+			claimPlan["provider_api_call_made"] != false ||
+			claimPlan["provider_api_mutation"] != "disabled" ||
+			claimPlan["contains_token"] != false {
+			t.Fatalf("unknown operation claim plan should be redacted: %#v", claimPlan)
+		}
+		blockedReasons := stringSliceFromAny(claimPlan["blocked_reasons"])
+		if len(blockedReasons) != 6 ||
+			blockedReasons[0] != "provider_review_response_diagnostics_missing" ||
+			blockedReasons[1] != "provider_review_idempotency_metadata_missing" ||
+			blockedReasons[2] != "provider_review_dependency_not_ready" ||
+			blockedReasons[3] != "provider_review_attempt_status_not_planned" ||
+			blockedReasons[4] != "provider_review_adapter_not_implemented" ||
+			blockedReasons[5] != "provider_review_mutation_not_armed" {
+			t.Fatalf("unknown operation claim blocked reasons = %#v", blockedReasons)
+		}
+		encoded, _ := json.Marshal(claimPlan)
+		for _, leak := range []string{"raw_operation", "github.secret_endpoint", "retrying", "raw_dependency", "raw_replay", "raw_conflict", "raw_retry"} {
+			if strings.Contains(string(encoded), leak) {
+				t.Fatalf("unknown operation claim plan leaked %q: %s", leak, encoded)
+			}
+		}
+	})
 	t.Run("redacts unknown adapter contract operation name", func(t *testing.T) {
 		contract := providerReviewAttemptCandidateAdapterContract(
 			map[string]any{
@@ -3570,6 +3677,10 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 		candidate := mapFromAny(summary["execution_candidate"])
 		if candidate["next_operation"] != "commit_starter_files" || candidate["endpoint_key"] != "" {
 			t.Fatalf("mixed operation name execution candidate = %#v", candidate)
+		}
+		claimPlan := mapFromAny(candidate["claim_plan"])
+		if claimPlan["claim_ready"] != false || claimPlan["claim_metadata_ready"] != false || claimPlan["operation_name"] != "commit_starter_files" || claimPlan["endpoint_key"] != "" {
+			t.Fatalf("mixed operation name claim plan = %#v", claimPlan)
 		}
 	})
 	t.Run("dependency failure wins over completed status", func(t *testing.T) {
