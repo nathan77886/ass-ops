@@ -84,6 +84,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/project-template-runs/{id}/retry-provision", s.retryProjectTemplateProvision)
 		r.Get("/api/provider-accounts", s.listProviderAccounts)
 		r.Post("/api/provider-accounts", s.createProviderAccount)
+		r.Post("/api/provider-accounts/execute-token-rotation-plan", s.executeProviderAccountTokenRotationPlan)
 		r.Get("/api/provider-accounts/{id}", s.getProviderAccount)
 		r.Patch("/api/provider-accounts/{id}", s.updateProviderAccount)
 		r.Post("/api/provider-accounts/{id}/check", s.checkProviderAccount)
@@ -1166,6 +1167,108 @@ func (s *Server) rotateProviderAccountTokenEnv(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, sanitizeProviderAccount(item))
 }
 
+func (s *Server) executeProviderAccountTokenRotationPlan(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePolicy(w, r, PolicyResource{Type: "provider_account"}, "update") {
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = "automated rotation plan execution"
+	}
+	now := time.Now().UTC()
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start provider token rotation execution transaction")
+		return
+	}
+	defer tx.Rollback()
+	items, err := queryMaps(r.Context(), tx, `
+		SELECT *
+		FROM provider_accounts
+		ORDER BY provider_type, name
+		FOR UPDATE`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load provider token rotation plan")
+		return
+	}
+	plan := providerAccountAutomatedRotationPlan(items, now)
+	candidates := providerAccountAutomatedRotationExecutionCandidates(items, now)
+	if len(candidates) == 0 {
+		writeError(w, http.StatusConflict, "no provider token rotation candidates are ready")
+		return
+	}
+
+	rotated := make([]map[string]any, 0, len(candidates))
+	for _, candidate := range candidates {
+		account := candidate.account
+		accountID := rawStringFromMap(account, "id")
+		currentTokenEnv := rawStringFromMap(account, "token_env")
+		next := providerAccountInput{
+			Name:         rawStringFromMap(account, "name"),
+			ProviderType: rawStringFromMap(account, "provider_type"),
+			APIBaseURL:   rawStringFromMap(account, "api_base_url"),
+			WebBaseURL:   rawStringFromMap(account, "web_base_url"),
+			TokenEnv:     candidate.tokenEnv,
+			DefaultOwner: rawStringFromMap(account, "default_owner"),
+			Visibility:   rawStringFromMap(account, "visibility"),
+			Metadata:     cloneMap(mapFromAny(account["metadata"])),
+		}
+		next.Metadata = providerAccountRotationMetadata(next.Metadata, currentTokenEnv, candidate.tokenEnv, reason, currentUser(r))
+		metadataJSON, err := jsonParam(next.Metadata)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid provider token rotation metadata")
+			return
+		}
+		item, err := queryOne(r.Context(), tx, `
+			UPDATE provider_accounts
+			SET token_env=$2,
+				metadata=$3::jsonb,
+				updated_at=now()
+			WHERE id=$1 AND token_env=$4
+			RETURNING *`,
+			accountID,
+			candidate.tokenEnv,
+			metadataJSON,
+			currentTokenEnv,
+		)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				writeError(w, http.StatusConflict, "provider account changed during token rotation execution; retry")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "could not execute provider token rotation")
+			return
+		}
+		if err := refreshGitRemotesForProviderAccount(r.Context(), tx, next, accountID); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not refresh provider account remotes")
+			return
+		}
+		rotated = append(rotated, item)
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.execute_token_rotation_plan") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit provider token rotation execution")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mode":                   "executed",
+		"automation_enabled":     true,
+		"provider_api_call_made": false,
+		"rotated_count":          len(rotated),
+		"skipped_count":          len(items) - len(rotated),
+		"plan_before":            plan,
+		"items":                  sanitizeProviderAccounts(rotated),
+	})
+}
+
 type providerAccountInput struct {
 	Name         string
 	ProviderType string
@@ -1543,7 +1646,7 @@ func providerAccountAutomatedRotationPlan(items []map[string]any, now time.Time)
 	if len(items) > 0 {
 		switch {
 		case counts["ready"] > 0:
-			nextAction = "Review ready provider token rotation candidates, then run manual rotation or enable an execution workflow."
+			nextAction = "Review ready provider token rotation candidates, then execute the ready rotation plan or rotate manually."
 		case counts["blocked"] > 0:
 			nextAction = "Add safe rotation candidate token env metadata before automated rotation can be enabled."
 		default:
@@ -1551,15 +1654,16 @@ func providerAccountAutomatedRotationPlan(items []map[string]any, now time.Time)
 		}
 	}
 	return map[string]any{
-		"mode":               "dry_run",
-		"automation_enabled": false,
-		"external_call_made": false,
-		"total":              len(items),
-		"ready":              counts["ready"],
-		"blocked":            counts["blocked"],
-		"not_needed":         counts["not_needed"],
-		"next_action":        nextAction,
-		"items":              planItems,
+		"mode":                "dry_run",
+		"automation_enabled":  false,
+		"execution_available": counts["ready"] > 0,
+		"external_call_made":  false,
+		"total":               len(items),
+		"ready":               counts["ready"],
+		"blocked":             counts["blocked"],
+		"not_needed":          counts["not_needed"],
+		"next_action":         nextAction,
+		"items":               planItems,
 	}
 }
 
@@ -1611,8 +1715,34 @@ func providerAccountAutomatedRotationPlanItem(item map[string]any, now time.Time
 		return entry
 	}
 	entry["status"] = "ready"
-	entry["next_action"] = "manual rotation can use the planned candidate; automated execution remains disabled"
+	entry["next_action"] = "ready for operator-triggered token-env rotation execution"
 	return entry
+}
+
+type providerAccountRotationExecutionCandidate struct {
+	account  map[string]any
+	tokenEnv string
+}
+
+func providerAccountAutomatedRotationExecutionCandidates(items []map[string]any, now time.Time) []providerAccountRotationExecutionCandidate {
+	candidates := make([]providerAccountRotationExecutionCandidate, 0)
+	for _, item := range items {
+		planItem := providerAccountAutomatedRotationPlanItem(item, now)
+		if planItem["status"] != "ready" {
+			continue
+		}
+		tokenEnv := providerAccountRotationCandidateEnv(item)
+		if tokenEnv == "" ||
+			!safeTemplateProviderTokenEnv(rawStringFromMap(item, "provider_type"), tokenEnv) ||
+			tokenEnv == rawStringFromMap(item, "token_env") {
+			continue
+		}
+		candidates = append(candidates, providerAccountRotationExecutionCandidate{
+			account:  item,
+			tokenEnv: tokenEnv,
+		})
+	}
+	return candidates
 }
 
 var providerTokenRotationCandidateKeys = []string{
@@ -1622,17 +1752,20 @@ var providerTokenRotationCandidateKeys = []string{
 	"automated_rotation_token_env",
 }
 
-func providerAccountRotationCandidate(item map[string]any) map[string]any {
+func providerAccountRotationCandidateEnv(item map[string]any) string {
 	metadata := mapFromAny(item["metadata"])
-	providerType := rawStringFromMap(item, "provider_type")
-	current := rawStringFromMap(item, "token_env")
-	candidate := ""
 	for _, key := range providerTokenRotationCandidateKeys {
 		if value := strings.TrimSpace(fmt.Sprint(metadata[key])); value != "" && value != "<nil>" {
-			candidate = value
-			break
+			return value
 		}
 	}
+	return ""
+}
+
+func providerAccountRotationCandidate(item map[string]any) map[string]any {
+	providerType := rawStringFromMap(item, "provider_type")
+	current := rawStringFromMap(item, "token_env")
+	candidate := providerAccountRotationCandidateEnv(item)
 	out := map[string]any{
 		"present":          candidate != "",
 		"safe":             false,

@@ -1116,6 +1116,19 @@ function ProviderAccounts() {
     rotateForm.resetFields();
     accounts.reload();
   }
+  async function executeReadyTokenRotations() {
+    try {
+      const result = await api('/api/provider-accounts/execute-token-rotation-plan', {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'operator executed ready provider token rotation plan' })
+      });
+      message.success(`Rotated ${result.rotated_count || 0} provider account${result.rotated_count === 1 ? '' : 's'}`);
+    } catch (err: any) {
+      message.error(err?.message || 'Provider token rotation failed');
+    } finally {
+      accounts.reload();
+    }
+  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="Provider Accounts" onCreate={() => setOpen(true)} />
@@ -1127,6 +1140,7 @@ function ProviderAccounts() {
       <Space wrap>
         {providerAutoRotationPlanTags(tokenRotationPlan).map((item) => <Tag key={item.key} color={item.color}>{item.label}</Tag>)}
         <Typography.Text type={tokenRotationPlan.blocked ? 'danger' : 'secondary'}>{tokenRotationPlan.next_action || 'No automated rotation plan available.'}</Typography.Text>
+        <Button size="small" onClick={executeReadyTokenRotations} disabled={!Number(tokenRotationPlan.ready || 0)}>Execute ready rotations</Button>
       </Space>
       <Table<AnyRow> rowKey="id" dataSource={accounts.data?.items || []} pagination={{ pageSize: 10 }} columns={[
         { title: 'Name', dataIndex: 'name' },

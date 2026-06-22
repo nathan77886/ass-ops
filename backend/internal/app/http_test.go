@@ -926,6 +926,9 @@ func TestProviderAccountAutomatedRotationPlan(t *testing.T) {
 	if plan["mode"] != "dry_run" || plan["automation_enabled"] != false || plan["external_call_made"] != false {
 		t.Fatalf("plan should be dry-run only: %#v", plan)
 	}
+	if plan["execution_available"] != true {
+		t.Fatalf("plan should expose ready execution availability: %#v", plan)
+	}
 	if plan["ready"] != 1 || plan["blocked"] != 3 || plan["not_needed"] != 1 {
 		t.Fatalf("plan counts = %#v", plan)
 	}
@@ -958,6 +961,57 @@ func TestProviderAccountAutomatedRotationPlan(t *testing.T) {
 	} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("automated rotation plan leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestProviderAccountAutomatedRotationExecutionCandidates(t *testing.T) {
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	items := []map[string]any{
+		{
+			"id":            "github-ready",
+			"name":          "github ready",
+			"provider_type": "github",
+			"token_env":     "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_CURRENT",
+			"metadata":      map[string]any{"rotation_candidate_token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_NEXT"},
+			"created_at":    now.AddDate(0, 0, -120),
+		},
+		{
+			"id":            "github-fresh",
+			"name":          "github fresh",
+			"provider_type": "github",
+			"token_env":     "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_FRESH",
+			"metadata":      map[string]any{"rotation_candidate_token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_OTHER"},
+			"created_at":    now.AddDate(0, 0, -10),
+		},
+		{
+			"id":            "gitea-unsafe",
+			"name":          "gitea unsafe",
+			"provider_type": "gitea",
+			"token_env":     "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITEA_CURRENT",
+			"metadata":      map[string]any{"rotation_candidate_token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_WRONG"},
+			"created_at":    now.AddDate(0, 0, -120),
+		},
+	}
+	candidates := providerAccountAutomatedRotationExecutionCandidates(items, now)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %#v", candidates)
+	}
+	if rawStringFromMap(candidates[0].account, "id") != "github-ready" ||
+		candidates[0].tokenEnv != "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_NEXT" ||
+		providerAccountAutomatedRotationPlanItem(candidates[0].account, now)["status"] != "ready" {
+		t.Fatalf("candidate = %#v", candidates[0])
+	}
+	plan := providerAccountAutomatedRotationPlan(items, now)
+	encoded, _ := json.Marshal(plan)
+	for _, leak := range []string{
+		"ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_CURRENT",
+		"ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_NEXT",
+		"ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITEA_CURRENT",
+		"ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_WRONG",
+	} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("execution plan leaked %q: %s", leak, encoded)
 		}
 	}
 }
@@ -2438,6 +2492,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.update")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.check")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.rotate_token_env")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.execute_token_rotation_plan")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "webhook_connection.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "webhook_connection.rotate_secret")`,
 		`syncing canonical assets for webhook event`,
