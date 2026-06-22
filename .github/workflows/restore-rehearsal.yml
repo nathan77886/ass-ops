@@ -42,10 +42,10 @@ jobs:
       ASSOPS_ADMIN_PASSWORD: admin1234
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -113,7 +113,7 @@ jobs:
           python3 /tmp/validate-rehearsal-report.py
 
       - name: Upload rehearsal artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scheduled-restore-rehearsal
           retention-days: 30
