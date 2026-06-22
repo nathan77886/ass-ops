@@ -228,6 +228,7 @@ function templateProvisionSummary(row: AnyRow) {
   if (details.starter_push_skipped && details.repository_exists) return { color: 'gold', label: 'push skipped', detail: 'repository exists' };
   if (details.starter_push_skipped) return { color: 'gold', label: 'push skipped', detail: shortText(row.result?.repository_provision_reason || details.reason, 44) };
   if (details.provider_status) return { color: 'red', label: `HTTP ${details.provider_status}`, detail: shortText(details.provider_error, 44) };
+  if (details.provider_error) return { color: 'red', label: 'error', detail: shortText(details.provider_error, 44) };
   if (row.result?.repository_provision_reason) return { color: 'gold', label: 'needs reconcile', detail: shortText(row.result.repository_provision_reason, 44) };
   return { color: 'default', label: 'pending', detail: '' };
 }
@@ -437,7 +438,7 @@ function Projects() {
 		} catch (error: any) {
 			message.error(error.message || 'Could not retry template provision');
 		}
-	}
+  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="Projects" onCreate={() => setOpen(true)} />
@@ -477,7 +478,7 @@ function Projects() {
           { title: 'RepoSync', render: (_, row) => row.result?.repo_sync_asset_id ? <Tag color="green">created</Tag> : <Tag>planned</Tag> },
           { title: 'Files', render: (_, row) => Array.isArray(row.result?.template_file_ids) ? <Tag color="green">{row.result.template_file_ids.length}</Tag> : <Tag>planned</Tag> },
           { title: 'Steps', render: (_, row) => Array.isArray(row.steps) ? `${row.steps.filter((step: AnyRow) => step.status === 'completed').length}/${row.steps.length}` : '-' },
-          { title: 'Error', render: (_, row) => row.result?.details?.provider_error || row.error_message || row.result?.repository_provision_reason || '-' },
+          { title: 'Error', render: (_, row) => templateRunErrorText(row) },
           { title: 'Created', dataIndex: 'created_at' },
           { title: 'Action', render: (_, row) => canRetryTemplateProvision(row) ? <Button size="small" title={templateProvisionRetryTitle(row)} onClick={() => retryTemplateProvision(row)}>Retry provision</Button> : '-' }
         ]}
@@ -486,7 +487,7 @@ function Projects() {
       <TemplateDetailModal template={selectedTemplate} open={templateDetailOpen} setOpen={setTemplateDetailOpen} />
       <TemplateUseModal template={selectedTemplate} open={templateOpen} setOpen={setTemplateOpen} onSubmit={createFromTemplate} />
     </Space>
-	);
+  );
 }
 
 function templateProvisionStatus(row: AnyRow) {
@@ -510,6 +511,12 @@ function templateProvisionRetryTitle(row: AnyRow) {
   if (details.repository_exists && details.starter_push_skipped) return 'Retry after enabling allow_existing_repository_push or reconciling the repository';
   if (details.starter_push_skipped) return 'Retry after reconciling template remote protection';
   return 'Retry repository provisioning';
+}
+
+function templateRunErrorText(row: AnyRow) {
+  if (row.error_message) return shortText(row.error_message, 72);
+  if (row.status === 'failed' && row.result?.error) return shortText(row.result.error, 72);
+  return '-';
 }
 
 function TemplateDetailModal({ template, open, setOpen }: { template?: AnyRow; open: boolean; setOpen: (v: boolean) => void }) {
