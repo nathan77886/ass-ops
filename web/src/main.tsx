@@ -2169,6 +2169,24 @@ function buildDeploymentPosture(targets: AnyRow[], records: AnyRow[], rollbackPo
   };
 }
 
+function buildRollbackGuardrail(rollbackPoints: AnyRow[]) {
+  if (!rollbackPoints.length) return null;
+  const previewable = rollbackPoints.filter((row) => String(row.rollback_readiness || '').toLowerCase() === 'previewable').length;
+  const executable = rollbackPoints.filter((row) => row.rollback_executable === true).length;
+  const mode = String(rollbackPoints[0]?.rollback_execution_mode || '').trim() || 'read_only_preview';
+  return {
+    type: executable > 0 ? 'warning' as const : 'info' as const,
+    message: executable > 0
+      ? `${executable} rollback point${executable === 1 ? '' : 's'} marked executable`
+      : 'Rollback execution is disabled in this first version',
+    description: executable > 0
+      ? `Executable rollback points are visible in ${mode}, but operators should confirm approval and environment rules before queueing any rollback action.`
+      : previewable > 0
+        ? `${previewable} rollback point${previewable === 1 ? '' : 's'} have revision metadata available for review; execution mode is ${mode}, and no rollback action will be queued from ASSOPS yet.`
+        : 'Rollback points are tracked for audit and context, but none are currently previewable.'
+  };
+}
+
 function deploymentStatusUnhealthy(status: any) {
   const value = String(status || '').toLowerCase();
   return ['failed', 'error', 'degraded', 'outofsync', 'missing', 'unknown'].includes(value);
@@ -2199,6 +2217,7 @@ function ConfigPage() {
     deploymentRecords.data?.items || [],
     rollbackPoints.data?.items || []
   );
+  const rollbackGuardrail = buildRollbackGuardrail(rollbackPoints.data?.items || []);
   useEffect(() => {
     if (!argoSyncOpID) return;
     let alive = true;
@@ -2329,6 +2348,7 @@ function ConfigPage() {
             <Card><Typography.Text type="secondary">Rollback points</Typography.Text><Typography.Title level={3}>{deploymentPosture.rollbackPoints}</Typography.Title></Card>
           </div>
           {deploymentPosture.summary !== 'No deployment targets yet' && <Alert showIcon type={deploymentPosture.unhealthy > 0 ? 'warning' : 'success'} message={deploymentPosture.summary} />}
+          {rollbackGuardrail && <Alert showIcon type={rollbackGuardrail.type} message={rollbackGuardrail.message} description={rollbackGuardrail.description} />}
           <Table<AnyRow> rowKey="id" dataSource={argoRows} pagination={false} columns={[
             { title: 'Name', dataIndex: 'name' },
             { title: 'Server', dataIndex: 'server_url' },
