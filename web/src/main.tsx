@@ -221,6 +221,17 @@ function signalSeverityColor(value: any) {
   }
 }
 
+function templateProvisionSummary(row: AnyRow) {
+  const details = row.result?.details || {};
+  if (row.result?.repository_provisioned) return { color: 'green', label: 'provisioned', detail: '' };
+  if (row.status === 'provisioning') return { color: 'blue', label: 'provisioning', detail: '' };
+  if (details.starter_push_skipped && details.repository_exists) return { color: 'gold', label: 'push skipped', detail: 'repository exists' };
+  if (details.starter_push_skipped) return { color: 'gold', label: 'push skipped', detail: shortText(row.result?.repository_provision_reason || details.reason, 44) };
+  if (details.provider_status) return { color: 'red', label: `HTTP ${details.provider_status}`, detail: shortText(details.provider_error, 44) };
+  if (row.result?.repository_provision_reason) return { color: 'gold', label: 'needs reconcile', detail: shortText(row.result.repository_provision_reason, 44) };
+  return { color: 'default', label: 'pending', detail: '' };
+}
+
 function cleanedList(values: string[] = []) {
   return values.map((value) => value.trim()).filter(Boolean);
 }
@@ -468,7 +479,7 @@ function Projects() {
           { title: 'Steps', render: (_, row) => Array.isArray(row.steps) ? `${row.steps.filter((step: AnyRow) => step.status === 'completed').length}/${row.steps.length}` : '-' },
           { title: 'Error', render: (_, row) => row.result?.details?.provider_error || row.error_message || row.result?.repository_provision_reason || '-' },
           { title: 'Created', dataIndex: 'created_at' },
-          { title: 'Action', render: (_, row) => canRetryTemplateProvision(row) ? <Button size="small" onClick={() => retryTemplateProvision(row)}>Retry provision</Button> : '-' }
+          { title: 'Action', render: (_, row) => canRetryTemplateProvision(row) ? <Button size="small" title={templateProvisionRetryTitle(row)} onClick={() => retryTemplateProvision(row)}>Retry provision</Button> : '-' }
         ]}
       />
       <CreateModal title="Create project" open={open} setOpen={setOpen} fields={['name', 'slug', 'description']} onSubmit={(v) => api('/api/projects', { method: 'POST', body: JSON.stringify(v) }).then(projects.reload)} />
@@ -479,18 +490,26 @@ function Projects() {
 }
 
 function templateProvisionStatus(row: AnyRow) {
-  const details = row.result?.details || {};
-  if (row.result?.repository_provisioned) return <Tag color="green">provisioned</Tag>;
-  if (details.provider_status) return <Tag color="red">HTTP {details.provider_status}</Tag>;
-  if (row.status === 'provisioning') return <Tag color="blue">provisioning</Tag>;
-  if (row.result?.repository_provision_reason) return <Tag color="gold">{row.result.repository_provision_reason}</Tag>;
-  return <Tag>pending</Tag>;
+  const summary = templateProvisionSummary(row);
+  return (
+    <Space size={4} wrap>
+      <Tag color={summary.color}>{summary.label}</Tag>
+      {summary.detail ? <Typography.Text type="secondary">{summary.detail}</Typography.Text> : null}
+    </Space>
+  );
 }
 
 function canRetryTemplateProvision(row: AnyRow) {
   if (row.result?.repository_provisioned) return false;
   if (!row.project_id) return false;
   return row.status === 'failed' || row.status === 'completed';
+}
+
+function templateProvisionRetryTitle(row: AnyRow) {
+  const details = row.result?.details || {};
+  if (details.repository_exists && details.starter_push_skipped) return 'Retry after enabling allow_existing_repository_push or reconciling the repository';
+  if (details.starter_push_skipped) return 'Retry after reconciling template remote protection';
+  return 'Retry repository provisioning';
 }
 
 function TemplateDetailModal({ template, open, setOpen }: { template?: AnyRow; open: boolean; setOpen: (v: boolean) => void }) {
