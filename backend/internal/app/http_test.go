@@ -2643,6 +2643,17 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 	if runtimeOutput["mutation_enabled"] != false {
 		t.Fatalf("runtime.check should keep mutation disabled: %#v", runtimeOutput)
 	}
+	cliReadiness := mapFromAny(runtimeOutput["codex_cli_readiness"])
+	if cliReadiness["readiness"] != "metadata_ready" ||
+		cliReadiness["execution_enabled"] != false ||
+		cliReadiness["process_spawn_enabled"] != false ||
+		cliReadiness["repository_mutation_allowed"] != false {
+		t.Fatalf("runtime.check should expose disabled Codex CLI readiness: %#v", cliReadiness)
+	}
+	if statusByGate(sliceOfMapsFromAny(cliReadiness["gates"]), "runtime_verified") != "ready" ||
+		statusByGate(sliceOfMapsFromAny(cliReadiness["gates"]), "codex_cli_process") != "blocked" {
+		t.Fatalf("runtime.check Codex CLI gates should keep process execution blocked: %#v", cliReadiness["gates"])
+	}
 	if _, ok := runtimeInput["config"]; ok {
 		t.Fatalf("runtime.check input should not expose runtime config: %#v", runtimeInput)
 	}
@@ -2699,6 +2710,97 @@ func TestAgentExecutionReadinessGatesKeepMutationBlocked(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("readiness gates should not expose sensitive config hints: %s", encoded)
 		}
+	}
+}
+
+func TestAgentCodexCLIReadiness(t *testing.T) {
+	tests := []struct {
+		name           string
+		runtime        map[string]any
+		wantReadiness  string
+		wantConfigured string
+		wantVerified   string
+		wantBinary     string
+	}{
+		{
+			name:           "missing runtime blocks all execution",
+			runtime:        map[string]any{},
+			wantReadiness:  "blocked",
+			wantConfigured: "blocked",
+			wantVerified:   "blocked",
+			wantBinary:     "blocked",
+		},
+		{
+			name:           "config-only runtime is not configured",
+			runtime:        map[string]any{"config": map[string]any{"token": "do-not-serialize"}},
+			wantReadiness:  "blocked",
+			wantConfigured: "blocked",
+			wantVerified:   "blocked",
+			wantBinary:     "blocked",
+		},
+		{
+			name: "runtime with error status remains blocked",
+			runtime: map[string]any{
+				"id":           "runtime-2",
+				"name":         "Broken Codex",
+				"runtime_type": "codex-cli",
+				"codex_binary": "codex",
+				"model":        "gpt-5-codex",
+				"status":       "error",
+			},
+			wantReadiness:  "blocked",
+			wantConfigured: "ready",
+			wantVerified:   "blocked",
+			wantBinary:     "ready",
+		},
+		{
+			name: "verified runtime is metadata ready but still cannot spawn processes",
+			runtime: map[string]any{
+				"id":           "runtime-1",
+				"name":         "Demo Codex",
+				"runtime_type": "codex-cli",
+				"codex_binary": "codex",
+				"model":        "gpt-5-codex",
+				"status":       "verified",
+				"config":       map[string]any{"token": "do-not-serialize"},
+			},
+			wantReadiness:  "metadata_ready",
+			wantConfigured: "ready",
+			wantVerified:   "ready",
+			wantBinary:     "ready",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := agentCodexCLIReadiness(tt.runtime)
+			if got["readiness"] != tt.wantReadiness {
+				t.Fatalf("readiness = %v, want %s: %#v", got["readiness"], tt.wantReadiness, got)
+			}
+			if got["execution_enabled"] != false ||
+				got["process_spawn_enabled"] != false ||
+				got["external_call_made"] != false ||
+				got["repository_mutation_allowed"] != false ||
+				got["pull_request_creation"] != false {
+				t.Fatalf("Codex CLI readiness should keep external execution disabled: %#v", got)
+			}
+			gates := sliceOfMapsFromAny(got["gates"])
+			if statusByGate(gates, "runtime_configured") != tt.wantConfigured ||
+				statusByGate(gates, "runtime_verified") != tt.wantVerified ||
+				statusByGate(gates, "codex_binary_configured") != tt.wantBinary {
+				t.Fatalf("runtime metadata gates mismatch: %#v", gates)
+			}
+			for _, gate := range []string{"codex_cli_process", "repository_mutation", "pull_request_workflow"} {
+				if statusByGate(gates, gate) != "blocked" {
+					t.Fatalf("%s should stay blocked: %#v", gate, gates)
+				}
+			}
+			encoded, _ := json.Marshal(got)
+			for _, forbidden := range []string{"do-not-serialize", "ASSOPS_", "OPENAI_", "GITHUB_TOKEN", "PRIVATE KEY"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("Codex CLI readiness should not expose sensitive config hints: %s", encoded)
+				}
+			}
+		})
 	}
 }
 

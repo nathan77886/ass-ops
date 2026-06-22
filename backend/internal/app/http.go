@@ -10279,11 +10279,90 @@ func agentRuntimeCheckStep(taskID, opID string, runtime map[string]any) map[stri
 		output["readiness"] = status
 		output["message"] = "AI runtime metadata checked for audit; repository mutation remains disabled"
 	}
+	output["codex_cli_readiness"] = agentCodexCLIReadiness(runtime)
 	return map[string]any{
 		"tool_name": "runtime.check",
 		"input":     input,
 		"output":    output,
 	}
+}
+
+func agentCodexCLIReadiness(runtime map[string]any) map[string]any {
+	status := strings.TrimSpace(fmt.Sprint(runtime["status"]))
+	if status == "" || status == "<nil>" {
+		status = "missing"
+	}
+	codexBinary := strings.TrimSpace(fmt.Sprint(runtime["codex_binary"]))
+	if codexBinary == "<nil>" {
+		codexBinary = ""
+	}
+	runtimeName := strings.TrimSpace(fmt.Sprint(runtime["name"]))
+	if runtimeName == "<nil>" {
+		runtimeName = ""
+	}
+	runtimeType := strings.TrimSpace(fmt.Sprint(runtime["runtime_type"]))
+	if runtimeType == "<nil>" {
+		runtimeType = ""
+	}
+	runtimeConfigured := runtimeName != "" && runtimeType != ""
+	runtimeVerified := status == "verified"
+	binaryConfigured := codexBinary != ""
+
+	gates := []map[string]any{
+		{
+			"gate":    "runtime_configured",
+			"status":  readinessStatus(runtimeConfigured),
+			"message": "project or global AI runtime metadata must be selected before Codex CLI execution can be enabled",
+		},
+		{
+			"gate":    "runtime_verified",
+			"status":  readinessStatus(runtimeVerified),
+			"message": "AI runtime must be verified before any future Codex CLI process launch",
+		},
+		{
+			"gate":    "codex_binary_configured",
+			"status":  readinessStatus(binaryConfigured),
+			"message": "Codex CLI binary path/name must be configured in runtime metadata",
+		},
+		{
+			"gate":    "codex_cli_process",
+			"status":  "blocked",
+			"message": "process spawning is disabled; this audit row is a dry-run readiness preview only",
+		},
+		{
+			"gate":    "repository_mutation",
+			"status":  "blocked",
+			"message": "repository writes require a future approval-gated patch apply operation",
+		},
+		{
+			"gate":    "pull_request_workflow",
+			"status":  "blocked",
+			"message": "pull request creation requires a future provider account workflow",
+		},
+	}
+
+	readiness := "blocked"
+	if runtimeConfigured && runtimeVerified && binaryConfigured {
+		readiness = "metadata_ready"
+	}
+	return map[string]any{
+		"readiness":                   readiness,
+		"execution_enabled":           false,
+		"process_spawn_enabled":       false,
+		"external_call_made":          false,
+		"repository_mutation_allowed": false,
+		"pull_request_creation":       false,
+		"runtime_status":              status,
+		"gates":                       gates,
+		"next_step":                   "Enable Codex CLI only after process launch, patch application, and PR creation each have approval gates and provider reconciliation.",
+	}
+}
+
+func readinessStatus(ready bool) string {
+	if ready {
+		return "ready"
+	}
+	return "blocked"
 }
 
 func (s *Server) createArgoConnection(w http.ResponseWriter, r *http.Request) {

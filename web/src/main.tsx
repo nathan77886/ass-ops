@@ -1979,7 +1979,7 @@ function agentReadinessGateTags(value: any) {
     <Space wrap size={4}>
       {gates.map((gate: AnyRow, index: number) => {
         const status = String(gate.status || 'unknown');
-        const color = status === 'blocked' ? 'red' : status.startsWith('audit_') ? 'blue' : status === 'unknown' ? 'default' : 'gold';
+        const color = status === 'blocked' ? 'red' : status === 'ready' ? 'green' : status.startsWith('audit_') ? 'blue' : status === 'unknown' ? 'default' : 'gold';
         return <Tag key={`${gate.gate || index}`} color={color}>{String(gate.gate || 'gate').replaceAll('_', ' ')}: {status}</Tag>;
       })}
     </Space>
@@ -2630,9 +2630,14 @@ function AgentTasks() {
     const input = row.input || {};
     const output = row.output || {};
     if (row.tool_name === 'runtime.check') {
+      const cliReadiness = output.codex_cli_readiness || {};
+      const gates = agentReadinessGateTags(cliReadiness.gates);
       return <Space size={4} wrap>
         <Tag color={output.readiness === 'verified' ? 'green' : output.readiness === 'missing' ? 'red' : 'gold'}>{output.readiness || input.status || 'unknown'}</Tag>
         <Typography.Text>{input.runtime_name || input.codex_binary || 'No runtime'}</Typography.Text>
+        {cliReadiness.readiness ? <Tag color={cliReadiness.readiness === 'metadata_ready' ? 'blue' : 'red'}>CLI {cliReadiness.readiness}</Tag> : null}
+        {gates}
+        {cliReadiness.next_step ? <Typography.Text type="secondary">{shortText(cliReadiness.next_step, 96)}</Typography.Text> : null}
       </Space>;
     }
     if (row.tool_name === 'patch.prepare') {
