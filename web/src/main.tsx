@@ -616,6 +616,7 @@ function buildAssetSearchGraph(nodes: AnyRow[] = [], relations: AnyRow[] = []) {
       label: row.display_name || row.name || row.id,
       asset_type: row.asset_type || 'unknown',
       status: row.status || '',
+      relation_count: row.relation_count || 0,
       external: false
     };
     columns[column].push(node);
@@ -636,6 +637,19 @@ function buildAssetSearchGraph(nodes: AnyRow[] = [], relations: AnyRow[] = []) {
   }));
   const height = Math.max(220, 140 + Math.max(columns.from.length, columns.center.length, columns.to.length) * 88);
   return { nodes: laidOut, edges, height };
+}
+
+function assetGraphRankingSummary(nodes: AnyRow[] = [], edges: AnyRow[] = [], truncated = false) {
+  const ranked = [...nodes].sort((a, b) =>
+    Number(b.graph_rank || 0) - Number(a.graph_rank || 0)
+      || Number(b.relation_count || 0) - Number(a.relation_count || 0)
+  );
+  const top = ranked[0];
+  return {
+    nodesLabel: `${nodes.length} ranked nodes${truncated ? ' (truncated)' : ''}`,
+    edges: edges.length,
+    topLabel: top ? `${top.display_name || top.name || top.id} (${top.relation_count || 0} links)` : 'No ranked assets'
+  };
 }
 
 function assetDependencyPath(assetID: string, direction: 'downstream' | 'upstream', projectID?: string) {
@@ -1078,6 +1092,7 @@ function AssetCenter() {
 	const upstream = useLoad(() => assetPick.selectedID ? api(assetDependencyPath(assetPick.selectedID, 'upstream', project?.id)) : Promise.resolve({ items: [] }), [assetPick.selectedID, project?.id]);
 	const selectedGraph = buildAssetGraph(assetPick.selected, assetRows, relations.data?.items || []);
 	const searchGraph = buildAssetSearchGraph(searchGraphResult.data?.nodes || [], searchGraphResult.data?.edges || []);
+	const searchGraphSummary = assetGraphRankingSummary(searchGraphResult.data?.nodes || [], searchGraphResult.data?.edges || [], Boolean(searchGraphResult.data?.truncated));
 	const dependencyColumns = [
 		{ title: 'Depth', dataIndex: 'depth' },
 		{ title: 'From', dataIndex: 'from_asset_id' },
@@ -1229,6 +1244,11 @@ function AssetCenter() {
 			<Typography.Title level={3}>Search graph</Typography.Title>
 			{searchGraphResult.error && <Alert showIcon type="error" message={searchGraphResult.error} />}
 			{searchGraphResult.data?.truncated && <Alert showIcon type="warning" message="Graph results are truncated. Select a project, asset type, or search term to narrow the view." />}
+			<Space wrap>
+				<Tag>{searchGraphSummary.nodesLabel}</Tag>
+				<Tag>{searchGraphSummary.edges} visible edges</Tag>
+				<Tag color="geekblue">{searchGraphSummary.topLabel}</Tag>
+			</Space>
 			<AssetRelationGraph graph={searchGraph} />
 			<Typography.Title level={3}>Relations</Typography.Title>
 			<Form form={relationForm} layout="inline" onFinish={createAssetRelation}>

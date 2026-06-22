@@ -1707,19 +1707,52 @@ func (s *Server) listAssetGraph(w http.ResponseWriter, r *http.Request) {
 }
 
 func assetGraphNodesSQL() string {
-	return assetInventorySQL() + `
+	return combinedAssetInventoryRelationSQL() + `,
+		relation_degree_endpoints AS (
+			SELECT from_asset_id AS asset_id, count(*)::int AS outgoing_relation_count, 0::int AS incoming_relation_count
+			FROM asset_relation_inventory
+			GROUP BY from_asset_id
+			UNION ALL
+			SELECT to_asset_id AS asset_id, 0::int AS outgoing_relation_count, count(*)::int AS incoming_relation_count
+			FROM asset_relation_inventory
+			GROUP BY to_asset_id
+		),
+		relation_degrees AS (
+			SELECT
+				asset_id,
+				sum(outgoing_relation_count)::int AS outgoing_relation_count,
+				sum(incoming_relation_count)::int AS incoming_relation_count,
+				(sum(outgoing_relation_count) + sum(incoming_relation_count))::int AS relation_count
+			FROM relation_degree_endpoints
+			GROUP BY asset_id
+		),
+		ranked_asset_inventory AS (
+			SELECT
+				ai.*,
+				COALESCE(rd.outgoing_relation_count, 0)::int AS outgoing_relation_count,
+				COALESCE(rd.incoming_relation_count, 0)::int AS incoming_relation_count,
+				COALESCE(rd.relation_count, 0)::int AS relation_count,
+				CASE
+					WHEN ai.risk_level='high' THEN 300
+					WHEN ai.risk_level='warning' THEN 200
+					WHEN ai.risk_level='normal' THEN 100
+					ELSE 0
+				END + LEAST(COALESCE(rd.relation_count, 0), 99)::int AS graph_rank
+			FROM asset_inventory ai
+			LEFT JOIN relation_degrees rd ON rd.asset_id=ai.id
+		)
 		SELECT *
-		FROM asset_inventory
+		FROM ranked_asset_inventory
 		WHERE ($1='' OR project_id=$1)
 			AND ($2='' OR asset_type=$2)
 			AND ($5='' OR name ILIKE $5 ESCAPE '\' OR display_name ILIKE $5 ESCAPE '\' OR external_id ILIKE $5 ESCAPE '\' OR source_table ILIKE $5 ESCAPE '\')
 			AND (
 				$3 OR project_id='' OR EXISTS (
 					SELECT 1 FROM project_members pm
-					WHERE pm.project_id::text=asset_inventory.project_id AND pm.user_id=$4
+					WHERE pm.project_id::text=ranked_asset_inventory.project_id AND pm.user_id=$4
 				)
 			)
-		ORDER BY project_id NULLS FIRST, asset_type, name
+		ORDER BY graph_rank DESC, relation_count DESC, updated_at DESC, project_id NULLS FIRST, asset_type, name
 		LIMIT $6`
 }
 

@@ -412,10 +412,22 @@ func TestAssetGraphNodesSQLIncludesVisibilityAndSearch(t *testing.T) {
 	sql := assetGraphNodesSQL()
 	for _, token := range []string{
 		"FROM asset_inventory",
+		"asset_relation_inventory AS",
+		"relation_degree_endpoints AS",
+		"relation_degrees AS",
+		"ranked_asset_inventory AS",
+		"outgoing_relation_count",
+		"incoming_relation_count",
+		"relation_count",
+		"graph_rank",
+		"WHEN ai.risk_level='high' THEN 300",
+		"WHEN ai.risk_level='normal' THEN 100",
+		"ELSE 0",
 		"($1='' OR project_id=$1)",
 		"($2='' OR asset_type=$2)",
 		"name ILIKE $5",
-		"pm.project_id::text=asset_inventory.project_id AND pm.user_id=$4",
+		"pm.project_id::text=ranked_asset_inventory.project_id AND pm.user_id=$4",
+		"ORDER BY graph_rank DESC, relation_count DESC, updated_at DESC",
 		"LIMIT $6",
 	} {
 		if !strings.Contains(sql, token) {
