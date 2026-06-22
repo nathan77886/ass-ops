@@ -373,6 +373,33 @@ func (w *ControlWorker) recoverStaleRunningJobs(ctx context.Context) error {
 			WHERE opr.id=stale_ops.id
 			RETURNING opr.id, opr.operation_type, opr.input
 		),
+		repo_sync_run_failures AS (
+			UPDATE repo_sync_runs rsr
+			SET status='failed',
+				error_message='worker timed out while running',
+				finished_at=now()
+			FROM updated_ops
+			WHERE rsr.operation_run_id=updated_ops.id
+				AND updated_ops.operation_type IN ('repo.sync', 'repo.sync_remote')
+				AND rsr.status IN ('queued', 'running', 'provisioning')
+			RETURNING rsr.repo_sync_asset_id, rsr.target_remote_id
+		),
+		repo_sync_asset_failures AS (
+			UPDATE repo_sync_assets rsa
+			SET last_sync_status='failed',
+				updated_at=now()
+			FROM repo_sync_run_failures failed
+			WHERE rsa.id=failed.repo_sync_asset_id
+			RETURNING rsa.id
+		),
+		repo_sync_remote_failures AS (
+			UPDATE git_remotes gr
+			SET last_sync_status='failed',
+				updated_at=now()
+			FROM repo_sync_run_failures failed
+			WHERE gr.id=failed.target_remote_id
+			RETURNING gr.id
+		),
 		template_create AS (
 			UPDATE project_template_runs ptr
 			SET status='failed',
@@ -397,6 +424,9 @@ func (w *ControlWorker) recoverStaleRunningJobs(ctx context.Context) error {
 			RETURNING ptr.id
 		)
 		SELECT
+			(SELECT count(*) FROM repo_sync_run_failures) AS repo_sync_run_count,
+			(SELECT count(*) FROM repo_sync_asset_failures) AS repo_sync_asset_count,
+			(SELECT count(*) FROM repo_sync_remote_failures) AS repo_sync_remote_count,
 			(SELECT count(*) FROM template_create) AS template_create_count,
 			(SELECT count(*) FROM template_retry) AS template_retry_count`, recoveryResult); err != nil {
 		return err

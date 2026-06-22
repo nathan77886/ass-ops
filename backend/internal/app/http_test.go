@@ -1447,6 +1447,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncing canonical assets for completed repo sync`,
 		`syncing canonical assets for failed repo sync`,
 		`syncing canonical assets for stale worker recovery`,
+		`repo_sync_run_failures AS`,
 		`syncing canonical assets for GitHub Actions sync`,
 		`syncing canonical assets for failed GitHub Actions sync`,
 		`syncing canonical assets for failed GitHub Actions sync without remote`,
