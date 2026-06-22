@@ -417,6 +417,16 @@ function providerTokenRotationSummary(row: AnyRow) {
   };
 }
 
+function providerTokenRotationSummaryTags(summary: AnyRow = {}) {
+  return [
+    { key: 'due', label: `${summary.due || 0} due`, color: (summary.due || 0) > 0 ? 'red' : 'default' },
+    { key: 'soon', label: `${summary.soon || 0} soon`, color: (summary.soon || 0) > 0 ? 'gold' : 'default' },
+    { key: 'missing', label: `${summary.missing || 0} missing`, color: (summary.missing || 0) > 0 ? 'red' : 'default' },
+    { key: 'unknown', label: `${summary.unknown || 0} unknown`, color: (summary.unknown || 0) > 0 ? 'orange' : 'default' },
+    { key: 'fresh', label: `${summary.fresh || 0} fresh`, color: 'green' }
+  ];
+}
+
 function countByField(rows: AnyRow[] = [], field: string) {
   return rows.reduce<Record<string, number>>((acc, row) => {
     const key = String(row[field] || '').trim();
@@ -958,6 +968,7 @@ function TemplateUseModal({ template, open, setOpen, onSubmit }: { template?: An
 
 function ProviderAccounts() {
   const accounts = useLoad(() => api('/api/provider-accounts'), []);
+  const tokenRotationSummary = accounts.data?.token_rotation_summary || {};
   const [open, setOpen] = useState(false);
   const [checkingID, setCheckingID] = useState('');
   const [rotatingID, setRotatingID] = useState('');
@@ -1002,6 +1013,11 @@ function ProviderAccounts() {
   return (
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="Provider Accounts" onCreate={() => setOpen(true)} />
+      <Space wrap>
+        <Tag>{tokenRotationSummary.total || 0} accounts</Tag>
+        {providerTokenRotationSummaryTags(tokenRotationSummary).map((item) => <Tag key={item.key} color={item.color}>{item.label}</Tag>)}
+        <Typography.Text type={tokenRotationSummary.action_required ? 'danger' : 'secondary'}>{tokenRotationSummary.next_action || 'No provider accounts configured.'}</Typography.Text>
+      </Space>
       <Table<AnyRow> rowKey="id" dataSource={accounts.data?.items || []} pagination={{ pageSize: 10 }} columns={[
         { title: 'Name', dataIndex: 'name' },
         { title: 'Provider', dataIndex: 'provider_type' },

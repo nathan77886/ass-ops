@@ -847,7 +847,10 @@ func (s *Server) listProviderAccounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": sanitizeProviderAccounts(items)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":                  sanitizeProviderAccounts(items),
+		"token_rotation_summary": providerAccountTokenRotationPlanSummary(items, time.Now().UTC()),
+	})
 }
 
 func (s *Server) getProviderAccount(w http.ResponseWriter, r *http.Request) {
@@ -1455,6 +1458,52 @@ func sanitizeProviderAccount(item map[string]any) map[string]any {
 	out["masked_token_env"] = maskProviderTokenEnv(tokenEnv)
 	out["token_rotation_status"] = providerAccountTokenRotationStatus(item, time.Now().UTC())
 	return out
+}
+
+func providerAccountTokenRotationPlanSummary(items []map[string]any, now time.Time) map[string]any {
+	counts := map[string]int{
+		"fresh":   0,
+		"soon":    0,
+		"due":     0,
+		"missing": 0,
+		"unknown": 0,
+	}
+	nextAction := "No provider accounts configured."
+	for _, item := range items {
+		status := providerAccountTokenRotationStatus(item, now)
+		key := strings.TrimSpace(fmt.Sprint(status["status"]))
+		if _, ok := counts[key]; !ok {
+			key = "unknown"
+		}
+		counts[key]++
+	}
+	actionRequired := counts["due"] + counts["missing"]
+	if len(items) > 0 {
+		switch {
+		case counts["due"] > 0 && counts["missing"] > 0:
+			nextAction = "Rotate due or missing provider token env values before external template provisioning."
+		case counts["missing"] > 0:
+			nextAction = "Configure missing provider token env values before external template provisioning."
+		case counts["due"] > 0:
+			nextAction = "Rotate due provider token env values before external template provisioning."
+		case counts["soon"] > 0:
+			nextAction = "Schedule provider token env rotation before the next due window."
+		case counts["unknown"] > 0:
+			nextAction = "Run a provider account check or rotate token env to establish rotation evidence."
+		default:
+			nextAction = "Provider token rotation evidence is fresh."
+		}
+	}
+	return map[string]any{
+		"total":           len(items),
+		"fresh":           counts["fresh"],
+		"soon":            counts["soon"],
+		"due":             counts["due"],
+		"missing":         counts["missing"],
+		"unknown":         counts["unknown"],
+		"action_required": actionRequired,
+		"next_action":     nextAction,
+	}
 }
 
 const (

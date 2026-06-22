@@ -705,6 +705,114 @@ func TestProviderAccountTokenRotationStatus(t *testing.T) {
 	}
 }
 
+func TestProviderAccountTokenRotationPlanSummaryDoesNotLeakTokenEnv(t *testing.T) {
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	summary := providerAccountTokenRotationPlanSummary([]map[string]any{
+		{
+			"token_env":  "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_MAIN",
+			"metadata":   map[string]any{},
+			"created_at": now.AddDate(0, 0, -120),
+		},
+		{
+			"token_env":  "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITEA_MAIN",
+			"metadata":   map[string]any{},
+			"created_at": now.AddDate(0, 0, -80),
+		},
+		{
+			"metadata":   map[string]any{},
+			"created_at": now,
+		},
+		{
+			"token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_UNKNOWN",
+			"metadata":  map[string]any{},
+		},
+	}, now)
+	if summary["total"] != 4 || summary["due"] != 1 || summary["soon"] != 1 ||
+		summary["missing"] != 1 || summary["unknown"] != 1 || summary["action_required"] != 2 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	encoded, _ := json.Marshal(summary)
+	if strings.Contains(string(encoded), "ASSOPS_TEMPLATE_PROVIDER_TOKEN") {
+		t.Fatalf("rotation plan summary leaked token env: %s", encoded)
+	}
+	if !strings.Contains(fmt.Sprint(summary["next_action"]), "Rotate due or missing") {
+		t.Fatalf("next action = %v", summary["next_action"])
+	}
+}
+
+func TestProviderAccountTokenRotationPlanSummaryNextActions(t *testing.T) {
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		rows []map[string]any
+		want string
+	}{
+		{
+			name: "empty",
+			rows: nil,
+			want: "No provider accounts configured.",
+		},
+		{
+			name: "due",
+			rows: []map[string]any{
+				{
+					"token_env":  "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_MAIN",
+					"metadata":   map[string]any{},
+					"created_at": now.AddDate(0, 0, -120),
+				},
+				{
+					"token_env":  "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITEA_MAIN",
+					"metadata":   map[string]any{},
+					"created_at": now.AddDate(0, 0, -10),
+				},
+			},
+			want: "Rotate due provider token env values before external template provisioning.",
+		},
+		{
+			name: "missing",
+			rows: []map[string]any{{
+				"metadata":   map[string]any{},
+				"created_at": now,
+			}},
+			want: "Configure missing provider token env values before external template provisioning.",
+		},
+		{
+			name: "soon",
+			rows: []map[string]any{{
+				"token_env":  "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITEA_MAIN",
+				"metadata":   map[string]any{},
+				"created_at": now.AddDate(0, 0, -80),
+			}},
+			want: "Schedule provider token env rotation before the next due window.",
+		},
+		{
+			name: "unknown",
+			rows: []map[string]any{{
+				"token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_UNKNOWN",
+				"metadata":  map[string]any{},
+			}},
+			want: "Run a provider account check or rotate token env to establish rotation evidence.",
+		},
+		{
+			name: "fresh",
+			rows: []map[string]any{{
+				"token_env":  "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_MAIN",
+				"metadata":   map[string]any{},
+				"created_at": now.AddDate(0, 0, -10),
+			}},
+			want: "Provider token rotation evidence is fresh.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			summary := providerAccountTokenRotationPlanSummary(tt.rows, now)
+			if summary["next_action"] != tt.want {
+				t.Fatalf("next_action = %v, want %s", summary["next_action"], tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateProviderAccountInputRejectsWrongTokenEnv(t *testing.T) {
 	t.Setenv("ASSOPS_ALLOW_LOCAL_TEMPLATE_PROVIDER_API", "true")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
