@@ -5504,6 +5504,41 @@ func assetInventorySQL() string {
 		FROM ssh_machines sm
 		UNION ALL
 		SELECT
+			'ssh_command_run:' || scr.id::text,
+			COALESCE(scr.project_id::text, sm.project_id::text, op.project_id::text, ''),
+			'ssh_command_run',
+			'SSH command run',
+			'SSH command run',
+			COALESCE(sm.name, 'SSH command run'),
+			'ssh',
+			scr.id::text,
+			scr.status,
+			CASE
+				WHEN scr.status='failed' THEN 'high'
+				WHEN scr.status IN ('queued', 'running') THEN 'warning'
+				ELSE 'normal'
+			END,
+			'ssh_command_runs',
+			scr.id::text,
+			jsonb_build_object(
+				'operation_run_id', scr.operation_run_id,
+				'ssh_machine_id', scr.ssh_machine_id,
+				'actor_user_id', scr.actor_user_id,
+				'exit_code', scr.exit_code,
+				'started_at', scr.started_at,
+				'finished_at', scr.finished_at,
+				'has_command', scr.command <> '',
+				'has_stdout', scr.stdout <> '',
+				'has_stderr', scr.stderr <> '',
+				'has_error', scr.error_message <> ''
+			),
+			scr.created_at,
+			COALESCE(scr.finished_at, scr.started_at, scr.created_at)
+		FROM ssh_command_runs scr
+		LEFT JOIN ssh_machines sm ON sm.id=scr.ssh_machine_id
+		LEFT JOIN operation_runs op ON op.id=scr.operation_run_id
+		UNION ALL
+		SELECT
 			'argo_connection:' || ac.id::text,
 			ac.project_id::text,
 			'argo_connection',
@@ -5940,6 +5975,29 @@ func assetRelationInventorySQL() string {
 			scr.created_at
 		FROM ssh_command_runs scr
 		JOIN operation_runs op ON op.id=scr.operation_run_id
+		JOIN ssh_machines sm ON sm.id=scr.ssh_machine_id
+		UNION ALL
+		SELECT
+			'operation_run:' || op.id::text || ':ran_ssh_command:ssh_command_run:' || scr.id::text,
+			COALESCE(scr.project_id::text, op.project_id::text, sm.project_id::text, ''),
+			'operation_run:' || op.id::text,
+			'ssh_command_run:' || scr.id::text,
+			'ran_ssh_command',
+			jsonb_build_object('status', scr.status, 'exit_code', scr.exit_code),
+			scr.created_at
+		FROM ssh_command_runs scr
+		JOIN operation_runs op ON op.id=scr.operation_run_id
+		LEFT JOIN ssh_machines sm ON sm.id=scr.ssh_machine_id
+		UNION ALL
+		SELECT
+			'ssh_command_run:' || scr.id::text || ':executed_on:ssh_machine:' || sm.id::text,
+			COALESCE(scr.project_id::text, sm.project_id::text, ''),
+			'ssh_command_run:' || scr.id::text,
+			'ssh_machine:' || sm.id::text,
+			'executed_on',
+			jsonb_build_object('status', scr.status, 'exit_code', scr.exit_code),
+			scr.created_at
+		FROM ssh_command_runs scr
 		JOIN ssh_machines sm ON sm.id=scr.ssh_machine_id
 		UNION ALL
 		SELECT

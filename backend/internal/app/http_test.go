@@ -207,6 +207,13 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		"'has_error', we.error_message <> ''",
 		"'pipeline_run'",
 		"'host'",
+		"'ssh_command_run'",
+		"FROM ssh_command_runs scr",
+		"COALESCE(sm.name, 'SSH command run')",
+		"'has_command', scr.command <> ''",
+		"'has_stdout', scr.stdout <> ''",
+		"'has_stderr', scr.stderr <> ''",
+		"'has_error', scr.error_message <> ''",
 		"'argo_connection'",
 		"'deployment_target'",
 		"'deployment_record'",
@@ -264,6 +271,16 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []*regexp.Regexp{
+		regexp.MustCompile(`'command'\s*,\s*scr\.command`),
+		regexp.MustCompile(`'stdout'\s*,\s*scr\.stdout`),
+		regexp.MustCompile(`'stderr'\s*,\s*scr\.stderr`),
+		regexp.MustCompile(`'error_message'\s*,\s*scr\.error_message`),
+	} {
+		if forbidden.MatchString(sql) {
+			t.Fatalf("SSH command run sensitive payload should not be exposed in assetInventorySQL: %s", forbidden)
+		}
+	}
+	for _, forbidden := range []*regexp.Regexp{
 		regexp.MustCompile(`\bptr\.input\b`),
 		regexp.MustCompile(`\bptr\.result\b`),
 		regexp.MustCompile(`'error_message'\s*,`),
@@ -315,6 +332,8 @@ func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
 		"'operation_run:' || op.id::text || ':used_target_remote:git_remote:' || target.id::text",
 		"'operation_run:' || op.id::text || ':tagged_remote:git_remote:' || target.id::text",
 		"'operation_run:' || op.id::text || ':executed_on:ssh_machine:' || sm.id::text",
+		"'operation_run:' || op.id::text || ':ran_ssh_command:ssh_command_run:' || scr.id::text",
+		"'ssh_command_run:' || scr.id::text || ':executed_on:ssh_machine:' || sm.id::text",
 		"'operation_run:' || op.id::text || ':executed_agent_task:agent_task:' || at.id::text",
 		"'operation_run:' || op.id::text || ':synced_argo_connection:argo_connection:' || ac.id::text",
 		"'operation_run:' || op.id::text || ':created_template_run:project_template_run:' || ptr.id::text",
@@ -338,6 +357,7 @@ func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
 		"'used_target_remote'",
 		"'tagged_remote'",
 		"'executed_on'",
+		"'ran_ssh_command'",
 		"'executed_agent_task'",
 		"'synced_argo_connection'",
 		"'created_template_run'",
@@ -364,6 +384,7 @@ func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
 		regexp.MustCompile(`\bscr\.command\b\s*(,|\)|AS|\n)`),
 		regexp.MustCompile(`\bscr\.stdout\b\s*(,|\)|AS|\n)`),
 		regexp.MustCompile(`\bscr\.stderr\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bscr\.error_message\b\s*(,|\)|AS|\n)`),
 		regexp.MustCompile(`\bop\.input\b\s*(,|\)|AS|\n)`),
 		regexp.MustCompile(`\bop\.result\b\s*(,|\)|AS|\n)`),
 		regexp.MustCompile(`\bop\.error\b\s*(,|\)|AS|\n)`),
@@ -440,6 +461,7 @@ func TestAssetRelationInventorySQLIncludesCoreRelations(t *testing.T) {
 		"'produced_template_file'",
 		"'records_tool_call'",
 		"'ran_tool_call'",
+		"'ran_ssh_command'",
 		"'received_webhook_event'",
 		"'matched_repo_sync'",
 		"'dispatched_worker_job'",
@@ -1981,6 +2003,9 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncing canonical assets for running agent execution`,
 		`syncing canonical assets for completed agent execution`,
 		`syncing canonical assets for failed agent execution`,
+		`syncing canonical assets for running SSH command`,
+		`syncing canonical assets for completed SSH command`,
+		`syncing canonical assets for failed SSH command`,
 		`agent_call_failures AS`,
 		`agent_task_failures AS`,
 	} {

@@ -198,7 +198,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "repo.sync", "repo.sync_remote", "repo.tag", "repo.create_tag", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute":
+	case "repo.sync", "repo.sync_remote", "repo.tag", "repo.create_tag", "ssh.exec", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute":
 		return true
 	default:
 		return false
@@ -503,8 +503,13 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 		_, err := db.ExecContext(ctx, "UPDATE repo_tag_runs SET status='running', started_at=COALESCE(started_at, now()) WHERE operation_run_id=$1", opID)
 		return err
 	case "ssh.exec":
-		_, err := db.ExecContext(ctx, "UPDATE ssh_command_runs SET status='running', started_at=COALESCE(started_at, now()) WHERE operation_run_id=$1", opID)
-		return err
+		if _, err := db.ExecContext(ctx, "UPDATE ssh_command_runs SET status='running', started_at=COALESCE(started_at, now()) WHERE operation_run_id=$1", opID); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+			return fmt.Errorf("syncing canonical assets for running SSH command: %w", err)
+		}
+		return nil
 	case "argo.apps.sync":
 		_, err := db.ExecContext(ctx, `
 			UPDATE argo_connections
@@ -716,7 +721,7 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 	case "ssh.exec":
 		stdout, stderr := gitExecutionOutputFromMap(result)
 		exitCode := nullableIntFromMap(result, "exit_code")
-		_, err := tx.ExecContext(ctx, `
+		if _, err := tx.ExecContext(ctx, `
 			UPDATE ssh_command_runs
 			SET status='failed',
 				exit_code=$2,
@@ -724,8 +729,13 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 				stderr=$4,
 				error_message=$5,
 				finished_at=now()
-			WHERE operation_run_id=$1`, opID, exitCode, stdout, stderr, adapterErr.Error())
-		return err
+			WHERE operation_run_id=$1`, opID, exitCode, stdout, stderr, adapterErr.Error()); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed SSH command: %w", err)
+		}
+		return nil
 	case "project.create_from_template":
 		if result["_template_run_completion_pending"] == true || result["_template_run_failure_recorded"] == true {
 			delete(result, "_template_run_completion_pending")
@@ -894,15 +904,20 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 	case "ssh.exec":
 		stdout, stderr := gitExecutionOutputFromMap(result)
 		exitCode := nullableIntFromMap(result, "exit_code")
-		_, err := tx.ExecContext(ctx, `
+		if _, err := tx.ExecContext(ctx, `
 			UPDATE ssh_command_runs
 			SET status='completed',
 				exit_code=$2,
 				stdout=$3,
 				stderr=$4,
 				finished_at=now()
-			WHERE operation_run_id=$1`, opID, exitCode, stdout, stderr)
-		return err
+			WHERE operation_run_id=$1`, opID, exitCode, stdout, stderr); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed SSH command: %w", err)
+		}
+		return nil
 	case "project.create_from_template":
 		if result["_template_run_recorded"] == true {
 			delete(result, "_template_run_recorded")
