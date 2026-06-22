@@ -3396,7 +3396,9 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateRuntimePlan["provider_client_constructed"] != false ||
 		candidateRuntimePlan["execute_method_bound"] != false ||
 		candidateRuntimePlan["request_builder_bound"] != false ||
+		len(mapFromAny(candidateRuntimePlan["request_builder_plan"])) == 0 ||
 		candidateRuntimePlan["response_handler_bound"] != false ||
+		len(mapFromAny(candidateRuntimePlan["response_handler_plan"])) == 0 ||
 		candidateRuntimePlan["transaction_handler_bound"] != false ||
 		candidateRuntimePlan["requires_provider_client"] != true ||
 		candidateRuntimePlan["requires_request_builder"] != true ||
@@ -4561,6 +4563,7 @@ func TestProviderReviewAttemptAdapterRuntimePlan(t *testing.T) {
 		endpoint     string
 		adapterKind  string
 		builderName  string
+		handlerName  string
 		templateKey  string
 		payloadShape string
 		wantNonEmpty bool
@@ -4572,6 +4575,7 @@ func TestProviderReviewAttemptAdapterRuntimePlan(t *testing.T) {
 			endpoint:     "github.create_branch_ref",
 			adapterKind:  "github_provider_review_adapter",
 			builderName:  "build_redacted_branch_ref_request",
+			handlerName:  "handle_branch_ref_response",
 			templateKey:  "github_git_refs_path_template",
 			payloadShape: "ref_from_target_branch",
 			wantNonEmpty: true,
@@ -4583,6 +4587,7 @@ func TestProviderReviewAttemptAdapterRuntimePlan(t *testing.T) {
 			endpoint:     "gitea.open_review",
 			adapterKind:  "gitea_provider_review_adapter",
 			builderName:  "build_redacted_review_request",
+			handlerName:  "handle_review_request_response",
 			templateKey:  "gitea_merge_request_path_template",
 			payloadShape: "review_request",
 			wantNonEmpty: true,
@@ -4594,6 +4599,7 @@ func TestProviderReviewAttemptAdapterRuntimePlan(t *testing.T) {
 			endpoint:     "github.commit_files",
 			adapterKind:  "github_provider_review_adapter",
 			builderName:  "build_redacted_commit_files_request",
+			handlerName:  "handle_commit_files_response",
 			templateKey:  "github_repository_contents_path_template",
 			payloadShape: "content_redacted_file_batch",
 			wantNonEmpty: true,
@@ -4655,6 +4661,7 @@ func TestProviderReviewAttemptAdapterRuntimePlan(t *testing.T) {
 				plan["request_builder_bound"] != false ||
 				len(mapFromAny(plan["request_builder_plan"])) == 0 ||
 				plan["response_handler_bound"] != false ||
+				len(mapFromAny(plan["response_handler_plan"])) == 0 ||
 				plan["transaction_handler_bound"] != false ||
 				plan["requires_provider_client"] != true ||
 				plan["requires_request_builder"] != true ||
@@ -4713,6 +4720,38 @@ func TestProviderReviewAttemptAdapterRuntimePlan(t *testing.T) {
 				builderPlan["contains_file_content"] != false ||
 				builderPlan["request_builder_boundary_redacted"] != true {
 				t.Fatalf("runtime request builder plan = %#v", builderPlan)
+			}
+			responseHandlerPlan := mapFromAny(plan["response_handler_plan"])
+			if responseHandlerPlan["mode"] != "redacted_attempt_adapter_response_handler_plan" ||
+				responseHandlerPlan["response_handler_state"] != "blocked" ||
+				responseHandlerPlan["response_handler_ready"] != false ||
+				responseHandlerPlan["response_handler_ready_reason"] != "provider_review_response_handler_not_armed" ||
+				responseHandlerPlan["provider_type"] != item.provider ||
+				responseHandlerPlan["operation_name"] != item.operation ||
+				responseHandlerPlan["endpoint_key"] != item.endpoint ||
+				responseHandlerPlan["handler_name"] != item.handlerName ||
+				responseHandlerPlan["response_status"] != "pending" ||
+				responseHandlerPlan["handler_interface_registered"] != true ||
+				responseHandlerPlan["handler_registered"] != true ||
+				responseHandlerPlan["handler_implemented"] != false ||
+				responseHandlerPlan["provider_response_classified"] != false ||
+				responseHandlerPlan["attempt_status_selected"] != false ||
+				responseHandlerPlan["dependency_update_selected"] != false ||
+				responseHandlerPlan["provider_request_id_recorded"] != false ||
+				responseHandlerPlan["response_body_recorded"] != false ||
+				responseHandlerPlan["response_headers_recorded"] != false ||
+				responseHandlerPlan["provider_api_call_made"] != false ||
+				responseHandlerPlan["provider_api_mutation"] != "disabled" ||
+				responseHandlerPlan["response_body_included"] != false ||
+				responseHandlerPlan["headers_included"] != false ||
+				responseHandlerPlan["provider_request_id_included"] != false ||
+				responseHandlerPlan["contains_token"] != false ||
+				responseHandlerPlan["contains_provider_url"] != false ||
+				responseHandlerPlan["contains_repository_ref"] != false ||
+				responseHandlerPlan["contains_branch_name"] != false ||
+				responseHandlerPlan["contains_file_content"] != false ||
+				responseHandlerPlan["response_handler_boundary_redacted"] != true {
+				t.Fatalf("runtime response handler plan = %#v", responseHandlerPlan)
 			}
 			blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
 			if len(blockedReasons) != 3 ||
@@ -4884,6 +4923,166 @@ func TestProviderReviewAttemptAdapterRequestBuilderPlan(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestProviderReviewAttemptAdapterResponseHandlerPlan(t *testing.T) {
+	for _, item := range []struct {
+		name            string
+		provider        string
+		operation       string
+		endpoint        string
+		handlerName     string
+		unlockOperation string
+		unlockStatus    string
+		requiresUpdate  bool
+		wantNonEmpty    bool
+	}{
+		{
+			name:            "github branch ref handler",
+			provider:        "github",
+			operation:       "create_branch_ref",
+			endpoint:        "github.create_branch_ref",
+			handlerName:     "handle_branch_ref_response",
+			unlockOperation: "commit_starter_files",
+			unlockStatus:    "dependency_satisfied",
+			requiresUpdate:  true,
+			wantNonEmpty:    true,
+		},
+		{
+			name:            "github commit starter files handler",
+			provider:        "github",
+			operation:       "commit_starter_files",
+			endpoint:        "github.commit_files",
+			handlerName:     "handle_commit_files_response",
+			unlockOperation: "open_review_request",
+			unlockStatus:    "dependency_satisfied",
+			requiresUpdate:  true,
+			wantNonEmpty:    true,
+		},
+		{
+			name:         "gitea review request handler",
+			provider:     "gitea",
+			operation:    "open_review_request",
+			endpoint:     "gitea.open_review",
+			handlerName:  "handle_review_request_response",
+			wantNonEmpty: true,
+		},
+		{
+			name:            "gitea branch ref handler",
+			provider:        "gitea",
+			operation:       "create_branch_ref",
+			endpoint:        "gitea.create_branch_ref",
+			handlerName:     "handle_branch_ref_response",
+			wantNonEmpty:    true,
+			unlockOperation: "commit_starter_files",
+			unlockStatus:    "dependency_satisfied",
+			requiresUpdate:  true,
+		},
+		{
+			name:      "unknown provider returns empty response handler plan",
+			provider:  "raw_provider",
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name:      "empty operation returns empty response handler plan",
+			provider:  "github",
+			operation: "",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name:      "mismatched endpoint returns empty response handler plan",
+			provider:  "github",
+			operation: "create_branch_ref",
+			endpoint:  "gitea.create_branch_ref",
+		},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			plan := providerReviewAttemptAdapterResponseHandlerPlan(item.provider, item.operation, item.endpoint)
+			if !item.wantNonEmpty {
+				if len(plan) != 0 {
+					t.Fatalf("response handler plan should be empty: %#v", plan)
+				}
+				return
+			}
+			if plan["mode"] != "redacted_attempt_adapter_response_handler_plan" ||
+				plan["response_handler_state"] != "blocked" ||
+				plan["response_handler_ready"] != false ||
+				plan["response_handler_ready_reason"] != "provider_review_response_handler_not_armed" ||
+				plan["provider_type"] != item.provider ||
+				plan["operation_name"] != item.operation ||
+				plan["endpoint_key"] != item.endpoint ||
+				plan["handler_name"] != item.handlerName ||
+				plan["response_status"] != "pending" ||
+				plan["success_attempt_status"] != "completed" ||
+				plan["retry_attempt_status"] != "planned" ||
+				plan["failure_attempt_status"] != "failed" ||
+				plan["dependency_unlocks_operation"] != item.unlockOperation ||
+				plan["dependency_update_status"] != item.unlockStatus ||
+				plan["requires_response_diagnostics"] != true ||
+				plan["requires_idempotency_ledger"] != true ||
+				plan["requires_dependency_update"] != item.requiresUpdate ||
+				plan["requires_transaction_handler"] != true ||
+				plan["requires_mutation_arming"] != true ||
+				plan["handler_interface_registered"] != true ||
+				plan["handler_registered"] != true ||
+				plan["handler_implemented"] != false ||
+				plan["provider_response_classified"] != false ||
+				plan["attempt_status_selected"] != false ||
+				plan["dependency_update_selected"] != false ||
+				plan["provider_request_id_recorded"] != false ||
+				plan["response_body_recorded"] != false ||
+				plan["response_headers_recorded"] != false ||
+				plan["response_handler_boundary_redacted"] != true ||
+				plan["external_call_made"] != false ||
+				plan["provider_api_call_made"] != false ||
+				plan["provider_api_mutation"] != "disabled" ||
+				plan["response_body_included"] != false ||
+				plan["headers_included"] != false ||
+				plan["provider_request_id_included"] != false ||
+				plan["contains_token"] != false ||
+				plan["contains_provider_url"] != false ||
+				plan["contains_repository_ref"] != false ||
+				plan["contains_branch_name"] != false ||
+				plan["contains_file_content"] != false {
+				t.Fatalf("response handler plan = %#v", plan)
+			}
+			if successClasses := stringSliceFromAny(plan["expected_success_classes"]); len(successClasses) != 1 || successClasses[0] != "2xx" {
+				t.Fatalf("response handler success classes = %#v", successClasses)
+			}
+			if retryClasses := stringSliceFromAny(plan["retryable_status_classes"]); len(retryClasses) != 1 || retryClasses[0] != "5xx" {
+				t.Fatalf("response handler retry classes = %#v", retryClasses)
+			}
+			if failureClasses := stringSliceFromAny(plan["terminal_failure_status_classes"]); len(failureClasses) != 1 || failureClasses[0] != "4xx" {
+				t.Fatalf("response handler failure classes = %#v", failureClasses)
+			}
+			blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
+			if len(blockedReasons) != 3 ||
+				blockedReasons[0] != "provider_review_response_handler_not_armed" ||
+				blockedReasons[1] != "provider_review_live_adapter_not_implemented" ||
+				blockedReasons[2] != "provider_review_mutation_not_armed" {
+				t.Fatalf("response handler blocked reasons = %#v", blockedReasons)
+			}
+			encoded, _ := json.Marshal(plan)
+			for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+				if strings.Contains(string(encoded), leak) {
+					t.Fatalf("response handler plan leaked %q: %s", leak, encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestDisabledProviderReviewAttemptResponseHandlerRejectsMismatchedEndpoint(t *testing.T) {
+	handler := disabledProviderReviewAttemptResponseHandler{handlerName: "handle_branch_ref_response"}
+	plan := handler.BuildPlan(providerReviewAttemptResponseHandlerInput{
+		ProviderType:  "github",
+		OperationName: "create_branch_ref",
+		EndpointKey:   "gitea.create_branch_ref",
+	})
+	if len(plan) != 0 {
+		t.Fatalf("mismatched endpoint direct response handler plan should be empty: %#v", plan)
 	}
 }
 

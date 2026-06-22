@@ -13,6 +13,11 @@ type providerReviewAttemptRequestBuilder interface {
 	BuildPlan(providerReviewAttemptRequestBuilderInput) map[string]any
 }
 
+type providerReviewAttemptResponseHandler interface {
+	HandlerName() string
+	BuildPlan(providerReviewAttemptResponseHandlerInput) map[string]any
+}
+
 type providerReviewAttemptAdapterRuntimeInput struct {
 	ProviderType  string
 	OperationName string
@@ -33,12 +38,22 @@ type providerReviewAttemptRequestBuilderInput struct {
 	EndpointKey   string
 }
 
+type providerReviewAttemptResponseHandlerInput struct {
+	ProviderType  string
+	OperationName string
+	EndpointKey   string
+}
+
 type disabledProviderReviewAdapterRuntime struct {
 	adapterKind string
 }
 
 type disabledProviderReviewAttemptRequestBuilder struct {
 	builderName string
+}
+
+type disabledProviderReviewAttemptResponseHandler struct {
+	handlerName string
 }
 
 func (a disabledProviderReviewAdapterRuntime) AdapterKind() string {
@@ -128,6 +143,70 @@ func (b disabledProviderReviewAttemptRequestBuilder) BuildPlan(input providerRev
 	}
 }
 
+func (h disabledProviderReviewAttemptResponseHandler) HandlerName() string {
+	return h.handlerName
+}
+
+func (h disabledProviderReviewAttemptResponseHandler) BuildPlan(input providerReviewAttemptResponseHandlerInput) map[string]any {
+	providerType := safeProviderReviewProviderType(input.ProviderType)
+	operationName := safeProviderReviewAttemptOperationName(input.OperationName)
+	endpointKey := safeProviderReviewEndpointKey(input.EndpointKey)
+	if providerType == "" || operationName == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+		return map[string]any{}
+	}
+	unlockOperation := providerReviewAttemptDependencyUnlockOperation(operationName)
+	return map[string]any{
+		"mode":                               "redacted_attempt_adapter_response_handler_plan",
+		"response_handler_state":             "blocked",
+		"response_handler_ready":             false,
+		"response_handler_ready_reason":      "provider_review_response_handler_not_armed",
+		"provider_type":                      providerType,
+		"operation_name":                     operationName,
+		"endpoint_key":                       endpointKey,
+		"handler_name":                       h.HandlerName(),
+		"response_status":                    "pending",
+		"expected_success_classes":           providerReviewExpectedSuccessClassesForOperation(operationName),
+		"retryable_status_classes":           providerReviewExpectedRetryClassesForOperation(operationName),
+		"terminal_failure_status_classes":    providerReviewTerminalFailureClassesForOperation(operationName),
+		"success_attempt_status":             "completed",
+		"retry_attempt_status":               "planned",
+		"failure_attempt_status":             "failed",
+		"dependency_unlocks_operation":       unlockOperation,
+		"dependency_update_status":           providerReviewAttemptDependencyUnlockStatus(unlockOperation),
+		"requires_response_diagnostics":      true,
+		"requires_idempotency_ledger":        true,
+		"requires_dependency_update":         unlockOperation != "",
+		"requires_transaction_handler":       true,
+		"requires_mutation_arming":           true,
+		"handler_interface_registered":       true,
+		"handler_registered":                 true,
+		"handler_implemented":                false,
+		"provider_response_classified":       false,
+		"attempt_status_selected":            false,
+		"dependency_update_selected":         false,
+		"provider_request_id_recorded":       false,
+		"response_body_recorded":             false,
+		"response_headers_recorded":          false,
+		"response_handler_boundary_redacted": true,
+		"external_call_made":                 false,
+		"provider_api_call_made":             false,
+		"provider_api_mutation":              "disabled",
+		"response_body_included":             false,
+		"headers_included":                   false,
+		"provider_request_id_included":       false,
+		"contains_token":                     false,
+		"contains_provider_url":              false,
+		"contains_repository_ref":            false,
+		"contains_branch_name":               false,
+		"contains_file_content":              false,
+		"blocked_reasons": []string{
+			"provider_review_response_handler_not_armed",
+			"provider_review_live_adapter_not_implemented",
+			"provider_review_mutation_not_armed",
+		},
+	}
+}
+
 func providerReviewAttemptAdapterRuntimeForProvider(providerType string) providerReviewAttemptAdapterRuntime {
 	switch safeProviderReviewProviderType(providerType) {
 	case "github":
@@ -152,6 +231,19 @@ func providerReviewAttemptRequestBuilderForOperation(operationName string) provi
 	}
 }
 
+func providerReviewAttemptResponseHandlerForOperation(operationName string) providerReviewAttemptResponseHandler {
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref":
+		return disabledProviderReviewAttemptResponseHandler{handlerName: "handle_branch_ref_response"}
+	case "commit_starter_files":
+		return disabledProviderReviewAttemptResponseHandler{handlerName: "handle_commit_files_response"}
+	case "open_review_request":
+		return disabledProviderReviewAttemptResponseHandler{handlerName: "handle_review_request_response"}
+	default:
+		return nil
+	}
+}
+
 func providerReviewAttemptAdapterRuntimePlan(providerType, operationName, endpointKey string) map[string]any {
 	providerType = safeProviderReviewProviderType(providerType)
 	operationName = safeProviderReviewAttemptOperationName(operationName)
@@ -169,6 +261,7 @@ func providerReviewAttemptAdapterRuntimePlan(providerType, operationName, endpoi
 		return map[string]any{}
 	}
 	builderPlan := providerReviewAttemptAdapterRequestBuilderPlan(providerType, operationName, endpointKey)
+	responseHandlerPlan := providerReviewAttemptAdapterResponseHandlerPlan(providerType, operationName, endpointKey)
 	return map[string]any{
 		"mode":                          "redacted_attempt_adapter_runtime_plan",
 		"runtime_state":                 "blocked",
@@ -188,6 +281,7 @@ func providerReviewAttemptAdapterRuntimePlan(providerType, operationName, endpoi
 		"request_builder_bound":         false,
 		"request_builder_plan":          builderPlan,
 		"response_handler_bound":        false,
+		"response_handler_plan":         responseHandlerPlan,
 		"transaction_handler_bound":     false,
 		"requires_provider_client":      true,
 		"requires_request_builder":      true,
@@ -227,6 +321,21 @@ func providerReviewAttemptAdapterRequestBuilderPlan(providerType, operationName,
 		return map[string]any{}
 	}
 	return builder.BuildPlan(providerReviewAttemptRequestBuilderInput{
+		ProviderType:  providerType,
+		OperationName: operationName,
+		EndpointKey:   endpointKey,
+	})
+}
+
+func providerReviewAttemptAdapterResponseHandlerPlan(providerType, operationName, endpointKey string) map[string]any {
+	providerType = safeProviderReviewProviderType(providerType)
+	operationName = safeProviderReviewAttemptOperationName(operationName)
+	endpointKey = safeProviderReviewEndpointKey(endpointKey)
+	handler := providerReviewAttemptResponseHandlerForOperation(operationName)
+	if handler == nil || providerType == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+		return map[string]any{}
+	}
+	return handler.BuildPlan(providerReviewAttemptResponseHandlerInput{
 		ProviderType:  providerType,
 		OperationName: operationName,
 		EndpointKey:   endpointKey,
