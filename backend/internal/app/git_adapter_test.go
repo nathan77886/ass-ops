@@ -493,6 +493,23 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 		adapterOperations[2]["required_capability"] != "review_request_write" {
 		t.Fatalf("github provider review adapter operations = %#v", adapterOperations)
 	}
+	requestEnvelopes := sliceOfMapsFromAny(reconciliation["request_envelopes"])
+	if len(requestEnvelopes) != 3 ||
+		requestEnvelopes[0]["endpoint_key"] != "github.create_branch_ref" ||
+		requestEnvelopes[1]["endpoint_key"] != "github.commit_files" ||
+		requestEnvelopes[2]["endpoint_key"] != "github.open_review" {
+		t.Fatalf("github provider review request envelopes = %#v", requestEnvelopes)
+	}
+	if requestEnvelopes[1]["contains_token"] != false ||
+		requestEnvelopes[1]["contains_file_content"] != false ||
+		requestEnvelopes[1]["contains_provider_url"] != false ||
+		requestEnvelopes[1]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("github provider review request envelope should be redacted/no-call: %#v", requestEnvelopes[1])
+	}
+	requestReadiness := sliceOfMapsFromAny(requestEnvelopes[1]["readiness"])
+	if len(requestReadiness) != 3 || requestReadiness[2]["evidence"] != "starter_file_payload_staged" {
+		t.Fatalf("github provider review request envelope readiness = %#v", requestReadiness)
+	}
 	gates := sliceOfMapsFromAny(githubGuardrail["gates"])
 	if len(gates) != 4 || gates[0]["gate"] != "provider_review_execution_enabled" || gates[2]["status"] != "ready" {
 		t.Fatalf("github execution guardrail gates = %#v", gates)

@@ -121,7 +121,7 @@ The older `git_remotes.source_provider_id` column remains an unused provider-lay
 
 Recommended next slice:
 
-- Add provider API-backed PR/MR execution adapters after approval-gated provider review execution requests, explicit execution guardrails, redacted starter-file staging summaries, redacted provider API request plans, credential-aware preflight reconciliation summaries, redacted adapter contracts, automated token-env rotation execution, manual token-env rotation, account-level rotation planning, protected push avoidance, branch strategy diagnostics, health checks, provider response diagnostics, structured reconciliation summaries, and operator-triggered retry have covered the basic token/API failure modes.
+- Add provider API-backed PR/MR execution adapters after approval-gated provider review execution requests, explicit execution guardrails, redacted starter-file staging summaries, redacted provider API request plans and adapter request envelopes, credential-aware preflight reconciliation summaries, redacted adapter contracts, automated token-env rotation execution, manual token-env rotation, account-level rotation planning, protected push avoidance, branch strategy diagnostics, health checks, provider response diagnostics, structured reconciliation summaries, and operator-triggered retry have covered the basic token/API failure modes.
 - Harden starter-file push to external repositories with actual provider branch creation/review execution after the current provider review readiness gates and protected/existing repository reconciliation checks have been exercised.
 
 ### 5. Deployment Is Still Read-Model Only

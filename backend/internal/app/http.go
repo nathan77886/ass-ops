@@ -8793,6 +8793,7 @@ func sanitizedProviderReviewReconciliation(value map[string]any) map[string]any 
 		"review_kind":            cleanOptionalText(stringFromMap(value, "review_kind")),
 		"credential_strategy":    sanitizedProviderReviewCredentialStrategy(mapFromAny(value["credential_strategy"])),
 		"adapter_contract":       sanitizedProviderReviewAdapterContract(mapFromAny(value["adapter_contract"])),
+		"request_envelopes":      sanitizedProviderReviewAdapterRequestEnvelopes(mapSliceFromAny(value["request_envelopes"])),
 		"adapter_status":         cleanOptionalText(stringFromMap(value, "adapter_status")),
 		"external_call_made":     false,
 		"provider_api_call_made": false,
@@ -8819,8 +8820,44 @@ func sanitizedProviderReviewAdapterContract(value map[string]any) map[string]any
 		"contains_token":        false,
 		"contains_file_content": false,
 		"operations":            sanitizedProviderReviewAdapterContractOperations(mapSliceFromAny(value["operations"])),
+		"request_envelopes":     sanitizedProviderReviewAdapterRequestEnvelopes(mapSliceFromAny(value["request_envelopes"])),
 		"next_step":             cleanOptionalText(stringFromMap(value, "next_step")),
 	}
+}
+
+func sanitizedProviderReviewAdapterRequestEnvelopes(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"name":                    cleanOptionalText(stringFromMap(item, "name")),
+			"method":                  cleanOptionalText(stringFromMap(item, "method")),
+			"endpoint_key":            cleanOptionalText(stringFromMap(item, "endpoint_key")),
+			"payload_shape":           cleanOptionalText(stringFromMap(item, "payload_shape")),
+			"file_count":              intFromAny(item["file_count"], 0),
+			"payload_redacted":        true,
+			"contains_token":          false,
+			"contains_file_content":   false,
+			"contains_provider_url":   false,
+			"contains_repository_ref": false,
+			"api_call":                false,
+			"provider_api_mutation":   "disabled",
+			"execution_status":        cleanOptionalText(stringFromMap(item, "execution_status")),
+			"blocked_reason":          cleanOptionalText(stringFromMap(item, "blocked_reason")),
+			"readiness":               sanitizedProviderReviewAdapterRequestReadiness(mapSliceFromAny(item["readiness"])),
+		})
+	}
+	return out
+}
+
+func sanitizedProviderReviewAdapterRequestReadiness(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"evidence": cleanOptionalText(stringFromMap(item, "evidence")),
+			"status":   cleanOptionalText(stringFromMap(item, "status")),
+		})
+	}
+	return out
 }
 
 func sanitizedProviderReviewAdapterContractOperations(items []map[string]any) []map[string]any {

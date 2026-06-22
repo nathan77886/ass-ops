@@ -1043,6 +1043,9 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
   const reconciliationGates = Array.isArray(reconciliation.gates) ? reconciliation.gates : [];
   const reconciliationOperations = Array.isArray(reconciliation.operations) ? reconciliation.operations : [];
   const adapterOperations = Array.isArray(adapterContract.operations) ? adapterContract.operations : [];
+  const requestEnvelopes = Array.isArray(reconciliation.request_envelopes)
+    ? reconciliation.request_envelopes
+    : (Array.isArray(adapterContract.request_envelopes) ? adapterContract.request_envelopes : []);
   return (
     <Space direction="vertical" size={8} className="full">
       <Space size={4} wrap>
@@ -1126,6 +1129,30 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
               {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.required_capability || operation.execution_status || 'blocked')}
             </Tag>
           ))}
+        </Space>
+      ) : null}
+      {requestEnvelopes.length ? (
+        <Space size={4} wrap>
+          {requestEnvelopes.map((envelope: AnyRow, index: number) => (
+            <Tag key={String(envelope.endpoint_key || envelope.name || `request-envelope-${index}`)}>
+              {String(envelope.endpoint_key || envelope.name || 'provider.api')}: {String(envelope.execution_status || 'blocked')}
+            </Tag>
+          ))}
+        </Space>
+      ) : null}
+      {requestEnvelopes.length ? (
+        <Space size={4} wrap>
+          {requestEnvelopes.flatMap((envelope: AnyRow, envelopeIndex: number) => {
+            const readiness = Array.isArray(envelope.readiness) ? envelope.readiness : [];
+            return readiness.map((item: AnyRow, readinessIndex: number) => (
+              <Tag
+                key={`${String(envelope.endpoint_key || envelope.name || envelopeIndex)}-${String(item.evidence || readinessIndex)}`}
+                color={item.status === 'ready' ? 'green' : 'gold'}
+              >
+                {String(item.evidence || 'evidence')}: {String(item.status || 'unknown')}
+              </Tag>
+            ));
+          })}
         </Space>
       ) : null}
       {reconciliationGates.length ? (

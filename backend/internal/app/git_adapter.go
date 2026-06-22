@@ -744,7 +744,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
 	credentialStrategy := firstProviderReviewCredentialStrategy(credentialStrategies...)
-	adapterContract := providerReviewAdapterContract(provider, reviewKind)
+	adapterContract := providerReviewAdapterContract(provider, reviewKind, apiRequestPlan, starterFilePayload)
 	providerSupported := provider == "github" || provider == "gitea"
 	starterReady := starterFilePayloadReady(starterFilePayload)
 	planReady := fmt.Sprint(apiRequestPlan["status"]) == "ready"
@@ -817,6 +817,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		"review_kind":            reviewKind,
 		"credential_strategy":    sanitizedProviderReviewCredentialStrategy(credentialStrategy),
 		"adapter_contract":       adapterContract,
+		"request_envelopes":      providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload),
 		"adapter_status":         "missing",
 		"external_call_made":     false,
 		"provider_api_call_made": false,
@@ -850,10 +851,18 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 	}
 }
 
-func providerReviewAdapterContract(provider, reviewKind string) map[string]any {
+func providerReviewAdapterContract(provider, reviewKind string, requestInputs ...map[string]any) map[string]any {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
 	supported := provider == "github" || provider == "gitea"
+	apiRequestPlan := map[string]any{}
+	starterFilePayload := map[string]any{}
+	if len(requestInputs) > 0 {
+		apiRequestPlan = requestInputs[0]
+	}
+	if len(requestInputs) > 1 {
+		starterFilePayload = requestInputs[1]
+	}
 	return map[string]any{
 		"status":                map[bool]string{true: "planned", false: "unsupported"}[supported],
 		"adapter_status":        "missing",
@@ -865,8 +874,110 @@ func providerReviewAdapterContract(provider, reviewKind string) map[string]any {
 		"contains_token":        false,
 		"contains_file_content": false,
 		"operations":            providerReviewAdapterContractOperations(provider, reviewKind),
+		"request_envelopes":     providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload),
 		"next_step":             "Implement operation adapters only after provider credentials, approval, payload staging, and protected-branch rules pass preflight.",
 	}
+}
+
+func providerReviewAdapterRequestEnvelopes(provider, reviewKind string, apiRequestPlan, starterFilePayload map[string]any) []map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	sourceBranch := cleanOptionalText(stringFromMap(apiRequestPlan, "source_branch"))
+	targetBranch := cleanOptionalText(stringFromMap(apiRequestPlan, "target_branch"))
+	fileCount := intFromAny(starterFilePayload["file_count"], intFromAny(apiRequestPlan["file_count"], 0))
+	planReady := fmt.Sprint(apiRequestPlan["status"]) == "ready"
+	starterReady := starterFilePayloadReady(starterFilePayload)
+	branchRefsReady := sourceBranch != "" &&
+		targetBranch != "" &&
+		isSafeGitRefPart(sourceBranch) &&
+		isSafeGitRefPart(targetBranch)
+
+	return []map[string]any{
+		providerReviewAdapterRequestEnvelope(
+			provider,
+			"create_branch_ref",
+			"create_branch_ref",
+			"POST",
+			"ref_from_target_branch",
+			0,
+			branchRefsReady,
+			planReady,
+			starterReady,
+			false,
+		),
+		providerReviewAdapterRequestEnvelope(
+			provider,
+			"commit_starter_files",
+			"commit_files",
+			"PUT",
+			"content_redacted_file_batch",
+			fileCount,
+			branchRefsReady,
+			planReady,
+			starterReady,
+			true,
+		),
+		providerReviewAdapterRequestEnvelope(
+			provider,
+			"open_review_request",
+			"open_review",
+			"POST",
+			reviewKind,
+			0,
+			branchRefsReady,
+			planReady,
+			starterReady,
+			false,
+		),
+	}
+}
+
+func providerReviewAdapterRequestEnvelope(
+	provider,
+	operation,
+	endpointOperation,
+	method,
+	payloadShape string,
+	fileCount int,
+	branchRefsReady,
+	planReady,
+	starterReady,
+	requiresStarterFiles bool,
+) map[string]any {
+	readiness := []map[string]any{
+		{"evidence": "provider_api_request_plan_ready", "status": readyStatus(planReady)},
+		{"evidence": "review_branch_refs_valid", "status": readyStatus(branchRefsReady)},
+	}
+	if requiresStarterFiles {
+		readiness = append(readiness, map[string]any{
+			"evidence": "starter_file_payload_staged",
+			"status":   readyStatus(starterReady),
+		})
+	}
+	return map[string]any{
+		"name":                    operation,
+		"method":                  method,
+		"endpoint_key":            providerReviewEndpointKey(provider, endpointOperation),
+		"payload_shape":           payloadShape,
+		"file_count":              fileCount,
+		"payload_redacted":        true,
+		"contains_token":          false,
+		"contains_file_content":   false,
+		"contains_provider_url":   false,
+		"contains_repository_ref": false,
+		"api_call":                false,
+		"provider_api_mutation":   "disabled",
+		"execution_status":        "blocked",
+		"blocked_reason":          "provider_review_api_adapter",
+		"readiness":               readiness,
+	}
+}
+
+func readyStatus(ready bool) string {
+	if ready {
+		return "ready"
+	}
+	return "blocked"
 }
 
 func providerReviewAdapterContractOperations(provider, reviewKind string) []map[string]any {

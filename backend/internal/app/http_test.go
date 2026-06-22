@@ -1779,6 +1779,30 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 					"operations": []map[string]any{
 						{"name": "open_review_request", "endpoint_key": "github.open_review", "required_capability": "review_request_write", "required_scope": "pull_requests:write", "payload_shape": "pull_request", "adapter_status": "ready", "execution_status": "ready", "external_call_made": true, "provider_api_mutation": "enabled", "url": "https://api.github.example.test/repos/acme/secret-repo/pulls", "token": "secret-token", "content": "do-not-include"},
 					},
+					"request_envelopes": []map[string]any{
+						{
+							"name":                    "commit_starter_files",
+							"method":                  "PUT",
+							"endpoint_key":            "github.commit_files",
+							"payload_shape":           "content_redacted_file_batch",
+							"file_count":              1,
+							"payload_redacted":        false,
+							"contains_token":          true,
+							"contains_file_content":   true,
+							"contains_provider_url":   true,
+							"contains_repository_ref": true,
+							"api_call":                true,
+							"provider_api_mutation":   "enabled",
+							"execution_status":        "ready",
+							"blocked_reason":          "none",
+							"url":                     "https://api.github.example.test/repos/acme/secret-repo/contents/README.md",
+							"token":                   "secret-token",
+							"content":                 "do-not-include",
+							"readiness": []map[string]any{
+								{"evidence": "starter_file_payload_staged", "status": "ready", "content": "do-not-include"},
+							},
+						},
+					},
 				},
 				"adapter_status":        "ready",
 				"external_call_made":    true,
@@ -1787,6 +1811,30 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 				"blocked_reasons":       []any{"provider_review_api_adapter"},
 				"gates":                 []map[string]any{{"gate": "provider_review_api_adapter", "status": "blocked", "token": "secret-token"}},
 				"operations":            []map[string]any{{"name": "open_review_request", "endpoint_key": "github.open_review", "status": "ready", "url": "https://api.github.example.test/repos/acme/secret-repo/pulls", "external_call_made": true}},
+				"request_envelopes": []map[string]any{
+					{
+						"name":                    "open_review_request",
+						"method":                  "POST",
+						"endpoint_key":            "github.open_review",
+						"payload_shape":           "pull_request",
+						"file_count":              1,
+						"payload_redacted":        false,
+						"contains_token":          true,
+						"contains_file_content":   true,
+						"contains_provider_url":   true,
+						"contains_repository_ref": true,
+						"api_call":                true,
+						"provider_api_mutation":   "enabled",
+						"execution_status":        "ready",
+						"blocked_reason":          "none",
+						"url":                     "https://api.github.example.test/repos/acme/secret-repo/pulls",
+						"token":                   "secret-token",
+						"content":                 "do-not-include",
+						"readiness": []map[string]any{
+							{"evidence": "provider_api_request_plan_ready", "status": "ready", "token": "secret-token"},
+						},
+					},
+				},
 			},
 			"approval_result": map[string]any{
 				"execution_enabled":         true,
@@ -1833,6 +1881,30 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		adapterOperations[0]["contains_token"] != false ||
 		adapterOperations[0]["contains_file_content"] != false {
 		t.Fatalf("adapter contract operations should be sanitized: %#v", adapterOperations)
+	}
+	contractRequestEnvelopes := sliceOfMapsFromAny(adapterContract["request_envelopes"])
+	if len(contractRequestEnvelopes) != 1 ||
+		contractRequestEnvelopes[0]["api_call"] != false ||
+		contractRequestEnvelopes[0]["provider_api_mutation"] != "disabled" ||
+		contractRequestEnvelopes[0]["contains_token"] != false ||
+		contractRequestEnvelopes[0]["contains_file_content"] != false ||
+		contractRequestEnvelopes[0]["contains_provider_url"] != false ||
+		contractRequestEnvelopes[0]["contains_repository_ref"] != false {
+		t.Fatalf("adapter contract request envelopes should be sanitized: %#v", contractRequestEnvelopes)
+	}
+	requestEnvelopes := sliceOfMapsFromAny(reconciliation["request_envelopes"])
+	if len(requestEnvelopes) != 1 ||
+		requestEnvelopes[0]["api_call"] != false ||
+		requestEnvelopes[0]["provider_api_mutation"] != "disabled" ||
+		requestEnvelopes[0]["contains_token"] != false ||
+		requestEnvelopes[0]["contains_file_content"] != false ||
+		requestEnvelopes[0]["contains_provider_url"] != false ||
+		requestEnvelopes[0]["contains_repository_ref"] != false {
+		t.Fatalf("request envelopes should be sanitized: %#v", requestEnvelopes)
+	}
+	requestReadiness := sliceOfMapsFromAny(requestEnvelopes[0]["readiness"])
+	if len(requestReadiness) != 1 || requestReadiness[0]["evidence"] != "provider_api_request_plan_ready" {
+		t.Fatalf("request envelope readiness should preserve safe evidence only: %#v", requestReadiness)
 	}
 	credential := mapFromAny(audit["credential_strategy"])
 	if credential["token_stored"] != false || credential["external_call_made"] != false || credential["token_env_present"] != true {
