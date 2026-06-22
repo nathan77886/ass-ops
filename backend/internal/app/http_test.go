@@ -1640,6 +1640,7 @@ func TestAgentPlanContentUsesContextSnapshot(t *testing.T) {
 		"Review canonical asset graph entries, status snapshots",
 		"No code changes, deployments, SSH execution",
 		"Rollback execution is disabled in this first version",
+		"Agent patch workflow is audit-only",
 		"High-risk follow-up actions must use operation approvals",
 	} {
 		if !strings.Contains(content, token) {
@@ -1993,10 +1994,47 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 	if !strings.Contains(fmt.Sprint(patchOutput["message"]), "code mutation remains disabled") {
 		t.Fatalf("patch.prepare output should document disabled mutation: %#v", patchOutput)
 	}
+	patchGuardrail := mapFromAny(patchOutput["patch_workflow_guardrail"])
+	if patchGuardrail["mutation_enabled"] != false || patchGuardrail["repository_mutation_allowed"] != false {
+		t.Fatalf("patch guardrail should keep mutation disabled: %#v", patchGuardrail)
+	}
+	if patchGuardrail["codex_cli_invocation"] != "disabled" || patchGuardrail["pull_request_creation"] != "disabled" {
+		t.Fatalf("patch guardrail should disable Codex CLI and PR creation: %#v", patchGuardrail)
+	}
+	blockedReasons := stringSliceFromAny(patchGuardrail["blocked_reasons"])
+	if len(blockedReasons) < 3 {
+		t.Fatalf("patch guardrail should expose blocked reasons: %#v", patchGuardrail)
+	}
 	planInput := mapFromAny(steps[1]["input"])
 	if planInput["plan_bytes"] != len("approved plan") {
 		t.Fatalf("plan_bytes = %v, want %d", planInput["plan_bytes"], len("approved plan"))
 	}
+}
+
+func TestAgentPatchWorkflowGuardrail(t *testing.T) {
+	got := agentPatchWorkflowGuardrail()
+	if got["execution_mode"] != "simulation_only" || got["mutation_enabled"] != false {
+		t.Fatalf("guardrail mode = %#v", got)
+	}
+	required := stringSliceFromAny(got["required_approvals"])
+	if !containsString(required, "agent.execute") || !containsString(required, "future.patch.apply") {
+		t.Fatalf("guardrail required approvals = %#v", required)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"ASSOPS_", "OPENAI_", "GITHUB_TOKEN", "PRIVATE KEY"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("guardrail should not include sensitive config hints: %s", encoded)
+		}
+	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAgentToolCallAuditMigrationAndFreshInit(t *testing.T) {

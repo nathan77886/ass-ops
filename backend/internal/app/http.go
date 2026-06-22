@@ -8967,6 +8967,10 @@ func agentPlanContent(task, snapshot map[string]any) string {
 	if msg := strings.TrimSpace(fmt.Sprint(rollbackGuardrail["message"])); msg != "" && msg != "<nil>" {
 		fmt.Fprintf(&b, "- %s\n", msg)
 	}
+	patchGuardrail := agentPatchWorkflowGuardrail()
+	if msg := strings.TrimSpace(fmt.Sprint(patchGuardrail["message"])); msg != "" && msg != "<nil>" {
+		fmt.Fprintf(&b, "- %s\n", msg)
+	}
 	fmt.Fprintf(&b, "- High-risk follow-up actions must use operation approvals.\n")
 	return b.String()
 }
@@ -9248,9 +9252,31 @@ func agentExecutionAuditSteps(task, plan, op, runtime map[string]any) []map[stri
 				"mode":          "simulation_only",
 			},
 			"output": map[string]any{
-				"message": "first-version agent execution records intent only; code mutation remains disabled",
+				"message":                  "first-version agent execution records intent only; code mutation remains disabled",
+				"patch_workflow_guardrail": agentPatchWorkflowGuardrail(),
 			},
 		},
+	}
+}
+
+func agentPatchWorkflowGuardrail() map[string]any {
+	return map[string]any{
+		"execution_mode":              "simulation_only",
+		"mutation_enabled":            false,
+		"repository_mutation_allowed": false,
+		"codex_cli_invocation":        "disabled",
+		"pull_request_creation":       "disabled",
+		"required_approvals": []string{
+			"agent.execute",
+			"future.patch.apply",
+		},
+		"blocked_reasons": []string{
+			"codex CLI process execution is not enabled in the first version",
+			"repository mutation requires a future approval-gated patch apply operation",
+			"pull request creation is not wired to a provider account workflow yet",
+		},
+		"next_step": "Keep execution audit-only until Codex CLI runs, patch application, and PR creation are individually approval-gated.",
+		"message":   "Agent patch workflow is audit-only: Codex CLI, repository mutation, and pull request creation are disabled.",
 	}
 }
 
