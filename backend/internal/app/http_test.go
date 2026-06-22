@@ -1518,6 +1518,23 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 	if len(reconcileOperations) != 3 || reconcileOperations[0]["endpoint_key"] != "github.create_branch_ref" {
 		t.Fatalf("provider review reconciliation operations = %#v", reconcileOperations)
 	}
+	targetSummary := mapFromAny(payload["provider_review_target_summary"])
+	if targetSummary["status"] != "adapter_blocked" ||
+		targetSummary["mode"] != "redacted_execution_target_summary" ||
+		targetSummary["branch_refs_ready"] != true ||
+		targetSummary["starter_file_payload_ready"] != true ||
+		targetSummary["provider_api_request_ready"] != true ||
+		targetSummary["provider_api_mutation"] != "disabled" ||
+		targetSummary["contains_token"] != false ||
+		targetSummary["contains_provider_url"] != false ||
+		targetSummary["contains_repository_ref"] != false ||
+		targetSummary["contains_file_content"] != false {
+		t.Fatalf("provider review target summary = %#v", targetSummary)
+	}
+	targetOperations := sliceOfMapsFromAny(targetSummary["operations"])
+	if len(targetOperations) != 3 || targetOperations[0]["endpoint_key"] != "github.create_branch_ref" || targetOperations[1]["contains_file_content"] != false {
+		t.Fatalf("provider review target operations = %#v", targetOperations)
+	}
 	request := mapFromAny(payload["execution_request"])
 	if request["status"] != "approval_ready" ||
 		request["approval_action"] != templateProviderReviewExecuteApprovalAction ||
@@ -1690,6 +1707,17 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 	if containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_credential_configured") ||
 		containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_token_env_present") {
 		t.Fatalf("provider review execution reconciliation should preserve credential preflight: %#v", reconciliation)
+	}
+	targetSummary := mapFromAny(result["provider_review_target_summary"])
+	if targetSummary["status"] != "adapter_blocked" ||
+		targetSummary["provider_api_call_made"] != false ||
+		targetSummary["provider_api_mutation"] != "disabled" ||
+		targetSummary["requires_provider_api_adapter"] != true ||
+		targetSummary["contains_token"] != false ||
+		targetSummary["contains_provider_url"] != false ||
+		targetSummary["contains_repository_ref"] != false ||
+		targetSummary["contains_file_content"] != false {
+		t.Fatalf("provider review execution target summary = %#v", targetSummary)
 	}
 	encoded, _ := json.Marshal(result)
 	for _, leak := range []string{"forged-content", "api_base_url", "secret-token"} {
@@ -1994,6 +2022,35 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 					},
 				},
 			},
+			"provider_review_target_summary": map[string]any{
+				"status":                     "ready",
+				"mode":                       "raw_execution_target_summary",
+				"provider_type":              "github",
+				"review_kind":                "pull_request",
+				"source_branch":              "assops/template/demo-main",
+				"target_branch":              "main",
+				"branch_refs_ready":          true,
+				"starter_file_payload_ready": true,
+				"provider_api_request_ready": true,
+				"file_count":                 1,
+				"adapter_status":             "<script>alert(1)</script>",
+				"blocked_reasons":            []any{"provider_review_api_adapter", "<script>alert(1)</script>", strings.Repeat("x", 140)},
+				"external_call_made":         true,
+				"provider_api_call_made":     true,
+				"provider_api_mutation":      "enabled",
+				"contains_token":             true,
+				"contains_provider_url":      true,
+				"contains_repository_ref":    true,
+				"contains_file_content":      true,
+				"idempotency_key_included":   true,
+				"url":                        "https://api.github.example.test/repos/acme/secret-repo",
+				"repo":                       "secret-repo",
+				"token":                      "secret-token",
+				"content":                    "do-not-include",
+				"operations": []map[string]any{
+					{"name": "open_review_request", "endpoint_key": "github.open_review", "payload_shape": "pull_request", "status": "ready", "api_call": true, "provider_api_mutation": "enabled", "contains_token": true, "contains_file_content": true, "url": "https://api.github.example.test/repos/acme/secret-repo/pulls", "token": "secret-token", "content": "do-not-include"},
+				},
+			},
 			"approval_result": map[string]any{
 				"execution_enabled":         true,
 				"provider_api_call_made":    true,
@@ -2007,6 +2064,31 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 					"external_call_made":    true,
 					"provider_api_mutation": "enabled",
 					"operations":            []map[string]any{{"url": "https://api.github.example.test", "external_call_made": true}},
+				},
+				"provider_review_target_summary": map[string]any{
+					"status":                     "ready",
+					"mode":                       "raw_execution_target_summary",
+					"provider_type":              "github",
+					"review_kind":                "pull_request",
+					"source_branch":              "assops/template/demo-main",
+					"target_branch":              "main",
+					"branch_refs_ready":          true,
+					"starter_file_payload_ready": true,
+					"provider_api_request_ready": true,
+					"file_count":                 1,
+					"adapter_status":             "<script>alert(1)</script>",
+					"blocked_reasons":            []any{"provider_review_api_adapter", "<script>alert(1)</script>", strings.Repeat("x", 140)},
+					"external_call_made":         true,
+					"provider_api_call_made":     true,
+					"provider_api_mutation":      "enabled",
+					"contains_token":             true,
+					"contains_provider_url":      true,
+					"contains_repository_ref":    true,
+					"contains_file_content":      true,
+					"idempotency_key_included":   true,
+					"operations": []map[string]any{
+						{"name": "open_review_request", "endpoint_key": "github.open_review", "payload_shape": "pull_request", "status": "ready", "api_call": true, "provider_api_mutation": "enabled", "contains_token": true, "contains_file_content": true, "url": "https://api.github.example.test/repos/acme/secret-repo/pulls", "token": "secret-token", "content": "do-not-include"},
+					},
 				},
 				"provider_review_attempt_ledger": map[string]any{
 					"status":                   "recorded",
@@ -2065,6 +2147,41 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		apiPlan["provider_api_call_made"] != false ||
 		apiPlan["provider_api_mutation"] != "disabled" {
 		t.Fatalf("api request plan audit should preserve plan mode and force disabled/no-call: %#v", apiPlan)
+	}
+	targetSummary := mapFromAny(audit["provider_review_target_summary"])
+	if targetSummary["mode"] != "redacted_execution_target_summary" ||
+		targetSummary["external_call_made"] != false ||
+		targetSummary["provider_api_call_made"] != false ||
+		targetSummary["provider_api_mutation"] != "disabled" ||
+		targetSummary["payload_redacted"] != true ||
+		targetSummary["contains_token"] != false ||
+		targetSummary["contains_provider_url"] != false ||
+		targetSummary["contains_repository_ref"] != false ||
+		targetSummary["contains_file_content"] != false ||
+		targetSummary["idempotency_key_included"] != false ||
+		targetSummary["requires_provider_api_adapter"] != true ||
+		targetSummary["adapter_status"] != "missing" {
+		t.Fatalf("target summary audit should be sanitized: %#v", targetSummary)
+	}
+	targetBlockedReasons := stringSliceFromAny(targetSummary["blocked_reasons"])
+	if len(targetBlockedReasons) != 1 || targetBlockedReasons[0] != "provider_review_api_adapter" {
+		t.Fatalf("target summary blocked reasons should be allowlisted: %#v", targetBlockedReasons)
+	}
+	targetOperations := sliceOfMapsFromAny(targetSummary["operations"])
+	if len(targetOperations) != 1 ||
+		targetOperations[0]["api_call"] != false ||
+		targetOperations[0]["provider_api_mutation"] != "disabled" ||
+		targetOperations[0]["contains_token"] != false ||
+		targetOperations[0]["contains_file_content"] != false {
+		t.Fatalf("target summary operations should be sanitized: %#v", targetOperations)
+	}
+	for _, field := range []string{"url", "repo", "token", "content"} {
+		if _, ok := targetSummary[field]; ok {
+			t.Fatalf("target summary should not expose %s: %#v", field, targetSummary)
+		}
+		if _, ok := targetOperations[0][field]; ok {
+			t.Fatalf("target summary operation should not expose %s: %#v", field, targetOperations[0])
+		}
 	}
 	adapterContract := mapFromAny(reconciliation["adapter_contract"])
 	if adapterContract["external_call_made"] != false ||
@@ -2231,6 +2348,24 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 	if resultReconciliation["external_call_made"] != false || resultReconciliation["provider_api_mutation"] != "disabled" {
 		t.Fatalf("approval result reconciliation audit should force disabled/no-call: %#v", resultReconciliation)
 	}
+	resultTargetSummary := mapFromAny(result["provider_review_target_summary"])
+	if resultTargetSummary["mode"] != "redacted_execution_target_summary" ||
+		resultTargetSummary["external_call_made"] != false ||
+		resultTargetSummary["provider_api_call_made"] != false ||
+		resultTargetSummary["provider_api_mutation"] != "disabled" ||
+		resultTargetSummary["contains_token"] != false ||
+		resultTargetSummary["contains_provider_url"] != false ||
+		resultTargetSummary["contains_repository_ref"] != false ||
+		resultTargetSummary["contains_file_content"] != false ||
+		resultTargetSummary["idempotency_key_included"] != false {
+		t.Fatalf("approval result target summary should be sanitized: %#v", resultTargetSummary)
+	}
+	resultTargetOperations := sliceOfMapsFromAny(resultTargetSummary["operations"])
+	if len(resultTargetOperations) != 1 ||
+		resultTargetOperations[0]["api_call"] != false ||
+		resultTargetOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("approval result target operations should be sanitized: %#v", resultTargetOperations)
+	}
 	resultAttemptLedger := mapFromAny(result["provider_review_attempt_ledger"])
 	if resultAttemptLedger["mode"] != "redacted_attempt_ledger" ||
 		resultAttemptLedger["external_call_made"] != false ||
@@ -2257,7 +2392,7 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		}
 	}
 	encoded, _ := json.Marshal(audit)
-	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_idempotency_plan", "raw_attempt_ledger", "raw_key"} {
+	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_attempt_ledger", "raw_key"} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
 		}

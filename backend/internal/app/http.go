@@ -925,6 +925,13 @@ func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, p
 		providerAPIRequestPlan,
 		credentialStrategy,
 	)
+	targetSummary := providerReviewExecutionTargetSummary(
+		stringFromMap(executionRequest, "provider_type"),
+		stringFromMap(executionRequest, "review_kind"),
+		providerAPIRequestPlan,
+		starterFilePayload,
+		reconciliation,
+	)
 	projectTemplateRunID := cleanOptionalID(fmt.Sprint(run["id"]))
 	if projectTemplateRunID == "" {
 		return nil, fmt.Errorf("template run id is required")
@@ -952,6 +959,7 @@ func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, p
 		"starter_file_payload":           starterFilePayload,
 		"provider_api_request_plan":      providerAPIRequestPlan,
 		"provider_review_reconciliation": reconciliation,
+		"provider_review_target_summary": targetSummary,
 		"provider_api_call_made":         false,
 		"provider_api_mutation":          "disabled",
 		"message":                        "Provider review execution is approval-gated; provider API mutation remains disabled in the first version.",
@@ -8682,6 +8690,7 @@ func operationApprovalPayloadAudit(approval map[string]any) map[string]any {
 		out["starter_file_payload"] = sanitizedStarterFilePayloadSummary(mapFromAny(payload["starter_file_payload"]))
 		out["provider_api_request_plan"] = sanitizedProviderAPIRequestPlan(mapFromAny(payload["provider_api_request_plan"]))
 		out["provider_review_reconciliation"] = sanitizedProviderReviewReconciliation(mapFromAny(payload["provider_review_reconciliation"]))
+		out["provider_review_target_summary"] = sanitizedProviderReviewTargetSummary(mapFromAny(payload["provider_review_target_summary"]))
 		if result := mapFromAny(payload["approval_result"]); len(result) > 0 {
 			out["approval_result"] = map[string]any{
 				"project_template_run_id":        cleanOptionalID(stringFromMap(result, "project_template_run_id")),
@@ -8691,6 +8700,7 @@ func operationApprovalPayloadAudit(approval map[string]any) map[string]any {
 				"starter_file_payload":           sanitizedStarterFilePayloadSummary(mapFromAny(result["starter_file_payload"])),
 				"provider_api_request_plan":      sanitizedProviderAPIRequestPlan(mapFromAny(result["provider_api_request_plan"])),
 				"provider_review_reconciliation": sanitizedProviderReviewReconciliation(mapFromAny(result["provider_review_reconciliation"])),
+				"provider_review_target_summary": sanitizedProviderReviewTargetSummary(mapFromAny(result["provider_review_target_summary"])),
 				"provider_review_attempt_ledger": sanitizedProviderReviewAttemptLedger(mapFromAny(result["provider_review_attempt_ledger"])),
 				"provider_api_call_made":         false,
 				"provider_api_mutation":          "disabled",
@@ -8749,6 +8759,100 @@ func sanitizedProviderReviewExecutionGuardrail(value map[string]any) map[string]
 		"gates":                    sanitizedProviderReviewGates(mapSliceFromAny(value["gates"])),
 		"next_step":                cleanOptionalText(stringFromMap(value, "next_step")),
 	}
+}
+
+func sanitizedProviderReviewTargetSummary(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	sourceBranch := cleanOptionalText(stringFromMap(value, "source_branch"))
+	if !isSafeGitRefPart(sourceBranch) {
+		sourceBranch = ""
+	}
+	targetBranch := cleanOptionalText(stringFromMap(value, "target_branch"))
+	if !isSafeGitRefPart(targetBranch) {
+		targetBranch = ""
+	}
+	operations := make([]map[string]any, 0, len(mapSliceFromAny(value["operations"])))
+	for _, operation := range mapSliceFromAny(value["operations"]) {
+		operations = append(operations, map[string]any{
+			"name":                  cleanOptionalText(stringFromMap(operation, "name")),
+			"endpoint_key":          cleanOptionalText(stringFromMap(operation, "endpoint_key")),
+			"payload_shape":         cleanOptionalText(stringFromMap(operation, "payload_shape")),
+			"status":                cleanOptionalText(stringFromMap(operation, "status")),
+			"api_call":              false,
+			"provider_api_mutation": "disabled",
+			"payload_redacted":      true,
+			"contains_token":        false,
+			"contains_file_content": false,
+		})
+	}
+	return map[string]any{
+		"status":                         cleanOptionalText(stringFromMap(value, "status")),
+		"mode":                           "redacted_execution_target_summary",
+		"provider_type":                  cleanOptionalText(stringFromMap(value, "provider_type")),
+		"review_kind":                    cleanOptionalText(stringFromMap(value, "review_kind")),
+		"source_branch":                  sourceBranch,
+		"target_branch":                  targetBranch,
+		"branch_refs_ready":              boolOnlyFromAny(value["branch_refs_ready"]),
+		"starter_file_payload_ready":     boolOnlyFromAny(value["starter_file_payload_ready"]),
+		"provider_api_request_ready":     boolOnlyFromAny(value["provider_api_request_ready"]),
+		"file_count":                     intFromAny(value["file_count"], 0),
+		"operation_count":                len(operations),
+		"operations":                     operations,
+		"adapter_status":                 safeProviderReviewAdapterStatus(stringFromMap(value, "adapter_status")),
+		"blocked_reasons":                safeProviderReviewBlockedReasons(stringSliceFromAny(value["blocked_reasons"])),
+		"external_call_made":             false,
+		"provider_api_call_made":         false,
+		"provider_api_mutation":          "disabled",
+		"payload_redacted":               true,
+		"contains_token":                 false,
+		"contains_provider_url":          false,
+		"contains_repository_ref":        false,
+		"contains_file_content":          false,
+		"idempotency_key_included":       false,
+		"requires_persisted_attempt":     true,
+		"requires_response_diagnostics":  true,
+		"requires_provider_api_adapter":  true,
+		"requires_operator_review":       true,
+		"future_adapter_input_boundary":  "branch_ref_commit_review_request",
+		"adapter_mutation_currently_off": true,
+	}
+}
+
+func safeProviderReviewAdapterStatus(value string) string {
+	switch cleanOptionalText(value) {
+	case "missing", "planned", "ready", "blocked", "unsupported":
+		return cleanOptionalText(value)
+	default:
+		return "missing"
+	}
+}
+
+func safeProviderReviewBlockedReasons(items []string) []string {
+	allowed := map[string]bool{
+		"provider_supported":                  true,
+		"starter_file_payload_staged":         true,
+		"provider_api_request_plan_ready":     true,
+		"provider_review_execution_enabled":   true,
+		"provider_credential_configured":      true,
+		"provider_token_env_present":          true,
+		"provider_review_api_adapter":         true,
+		"review_branches_valid":               true,
+		"review_target_summary_ready":         true,
+		"provider_review_target_summary_safe": true,
+	}
+	out := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		item = cleanOptionalText(item)
+		if item == "" || len(item) > 128 || !allowed[item] || seen[item] {
+			continue
+		}
+		out = append(out, item)
+		seen[item] = true
+	}
+	return out
 }
 
 func sanitizedProviderReviewAttemptLedger(value map[string]any) map[string]any {
@@ -10139,6 +10243,13 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			providerAPIRequestPlan,
 			credentialStrategy,
 		)
+		targetSummary := providerReviewExecutionTargetSummary(
+			stringFromMap(request, "provider_type"),
+			stringFromMap(request, "review_kind"),
+			providerAPIRequestPlan,
+			starterFilePayload,
+			reconciliation,
+		)
 		attemptLedger, err := s.recordProviderReviewAttemptLedger(
 			ctx,
 			tx,
@@ -10157,6 +10268,7 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			"starter_file_payload":           starterFilePayload,
 			"provider_api_request_plan":      providerAPIRequestPlan,
 			"provider_review_reconciliation": reconciliation,
+			"provider_review_target_summary": targetSummary,
 			"provider_review_attempt_ledger": attemptLedger,
 			"provider_api_call_made":         false,
 			"provider_api_mutation":          "disabled",

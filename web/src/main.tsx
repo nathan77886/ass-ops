@@ -1035,11 +1035,18 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const starter = value.starter_file_payload || {};
   const apiPlan = value.provider_api_request_plan || {};
   const reconciliation = value.provider_review_reconciliation || {};
-  const adapterContract = reconciliation.adapter_contract || {};
   const result = value.approval_result || {};
+  const targetSummary = value.provider_review_target_summary?.status ? value.provider_review_target_summary : (result.provider_review_target_summary || {});
+  const adapterContract = reconciliation.adapter_contract || {};
   const gates = Array.isArray(guardrail.gates) ? guardrail.gates : [];
   const files = Array.isArray(starter.files) ? starter.files : [];
   const operations = Array.isArray(apiPlan.operations) ? apiPlan.operations : [];
+  const targetOperations = Array.isArray(targetSummary.operations) ? targetSummary.operations : [];
+  const targetSummarySafe = targetSummary.payload_redacted !== false &&
+    targetSummary.contains_token !== true &&
+    targetSummary.contains_provider_url !== true &&
+    targetSummary.contains_repository_ref !== true &&
+    targetSummary.contains_file_content !== true;
   const reconciliationGates = Array.isArray(reconciliation.gates) ? reconciliation.gates : [];
   const reconciliationOperations = Array.isArray(reconciliation.operations) ? reconciliation.operations : [];
   const adapterOperations = Array.isArray(adapterContract.operations) ? adapterContract.operations : [];
@@ -1108,6 +1115,26 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           {operations.map((operation: AnyRow, index: number) => (
             <Tag key={String(operation.endpoint_key || operation.name || `operation-${index}`)} color={operation.api_call === true ? 'red' : 'default'}>
               {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.payload_shape || operation.method || 'redacted')}
+            </Tag>
+          ))}
+        </Space>
+      ) : null}
+      {targetSummary.status ? (
+        <Space size={4} wrap>
+          <Tag color={targetSummary.status === 'adapter_blocked' ? 'blue' : targetSummary.status === 'ready' ? 'green' : 'gold'}>target {String(targetSummary.status).replaceAll('_', ' ')}</Tag>
+          <Tag>{String(targetSummary.mode || 'redacted_execution_target_summary').replaceAll('_', ' ')}</Tag>
+          {!targetSummarySafe ? <Tag color="red">target not redacted</Tag> : null}
+          <Tag>{targetSummary.branch_refs_ready === true ? 'branches ready' : 'branches blocked'}</Tag>
+          <Tag>{targetSummary.starter_file_payload_ready === true ? 'starter ready' : 'starter blocked'}</Tag>
+          <Tag>files {Number(targetSummary.file_count || 0)}</Tag>
+          <Tag>adapter {String(targetSummary.adapter_status || 'missing')}</Tag>
+        </Space>
+      ) : null}
+      {targetSummarySafe && targetOperations.length ? (
+        <Space size={4} wrap>
+          {targetOperations.map((operation: AnyRow, index: number) => (
+            <Tag key={String(operation.endpoint_key || operation.name || `target-operation-${index}`)}>
+              {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.status || 'planned')}
             </Tag>
           ))}
         </Space>

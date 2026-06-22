@@ -617,6 +617,7 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 	// Starter files are staged later when the approval payload is built.
 	apiRequestPlan := templateProviderReviewAPIRequestPlan(provider, reviewKind, sourceBranch, targetBranch, nil)
 	reconciliation := templateProviderReviewExecutionReconciliation(provider, reviewKind, nil, guardrail, apiRequestPlan, credentialStrategy)
+	targetSummary := providerReviewExecutionTargetSummary(provider, reviewKind, apiRequestPlan, nil, reconciliation)
 	steps := []map[string]any{
 		{
 			"name":      "create_branch",
@@ -663,8 +664,83 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 		"credential_strategy":            credentialStrategy,
 		"provider_api_request_plan":      apiRequestPlan,
 		"provider_review_reconciliation": reconciliation,
+		"provider_review_target_summary": targetSummary,
 		"steps":                          steps,
 		"message":                        "Provider review execution request is prepared for approval, but branch creation, starter-file commits, and PR/MR creation remain disabled.",
+	}
+}
+
+func providerReviewExecutionTargetSummary(provider, reviewKind string, apiRequestPlan, starterFilePayload, reconciliation map[string]any) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	sourceBranch := cleanOptionalText(stringFromMap(apiRequestPlan, "source_branch"))
+	targetBranch := cleanOptionalText(stringFromMap(apiRequestPlan, "target_branch"))
+	branchRefsReady := sourceBranch != "" &&
+		targetBranch != "" &&
+		isSafeGitRefPart(sourceBranch) &&
+		isSafeGitRefPart(targetBranch)
+	starterReady := starterFilePayloadReady(starterFilePayload)
+	planReady := fmt.Sprint(apiRequestPlan["status"]) == "ready"
+	fileCount := intFromAny(starterFilePayload["file_count"], intFromAny(apiRequestPlan["file_count"], 0))
+	operations := make([]map[string]any, 0, len(mapSliceFromAny(apiRequestPlan["operations"])))
+	for _, operation := range mapSliceFromAny(apiRequestPlan["operations"]) {
+		operations = append(operations, map[string]any{
+			"name":                  cleanOptionalText(stringFromMap(operation, "name")),
+			"endpoint_key":          cleanOptionalText(stringFromMap(operation, "endpoint_key")),
+			"payload_shape":         cleanOptionalText(stringFromMap(operation, "payload_shape")),
+			"status":                "planned",
+			"api_call":              false,
+			"provider_api_mutation": "disabled",
+			"payload_redacted":      true,
+			"contains_token":        false,
+			"contains_file_content": false,
+		})
+	}
+	blockedReasons := append([]string{}, stringSliceFromAny(apiRequestPlan["blocked_reasons"])...)
+	blockedSeen := map[string]bool{}
+	for _, reason := range blockedReasons {
+		blockedSeen[reason] = true
+	}
+	for _, reason := range stringSliceFromAny(reconciliation["blocked_reasons"]) {
+		if reason != "" && !blockedSeen[reason] {
+			blockedReasons = append(blockedReasons, reason)
+			blockedSeen[reason] = true
+		}
+	}
+	status := "blocked"
+	if branchRefsReady && starterReady && planReady {
+		status = "adapter_blocked"
+	}
+	return map[string]any{
+		"status":                         status,
+		"mode":                           "redacted_execution_target_summary",
+		"provider_type":                  provider,
+		"review_kind":                    reviewKind,
+		"source_branch":                  sourceBranch,
+		"target_branch":                  targetBranch,
+		"branch_refs_ready":              branchRefsReady,
+		"starter_file_payload_ready":     starterReady,
+		"provider_api_request_ready":     planReady,
+		"file_count":                     fileCount,
+		"operation_count":                len(operations),
+		"operations":                     operations,
+		"adapter_status":                 cleanOptionalText(stringFromMap(reconciliation, "adapter_status")),
+		"blocked_reasons":                blockedReasons,
+		"external_call_made":             false,
+		"provider_api_call_made":         false,
+		"provider_api_mutation":          "disabled",
+		"payload_redacted":               true,
+		"contains_token":                 false,
+		"contains_provider_url":          false,
+		"contains_repository_ref":        false,
+		"contains_file_content":          false,
+		"idempotency_key_included":       false,
+		"requires_persisted_attempt":     true,
+		"requires_response_diagnostics":  true,
+		"requires_provider_api_adapter":  true,
+		"requires_operator_review":       true,
+		"future_adapter_input_boundary":  "branch_ref_commit_review_request",
+		"adapter_mutation_currently_off": true,
 	}
 }
 
