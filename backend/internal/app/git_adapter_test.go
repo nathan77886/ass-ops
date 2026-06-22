@@ -331,6 +331,15 @@ func TestProvisionTemplateRepositoryReportsProtectedBranchStrategy(t *testing.T)
 	if executionPlan["provider_api_mutation"] != "disabled" || executionPlan["requires_approval"] != true {
 		t.Fatalf("execution plan guardrails = %#v", executionPlan)
 	}
+	request := mapFromAny(executionPlan["execution_request"])
+	if request["status"] != "approval_ready" ||
+		request["approval_action"] != "project_template.provider_review.execute" ||
+		request["resource_type"] != "project_template_run" ||
+		request["payload_redacted"] != true ||
+		request["contains_token"] != false ||
+		request["provider_api_mutation"] != "disabled" {
+		t.Fatalf("execution request = %#v", request)
+	}
 	if executionPlan["source_branch"] != "assops/starter/protected-service-release-main" || executionPlan["target_branch"] != "release/main" {
 		t.Fatalf("execution plan branches = %#v", executionPlan)
 	}
@@ -414,6 +423,13 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	if githubPlan["review_kind"] != "pull_request" || githubPlan["provider_api_mutation"] != "disabled" {
 		t.Fatalf("github execution plan = %#v", githubPlan)
 	}
+	githubRequest := mapFromAny(githubPlan["execution_request"])
+	if githubRequest["status"] != "approval_ready" || githubRequest["review_kind"] != "pull_request" {
+		t.Fatalf("github execution request = %#v", githubRequest)
+	}
+	if _, ok := githubRequest["blocked_reason"]; ok {
+		t.Fatalf("approval-ready execution request should not include blocked_reason: %#v", githubRequest)
+	}
 	giteaPlan := templateProviderReviewExecutionPlan("gitea", map[string]any{
 		"mode":            "merge_request",
 		"provider_type":   "gitea",
@@ -422,6 +438,28 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	})
 	if giteaPlan["review_kind"] != "merge_request" || giteaPlan["execution_enabled"] != false {
 		t.Fatalf("gitea execution plan = %#v", giteaPlan)
+	}
+	for _, tt := range []struct {
+		name   string
+		source string
+		target string
+	}{
+		{name: "missing source", source: "", target: "main"},
+		{name: "missing target", source: "assops/template/demo-main", target: ""},
+		{name: "missing both", source: "", target: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			blockedRequest := templateProviderReviewExecutionRequest("github", "pull_request", tt.source, tt.target)
+			if blockedRequest["status"] != "blocked" || strings.TrimSpace(fmt.Sprint(blockedRequest["blocked_reason"])) == "" {
+				t.Fatalf("blocked execution request = %#v", blockedRequest)
+			}
+		})
+	}
+	encoded, _ := json.Marshal(githubPlan)
+	for _, leak := range []string{"ASSOPS_TEMPLATE_PROVIDER_TOKEN", "secret-token", "api_base_url"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("provider review execution plan leaked %q: %s", leak, encoded)
+		}
 	}
 }
 

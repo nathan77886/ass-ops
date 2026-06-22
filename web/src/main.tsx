@@ -319,10 +319,12 @@ type TemplateProvisionGuidance = {
   sourceBranch: string;
   targetBranch: string;
   approvalAction: string;
+  executionRequestStatus: string;
+  executionRequestResource: string;
   reviewSteps: AnyRow[];
 };
 
-function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'reviewSteps'> & Partial<Pick<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'reviewSteps'>>): TemplateProvisionGuidance {
+function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'executionRequestStatus' | 'executionRequestResource' | 'reviewSteps'> & Partial<Pick<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'executionRequestStatus' | 'executionRequestResource' | 'reviewSteps'>>): TemplateProvisionGuidance {
   return {
     reviewStatus: '',
     reviewExecution: '',
@@ -331,6 +333,8 @@ function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' 
     sourceBranch: '',
     targetBranch: '',
     approvalAction: '',
+    executionRequestStatus: '',
+    executionRequestResource: '',
     reviewSteps: [],
     ...value
   };
@@ -361,6 +365,7 @@ function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
     const branchStrategy = reconciliation.branch_strategy || {};
     const providerReview = reconciliation.provider_review_readiness || {};
     const executionPlan = providerReview.execution_plan || {};
+    const executionRequest = executionPlan.execution_request || {};
     const branchStrategyReady = reconciliation.kind === 'protected_branch' && branchStrategy.strategy_status === 'planned';
     const titles: Record<string, string> = {
       existing_repository: 'Existing repository needs reconciliation',
@@ -380,6 +385,8 @@ function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
       sourceBranch: String(executionPlan.source_branch || ''),
       targetBranch: String(executionPlan.target_branch || ''),
       approvalAction: String(executionPlan.approval_action || ''),
+      executionRequestStatus: String(executionRequest.status || ''),
+      executionRequestResource: String(executionRequest.resource_type || ''),
       reviewSteps: Array.isArray(executionPlan.steps) ? executionPlan.steps : []
     });
   }
@@ -921,15 +928,20 @@ function templateProvisionGuidanceView(row: AnyRow, compact = false) {
 }
 
 function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionGuidance }) {
+  const requestColor = guidance.executionRequestStatus === 'approval_ready' ? 'green' : guidance.executionRequestStatus === 'blocked' ? 'gold' : 'default';
   return (
     <Space direction="vertical" size={4}>
       <Space size={4} wrap>
         <Tag color="blue">{guidance.reviewPlanMode}</Tag>
         {guidance.reviewKind ? <Tag>{guidance.reviewKind}</Tag> : null}
         {guidance.approvalAction ? <Tag>{guidance.approvalAction}</Tag> : null}
+        {guidance.executionRequestStatus ? <Tag color={requestColor}>request {guidance.executionRequestStatus.replaceAll('_', ' ')}</Tag> : null}
       </Space>
       {guidance.sourceBranch || guidance.targetBranch ? (
         <Typography.Text type="secondary">{guidance.sourceBranch || '-'} -&gt; {guidance.targetBranch || '-'}</Typography.Text>
+      ) : null}
+      {guidance.executionRequestResource ? (
+        <Typography.Text type="secondary">Resource: {guidance.executionRequestResource}</Typography.Text>
       ) : null}
       {guidance.reviewSteps.length ? (
         <Space size={4} wrap>

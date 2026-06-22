@@ -589,12 +589,15 @@ func templateProviderReviewReadiness(kind, provider string, branchStrategy map[s
 	return readiness
 }
 
+const templateProviderReviewExecuteApprovalAction = "project_template.provider_review.execute"
+
 func templateProviderReviewExecutionPlan(provider string, branchStrategy map[string]any) map[string]any {
 	provider = strings.ToLower(strings.TrimSpace(firstNonEmptyString(provider, stringFromMap(branchStrategy, "provider_type"))))
 	mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(branchStrategy["mode"])))
 	sourceBranch := strings.TrimSpace(fmt.Sprint(branchStrategy["proposed_branch"]))
 	targetBranch := strings.TrimSpace(fmt.Sprint(branchStrategy["target_branch"]))
 	reviewKind := templateProviderReviewKind(provider, mode)
+	executionRequest := templateProviderReviewExecutionRequest(provider, reviewKind, sourceBranch, targetBranch)
 	steps := []map[string]any{
 		{
 			"name":      "create_branch",
@@ -634,11 +637,35 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 		"execution_enabled":     false,
 		"external_call_made":    false,
 		"requires_approval":     true,
-		"approval_action":       "project_template.provider_review.execute",
+		"approval_action":       templateProviderReviewExecuteApprovalAction,
 		"provider_api_mutation": "disabled",
+		"execution_request":     executionRequest,
 		"steps":                 steps,
-		"message":               "Dry-run provider review execution plan only; branch creation, starter-file commits, and PR/MR creation remain disabled.",
+		"message":               "Provider review execution request is prepared for approval, but branch creation, starter-file commits, and PR/MR creation remain disabled.",
 	}
+}
+
+func templateProviderReviewExecutionRequest(provider, reviewKind, sourceBranch, targetBranch string) map[string]any {
+	ready := sourceBranch != "" && targetBranch != ""
+	request := map[string]any{
+		"status":                   "blocked",
+		"approval_action":          templateProviderReviewExecuteApprovalAction,
+		"resource_type":            "project_template_run",
+		"provider_type":            provider,
+		"review_kind":              reviewKind,
+		"source_branch":            sourceBranch,
+		"target_branch":            targetBranch,
+		"payload_redacted":         true,
+		"contains_token":           false,
+		"provider_api_mutation":    "disabled",
+		"requires_operator_review": true,
+	}
+	if ready {
+		request["status"] = "approval_ready"
+		return request
+	}
+	request["blocked_reason"] = "source and target branches are required before requesting provider review execution"
+	return request
 }
 
 func templateProviderReviewKind(provider, mode string) string {
