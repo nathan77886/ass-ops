@@ -1355,12 +1355,6 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		t.Fatalf("read http.go: %v", err)
 	}
 	for _, token := range []string{
-		`writeCreatedOneAndRefreshAssets(w, r, project, nil, "project.create")`,
-		`writeUpdatedOneAndRefreshAssets(w, r, item, err, "project.update")`,
-		`writeCreatedOneAndRefreshAssets(w, r, item, err, "git_repository.create")`,
-		`writeUpdatedOneAndRefreshAssets(w, r, item, err, "git_repository.update")`,
-		`writeCreatedOneAndRefreshAssets(w, r, item, err, "git_remote.create")`,
-		`writeUpdatedOneAndRefreshAssets(w, r, item, err, "git_remote.update")`,
 		`writeCreatedOneAndRefreshAssets(w, r, item, err, "argo_connection.create")`,
 		`writeCreatedOneAndRefreshAssets(w, r, item, err, "ssh_machine.create")`,
 	} {
@@ -1369,6 +1363,12 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		}
 	}
 	for _, reason := range []string{
+		`syncCanonicalAssetsInTransaction(w, r, tx, "project.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "project.update")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "git_repository.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "git_repository.update")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "git_remote.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "git_remote.update")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.update")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.archive")`,

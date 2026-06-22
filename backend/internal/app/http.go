@@ -374,11 +374,14 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create project membership")
 		return
 	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project.create") {
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit project")
 		return
 	}
-	s.writeCreatedOneAndRefreshAssets(w, r, project, nil, "project.create")
+	writeJSON(w, http.StatusCreated, project)
 }
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
@@ -1434,7 +1437,13 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start project transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE projects
 		SET name=COALESCE(NULLIF($2,''), name),
 			slug=COALESCE(NULLIF($3,''), slug),
@@ -1447,7 +1456,22 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 		nullableString(req.Slug),
 		nullableString(req.Description),
 	)
-	s.writeUpdatedOneAndRefreshAssets(w, r, item, err, "project.update")
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project.update") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit project")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -2014,7 +2038,13 @@ func (s *Server) createGitRepository(w http.ResponseWriter, r *http.Request) {
 	if req.Status == "" {
 		req.Status = "active"
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start git repository transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		INSERT INTO project_git_repositories(project_id, name, repo_key, display_name, repo_role, status, description, default_branch)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING *`,
@@ -2027,7 +2057,18 @@ func (s *Server) createGitRepository(w http.ResponseWriter, r *http.Request) {
 		req.Description,
 		req.DefaultBranch,
 	)
-	s.writeCreatedOneAndRefreshAssets(w, r, item, err, "git_repository.create")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not create resource")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "git_repository.create") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit git repository")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func (s *Server) listGitRepositories(w http.ResponseWriter, r *http.Request) {
@@ -2076,7 +2117,13 @@ func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start git repository transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE project_git_repositories
 		SET name=COALESCE(NULLIF($2,''), name),
 			repo_key=COALESCE(NULLIF($3,''), repo_key),
@@ -2097,7 +2144,22 @@ func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
 		nullableString(req.Description),
 		nullableString(req.DefaultBranch),
 	)
-	s.writeUpdatedOneAndRefreshAssets(w, r, item, err, "git_repository.update")
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "git_repository.update") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit git repository")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) createRepositorySync(w http.ResponseWriter, r *http.Request) {
@@ -4260,7 +4322,13 @@ func (s *Server) createGitRemote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid metadata")
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start git remote transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		INSERT INTO git_remotes(
 			project_git_repository_id, name, kind, remote_key, provider_type, remote_url, web_url,
 			remote_role, is_primary, sync_enabled, protected, latest_sha, last_sync_status,
@@ -4285,7 +4353,18 @@ func (s *Server) createGitRemote(w http.ResponseWriter, r *http.Request) {
 		req.DefaultBranch,
 		metadata,
 	)
-	s.writeCreatedOneAndRefreshAssets(w, r, item, err, "git_remote.create")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not create resource")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "git_remote.create") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit git remote")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func (s *Server) listGitRemotes(w http.ResponseWriter, r *http.Request) {
@@ -4357,7 +4436,13 @@ func (s *Server) updateGitRemote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid metadata")
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start git remote transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		UPDATE git_remotes
 		SET name=COALESCE(NULLIF($2,''), name),
 			kind=COALESCE(NULLIF($3,''), kind),
@@ -4394,7 +4479,22 @@ func (s *Server) updateGitRemote(w http.ResponseWriter, r *http.Request) {
 		nullableString(req.DefaultBranch),
 		metadata,
 	)
-	s.writeUpdatedOneAndRefreshAssets(w, r, item, err, "git_remote.update")
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "git_remote.update") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit git remote")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) listGitHubActions(w http.ResponseWriter, r *http.Request) {
