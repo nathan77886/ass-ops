@@ -52,7 +52,7 @@ The staged plan in Notion starts with an asset ledger, then provider sync, then 
 
 ### Frontend
 
-- Dashboard and operation list.
+- Dashboard, first-version readiness checklist, and operation list.
 - Project/repository detail and read-only project template catalog.
 - Repo Sync page with source/target remotes, branches/tags, GitHub Actions project/repository linkage summary, and run tables.
 - Worker node page with queue health, stale-node, stale-running-job, queued-by-tool, and recent-failure visibility.
@@ -79,6 +79,7 @@ Notion's first principle is Asset / AssetRelation / AssetOperationRun. The curre
 Impact:
 
 - The app can show and search an asset inventory, render filtered cross-project graph subviews, save and reapply graph filters/selections, render relation tables, inspect selected-asset status history, browse operation runs as assets linked to their target RepoSyncAsset, Git remote, SSH machine, agent task, Argo connection, project template, or webhook connection, render selected-asset graphs, traverse upstream/downstream dependency paths, preserve manual operator-curated graph edges, backfill canonical assets/relations/status snapshots on demand, transactionally sync the canonical ledger for direct project/repository/remote/RepoSyncAsset lifecycle/run queue writes, operation-run enqueue/status writes, worker status/repo-tag writes, agent execution running/completion/failure writes, agent execution stale recovery, and stale worker recovery plus provider account management, webhook connection/delivery-health writes, webhook event delivery read-model writes, AI runtime and agent task management, worker node registration/heartbeat, Argo connection/status/deployment/rollback read-model writes, SSH machine, manual relation create/delete, template-worker project creation/completion/retry writes, and GitHub Actions pipeline read-model writes, and refresh the canonical ledger after remaining worker operation completion paths, but cannot yet transactionally canonicalize every asset-producing write path. Worker node heartbeat uses a narrow single-asset sync instead of a full-ledger refresh.
+- The Dashboard now turns the ten first-version readiness criteria into a live evidence checklist derived from canonical asset inventory and recent operations, so demo gaps are visible without cross-checking this document manually.
 - AI context now includes canonical asset graph and recent asset health/status snapshots after the ledger has been refreshed by write hooks or `db sync-assets`.
 
 Recommended next slice:

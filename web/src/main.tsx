@@ -396,6 +396,94 @@ function providerTokenRotationSummary(row: AnyRow) {
   };
 }
 
+function countByField(rows: AnyRow[] = [], field: string) {
+  return rows.reduce<Record<string, number>>((acc, row) => {
+    const key = String(row[field] || '').trim();
+    if (key) acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function readinessState(done: boolean, evidence: React.ReactNode, hasPartialEvidence?: boolean) {
+  if (done) return { status: 'ready', color: 'green', evidence };
+  if (hasPartialEvidence ?? Boolean(evidence)) return { status: 'partial', color: 'gold', evidence };
+  return { status: 'missing', color: 'red', evidence };
+}
+
+function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] = [], approvalSummary: AnyRow = {}) {
+  const assetCounts = countByField(assets, 'asset_type');
+  const operationCounts = countByField(operations, 'operation_type');
+  const syncTriggered = (operationCounts['repo.sync'] || 0) + (operationCounts['repo.sync_remote'] || 0);
+  const webhookReady = (assetCounts.webhook_connection || 0) > 0;
+  const sshRuns = (operationCounts['ssh.exec'] || 0) + (operationCounts['ssh.command'] || 0);
+  const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0);
+  const approvalEvidence = Number(approvalSummary.total || 0);
+  const pendingApprovalOps = operations.filter((row) => String(row.status || '') === 'pending_approval').length;
+  const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
+  return [
+    {
+      key: 'project',
+      label: 'Create/import project asset',
+      next: 'Create a project or run the demo seed.',
+      ...readinessState((assetCounts.project || 0) > 0, assetCounts.project || 0)
+    },
+    {
+      key: 'repositories',
+      label: 'Attach source and mirror repositories',
+      next: 'Add repository metadata and at least two Git remotes.',
+      ...readinessState((assetCounts.repository || 0) > 0 && (assetCounts.git_remote || 0) >= 2, `${assetCounts.repository || 0} repos / ${assetCounts.git_remote || 0} remotes`, (assetCounts.repository || 0) > 0 || (assetCounts.git_remote || 0) > 0)
+    },
+    {
+      key: 'repo_sync',
+      label: 'Define RepoSyncAsset',
+      next: 'Create a RepoSyncAsset between source and mirror remotes.',
+      ...readinessState((assetCounts.repo_sync || 0) > 0, assetCounts.repo_sync || 0)
+    },
+    {
+      key: 'sync_trigger',
+      label: 'Trigger sync manually and from webhook',
+      next: 'Run a manual sync and configure a Gitea webhook connection.',
+      ...readinessState(syncTriggered > 0 && webhookReady, `${syncTriggered} sync ops / ${assetCounts.webhook_connection || 0} webhooks`, syncTriggered > 0 || webhookReady)
+    },
+    {
+      key: 'github_actions',
+      label: 'See GitHub Actions state',
+      next: 'Sync GitHub Actions for the mirror remote or receive workflow_run webhooks.',
+      ...readinessState((assetCounts.pipeline_run || 0) > 0, assetCounts.pipeline_run || 0)
+    },
+    {
+      key: 'ssh',
+      label: 'Register SSH machines and audited commands',
+      next: 'Register an SSH machine and run an approval-gated command.',
+      ...readinessState((assetCounts.host || 0) > 0 && sshRuns > 0, `${assetCounts.host || 0} hosts / ${sshRuns} commands`, (assetCounts.host || 0) > 0 || sshRuns > 0)
+    },
+    {
+      key: 'argo',
+      label: 'Sync Argo apps to deployment targets',
+      next: 'Create an Argo connection, sync apps, and inspect deployment targets.',
+      ...readinessState((assetCounts.argo_connection || 0) > 0 && (assetCounts.deployment_target || 0) > 0 && (operationCounts['argo.apps.sync'] || 0) > 0, `${assetCounts.deployment_target || 0} targets / ${assetCounts.argo_connection || 0} Argo connections / ${operationCounts['argo.apps.sync'] || 0} sync ops`, argoEvidence > 0)
+    },
+    {
+      key: 'operations',
+      label: 'View operation history and logs',
+      next: 'Run any controlled operation and inspect its logs.',
+      ...readinessState((assetCounts.operation_run || operations.length || 0) > 0, assetCounts.operation_run || operations.length || 0)
+    },
+    {
+      key: 'approval',
+      label: 'Enforce approval for high-risk operations',
+      next: 'Queue a high-risk action that creates an approval request.',
+      ...readinessState(approvalEvidence > 0 || pendingApprovalOps > 0, `${approvalEvidence} approvals / ${pendingApprovalOps} pending ops`, approvalEvidence > 0 || pendingApprovalOps > 0)
+    },
+    {
+      key: 'context',
+      label: 'Generate AI-readable context from graph',
+      next: 'Create an agent task or AI runtime after syncing the canonical asset ledger.',
+      ...readinessState(contextEvidence > 0, contextEvidence)
+    }
+  ];
+}
+
 function cleanedList(values: string[] = []) {
   return values.map((value) => value.trim()).filter(Boolean);
 }
@@ -557,14 +645,33 @@ function graphNodeColor(type: string) {
 
 function Dashboard() {
   const ops = useLoad(() => api('/api/operations'), []);
+  const assets = useLoad(() => api('/api/assets'), []);
+  const approvalSummary = useLoad(() => api('/api/operation-approvals/summary'), []);
+  const readinessRows = firstVersionReadinessRows(assets.data?.items || [], ops.data?.items || [], approvalSummary.data || {});
+  const readinessCounts = countByField(readinessRows, 'status');
   return (
     <Space direction="vertical" size={16} className="full">
       <Typography.Title level={2}>Dashboard</Typography.Title>
       <div className="metricGrid">
         <Card><Typography.Text type="secondary">Gateway</Typography.Text><Typography.Title level={3}>Online</Typography.Title></Card>
         <Card><Typography.Text type="secondary">Recent operations</Typography.Text><Typography.Title level={3}>{ops.data?.items?.length || 0}</Typography.Title></Card>
-        <Card><Typography.Text type="secondary">Runtime</Typography.Text><Typography.Title level={3}>Codex CLI</Typography.Title></Card>
+        <Card><Typography.Text type="secondary">Ready checks</Typography.Text><Typography.Title level={3}>{readinessCounts.ready || 0}/{readinessRows.length}</Typography.Title></Card>
+        <Card><Typography.Text type="secondary">Needs evidence</Typography.Text><Typography.Title level={3}>{(readinessCounts.partial || 0) + (readinessCounts.missing || 0)}</Typography.Title></Card>
       </div>
+      <Card title="First-Version Readiness">
+        <Table<AnyRow>
+          rowKey="key"
+          dataSource={readinessRows}
+          pagination={false}
+          size="small"
+          columns={[
+            { title: 'Status', render: (_, row) => <Tag color={row.color}>{row.status}</Tag> },
+            { title: 'Demo proof', dataIndex: 'label' },
+            { title: 'Evidence', render: (_, row) => <Typography.Text>{String(row.evidence)}</Typography.Text> },
+            { title: 'Next', dataIndex: 'next' }
+          ]}
+        />
+      </Card>
       <Operations embedded />
     </Space>
   );

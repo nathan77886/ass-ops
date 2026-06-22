@@ -156,6 +156,7 @@ Implemented as real local code:
 
 - Auth login and current user
 - PostgreSQL migration and admin seed
+- Dashboard first-version readiness checklist derived from canonical assets and recent operations
 - Project, repository, GitRemote CRUD
 - Operation runs, worker jobs, operation logs
 - Control-worker queue consumption and worker queue health summaries
