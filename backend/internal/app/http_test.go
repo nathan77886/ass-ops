@@ -3379,6 +3379,54 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateCredentialBlockedReasons[2] != "provider_review_mutation_not_armed" {
 		t.Fatalf("attempt execution candidate credential blocked reasons = %#v", candidateCredentialBlockedReasons)
 	}
+	candidateRuntimePlan := mapFromAny(candidateDispatchPlan["adapter_runtime_plan"])
+	if candidateRuntimePlan["mode"] != "redacted_attempt_adapter_runtime_plan" ||
+		candidateRuntimePlan["runtime_state"] != "blocked" ||
+		candidateRuntimePlan["runtime_ready"] != false ||
+		candidateRuntimePlan["runtime_ready_reason"] != "provider_review_adapter_runtime_not_armed" ||
+		candidateRuntimePlan["provider_type"] != "github" ||
+		candidateRuntimePlan["adapter_kind"] != "github_provider_review_adapter" ||
+		candidateRuntimePlan["operation_name"] != "create_branch_ref" ||
+		candidateRuntimePlan["endpoint_key"] != "github.create_branch_ref" ||
+		candidateRuntimePlan["adapter_interface_registered"] != true ||
+		candidateRuntimePlan["adapter_dispatch_registered"] != true ||
+		candidateRuntimePlan["runtime_adapter_selected"] != true ||
+		candidateRuntimePlan["operation_supported"] != true ||
+		candidateRuntimePlan["live_adapter_implemented"] != false ||
+		candidateRuntimePlan["provider_client_constructed"] != false ||
+		candidateRuntimePlan["execute_method_bound"] != false ||
+		candidateRuntimePlan["request_builder_bound"] != false ||
+		candidateRuntimePlan["response_handler_bound"] != false ||
+		candidateRuntimePlan["transaction_handler_bound"] != false ||
+		candidateRuntimePlan["requires_provider_client"] != true ||
+		candidateRuntimePlan["requires_request_builder"] != true ||
+		candidateRuntimePlan["requires_response_handler"] != true ||
+		candidateRuntimePlan["requires_transaction_handler"] != true ||
+		candidateRuntimePlan["requires_mutation_arming"] != true ||
+		candidateRuntimePlan["runtime_boundary_redacted"] != true ||
+		candidateRuntimePlan["external_call_made"] != false ||
+		candidateRuntimePlan["provider_api_call_made"] != false ||
+		candidateRuntimePlan["provider_api_mutation"] != "disabled" ||
+		candidateRuntimePlan["contains_token"] != false ||
+		candidateRuntimePlan["contains_provider_url"] != false ||
+		candidateRuntimePlan["contains_repository_ref"] != false ||
+		candidateRuntimePlan["contains_branch_name"] != false ||
+		candidateRuntimePlan["contains_file_content"] != false {
+		t.Fatalf("attempt execution candidate runtime plan = %#v", candidateRuntimePlan)
+	}
+	candidateRuntimeMethods := stringSliceFromAny(candidateRuntimePlan["required_runtime_methods"])
+	if len(candidateRuntimeMethods) != 4 ||
+		candidateRuntimeMethods[0] != "build_request" ||
+		candidateRuntimeMethods[3] != "record_attempt_transaction" {
+		t.Fatalf("attempt execution candidate runtime methods = %#v", candidateRuntimeMethods)
+	}
+	candidateRuntimeBlockedReasons := stringSliceFromAny(candidateRuntimePlan["blocked_reasons"])
+	if len(candidateRuntimeBlockedReasons) != 3 ||
+		candidateRuntimeBlockedReasons[0] != "provider_review_live_adapter_not_implemented" ||
+		candidateRuntimeBlockedReasons[1] != "provider_review_adapter_runtime_not_armed" ||
+		candidateRuntimeBlockedReasons[2] != "provider_review_mutation_not_armed" {
+		t.Fatalf("attempt execution candidate runtime blocked reasons = %#v", candidateRuntimeBlockedReasons)
+	}
 	candidateTransactionPlan := mapFromAny(candidateDispatchPlan["transaction_plan"])
 	if candidateTransactionPlan["mode"] != "redacted_attempt_adapter_transaction_plan" ||
 		candidateTransactionPlan["transaction_state"] != "blocked" ||
@@ -3442,16 +3490,19 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateInvocationPlan["operation_order"] != 10 ||
 		candidateInvocationPlan["claim_metadata_ready"] != true ||
 		candidateInvocationPlan["credential_binding_ready"] != false ||
+		candidateInvocationPlan["adapter_runtime_ready"] != false ||
 		candidateInvocationPlan["request_materialization_ready"] != false ||
 		candidateInvocationPlan["transport_metadata_ready"] != true ||
 		candidateInvocationPlan["response_recording_ready"] != false ||
 		candidateInvocationPlan["transaction_metadata_ready"] != true ||
 		candidateInvocationPlan["claim_metadata_ready_reason"] != "ready" ||
+		candidateInvocationPlan["adapter_runtime_ready_reason"] != "provider_review_adapter_runtime_not_ready" ||
 		candidateInvocationPlan["transport_metadata_ready_reason"] != "ready" ||
 		candidateInvocationPlan["transaction_metadata_ready_reason"] != "ready" ||
 		candidateInvocationPlan["requires_attempt_claim"] != true ||
 		candidateInvocationPlan["requires_idempotency_claim"] != true ||
 		candidateInvocationPlan["requires_credential_binding"] != true ||
+		candidateInvocationPlan["requires_adapter_runtime"] != true ||
 		candidateInvocationPlan["requires_request_materialization"] != true ||
 		candidateInvocationPlan["requires_transport"] != true ||
 		candidateInvocationPlan["requires_response_recording"] != true ||
@@ -3459,6 +3510,7 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateInvocationPlan["attempt_claim_recorded"] != false ||
 		candidateInvocationPlan["idempotency_claim_recorded"] != false ||
 		candidateInvocationPlan["credential_bound"] != false ||
+		candidateInvocationPlan["adapter_runtime_bound"] != false ||
 		candidateInvocationPlan["request_materialized"] != false ||
 		candidateInvocationPlan["provider_request_sent"] != false ||
 		candidateInvocationPlan["response_recorded"] != false ||
@@ -3484,36 +3536,39 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		t.Fatalf("attempt execution candidate invocation plan = %#v", candidateInvocationPlan)
 	}
 	candidateInvocationSequence := stringSliceFromAny(candidateInvocationPlan["invocation_sequence"])
-	if len(candidateInvocationSequence) != 8 ||
+	if len(candidateInvocationSequence) != 9 ||
 		candidateInvocationSequence[0] != "claim_attempt" ||
 		candidateInvocationSequence[1] != "claim_idempotency" ||
 		candidateInvocationSequence[2] != "bind_credential" ||
-		candidateInvocationSequence[3] != "materialize_request" ||
-		candidateInvocationSequence[4] != "send_provider_request" ||
-		candidateInvocationSequence[5] != "record_response" ||
-		candidateInvocationSequence[6] != "record_transaction_boundary" ||
-		candidateInvocationSequence[7] != "unlock_dependency" {
+		candidateInvocationSequence[3] != "select_adapter_runtime" ||
+		candidateInvocationSequence[4] != "materialize_request" ||
+		candidateInvocationSequence[5] != "send_provider_request" ||
+		candidateInvocationSequence[6] != "record_response" ||
+		candidateInvocationSequence[7] != "record_transaction_boundary" ||
+		candidateInvocationSequence[8] != "unlock_dependency" {
 		t.Fatalf("attempt execution candidate invocation sequence = %#v", candidateInvocationSequence)
 	}
 	candidateInvocationSubplans := stringSliceFromAny(candidateInvocationPlan["required_subplans"])
-	if len(candidateInvocationSubplans) != 6 ||
+	if len(candidateInvocationSubplans) != 7 ||
 		candidateInvocationSubplans[0] != "claim_plan" ||
 		candidateInvocationSubplans[1] != "credential_binding_plan" ||
-		candidateInvocationSubplans[2] != "request_materialization_plan" ||
-		candidateInvocationSubplans[3] != "transport_plan" ||
-		candidateInvocationSubplans[4] != "response_plan" ||
-		candidateInvocationSubplans[5] != "transaction_plan" {
+		candidateInvocationSubplans[2] != "adapter_runtime_plan" ||
+		candidateInvocationSubplans[3] != "request_materialization_plan" ||
+		candidateInvocationSubplans[4] != "transport_plan" ||
+		candidateInvocationSubplans[5] != "response_plan" ||
+		candidateInvocationSubplans[6] != "transaction_plan" {
 		t.Fatalf("attempt execution candidate invocation subplans = %#v", candidateInvocationSubplans)
 	}
 	candidateInvocationBlockedReasons := stringSliceFromAny(candidateInvocationPlan["blocked_reasons"])
-	if len(candidateInvocationBlockedReasons) != 7 ||
+	if len(candidateInvocationBlockedReasons) != 8 ||
 		candidateInvocationBlockedReasons[0] != "provider_review_attempt_claim_not_recorded" ||
 		candidateInvocationBlockedReasons[1] != "provider_credential_runtime_binding_not_armed" ||
-		candidateInvocationBlockedReasons[2] != "provider_request_not_materialized" ||
-		candidateInvocationBlockedReasons[3] != "provider_api_call_not_made" ||
-		candidateInvocationBlockedReasons[4] != "provider_review_transaction_not_recorded" ||
-		candidateInvocationBlockedReasons[5] != "provider_review_adapter_not_implemented" ||
-		candidateInvocationBlockedReasons[6] != "provider_review_mutation_not_armed" {
+		candidateInvocationBlockedReasons[2] != "provider_review_adapter_runtime_not_bound" ||
+		candidateInvocationBlockedReasons[3] != "provider_request_not_materialized" ||
+		candidateInvocationBlockedReasons[4] != "provider_api_call_not_made" ||
+		candidateInvocationBlockedReasons[5] != "provider_review_transaction_not_recorded" ||
+		candidateInvocationBlockedReasons[6] != "provider_review_adapter_not_implemented" ||
+		candidateInvocationBlockedReasons[7] != "provider_review_mutation_not_armed" {
 		t.Fatalf("attempt execution candidate invocation blocked reasons = %#v", candidateInvocationBlockedReasons)
 	}
 	candidateGates := sliceOfMapsFromAny(candidate["gates"])
@@ -4358,10 +4413,11 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 	claimPlan := map[string]any{"claim_metadata_ready": true}
 	requestPlan := map[string]any{"request_materialization_ready": false}
 	credentialPlan := map[string]any{"credential_binding_ready": false}
+	runtimePlan := map[string]any{"runtime_ready": false}
 	transportPlan := map[string]any{"mode": "redacted_attempt_adapter_transport_plan", "transport_ready": true}
 	responsePlan := map[string]any{"response_recording_ready": false}
 	transactionPlan := map[string]any{"transaction_metadata_ready": true}
-	plan := providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, transportPlan, responsePlan, transactionPlan)
+	plan := providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, runtimePlan, transportPlan, responsePlan, transactionPlan)
 	if plan["mode"] != "redacted_attempt_adapter_invocation_plan" ||
 		plan["invocation_state"] != "blocked" ||
 		plan["invocation_ready"] != false ||
@@ -4371,16 +4427,19 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		plan["operation_order"] != 10 ||
 		plan["claim_metadata_ready"] != true ||
 		plan["credential_binding_ready"] != false ||
+		plan["adapter_runtime_ready"] != false ||
 		plan["request_materialization_ready"] != false ||
 		plan["transport_metadata_ready"] != true ||
 		plan["response_recording_ready"] != false ||
 		plan["transaction_metadata_ready"] != true ||
 		plan["claim_metadata_ready_reason"] != "ready" ||
+		plan["adapter_runtime_ready_reason"] != "provider_review_adapter_runtime_not_ready" ||
 		plan["transport_metadata_ready_reason"] != "ready" ||
 		plan["transaction_metadata_ready_reason"] != "ready" ||
 		plan["requires_attempt_claim"] != true ||
 		plan["requires_idempotency_claim"] != true ||
 		plan["requires_credential_binding"] != true ||
+		plan["requires_adapter_runtime"] != true ||
 		plan["requires_request_materialization"] != true ||
 		plan["requires_transport"] != true ||
 		plan["requires_response_recording"] != true ||
@@ -4388,6 +4447,7 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		plan["attempt_claim_recorded"] != false ||
 		plan["idempotency_claim_recorded"] != false ||
 		plan["credential_bound"] != false ||
+		plan["adapter_runtime_bound"] != false ||
 		plan["request_materialized"] != false ||
 		plan["provider_request_sent"] != false ||
 		plan["response_recorded"] != false ||
@@ -4413,17 +4473,19 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		t.Fatalf("providerReviewAttemptAdapterInvocationPlan() = %#v", plan)
 	}
 	sequence := stringSliceFromAny(plan["invocation_sequence"])
-	if len(sequence) != 8 ||
+	if len(sequence) != 9 ||
 		sequence[0] != "claim_attempt" ||
-		sequence[6] != "record_transaction_boundary" ||
-		sequence[7] != "unlock_dependency" {
+		sequence[3] != "select_adapter_runtime" ||
+		sequence[7] != "record_transaction_boundary" ||
+		sequence[8] != "unlock_dependency" {
 		t.Fatalf("invocation sequence = %#v", sequence)
 	}
 	blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
-	if len(blockedReasons) != 7 ||
+	if len(blockedReasons) != 8 ||
 		blockedReasons[0] != "provider_review_attempt_claim_not_recorded" ||
-		blockedReasons[4] != "provider_review_transaction_not_recorded" ||
-		blockedReasons[6] != "provider_review_mutation_not_armed" {
+		blockedReasons[2] != "provider_review_adapter_runtime_not_bound" ||
+		blockedReasons[5] != "provider_review_transaction_not_recorded" ||
+		blockedReasons[7] != "provider_review_mutation_not_armed" {
 		t.Fatalf("invocation blocked reasons = %#v", blockedReasons)
 	}
 	encoded, _ := json.Marshal(plan)
@@ -4432,7 +4494,7 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 			t.Fatalf("invocation plan leaked %q: %s", leak, encoded)
 		}
 	}
-	if got := providerReviewAttemptAdapterInvocationPlan(nil, nil, nil, nil, nil, nil, nil); len(got) != 0 {
+	if got := providerReviewAttemptAdapterInvocationPlan(nil, nil, nil, nil, nil, nil, nil, nil); len(got) != 0 {
 		t.Fatalf("empty operation invocation plan = %#v", got)
 	}
 	got := providerReviewAttemptAdapterInvocationPlan(
@@ -4440,6 +4502,7 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		claimPlan,
 		requestPlan,
 		credentialPlan,
+		runtimePlan,
 		transportPlan,
 		responsePlan,
 		transactionPlan,
@@ -4452,6 +4515,7 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		claimPlan,
 		requestPlan,
 		credentialPlan,
+		runtimePlan,
 		transportPlan,
 		responsePlan,
 		transactionPlan,
@@ -4464,6 +4528,7 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		claimPlan,
 		requestPlan,
 		credentialPlan,
+		runtimePlan,
 		map[string]any{"mode": "raw_transport_plan", "transport_ready": false},
 		responsePlan,
 		transactionPlan,
@@ -4477,6 +4542,7 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		claimPlan,
 		requestPlan,
 		credentialPlan,
+		runtimePlan,
 		transportPlan,
 		responsePlan,
 		map[string]any{"transaction_metadata_ready": false},
@@ -4484,6 +4550,143 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 	if notReadyTransactionPlan["transaction_metadata_ready"] != false ||
 		notReadyTransactionPlan["transaction_metadata_ready_reason"] != "provider_review_transaction_metadata_not_ready" {
 		t.Fatalf("not ready transaction invocation plan = %#v", notReadyTransactionPlan)
+	}
+}
+
+func TestProviderReviewAttemptAdapterRuntimePlan(t *testing.T) {
+	for _, item := range []struct {
+		name         string
+		provider     string
+		operation    string
+		endpoint     string
+		adapterKind  string
+		wantNonEmpty bool
+	}{
+		{
+			name:         "github branch ref selects github runtime",
+			provider:     "github",
+			operation:    "create_branch_ref",
+			endpoint:     "github.create_branch_ref",
+			adapterKind:  "github_provider_review_adapter",
+			wantNonEmpty: true,
+		},
+		{
+			name:         "gitea review request selects gitea runtime",
+			provider:     "gitea",
+			operation:    "open_review_request",
+			endpoint:     "gitea.open_review",
+			adapterKind:  "gitea_provider_review_adapter",
+			wantNonEmpty: true,
+		},
+		{
+			name:         "github commit starter files selects github runtime",
+			provider:     "github",
+			operation:    "commit_starter_files",
+			endpoint:     "github.commit_files",
+			adapterKind:  "github_provider_review_adapter",
+			wantNonEmpty: true,
+		},
+		{
+			name:      "unknown provider returns empty plan",
+			provider:  "raw_provider",
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name:      "unknown operation returns empty plan",
+			provider:  "github",
+			operation: "raw_operation",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name:      "empty operation name returns empty plan",
+			provider:  "github",
+			operation: "",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name:      "empty endpoint key returns empty plan",
+			provider:  "github",
+			operation: "create_branch_ref",
+			endpoint:  "",
+		},
+		{
+			name:      "provider endpoint mismatch returns empty plan",
+			provider:  "github",
+			operation: "create_branch_ref",
+			endpoint:  "gitea.create_branch_ref",
+		},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			plan := providerReviewAttemptAdapterRuntimePlan(item.provider, item.operation, item.endpoint)
+			if !item.wantNonEmpty {
+				if len(plan) != 0 {
+					t.Fatalf("runtime plan should be empty: %#v", plan)
+				}
+				return
+			}
+			if plan["mode"] != "redacted_attempt_adapter_runtime_plan" ||
+				plan["runtime_state"] != "blocked" ||
+				plan["runtime_ready"] != false ||
+				plan["runtime_ready_reason"] != "provider_review_adapter_runtime_not_armed" ||
+				plan["provider_type"] != item.provider ||
+				plan["adapter_kind"] != item.adapterKind ||
+				plan["operation_name"] != item.operation ||
+				plan["endpoint_key"] != item.endpoint ||
+				plan["adapter_interface_registered"] != true ||
+				plan["adapter_dispatch_registered"] != true ||
+				plan["runtime_adapter_selected"] != true ||
+				plan["operation_supported"] != true ||
+				plan["live_adapter_implemented"] != false ||
+				plan["provider_client_constructed"] != false ||
+				plan["execute_method_bound"] != false ||
+				plan["request_builder_bound"] != false ||
+				plan["response_handler_bound"] != false ||
+				plan["transaction_handler_bound"] != false ||
+				plan["requires_provider_client"] != true ||
+				plan["requires_request_builder"] != true ||
+				plan["requires_response_handler"] != true ||
+				plan["requires_transaction_handler"] != true ||
+				plan["requires_mutation_arming"] != true ||
+				plan["runtime_boundary_redacted"] != true ||
+				plan["external_call_made"] != false ||
+				plan["provider_api_call_made"] != false ||
+				plan["provider_api_mutation"] != "disabled" ||
+				plan["request_body_included"] != false ||
+				plan["response_body_included"] != false ||
+				plan["headers_included"] != false ||
+				plan["authorization_header_included"] != false ||
+				plan["provider_url_included"] != false ||
+				plan["idempotency_key_included"] != false ||
+				plan["contains_token"] != false ||
+				plan["contains_provider_url"] != false ||
+				plan["contains_repository_ref"] != false ||
+				plan["contains_branch_name"] != false ||
+				plan["contains_file_content"] != false {
+				t.Fatalf("runtime plan = %#v", plan)
+			}
+			methods := stringSliceFromAny(plan["required_runtime_methods"])
+			if len(methods) != 4 ||
+				methods[0] != "build_request" ||
+				methods[1] != "send_provider_request" ||
+				methods[2] != "handle_response" ||
+				methods[3] != "record_attempt_transaction" {
+				t.Fatalf("runtime methods = %#v", methods)
+			}
+			blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
+			if len(blockedReasons) != 3 ||
+				blockedReasons[0] != "provider_review_live_adapter_not_implemented" ||
+				blockedReasons[1] != "provider_review_adapter_runtime_not_armed" ||
+				blockedReasons[2] != "provider_review_mutation_not_armed" {
+				t.Fatalf("runtime blocked reasons = %#v", blockedReasons)
+			}
+			encoded, _ := json.Marshal(plan)
+			for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+				if strings.Contains(string(encoded), leak) {
+					t.Fatalf("runtime plan leaked %q: %s", leak, encoded)
+				}
+			}
+		})
 	}
 }
 
@@ -4785,6 +4988,9 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 		}
 		if credentialPlan := mapFromAny(dispatchPlan["credential_binding_plan"]); len(credentialPlan) != 0 {
 			t.Fatalf("unknown operation credential binding plan should be empty: %#v", credentialPlan)
+		}
+		if runtimePlan := mapFromAny(dispatchPlan["adapter_runtime_plan"]); len(runtimePlan) != 0 {
+			t.Fatalf("unknown operation runtime plan should be empty: %#v", runtimePlan)
 		}
 		if transactionPlan := mapFromAny(dispatchPlan["transaction_plan"]); len(transactionPlan) != 0 {
 			t.Fatalf("unknown operation transaction plan should be empty: %#v", transactionPlan)

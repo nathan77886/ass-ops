@@ -11135,6 +11135,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 	transportPlan := providerReviewAttemptAdapterTransportPlan(providerType, operationName)
 	responsePlan := providerReviewAttemptAdapterResponsePlan(operation, requestSummary, responseDiagnostics)
 	credentialPlan := providerReviewAttemptAdapterCredentialBindingPlan(providerType, operationName)
+	runtimePlan := providerReviewAttemptAdapterRuntimePlan(providerType, operationName, endpointKey)
 	transactionPlan := providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, responsePlan)
 	return map[string]any{
 		"mode":                         "redacted_attempt_adapter_dispatch_plan",
@@ -11155,8 +11156,9 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 		"transport_plan":               transportPlan,
 		"response_plan":                responsePlan,
 		"credential_binding_plan":      credentialPlan,
+		"adapter_runtime_plan":         runtimePlan,
 		"transaction_plan":             transactionPlan,
-		"invocation_plan":              providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, transportPlan, responsePlan, transactionPlan),
+		"invocation_plan":              providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, runtimePlan, transportPlan, responsePlan, transactionPlan),
 		"idempotency_key_kind":         "operation_scope_hash",
 		"requires_attempt_claim":       true,
 		"requires_idempotency_claim":   true,
@@ -11186,7 +11188,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 	}
 }
 
-func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, transportPlan, responsePlan, transactionPlan map[string]any) map[string]any {
+func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, runtimePlan, transportPlan, responsePlan, transactionPlan map[string]any) map[string]any {
 	if len(operation) == 0 {
 		return map[string]any{}
 	}
@@ -11203,20 +11205,23 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"operation_name":                    operationName,
 		"endpoint_key":                      endpointKey,
 		"operation_order":                   intFromAny(operation["operation_order"], 0),
-		"invocation_sequence":               []string{"claim_attempt", "claim_idempotency", "bind_credential", "materialize_request", "send_provider_request", "record_response", "record_transaction_boundary", "unlock_dependency"},
-		"required_subplans":                 []string{"claim_plan", "credential_binding_plan", "request_materialization_plan", "transport_plan", "response_plan", "transaction_plan"},
+		"invocation_sequence":               []string{"claim_attempt", "claim_idempotency", "bind_credential", "select_adapter_runtime", "materialize_request", "send_provider_request", "record_response", "record_transaction_boundary", "unlock_dependency"},
+		"required_subplans":                 []string{"claim_plan", "credential_binding_plan", "adapter_runtime_plan", "request_materialization_plan", "transport_plan", "response_plan", "transaction_plan"},
 		"claim_metadata_ready":              boolOnlyFromAny(claimPlan["claim_metadata_ready"]),
 		"credential_binding_ready":          boolOnlyFromAny(credentialPlan["credential_binding_ready"]),
+		"adapter_runtime_ready":             boolOnlyFromAny(runtimePlan["runtime_ready"]),
 		"request_materialization_ready":     boolOnlyFromAny(requestPlan["request_materialization_ready"]),
 		"transport_metadata_ready":          boolOnlyFromAny(transportPlan["transport_ready"]),
 		"response_recording_ready":          boolOnlyFromAny(responsePlan["response_recording_ready"]),
 		"transaction_metadata_ready":        boolOnlyFromAny(transactionPlan["transaction_metadata_ready"]),
 		"claim_metadata_ready_reason":       providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(claimPlan["claim_metadata_ready"]), "provider_review_claim_metadata_not_ready"),
+		"adapter_runtime_ready_reason":      providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(runtimePlan["runtime_ready"]), "provider_review_adapter_runtime_not_ready"),
 		"transport_metadata_ready_reason":   providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(transportPlan["transport_ready"]), "provider_review_transport_metadata_not_ready"),
 		"transaction_metadata_ready_reason": providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(transactionPlan["transaction_metadata_ready"]), "provider_review_transaction_metadata_not_ready"),
 		"requires_attempt_claim":            true,
 		"requires_idempotency_claim":        true,
 		"requires_credential_binding":       true,
+		"requires_adapter_runtime":          true,
 		"requires_request_materialization":  true,
 		"requires_transport":                true,
 		"requires_response_recording":       true,
@@ -11225,6 +11230,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"attempt_claim_recorded":            false,
 		"idempotency_claim_recorded":        false,
 		"credential_bound":                  false,
+		"adapter_runtime_bound":             false,
 		"request_materialized":              false,
 		"provider_request_sent":             false,
 		"response_recorded":                 false,
@@ -11250,6 +11256,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"blocked_reasons": []string{
 			"provider_review_attempt_claim_not_recorded",
 			"provider_credential_runtime_binding_not_armed",
+			"provider_review_adapter_runtime_not_bound",
 			"provider_request_not_materialized",
 			"provider_api_call_not_made",
 			"provider_review_transaction_not_recorded",
