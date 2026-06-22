@@ -5676,6 +5676,41 @@ func assetInventorySQL() string {
 		JOIN agent_tasks at ON at.id=atc.agent_task_id
 		UNION ALL
 		SELECT
+			'worker_job:' || wj.id::text,
+			COALESCE(op.project_id::text, ''),
+			'worker_job',
+			wj.tool_name,
+			wj.tool_name,
+			'Worker job',
+			'assops_worker',
+			wj.id::text,
+			wj.status,
+			CASE
+				WHEN wj.status='failed' THEN 'high'
+				WHEN wj.status IN ('queued', 'running') THEN 'warning'
+				ELSE 'normal'
+			END,
+			'worker_jobs',
+			wj.id::text,
+			jsonb_build_object(
+				'operation_run_id', wj.operation_run_id,
+				'tool_name', wj.tool_name,
+				'required_capabilities', wj.required_capabilities,
+				'preferred_node_kind', wj.preferred_node_kind,
+				'assigned_worker_node_id', wj.assigned_worker_node_id,
+				'claimed_at', wj.claimed_at,
+				'started_at', wj.started_at,
+				'finished_at', wj.finished_at,
+				'has_payload', wj.payload <> '{}'::jsonb,
+				'has_result', wj.result <> '{}'::jsonb,
+				'has_error', wj.error <> ''
+			),
+			wj.created_at,
+			wj.updated_at
+		FROM worker_jobs wj
+		LEFT JOIN operation_runs op ON op.id=wj.operation_run_id
+		UNION ALL
+		SELECT
 			'worker_node:' || wn.id::text,
 			'',
 			'node_agent',
@@ -5743,6 +5778,31 @@ func assetRelationInventorySQL() string {
 			op.created_at
 		FROM projects p
 		JOIN operation_runs op ON op.project_id=p.id
+		UNION ALL
+		SELECT
+			'operation_run:' || op.id::text || ':dispatched_worker_job:worker_job:' || wj.id::text,
+			COALESCE(op.project_id::text, ''),
+			'operation_run:' || op.id::text,
+			'worker_job:' || wj.id::text,
+			'dispatched_worker_job',
+			jsonb_build_object('tool_name', wj.tool_name, 'status', wj.status),
+			wj.created_at
+		FROM worker_jobs wj
+		JOIN operation_runs op ON op.id=wj.operation_run_id
+		UNION ALL
+		-- Queued jobs have not been claimed yet, so they intentionally do not have an
+		-- assigned node edge until assigned_worker_node_id is set by claim.
+		SELECT
+			'worker_job:' || wj.id::text || ':assigned_to:worker_node:' || wn.id::text,
+			COALESCE(op.project_id::text, ''),
+			'worker_job:' || wj.id::text,
+			'worker_node:' || wn.id::text,
+			'assigned_to_worker_node',
+			jsonb_build_object('tool_name', wj.tool_name, 'status', wj.status, 'node_kind', wn.kind),
+			wj.created_at
+		FROM worker_jobs wj
+		JOIN worker_nodes wn ON wn.id=wj.assigned_worker_node_id
+		LEFT JOIN operation_runs op ON op.id=wj.operation_run_id
 		UNION ALL
 		SELECT
 			'project:' || p.id::text || ':owns:operation_approval:' || oa.id::text,

@@ -167,7 +167,7 @@ Implemented as real local code:
 - Agent task, generated plan, approve plan, approval-gated execute-plan operation enqueue, and simulation-only tool-call audit with patch workflow guardrails
 - Argo connection CRUD, Argo app sync/list, deployment posture summary, and rollback point visibility
 - SSH machine CRUD and controlled SSH command runs
-- Asset Center inventory search, cross-project graph search, saved graph views, selected-asset relation graph, status history, manual graph relation edits, operation-run and project-template-run asset visibility with target/output links, and upstream/downstream dependency path queries
+- Asset Center inventory search, cross-project graph search, saved graph views, selected-asset relation graph, status history, manual graph relation edits, operation-run, worker-job, and project-template-run asset visibility with target/output links, and upstream/downstream dependency path queries
 - Canonical asset ledger backfill/sync from current domain tables, deduplicated asset status snapshots, plus best-effort refresh after key asset-producing writes and worker operation completion
 - Provider account management for GitHub/Gitea template repository creation, with masked token-env display and template account selectors
 - Gitea/GitHub webhook connection, HMAC verification, event audit asset graph visibility, connection health summaries, RepoSyncAsset enqueue, and GitHub Actions read-model updates

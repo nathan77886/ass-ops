@@ -221,6 +221,11 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		"'has_input', atc.input <> '{}'::jsonb",
 		"'has_output', atc.output <> '{}'::jsonb",
 		"'has_error', atc.error_message <> ''",
+		"'worker_job'",
+		"FROM worker_jobs wj",
+		"'has_payload', wj.payload <> '{}'::jsonb",
+		"'has_result', wj.result <> '{}'::jsonb",
+		"'has_error', wj.error <> ''",
 		"'node_agent'",
 	} {
 		if !strings.Contains(sql, token) {
@@ -247,6 +252,15 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 	} {
 		if forbidden.MatchString(sql) {
 			t.Fatalf("webhook event sensitive payload should not be exposed in assetInventorySQL: %s", forbidden)
+		}
+	}
+	for _, forbidden := range []*regexp.Regexp{
+		regexp.MustCompile(`'payload'\s*,\s*wj\.payload`),
+		regexp.MustCompile(`'result'\s*,\s*wj\.result`),
+		regexp.MustCompile(`'error'\s*,\s*wj\.error`),
+	} {
+		if forbidden.MatchString(sql) {
+			t.Fatalf("worker job sensitive payload should not be exposed in assetInventorySQL: %s", forbidden)
 		}
 	}
 	for _, forbidden := range []*regexp.Regexp{
@@ -285,6 +299,8 @@ func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
 	sql := assetRelationInventorySQL()
 	for _, token := range []string{
 		"'project:' || p.id::text || ':owns:operation_run:' || op.id::text",
+		"'operation_run:' || op.id::text || ':dispatched_worker_job:worker_job:' || wj.id::text",
+		"'worker_job:' || wj.id::text || ':assigned_to:worker_node:' || wn.id::text",
 		"'project:' || p.id::text || ':owns:operation_approval:' || oa.id::text",
 		"'operation_approval:' || oa.id::text || ':gates_operation:operation_run:' || op.id::text",
 		"'operation_approval_rule:' || oar.id::text || ':governs:operation_approval:' || oa.id::text",
@@ -311,6 +327,8 @@ func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
 		"'webhook_event:' || we.id::text || ':triggered_operation:operation_run:' || op.id::text",
 		"'webhook_connection:' || wc.id::text || ':triggered_operation:operation_run:' || op.id::text",
 		"'owns_operation'",
+		"'dispatched_worker_job'",
+		"'assigned_to_worker_node'",
 		"'owns_approval'",
 		"'gates_operation'",
 		"'targets'",
@@ -424,6 +442,8 @@ func TestAssetRelationInventorySQLIncludesCoreRelations(t *testing.T) {
 		"'ran_tool_call'",
 		"'received_webhook_event'",
 		"'matched_repo_sync'",
+		"'dispatched_worker_job'",
+		"'assigned_to_worker_node'",
 		"FROM asset_relations ar",
 		"ar.metadata->>'source'='manual'",
 	} {
@@ -442,6 +462,9 @@ func TestAssetRelationInventorySQLIncludesCoreRelations(t *testing.T) {
 		regexp.MustCompile(`'payload'\s*,\s*we\.payload`),
 		regexp.MustCompile(`'result'\s*,\s*we\.result`),
 		regexp.MustCompile(`'error_message'\s*,\s*we\.error_message`),
+		regexp.MustCompile(`'payload'\s*,\s*wj\.payload`),
+		regexp.MustCompile(`'result'\s*,\s*wj\.result`),
+		regexp.MustCompile(`'error'\s*,\s*wj\.error`),
 	} {
 		if forbidden.MatchString(sql) {
 			t.Fatalf("project template run relation metadata should not expose sensitive payload: %s", forbidden)
