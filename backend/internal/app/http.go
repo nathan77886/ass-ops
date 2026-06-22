@@ -845,7 +845,7 @@ func (s *Server) requestProjectTemplateProviderReviewExecution(w http.ResponseWr
 		writeQueryOne(w, nil, err)
 		return
 	}
-	payload, err := projectTemplateProviderReviewApprovalPayload(run)
+	payload, err := projectTemplateProviderReviewApprovalPayloadForConfig(run, s.cfg.ProviderReviewExecutionEnabled)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -884,6 +884,10 @@ func (s *Server) requestProjectTemplateProviderReviewExecution(w http.ResponseWr
 }
 
 func projectTemplateProviderReviewApprovalPayload(run map[string]any) (map[string]any, error) {
+	return projectTemplateProviderReviewApprovalPayloadForConfig(run, false)
+}
+
+func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, providerReviewExecutionEnabled bool) (map[string]any, error) {
 	result := mapFromAny(run["result"])
 	details := mapFromAny(result["details"])
 	reconciliation := mapFromAny(details["repository_reconciliation"])
@@ -893,6 +897,13 @@ func projectTemplateProviderReviewApprovalPayload(run map[string]any) (map[strin
 	if executionRequest["status"] != "approval_ready" {
 		return nil, fmt.Errorf("provider review execution request is not approval ready")
 	}
+	executionGuardrail := templateProviderReviewExecutionGuardrail(
+		stringFromMap(executionRequest, "provider_type"),
+		stringFromMap(executionRequest, "review_kind"),
+		stringFromMap(executionRequest, "source_branch"),
+		stringFromMap(executionRequest, "target_branch"),
+		providerReviewExecutionEnabled,
+	)
 	projectTemplateRunID := cleanOptionalID(fmt.Sprint(run["id"]))
 	if projectTemplateRunID == "" {
 		return nil, fmt.Errorf("template run id is required")
@@ -915,6 +926,7 @@ func projectTemplateProviderReviewApprovalPayload(run map[string]any) (map[strin
 		"project_template_run_id": projectTemplateRunID,
 		"project_id":              cleanOptionalID(fmt.Sprint(run["project_id"])),
 		"execution_request":       request,
+		"execution_guardrail":     executionGuardrail,
 		"provider_api_call_made":  false,
 		"provider_api_mutation":   "disabled",
 		"message":                 "Provider review execution is approval-gated; provider API mutation remains disabled in the first version.",
@@ -9575,9 +9587,18 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 		}
 		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "project_template_provider_review_execute":
+		request := mapFromAny(payload["execution_request"])
+		guardrail := templateProviderReviewExecutionGuardrail(
+			stringFromMap(request, "provider_type"),
+			stringFromMap(request, "review_kind"),
+			stringFromMap(request, "source_branch"),
+			stringFromMap(request, "target_branch"),
+			s.cfg.ProviderReviewExecutionEnabled,
+		)
 		return map[string]any{
 			"project_template_run_id": stringFromMap(payload, "project_template_run_id"),
-			"execution_request":       mapFromAny(payload["execution_request"]),
+			"execution_request":       request,
+			"execution_guardrail":     guardrail,
 			"provider_api_call_made":  false,
 			"provider_api_mutation":   "disabled",
 			"execution_enabled":       false,

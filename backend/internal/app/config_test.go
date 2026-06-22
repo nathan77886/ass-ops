@@ -5,6 +5,7 @@ import "testing"
 func TestLoadConfigIncludesApprovalWebhook(t *testing.T) {
 	t.Setenv("ASSOPS_APPROVAL_WEBHOOK_URL", "https://hooks.example.test/approval")
 	t.Setenv("ASSOPS_APPROVAL_WEBHOOK_TOKEN", "approval-token")
+	t.Setenv("ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION", "true")
 
 	cfg := LoadConfig()
 	if cfg.ApprovalWebhookURL != "https://hooks.example.test/approval" {
@@ -12,6 +13,9 @@ func TestLoadConfigIncludesApprovalWebhook(t *testing.T) {
 	}
 	if cfg.ApprovalWebhookToken != "approval-token" {
 		t.Fatalf("ApprovalWebhookToken = %q", cfg.ApprovalWebhookToken)
+	}
+	if !cfg.ProviderReviewExecutionEnabled {
+		t.Fatal("ProviderReviewExecutionEnabled should be true")
 	}
 }
 

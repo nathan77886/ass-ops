@@ -331,6 +331,18 @@ func TestProvisionTemplateRepositoryReportsProtectedBranchStrategy(t *testing.T)
 	if executionPlan["provider_api_mutation"] != "disabled" || executionPlan["requires_approval"] != true {
 		t.Fatalf("execution plan guardrails = %#v", executionPlan)
 	}
+	guardrail := mapFromAny(executionPlan["execution_guardrail"])
+	if guardrail["execution_mode"] != "disabled" ||
+		guardrail["execution_enabled"] != false ||
+		guardrail["execution_enabled_config"] != false ||
+		guardrail["provider_api_call_made"] != false ||
+		guardrail["provider_api_mutation"] != "disabled" {
+		t.Fatalf("execution guardrail = %#v", guardrail)
+	}
+	if !containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_execution_enabled") ||
+		!containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_api_adapter") {
+		t.Fatalf("execution guardrail blocked reasons = %#v", guardrail)
+	}
 	request := mapFromAny(executionPlan["execution_request"])
 	if request["status"] != "approval_ready" ||
 		request["approval_action"] != "project_template.provider_review.execute" ||
@@ -423,6 +435,17 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	if githubPlan["review_kind"] != "pull_request" || githubPlan["provider_api_mutation"] != "disabled" {
 		t.Fatalf("github execution plan = %#v", githubPlan)
 	}
+	githubGuardrail := mapFromAny(githubPlan["execution_guardrail"])
+	if githubGuardrail["execution_mode"] != "disabled" || githubGuardrail["branch_creation_allowed"] != false || githubGuardrail["review_request_allowed"] != false {
+		t.Fatalf("github execution guardrail = %#v", githubGuardrail)
+	}
+	if githubGuardrail["execution_enabled_config"] != false {
+		t.Fatalf("github execution guardrail should record disabled config: %#v", githubGuardrail)
+	}
+	gates := sliceOfMapsFromAny(githubGuardrail["gates"])
+	if len(gates) != 4 || gates[0]["gate"] != "provider_review_execution_enabled" || gates[2]["status"] != "ready" {
+		t.Fatalf("github execution guardrail gates = %#v", gates)
+	}
 	githubRequest := mapFromAny(githubPlan["execution_request"])
 	if githubRequest["status"] != "approval_ready" || githubRequest["review_kind"] != "pull_request" {
 		t.Fatalf("github execution request = %#v", githubRequest)
@@ -438,6 +461,13 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	})
 	if giteaPlan["review_kind"] != "merge_request" || giteaPlan["execution_enabled"] != false {
 		t.Fatalf("gitea execution plan = %#v", giteaPlan)
+	}
+	enabledGuardrail := templateProviderReviewExecutionGuardrail("github", "pull_request", "assops/template/demo-main", "main", true)
+	if enabledGuardrail["execution_mode"] != "adapter_blocked" || enabledGuardrail["execution_enabled"] != false {
+		t.Fatalf("enabled guardrail should remain adapter-blocked: %#v", enabledGuardrail)
+	}
+	if !containsString(stringSliceFromAny(enabledGuardrail["blocked_reasons"]), "provider_review_api_adapter") {
+		t.Fatalf("enabled guardrail should still require adapter: %#v", enabledGuardrail)
 	}
 	for _, tt := range []struct {
 		name   string

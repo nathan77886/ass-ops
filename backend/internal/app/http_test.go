@@ -1439,6 +1439,16 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 		payload["provider_api_mutation"] != "disabled" {
 		t.Fatalf("payload = %#v", payload)
 	}
+	guardrail := mapFromAny(payload["execution_guardrail"])
+	if guardrail["execution_mode"] != "disabled" ||
+		guardrail["execution_enabled"] != false ||
+		guardrail["execution_enabled_config"] != false ||
+		guardrail["provider_api_call_made"] != false {
+		t.Fatalf("payload guardrail = %#v", guardrail)
+	}
+	if !containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_execution_enabled") {
+		t.Fatalf("payload guardrail blocked reasons = %#v", guardrail)
+	}
 	request := mapFromAny(payload["execution_request"])
 	if request["status"] != "approval_ready" ||
 		request["approval_action"] != templateProviderReviewExecuteApprovalAction ||
@@ -1472,8 +1482,38 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 	}
 }
 
+func TestProjectTemplateProviderReviewApprovalPayloadUsesRuntimeGuardrailConfig(t *testing.T) {
+	plan := templateProviderReviewExecutionPlan("github", map[string]any{
+		"mode":            "pull_request",
+		"provider_type":   "github",
+		"proposed_branch": "assops/template/demo-main",
+		"target_branch":   "main",
+	})
+	payload, err := projectTemplateProviderReviewApprovalPayloadForConfig(map[string]any{
+		"id":         "11111111-1111-1111-1111-111111111111",
+		"project_id": "22222222-2222-2222-2222-222222222222",
+		"result": map[string]any{
+			"details": map[string]any{
+				"repository_reconciliation": map[string]any{
+					"provider_review_readiness": map[string]any{"execution_plan": plan},
+				},
+			},
+		},
+	}, true)
+	if err != nil {
+		t.Fatalf("projectTemplateProviderReviewApprovalPayloadForConfig: %v", err)
+	}
+	guardrail := mapFromAny(payload["execution_guardrail"])
+	if guardrail["execution_mode"] != "adapter_blocked" || guardrail["execution_enabled_config"] != true || guardrail["execution_enabled"] != false {
+		t.Fatalf("runtime guardrail should reflect enabled config while staying blocked: %#v", guardrail)
+	}
+	if !containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_api_adapter") {
+		t.Fatalf("runtime guardrail should remain adapter-blocked: %#v", guardrail)
+	}
+}
+
 func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
-	server := &Server{}
+	server := &Server{cfg: Config{ProviderReviewExecutionEnabled: true}}
 	result, operationID, err := server.executeApprovedOperation(context.Background(), nil, map[string]any{
 		"requested_by": "11111111-1111-1111-1111-111111111111",
 		"request_payload": map[string]any{
@@ -1481,6 +1521,10 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 			"project_template_run_id": "22222222-2222-2222-2222-222222222222",
 			"execution_request": map[string]any{
 				"status":                "approval_ready",
+				"provider_type":         "github",
+				"review_kind":           "pull_request",
+				"source_branch":         "assops/template/demo-main",
+				"target_branch":         "main",
 				"provider_api_mutation": "disabled",
 			},
 		},
@@ -1495,6 +1539,17 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 		result["provider_api_mutation"] != "disabled" ||
 		result["execution_enabled"] != false {
 		t.Fatalf("provider review approval result should remain audit-only: %#v", result)
+	}
+	guardrail := mapFromAny(result["execution_guardrail"])
+	if guardrail["execution_mode"] != "adapter_blocked" ||
+		guardrail["execution_enabled_config"] != true ||
+		guardrail["branch_creation_allowed"] != false ||
+		guardrail["review_request_allowed"] != false {
+		t.Fatalf("provider review execution guardrail should stay blocked: %#v", guardrail)
+	}
+	if !containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_api_adapter") ||
+		!containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "starter_file_payload_staged") {
+		t.Fatalf("provider review execution blocked reasons = %#v", guardrail)
 	}
 }
 

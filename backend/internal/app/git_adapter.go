@@ -598,6 +598,7 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 	targetBranch := strings.TrimSpace(fmt.Sprint(branchStrategy["target_branch"]))
 	reviewKind := templateProviderReviewKind(provider, mode)
 	executionRequest := templateProviderReviewExecutionRequest(provider, reviewKind, sourceBranch, targetBranch)
+	guardrail := templateProviderReviewExecutionGuardrail(provider, reviewKind, sourceBranch, targetBranch, false)
 	steps := []map[string]any{
 		{
 			"name":      "create_branch",
@@ -640,8 +641,80 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 		"approval_action":       templateProviderReviewExecuteApprovalAction,
 		"provider_api_mutation": "disabled",
 		"execution_request":     executionRequest,
+		"execution_guardrail":   guardrail,
 		"steps":                 steps,
 		"message":               "Provider review execution request is prepared for approval, but branch creation, starter-file commits, and PR/MR creation remain disabled.",
+	}
+}
+
+func templateProviderReviewExecutionGuardrail(provider, reviewKind, sourceBranch, targetBranch string, enableRequested bool) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	sourceBranch = strings.TrimSpace(sourceBranch)
+	targetBranch = strings.TrimSpace(targetBranch)
+	branchReady := sourceBranch != "" && targetBranch != "" && isSafeGitRefPart(sourceBranch) && isSafeGitRefPart(targetBranch)
+	configStatus := "blocked"
+	configMessage := "Set ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION=true only after provider branch, commit, and review adapters are ready."
+	if enableRequested {
+		configStatus = "ready"
+		configMessage = "Provider review execution was explicitly requested by configuration."
+	}
+	gates := []map[string]any{
+		{
+			"gate":              "provider_review_execution_enabled",
+			"status":            configStatus,
+			"required_config":   "ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION",
+			"message":           configMessage,
+			"sensitive_payload": false,
+		},
+		{
+			"gate":              "provider_review_api_adapter",
+			"status":            "blocked",
+			"provider_type":     provider,
+			"review_kind":       reviewKind,
+			"message":           "Provider branch creation, starter-file commit, and PR/MR API adapters are not implemented yet.",
+			"sensitive_payload": false,
+		},
+		{
+			"gate":              "review_branches_valid",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[branchReady],
+			"source_branch":     sourceBranch,
+			"target_branch":     targetBranch,
+			"message":           "Source and target branches must be present safe git refs before provider review execution.",
+			"sensitive_payload": false,
+		},
+		{
+			"gate":              "starter_file_payload_staged",
+			"status":            "blocked",
+			"message":           "Approved provider review execution does not yet stage starter-file content for external provider mutation.",
+			"sensitive_payload": false,
+		},
+	}
+	blocked := make([]string, 0, len(gates))
+	for _, gate := range gates {
+		if gate["status"] != "ready" {
+			blocked = append(blocked, stringFromMap(gate, "gate"))
+		}
+	}
+	mode := "disabled"
+	if enableRequested {
+		mode = "adapter_blocked"
+	}
+	return map[string]any{
+		"execution_mode":           mode,
+		"execution_enabled":        false,
+		"execution_enabled_config": enableRequested,
+		"provider_type":            provider,
+		"review_kind":              reviewKind,
+		"source_branch":            sourceBranch,
+		"target_branch":            targetBranch,
+		"provider_api_call_made":   false,
+		"provider_api_mutation":    "disabled",
+		"branch_creation_allowed":  false,
+		"review_request_allowed":   false,
+		"blocked_reasons":          blocked,
+		"gates":                    gates,
+		"next_step":                "Implement provider branch, commit, and review adapters, then enable the guarded execution path in a controlled environment.",
 	}
 }
 

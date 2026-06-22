@@ -321,10 +321,13 @@ type TemplateProvisionGuidance = {
   approvalAction: string;
   executionRequestStatus: string;
   executionRequestResource: string;
+  guardrailMode: string;
+  guardrailReasons: string[];
+  guardrailGates: AnyRow[];
   reviewSteps: AnyRow[];
 };
 
-function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'executionRequestStatus' | 'executionRequestResource' | 'reviewSteps'> & Partial<Pick<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'executionRequestStatus' | 'executionRequestResource' | 'reviewSteps'>>): TemplateProvisionGuidance {
+function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'executionRequestStatus' | 'executionRequestResource' | 'guardrailMode' | 'guardrailReasons' | 'guardrailGates' | 'reviewSteps'> & Partial<Pick<TemplateProvisionGuidance, 'reviewStatus' | 'reviewExecution' | 'reviewPlanMode' | 'reviewKind' | 'sourceBranch' | 'targetBranch' | 'approvalAction' | 'executionRequestStatus' | 'executionRequestResource' | 'guardrailMode' | 'guardrailReasons' | 'guardrailGates' | 'reviewSteps'>>): TemplateProvisionGuidance {
   return {
     reviewStatus: '',
     reviewExecution: '',
@@ -335,6 +338,9 @@ function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' 
     approvalAction: '',
     executionRequestStatus: '',
     executionRequestResource: '',
+    guardrailMode: '',
+    guardrailReasons: [],
+    guardrailGates: [],
     reviewSteps: [],
     ...value
   };
@@ -366,6 +372,7 @@ function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
     const providerReview = reconciliation.provider_review_readiness || {};
     const executionPlan = providerReview.execution_plan || {};
     const executionRequest = executionPlan.execution_request || {};
+    const executionGuardrail = executionPlan.execution_guardrail || {};
     const branchStrategyReady = reconciliation.kind === 'protected_branch' && branchStrategy.strategy_status === 'planned';
     const titles: Record<string, string> = {
       existing_repository: 'Existing repository needs reconciliation',
@@ -387,6 +394,9 @@ function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
       approvalAction: String(executionPlan.approval_action || ''),
       executionRequestStatus: String(executionRequest.status || ''),
       executionRequestResource: String(executionRequest.resource_type || ''),
+      guardrailMode: String(executionGuardrail.execution_mode || ''),
+      guardrailReasons: Array.isArray(executionGuardrail.blocked_reasons) ? executionGuardrail.blocked_reasons.map((item: unknown) => String(item)) : [],
+      guardrailGates: Array.isArray(executionGuardrail.gates) ? executionGuardrail.gates : [],
       reviewSteps: Array.isArray(executionPlan.steps) ? executionPlan.steps : []
     });
   }
@@ -957,6 +967,7 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
         <Tag color="blue">{guidance.reviewPlanMode}</Tag>
         {guidance.reviewKind ? <Tag>{guidance.reviewKind}</Tag> : null}
         {guidance.approvalAction ? <Tag>{guidance.approvalAction}</Tag> : null}
+        {guidance.guardrailMode ? <Tag color="gold">guardrail {guidance.guardrailMode.replaceAll('_', ' ')}</Tag> : null}
         {guidance.executionRequestStatus ? <Tag color={requestColor}>request {guidance.executionRequestStatus.replaceAll('_', ' ')}</Tag> : null}
       </Space>
       {guidance.sourceBranch || guidance.targetBranch ? (
@@ -964,6 +975,18 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
       ) : null}
       {guidance.executionRequestResource ? (
         <Typography.Text type="secondary">Resource: {guidance.executionRequestResource}</Typography.Text>
+      ) : null}
+      {guidance.guardrailGates.length ? (
+        <Space size={4} wrap>
+          {guidance.guardrailGates.map((gate, index) => (
+            <Tag key={`${gate.gate || 'gate'}-${index}`} color={gate.status === 'ready' ? 'green' : 'gold'}>
+              {String(gate.gate || 'gate')}: {String(gate.status || 'unknown')}
+            </Tag>
+          ))}
+        </Space>
+      ) : null}
+      {guidance.guardrailReasons.length ? (
+        <Typography.Text type="secondary">{shortText(`Blocked: ${guidance.guardrailReasons.join(', ')}`, 120)}</Typography.Text>
       ) : null}
       {guidance.reviewSteps.length ? (
         <Space size={4} wrap>
