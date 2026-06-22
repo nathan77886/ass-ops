@@ -1107,6 +1107,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptResponsePlanMode = typeof attemptResponsePlan.mode === 'string' ? attemptResponsePlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter response plan';
   const attemptCredentialPlan = attemptDispatchPlan.credential_binding_plan || {};
   const attemptCredentialPlanMode = typeof attemptCredentialPlan.mode === 'string' ? attemptCredentialPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter credential binding plan';
+  const attemptTransactionPlan = attemptDispatchPlan.transaction_plan || {};
+  const attemptTransactionPlanMode = typeof attemptTransactionPlan.mode === 'string' ? attemptTransactionPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter transaction plan';
   const attemptInvocationPlan = attemptDispatchPlan.invocation_plan || {};
   const attemptInvocationPlanMode = typeof attemptInvocationPlan.mode === 'string' ? attemptInvocationPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter invocation plan';
   const attemptInvocationSequence = Array.isArray(attemptInvocationPlan.invocation_sequence) ? attemptInvocationPlan.invocation_sequence : [];
@@ -1472,6 +1474,25 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>{attemptCredentialPlan.token_env_name_included === true ? 'env name included' : 'env name redacted'}</Tag>
           <Tag>{attemptCredentialPlan.token_value_included === true ? 'token included' : 'token redacted'}</Tag>
           <Tag>{String(attemptCredentialPlan.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {attemptTransactionPlan.mode ? (
+        <Space size={4} wrap>
+          <Tag>{attemptTransactionPlanMode}</Tag>
+          <Tag color={attemptTransactionPlan.transaction_state === 'blocked' ? 'red' : 'gold'}>
+            transaction {String(attemptTransactionPlan.transaction_state ?? 'blocked')}
+          </Tag>
+          <Tag color={attemptTransactionPlan.transaction_metadata_ready === true ? 'green' : 'gold'}>
+            metadata {attemptTransactionPlan.transaction_metadata_ready === true ? 'ready' : 'blocked'}
+          </Tag>
+          <Tag>
+            {String(attemptTransactionPlan.claim_status_from ?? 'planned')} -&gt; {String(attemptTransactionPlan.claim_status_to ?? 'running')}
+          </Tag>
+          <Tag>
+            {String(attemptTransactionPlan.success_attempt_status ?? 'completed')} / {String(attemptTransactionPlan.retry_attempt_status ?? 'planned')} / {String(attemptTransactionPlan.failure_attempt_status ?? 'failed')}
+          </Tag>
+          <Tag>{attemptTransactionPlan.provider_api_call_made === true ? 'api called' : 'no api call'}</Tag>
+          <Tag>{String(attemptTransactionPlan.provider_api_mutation ?? 'disabled')}</Tag>
         </Space>
       ) : null}
       {attemptInvocationPlan.mode ? (
