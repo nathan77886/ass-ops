@@ -1073,6 +1073,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptDispatchPlanMode = typeof attemptDispatchPlan.mode === 'string' ? attemptDispatchPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter dispatch plan';
   const attemptTransportPlan = attemptDispatchPlan.transport_plan || {};
   const attemptTransportPlanMode = typeof attemptTransportPlan.mode === 'string' ? attemptTransportPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter transport plan';
+  const attemptResponsePlan = attemptDispatchPlan.response_plan || {};
+  const attemptResponsePlanMode = typeof attemptResponsePlan.mode === 'string' ? attemptResponsePlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter response plan';
   const attemptExecutionCandidateGates = Array.isArray(attemptExecutionCandidate.gates) ? attemptExecutionCandidate.gates : [];
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
   return (
@@ -1394,6 +1396,21 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>timeout {Number(attemptTransportPlan.timeout_seconds || 0)}s</Tag>
           <Tag>{String(attemptTransportPlan.provider_api_mutation || 'disabled')}</Tag>
           <Tag>auth redacted</Tag>
+        </Space>
+      ) : null}
+      {attemptResponsePlan.mode ? (
+        <Space size={4} wrap>
+          <Tag>{attemptResponsePlanMode}</Tag>
+          <Tag color={attemptResponsePlan.response_recording_state === 'blocked' ? 'red' : 'gold'}>
+            response {String(attemptResponsePlan.response_recording_state || 'blocked')}
+          </Tag>
+          <Tag>{String(attemptResponsePlan.response_status || 'pending')}</Tag>
+          <Tag>
+            {String(attemptResponsePlan.success_attempt_status || 'completed')} / {String(attemptResponsePlan.retry_attempt_status || 'planned')} / {String(attemptResponsePlan.failure_attempt_status || 'failed')}
+          </Tag>
+          <Tag>{String(attemptResponsePlan.dependency_unlocks_operation || 'no dependency unlock')}</Tag>
+          <Tag>{String(attemptResponsePlan.provider_api_mutation || 'disabled')}</Tag>
+          <Tag>body redacted</Tag>
         </Space>
       ) : null}
       {attemptExecutionCandidateGates.length ? (

@@ -11050,7 +11050,7 @@ func providerReviewAttemptExecutionCandidate(operations []map[string]any, nextOp
 		candidate["status"] = "blocked"
 		candidate["adapter_contract"] = adapterContract
 		candidate["claim_plan"] = claimPlan
-		candidate["dispatch_plan"] = providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, adapterContract, claimPlan)
+		candidate["dispatch_plan"] = providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, responseDiagnostics, adapterContract, claimPlan)
 		candidate["gates"] = providerReviewAttemptExecutionCandidateGates(true, idempotencyReady, responseReady)
 		return candidate
 	}
@@ -11099,7 +11099,7 @@ func providerReviewAttemptCandidateAdapterContract(operation, requestSummary, re
 	}
 }
 
-func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, adapterContract, claimPlan map[string]any) map[string]any {
+func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, responseDiagnostics, adapterContract, claimPlan map[string]any) map[string]any {
 	if len(operation) == 0 {
 		return map[string]any{}
 	}
@@ -11138,6 +11138,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, adapter
 		"payload_builder":              safeProviderReviewPayloadBuilderName(stringFromMap(requestSummary, "payload_builder")),
 		"response_handler":             safeProviderReviewResponseHandlerName(stringFromMap(requestSummary, "response_handler")),
 		"transport_plan":               providerReviewAttemptAdapterTransportPlan(providerType, operationName),
+		"response_plan":                providerReviewAttemptAdapterResponsePlan(operation, requestSummary, responseDiagnostics),
 		"idempotency_key_kind":         "operation_scope_hash",
 		"requires_attempt_claim":       true,
 		"requires_idempotency_claim":   true,
@@ -11164,6 +11165,62 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, adapter
 		"blocked_reasons":              blockedReasons,
 		"dispatch_boundary_redacted":   true,
 		"provider_request_id_included": false,
+	}
+}
+
+func providerReviewAttemptAdapterResponsePlan(operation, requestSummary, responseDiagnostics map[string]any) map[string]any {
+	if len(operation) == 0 {
+		return map[string]any{}
+	}
+	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+	if operationName == "" || endpointKey == "" {
+		return map[string]any{}
+	}
+	unlockOperation := providerReviewAttemptDependencyUnlockOperation(operationName)
+	return map[string]any{
+		"mode":                            "redacted_attempt_adapter_response_plan",
+		"response_recording_state":        "blocked",
+		"response_recording_ready":        false,
+		"response_recording_ready_reason": "provider_api_adapter_response_not_recorded",
+		"operation_name":                  operationName,
+		"endpoint_key":                    endpointKey,
+		"operation_order":                 intFromAny(operation["operation_order"], 0),
+		"response_handler":                safeProviderReviewResponseHandlerName(stringFromMap(requestSummary, "response_handler")),
+		"response_status":                 safeProviderReviewAttemptResponseStatus(stringFromMap(responseDiagnostics, "status")),
+		"expected_success_classes":        providerReviewExpectedSuccessClassesForOperation(operationName),
+		"retryable_status_classes":        providerReviewExpectedRetryClassesForOperation(operationName),
+		"terminal_failure_status_classes": providerReviewTerminalFailureClassesForOperation(operationName),
+		"success_attempt_status":          "completed",
+		"retry_attempt_status":            "planned",
+		"failure_attempt_status":          "failed",
+		"dependency_unlocks_operation":    unlockOperation,
+		"dependency_update_status":        providerReviewAttemptDependencyUnlockStatus(unlockOperation),
+		"requires_response_handler":       true,
+		"requires_response_diagnostics":   true,
+		"requires_idempotency_ledger":     true,
+		"requires_dependency_update":      unlockOperation != "",
+		"adapter_implemented":             false,
+		"mutation_armed":                  false,
+		"response_recorded":               false,
+		"dependency_update_recorded":      false,
+		"external_call_made":              false,
+		"provider_api_call_made":          false,
+		"provider_api_mutation":           "disabled",
+		"response_body_included":          false,
+		"headers_included":                false,
+		"provider_request_id_included":    false,
+		"contains_token":                  false,
+		"contains_provider_url":           false,
+		"contains_repository_ref":         false,
+		"contains_branch_name":            false,
+		"contains_file_content":           false,
+		"blocked_reasons": []string{
+			"provider_api_call_not_made",
+			"provider_review_adapter_not_implemented",
+			"provider_review_mutation_not_armed",
+		},
+		"response_boundary_redacted": true,
 	}
 }
 
@@ -11377,6 +11434,42 @@ func providerReviewExpectedSuccessClassesForOperation(operationName string) []st
 	default:
 		return []string{}
 	}
+}
+
+func providerReviewExpectedRetryClassesForOperation(operationName string) []string {
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref", "commit_starter_files", "open_review_request":
+		return []string{"5xx"}
+	default:
+		return []string{}
+	}
+}
+
+func providerReviewTerminalFailureClassesForOperation(operationName string) []string {
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref", "commit_starter_files", "open_review_request":
+		return []string{"4xx"}
+	default:
+		return []string{}
+	}
+}
+
+func providerReviewAttemptDependencyUnlockOperation(operationName string) string {
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref":
+		return "commit_starter_files"
+	case "commit_starter_files":
+		return "open_review_request"
+	default:
+		return ""
+	}
+}
+
+func providerReviewAttemptDependencyUnlockStatus(operationName string) string {
+	if safeProviderReviewAttemptOperationName(operationName) == "" {
+		return ""
+	}
+	return "dependency_satisfied"
 }
 
 func providerReviewAttemptExecutionCandidateGates(candidateReady, idempotencyReady, responseDiagnosticsReady bool) []map[string]any {
