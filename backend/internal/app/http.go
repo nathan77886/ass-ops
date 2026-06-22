@@ -5423,6 +5423,125 @@ func assetRelationInventorySQL() string {
 		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
 		UNION ALL
 		SELECT
+			'operation_run:' || op.id::text || ':ran_repo_sync:repo_sync:' || rsa.id::text,
+			rsa.project_id::text,
+			'operation_run:' || op.id::text,
+			'repo_sync:' || rsa.id::text,
+			'ran_repo_sync',
+			jsonb_build_object('status', rsr.status),
+			rsr.created_at
+		FROM repo_sync_runs rsr
+		JOIN operation_runs op ON op.id=rsr.operation_run_id
+		JOIN repo_sync_assets rsa ON rsa.id=rsr.repo_sync_asset_id
+		UNION ALL
+		SELECT
+			'operation_run:' || op.id::text || ':used_source_remote:git_remote:' || source.id::text,
+			r.project_id::text,
+			'operation_run:' || op.id::text,
+			'git_remote:' || source.id::text,
+			'used_source_remote',
+			jsonb_build_object('status', rsr.status),
+			rsr.created_at
+		FROM repo_sync_runs rsr
+		JOIN operation_runs op ON op.id=rsr.operation_run_id
+		JOIN git_remotes source ON source.id=rsr.source_remote_id
+		JOIN project_git_repositories r ON r.id=source.project_git_repository_id
+		UNION ALL
+		SELECT
+			'operation_run:' || op.id::text || ':used_target_remote:git_remote:' || target.id::text,
+			r.project_id::text,
+			'operation_run:' || op.id::text,
+			'git_remote:' || target.id::text,
+			'used_target_remote',
+			jsonb_build_object('status', rsr.status),
+			rsr.created_at
+		FROM repo_sync_runs rsr
+		JOIN operation_runs op ON op.id=rsr.operation_run_id
+		JOIN git_remotes target ON target.id=rsr.target_remote_id
+		JOIN project_git_repositories r ON r.id=target.project_git_repository_id
+		UNION ALL
+		SELECT
+			'operation_run:' || op.id::text || ':tagged_remote:git_remote:' || target.id::text,
+			r.project_id::text,
+			'operation_run:' || op.id::text,
+			'git_remote:' || target.id::text,
+			'tagged_remote',
+			jsonb_build_object('status', rtr.status, 'tag_name', rtr.tag_name),
+			rtr.created_at
+		FROM repo_tag_runs rtr
+		JOIN operation_runs op ON op.id=rtr.operation_run_id
+		JOIN git_remotes target ON target.id=rtr.target_remote_id
+		JOIN project_git_repositories r ON r.id=target.project_git_repository_id
+		UNION ALL
+		SELECT
+			'operation_run:' || op.id::text || ':executed_on:ssh_machine:' || sm.id::text,
+			sm.project_id::text,
+			'operation_run:' || op.id::text,
+			'ssh_machine:' || sm.id::text,
+			'executed_on',
+			jsonb_build_object('status', scr.status, 'exit_code', scr.exit_code),
+			scr.created_at
+		FROM ssh_command_runs scr
+		JOIN operation_runs op ON op.id=scr.operation_run_id
+		JOIN ssh_machines sm ON sm.id=scr.ssh_machine_id
+		UNION ALL
+		SELECT
+			'operation_run:' || op.id::text || ':executed_agent_task:agent_task:' || at.id::text,
+			at.project_id::text,
+			'operation_run:' || op.id::text,
+			'agent_task:' || at.id::text,
+			'executed_agent_task',
+			jsonb_build_object('status', at.status),
+			op.created_at
+		FROM operation_runs op
+		JOIN agent_tasks at ON at.id=CASE
+			WHEN (op.input->>'agent_task_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+			THEN (op.input->>'agent_task_id')::uuid
+			ELSE NULL
+		END
+		WHERE op.operation_type='agent.execute'
+		UNION ALL
+		SELECT
+			'operation_run:' || op.id::text || ':synced_argo_connection:argo_connection:' || ac.id::text,
+			ac.project_id::text,
+			'operation_run:' || op.id::text,
+			'argo_connection:' || ac.id::text,
+			'synced_argo_connection',
+			jsonb_build_object('status', op.status),
+			op.created_at
+		FROM operation_runs op
+		JOIN argo_connections ac ON ac.id=CASE
+			WHEN (op.input->>'argo_connection_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+			THEN (op.input->>'argo_connection_id')::uuid
+			ELSE NULL
+		END
+		WHERE op.operation_type='argo.apps.sync'
+		UNION ALL
+		SELECT
+			'operation_run:' || op.id::text || ':created_from_template:project_template:' || pt.id::text,
+			COALESCE(ptr.project_id::text, ''),
+			'operation_run:' || op.id::text,
+			'project_template:' || pt.id::text,
+			'created_from_template',
+			jsonb_build_object('status', ptr.status),
+			ptr.created_at
+		FROM project_template_runs ptr
+		JOIN operation_runs op ON op.id=ptr.operation_run_id
+		JOIN project_templates pt ON pt.id=ptr.project_template_id
+		UNION ALL
+		SELECT
+			'webhook_connection:' || wc.id::text || ':triggered_operation:operation_run:' || op.id::text,
+			wc.project_id::text,
+			'webhook_connection:' || wc.id::text,
+			'operation_run:' || op.id::text,
+			'triggered_operation',
+			jsonb_build_object('provider', we.provider, 'event_type', we.event_type),
+			we.received_at
+		FROM webhook_events we
+		JOIN operation_runs op ON op.id=we.operation_run_id
+		JOIN webhook_connections wc ON wc.id=we.webhook_connection_id
+		UNION ALL
+		SELECT
 			'repository:' || r.id::text || ':has_sync:repo_sync:' || rsa.id::text,
 			r.project_id::text,
 			'repository:' || r.id::text,

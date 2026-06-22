@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -149,13 +150,61 @@ func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
 	for _, token := range []string{
 		"'project:' || p.id::text || ':owns:operation_run:' || op.id::text",
 		"'git_remote:' || gr.id::text || ':triggered:operation_run:' || op.id::text",
+		"'operation_run:' || op.id::text || ':ran_repo_sync:repo_sync:' || rsa.id::text",
+		"'operation_run:' || op.id::text || ':used_source_remote:git_remote:' || source.id::text",
+		"'operation_run:' || op.id::text || ':used_target_remote:git_remote:' || target.id::text",
+		"'operation_run:' || op.id::text || ':tagged_remote:git_remote:' || target.id::text",
+		"'operation_run:' || op.id::text || ':executed_on:ssh_machine:' || sm.id::text",
+		"'operation_run:' || op.id::text || ':executed_agent_task:agent_task:' || at.id::text",
+		"'operation_run:' || op.id::text || ':synced_argo_connection:argo_connection:' || ac.id::text",
+		"'operation_run:' || op.id::text || ':created_from_template:project_template:' || pt.id::text",
+		"'webhook_connection:' || wc.id::text || ':triggered_operation:operation_run:' || op.id::text",
 		"'owns_operation'",
 		"'triggered'",
+		"'ran_repo_sync'",
+		"'used_source_remote'",
+		"'used_target_remote'",
+		"'tagged_remote'",
+		"'executed_on'",
+		"'executed_agent_task'",
+		"'synced_argo_connection'",
+		"'created_from_template'",
+		"'triggered_operation'",
 		"JOIN operation_runs op ON op.project_id=p.id",
 		"JOIN git_remotes gr ON gr.id=op.git_remote_id",
+		"JOIN ssh_machines sm ON sm.id=scr.ssh_machine_id",
+		"WHEN (op.input->>'agent_task_id') ~*",
+		"THEN (op.input->>'agent_task_id')::uuid",
+		"WHEN (op.input->>'argo_connection_id') ~*",
+		"THEN (op.input->>'argo_connection_id')::uuid",
 	} {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("assetRelationInventorySQL missing %s", token)
+		}
+	}
+	for _, forbidden := range []*regexp.Regexp{
+		regexp.MustCompile(`\bscr\.command\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bscr\.stdout\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bscr\.stderr\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bop\.input\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bop\.result\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bop\.error\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bwe\.payload\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bwc\.secret_token\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bwc\.secret_ciphertext\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bptr\.input\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bptr\.result\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\bptr\.error_message\b\s*(,|\)|AS|\n)`),
+		regexp.MustCompile(`\brsr\.stdout\b`),
+		regexp.MustCompile(`\brsr\.stderr\b`),
+		regexp.MustCompile(`\brtr\.stdout\b`),
+		regexp.MustCompile(`\brtr\.stderr\b`),
+		regexp.MustCompile(`\bat\.prompt\b`),
+		regexp.MustCompile(`\bac\.config\b`),
+		regexp.MustCompile(`\bsm\.metadata\b`),
+	} {
+		if forbidden.MatchString(sql) {
+			t.Fatalf("assetRelationInventorySQL should not expose sensitive operation details matching %q", forbidden.String())
 		}
 	}
 }
