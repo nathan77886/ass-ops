@@ -850,6 +850,7 @@ func (s *Server) listProviderAccounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":                  sanitizeProviderAccounts(items),
 		"token_rotation_summary": providerAccountTokenRotationPlanSummary(items, time.Now().UTC()),
+		"token_rotation_plan":    providerAccountAutomatedRotationPlan(items, time.Now().UTC()),
 	})
 }
 
@@ -1451,12 +1452,28 @@ func sanitizeProviderAccount(item map[string]any) map[string]any {
 		if key == "token_env" {
 			continue
 		}
+		if key == "metadata" {
+			out[key] = sanitizeProviderAccountMetadata(mapFromAny(value))
+			continue
+		}
 		out[key] = value
 	}
 	tokenEnv := rawStringFromMap(item, "token_env")
 	out["token_configured"] = tokenEnv != ""
 	out["masked_token_env"] = maskProviderTokenEnv(tokenEnv)
 	out["token_rotation_status"] = providerAccountTokenRotationStatus(item, time.Now().UTC())
+	out["token_rotation_candidate"] = providerAccountRotationCandidate(item)
+	return out
+}
+
+func sanitizeProviderAccountMetadata(metadata map[string]any) map[string]any {
+	out := cloneMap(metadata)
+	for _, key := range providerTokenRotationCandidateKeys {
+		delete(out, key)
+	}
+	delete(out, "token")
+	delete(out, "token_env")
+	delete(out, "secret")
 	return out
 }
 
@@ -1504,6 +1521,130 @@ func providerAccountTokenRotationPlanSummary(items []map[string]any, now time.Ti
 		"action_required": actionRequired,
 		"next_action":     nextAction,
 	}
+}
+
+func providerAccountAutomatedRotationPlan(items []map[string]any, now time.Time) map[string]any {
+	planItems := make([]map[string]any, 0, len(items))
+	counts := map[string]int{
+		"ready":      0,
+		"blocked":    0,
+		"not_needed": 0,
+	}
+	for _, item := range items {
+		entry := providerAccountAutomatedRotationPlanItem(item, now)
+		status := strings.TrimSpace(fmt.Sprint(entry["status"]))
+		if _, ok := counts[status]; !ok {
+			status = "blocked"
+		}
+		counts[status]++
+		planItems = append(planItems, entry)
+	}
+	nextAction := "No provider accounts configured."
+	if len(items) > 0 {
+		switch {
+		case counts["ready"] > 0:
+			nextAction = "Review ready provider token rotation candidates, then run manual rotation or enable an execution workflow."
+		case counts["blocked"] > 0:
+			nextAction = "Add safe rotation candidate token env metadata before automated rotation can be enabled."
+		default:
+			nextAction = "No provider token rotation is currently due."
+		}
+	}
+	return map[string]any{
+		"mode":               "dry_run",
+		"automation_enabled": false,
+		"external_call_made": false,
+		"total":              len(items),
+		"ready":              counts["ready"],
+		"blocked":            counts["blocked"],
+		"not_needed":         counts["not_needed"],
+		"next_action":        nextAction,
+		"items":              planItems,
+	}
+}
+
+func providerAccountAutomatedRotationPlanItem(item map[string]any, now time.Time) map[string]any {
+	status := providerAccountTokenRotationStatus(item, now)
+	accountID := rawStringFromMap(item, "id")
+	tokenStatus := strings.TrimSpace(fmt.Sprint(status["status"]))
+	entry := map[string]any{
+		"provider_account_id": accountID,
+		"name":                rawStringFromMap(item, "name"),
+		"provider_type":       rawStringFromMap(item, "provider_type"),
+		"rotation_status":     tokenStatus,
+		"status":              "blocked",
+		"automation_enabled":  false,
+		"external_call_made":  false,
+		"masked_current_env":  maskProviderTokenEnv(rawStringFromMap(item, "token_env")),
+	}
+	for _, key := range []string{"last_rotated_at", "next_rotation_due_at", "days_since_rotation", "days_until_due"} {
+		if value, ok := status[key]; ok {
+			entry[key] = value
+		}
+	}
+	if rawStringFromMap(item, "token_env") == "" {
+		entry["blocked_reason"] = "current token env is missing"
+		entry["next_action"] = "configure a current provider token env before planning automated rotation"
+		return entry
+	}
+	if tokenStatus != "due" && tokenStatus != "soon" {
+		entry["status"] = "not_needed"
+		entry["next_action"] = "no rotation required in the current window"
+		return entry
+	}
+	candidate := providerAccountRotationCandidate(item)
+	entry["candidate_present"] = candidate["present"]
+	entry["masked_candidate_env"] = candidate["masked_token_env"]
+	if candidate["safe"] != true {
+		if candidate["present"] == true {
+			entry["blocked_reason"] = "rotation candidate token env is not allowed for this provider type"
+			entry["next_action"] = "set provider account metadata rotation_candidate_token_env to an allowed provider-scoped env name"
+		} else {
+			entry["blocked_reason"] = "safe rotation candidate token env metadata is missing"
+			entry["next_action"] = "set provider account metadata rotation_candidate_token_env to an allowed env name"
+		}
+		return entry
+	}
+	if candidate["same_as_current"] == true {
+		entry["blocked_reason"] = "candidate token env matches the current token env"
+		entry["next_action"] = "provide a different allowed candidate token env"
+		return entry
+	}
+	entry["status"] = "ready"
+	entry["next_action"] = "manual rotation can use the planned candidate; automated execution remains disabled"
+	return entry
+}
+
+var providerTokenRotationCandidateKeys = []string{
+	"rotation_candidate_token_env",
+	"next_token_env",
+	"candidate_token_env",
+	"automated_rotation_token_env",
+}
+
+func providerAccountRotationCandidate(item map[string]any) map[string]any {
+	metadata := mapFromAny(item["metadata"])
+	providerType := rawStringFromMap(item, "provider_type")
+	current := rawStringFromMap(item, "token_env")
+	candidate := ""
+	for _, key := range providerTokenRotationCandidateKeys {
+		if value := strings.TrimSpace(fmt.Sprint(metadata[key])); value != "" && value != "<nil>" {
+			candidate = value
+			break
+		}
+	}
+	out := map[string]any{
+		"present":          candidate != "",
+		"safe":             false,
+		"same_as_current":  false,
+		"masked_token_env": maskProviderTokenEnv(candidate),
+	}
+	if candidate == "" {
+		return out
+	}
+	out["safe"] = safeTemplateProviderTokenEnv(providerType, candidate)
+	out["same_as_current"] = current != "" && candidate == current
+	return out
 }
 
 const (

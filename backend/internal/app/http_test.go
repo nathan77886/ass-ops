@@ -616,6 +616,11 @@ func TestProviderAccountSanitizeDoesNotReturnRawTokenEnv(t *testing.T) {
 		"provider_type": "github",
 		"token_env":     "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_MAIN",
 		"created_at":    time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC),
+		"metadata": map[string]any{
+			"rotation_candidate_token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_NEXT",
+			"next_token_env":               "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_OTHER",
+			"note":                         "safe",
+		},
 	})
 	if _, ok := item["token_env"]; ok {
 		t.Fatal("sanitizeProviderAccount should remove token_env")
@@ -630,8 +635,20 @@ func TestProviderAccountSanitizeDoesNotReturnRawTokenEnv(t *testing.T) {
 	if strings.Contains(string(encoded), "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_MAIN") {
 		t.Fatalf("sanitized account leaked token env: %s", encoded)
 	}
+	if strings.Contains(string(encoded), "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_NEXT") ||
+		strings.Contains(string(encoded), "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_OTHER") {
+		t.Fatalf("sanitized account leaked candidate token env: %s", encoded)
+	}
 	if status := mapFromAny(item["token_rotation_status"]); status["status"] == "" {
 		t.Fatalf("token_rotation_status missing: %#v", item)
+	}
+	metadata := mapFromAny(item["metadata"])
+	if metadata["note"] != "safe" {
+		t.Fatalf("metadata note should be preserved without token env fields: %#v", metadata)
+	}
+	candidate := mapFromAny(item["token_rotation_candidate"])
+	if candidate["safe"] != true || candidate["same_as_current"] != false {
+		t.Fatalf("candidate status = %#v", candidate)
 	}
 }
 
@@ -810,6 +827,89 @@ func TestProviderAccountTokenRotationPlanSummaryNextActions(t *testing.T) {
 				t.Fatalf("next_action = %v, want %s", summary["next_action"], tt.want)
 			}
 		})
+	}
+}
+
+func TestProviderAccountAutomatedRotationPlan(t *testing.T) {
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	plan := providerAccountAutomatedRotationPlan([]map[string]any{
+		{
+			"id":            "github-due",
+			"name":          "github due",
+			"provider_type": "github",
+			"token_env":     "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_CURRENT",
+			"metadata":      map[string]any{"rotation_candidate_token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_NEXT"},
+			"created_at":    now.AddDate(0, 0, -120),
+		},
+		{
+			"id":            "gitea-soon-missing-candidate",
+			"name":          "gitea soon",
+			"provider_type": "gitea",
+			"token_env":     "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITEA_CURRENT",
+			"metadata":      map[string]any{},
+			"created_at":    now.AddDate(0, 0, -80),
+		},
+		{
+			"id":            "github-fresh",
+			"name":          "github fresh",
+			"provider_type": "github",
+			"token_env":     "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_FRESH",
+			"metadata":      map[string]any{},
+			"created_at":    now.AddDate(0, 0, -10),
+		},
+		{
+			"id":            "github-unsafe",
+			"name":          "github unsafe",
+			"provider_type": "github",
+			"token_env":     "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_CURRENT",
+			"metadata":      map[string]any{"rotation_candidate_token_env": "BAD_TOKEN_ENV"},
+			"created_at":    now.AddDate(0, 0, -120),
+		},
+		{
+			"id":            "github-same",
+			"name":          "github same",
+			"provider_type": "github",
+			"token_env":     "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_CURRENT",
+			"metadata":      map[string]any{"rotation_candidate_token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_CURRENT"},
+			"created_at":    now.AddDate(0, 0, -120),
+		},
+	}, now)
+	if plan["mode"] != "dry_run" || plan["automation_enabled"] != false || plan["external_call_made"] != false {
+		t.Fatalf("plan should be dry-run only: %#v", plan)
+	}
+	if plan["ready"] != 1 || plan["blocked"] != 3 || plan["not_needed"] != 1 {
+		t.Fatalf("plan counts = %#v", plan)
+	}
+	items := sliceOfMapsFromAny(plan["items"])
+	byID := map[string]map[string]any{}
+	for _, item := range items {
+		byID[fmt.Sprint(item["provider_account_id"])] = item
+	}
+	if byID["github-due"]["status"] != "ready" {
+		t.Fatalf("github due should be ready: %#v", byID["github-due"])
+	}
+	if byID["gitea-soon-missing-candidate"]["status"] != "blocked" {
+		t.Fatalf("missing candidate should be blocked: %#v", byID["gitea-soon-missing-candidate"])
+	}
+	if byID["github-fresh"]["status"] != "not_needed" {
+		t.Fatalf("fresh account should not need rotation: %#v", byID["github-fresh"])
+	}
+	if byID["github-unsafe"]["status"] != "blocked" || byID["github-same"]["status"] != "blocked" {
+		t.Fatalf("unsafe/same candidates should be blocked: %#v %#v", byID["github-unsafe"], byID["github-same"])
+	}
+	if !strings.Contains(fmt.Sprint(byID["github-unsafe"]["blocked_reason"]), "not allowed") {
+		t.Fatalf("unsafe candidate should explain allowlist failure: %#v", byID["github-unsafe"])
+	}
+	encoded, _ := json.Marshal(plan)
+	for _, leak := range []string{
+		"ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_CURRENT",
+		"ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_NEXT",
+		"ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITEA_CURRENT",
+		"BAD_TOKEN_ENV",
+	} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("automated rotation plan leaked %q: %s", leak, encoded)
+		}
 	}
 }
 

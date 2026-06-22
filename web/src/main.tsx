@@ -448,6 +448,40 @@ function providerTokenRotationSummaryTags(summary: AnyRow = {}) {
   ];
 }
 
+function providerAutoRotationPlanTags(plan: AnyRow = {}) {
+  return [
+    { key: 'ready', label: `${plan.ready || 0} auto-ready`, color: (plan.ready || 0) > 0 ? 'green' : 'default' },
+    { key: 'blocked', label: `${plan.blocked || 0} auto-blocked`, color: (plan.blocked || 0) > 0 ? 'red' : 'default' },
+    { key: 'not_needed', label: `${plan.not_needed || 0} not needed`, color: 'default' },
+    { key: 'mode', label: plan.mode || 'dry_run', color: plan.automation_enabled ? 'green' : 'blue' }
+  ];
+}
+
+function providerAutoRotationPlanByID(plan: AnyRow = {}) {
+  const rows = Array.isArray(plan.items) ? plan.items : [];
+  return rows.reduce<Record<string, AnyRow>>((acc, row) => {
+    if (row.provider_account_id) acc[String(row.provider_account_id)] = row;
+    return acc;
+  }, {});
+}
+
+function providerAutoRotationStatus(row: AnyRow, planByID: Record<string, AnyRow>) {
+  const plan = planByID[String(row.id)] || {};
+  const status = String(plan.status || 'unknown');
+  const colors: Record<string, string> = {
+    ready: 'green',
+    blocked: 'red',
+    not_needed: 'default',
+    unknown: 'default'
+  };
+  return {
+    color: colors[status] || 'default',
+    label: status,
+    candidate: String(plan.masked_candidate_env || ''),
+    next: String(plan.next_action || plan.blocked_reason || '')
+  };
+}
+
 function countByField(rows: AnyRow[] = [], field: string) {
   return rows.reduce<Record<string, number>>((acc, row) => {
     const key = String(row[field] || '').trim();
@@ -994,6 +1028,8 @@ function TemplateUseModal({ template, open, setOpen, onSubmit }: { template?: An
 function ProviderAccounts() {
   const accounts = useLoad(() => api('/api/provider-accounts'), []);
   const tokenRotationSummary = accounts.data?.token_rotation_summary || {};
+  const tokenRotationPlan = accounts.data?.token_rotation_plan || {};
+  const tokenRotationPlanByID = providerAutoRotationPlanByID(tokenRotationPlan);
   const [open, setOpen] = useState(false);
   const [checkingID, setCheckingID] = useState('');
   const [rotatingID, setRotatingID] = useState('');
@@ -1043,6 +1079,10 @@ function ProviderAccounts() {
         {providerTokenRotationSummaryTags(tokenRotationSummary).map((item) => <Tag key={item.key} color={item.color}>{item.label}</Tag>)}
         <Typography.Text type={tokenRotationSummary.action_required ? 'danger' : 'secondary'}>{tokenRotationSummary.next_action || 'No provider accounts configured.'}</Typography.Text>
       </Space>
+      <Space wrap>
+        {providerAutoRotationPlanTags(tokenRotationPlan).map((item) => <Tag key={item.key} color={item.color}>{item.label}</Tag>)}
+        <Typography.Text type={tokenRotationPlan.blocked ? 'danger' : 'secondary'}>{tokenRotationPlan.next_action || 'No automated rotation plan available.'}</Typography.Text>
+      </Space>
       <Table<AnyRow> rowKey="id" dataSource={accounts.data?.items || []} pagination={{ pageSize: 10 }} columns={[
         { title: 'Name', dataIndex: 'name' },
         { title: 'Provider', dataIndex: 'provider_type' },
@@ -1058,6 +1098,19 @@ function ProviderAccounts() {
               <Space direction="vertical" size={2}>
                 <Tag color={rotation.color}>{rotation.label}</Tag>
                 {rotation.detail ? <Typography.Text type="secondary">{rotation.detail}</Typography.Text> : null}
+              </Space>
+            );
+          }
+        },
+        {
+          title: 'Auto rotation',
+          render: (_, row) => {
+            const rotation = providerAutoRotationStatus(row, tokenRotationPlanByID);
+            return (
+              <Space direction="vertical" size={2}>
+                <Tag color={rotation.color}>{rotation.label}</Tag>
+                {rotation.candidate ? <Typography.Text type="secondary">{rotation.candidate}</Typography.Text> : null}
+                {rotation.next ? <Typography.Text type="secondary">{shortText(rotation.next, 72)}</Typography.Text> : null}
               </Space>
             );
           }
