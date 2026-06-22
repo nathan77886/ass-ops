@@ -1411,6 +1411,8 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.rotate_token_env")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "webhook_connection.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "webhook_connection.rotate_secret")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "ai_runtime.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "ai_runtime.verify")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "argo_connection.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "ssh_machine.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.create")`,

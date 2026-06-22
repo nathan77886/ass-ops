@@ -8208,19 +8208,53 @@ func (s *Server) createAIRuntime(w http.ResponseWriter, r *http.Request) {
 		req.CodexBinary = "codex"
 	}
 	config, _ := jsonParam(req.Config)
-	item, err := queryOne(r.Context(), s.store.DB, `
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start AI runtime transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, `
 		INSERT INTO ai_runtimes(project_id, name, runtime_type, codex_binary, model, config)
 		VALUES (NULLIF($1,'')::uuid, $2, $3, $4, $5, $6::jsonb)
 		RETURNING *`, req.ProjectID, req.Name, req.RuntimeType, req.CodexBinary, req.Model, config)
-	writeCreatedOne(w, item, err)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not create AI runtime")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ai_runtime.create") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit AI runtime")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
 }
 
 func (s *Server) verifyAIRuntime(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "ai_runtime", ID: chi.URLParam(r, "id")}, "update") {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, "UPDATE ai_runtimes SET status='verified', updated_at=now() WHERE id=$1 RETURNING *", chi.URLParam(r, "id"))
-	writeQueryOne(w, item, err)
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start AI runtime verification transaction")
+		return
+	}
+	defer tx.Rollback()
+	item, err := queryOne(r.Context(), tx, "UPDATE ai_runtimes SET status='verified', updated_at=now() WHERE id=$1 RETURNING *", chi.URLParam(r, "id"))
+	if err != nil {
+		writeQueryOne(w, item, err)
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ai_runtime.verify") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit AI runtime verification")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) createAgentTask(w http.ResponseWriter, r *http.Request) {
