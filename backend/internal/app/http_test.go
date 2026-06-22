@@ -1563,6 +1563,34 @@ func TestFormatCountMap(t *testing.T) {
 	}
 }
 
+func TestSanitizeContextRowsMetadataRedactsSensitiveKeys(t *testing.T) {
+	rows := []map[string]any{
+		{
+			"id": "rollback-1",
+			"metadata": map[string]any{
+				"source":       "argocd",
+				"access_token": "secret",
+				"nested": map[string]any{
+					"secret": "nested-secret",
+					"team":   "platform",
+				},
+			},
+		},
+	}
+	sanitizeContextRowsMetadata(rows)
+	metadata := mapFromAny(rows[0]["metadata"])
+	if metadata["access_token"] != "<redacted>" {
+		t.Fatalf("access_token = %v, want redacted", metadata["access_token"])
+	}
+	nested := mapFromAny(metadata["nested"])
+	if nested["secret"] != "<redacted>" {
+		t.Fatalf("nested secret = %v, want redacted", nested["secret"])
+	}
+	if metadata["source"] != "argocd" || nested["team"] != "platform" {
+		t.Fatalf("non-sensitive metadata changed: %#v", metadata)
+	}
+}
+
 func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 	httpSource, err := os.ReadFile("http.go")
 	if err != nil {

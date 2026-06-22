@@ -8845,6 +8845,17 @@ func countByStringField(rows []map[string]any, field string) map[string]int {
 	return counts
 }
 
+func sanitizeContextRowsMetadata(rows []map[string]any) {
+	for _, row := range rows {
+		metadata, ok := row["metadata"].(map[string]any)
+		if !ok {
+			continue
+		}
+		// Keep AI/context snapshots explicitly sanitized even if callers change query normalization.
+		row["metadata"] = sanitizeMetadata(metadata)
+	}
+}
+
 func formatCountMap(counts map[string]int) string {
 	if len(counts) == 0 {
 		return ""
@@ -9878,6 +9889,7 @@ func (s *Server) BuildContextFiles(ctx context.Context, projectID string) (map[s
 	if err != nil {
 		return nil, nil, err
 	}
+	sanitizeContextRowsMetadata(rollbackPoints)
 	sshMachines, err := queryMaps(ctx, s.store.DB, `
 		SELECT id, name, host, port, username, auth_type, created_at, updated_at
 		FROM ssh_machines

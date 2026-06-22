@@ -55,6 +55,13 @@ func TestSanitizeMetadataRedactsSensitiveKeys(t *testing.T) {
 	}
 }
 
+func TestSanitizeMetadataNilReturnsEmptyMap(t *testing.T) {
+	got := sanitizeMetadata(nil)
+	if got == nil || len(got) != 0 {
+		t.Fatalf("sanitizeMetadata(nil) = %#v, want empty map", got)
+	}
+}
+
 func TestSanitizeURLUserInfo(t *testing.T) {
 	got := sanitizeURLUserInfo("clone https://token@example.com/org/repo.git and ssh://user:pass@git.example.com/org/repo.git")
 	for _, leaked := range []string{"token@example.com", "user:pass@git.example.com"} {

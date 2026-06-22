@@ -352,6 +352,9 @@ func sanitizeRowValue(key string, value any) any {
 }
 
 func sanitizeMetadata(metadata map[string]any) map[string]any {
+	if metadata == nil {
+		return map[string]any{}
+	}
 	sanitized, _ := sanitizeAnyValue("metadata", metadata).(map[string]any)
 	return sanitized
 }
