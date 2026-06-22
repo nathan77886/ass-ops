@@ -59,6 +59,17 @@ function streamURL(path: string) {
   return `${API}${path}${sep}token=${encodeURIComponent(token)}`;
 }
 
+function safeProviderAuthSchemeLabel(value: unknown) {
+  switch (value) {
+    case 'bearer_token':
+      return 'bearer token';
+    case 'token':
+      return 'token';
+    default:
+      return 'redacted auth';
+  }
+}
+
 function Login({ onLogin }: { onLogin: () => void }) {
   const [loading, setLoading] = useState(false);
   return (
@@ -1075,6 +1086,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptTransportPlanMode = typeof attemptTransportPlan.mode === 'string' ? attemptTransportPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter transport plan';
   const attemptResponsePlan = attemptDispatchPlan.response_plan || {};
   const attemptResponsePlanMode = typeof attemptResponsePlan.mode === 'string' ? attemptResponsePlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter response plan';
+  const attemptCredentialPlan = attemptDispatchPlan.credential_binding_plan || {};
+  const attemptCredentialPlanMode = typeof attemptCredentialPlan.mode === 'string' ? attemptCredentialPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter credential binding plan';
   const attemptExecutionCandidateGates = Array.isArray(attemptExecutionCandidate.gates) ? attemptExecutionCandidate.gates : [];
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
   return (
@@ -1411,6 +1424,19 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>{String(attemptResponsePlan.dependency_unlocks_operation || 'no dependency unlock')}</Tag>
           <Tag>{String(attemptResponsePlan.provider_api_mutation || 'disabled')}</Tag>
           <Tag>body redacted</Tag>
+        </Space>
+      ) : null}
+      {attemptCredentialPlan.mode ? (
+        <Space size={4} wrap>
+          <Tag>{attemptCredentialPlanMode}</Tag>
+          <Tag color={attemptCredentialPlan.credential_binding_state === 'blocked' ? 'red' : 'gold'}>
+            credential {String(attemptCredentialPlan.credential_binding_state || 'blocked')}
+          </Tag>
+          <Tag>{String(attemptCredentialPlan.credential_source_kind || 'credential source kind redacted')}</Tag>
+          <Tag>{safeProviderAuthSchemeLabel(attemptCredentialPlan.auth_scheme)}</Tag>
+          <Tag>{attemptCredentialPlan.token_env_name_included === true ? 'env name included' : 'env name redacted'}</Tag>
+          <Tag>{attemptCredentialPlan.token_value_included === true ? 'token included' : 'token redacted'}</Tag>
+          <Tag>{String(attemptCredentialPlan.provider_api_mutation || 'disabled')}</Tag>
         </Space>
       ) : null}
       {attemptExecutionCandidateGates.length ? (

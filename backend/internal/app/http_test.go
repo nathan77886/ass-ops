@@ -3289,6 +3289,44 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateResponseBlockedReasons[2] != "provider_review_mutation_not_armed" {
 		t.Fatalf("attempt execution candidate response blocked reasons = %#v", candidateResponseBlockedReasons)
 	}
+	candidateCredentialPlan := mapFromAny(candidateDispatchPlan["credential_binding_plan"])
+	if candidateCredentialPlan["mode"] != "redacted_attempt_adapter_credential_binding_plan" ||
+		candidateCredentialPlan["credential_binding_state"] != "blocked" ||
+		candidateCredentialPlan["credential_binding_ready"] != false ||
+		candidateCredentialPlan["credential_binding_ready_reason"] != "provider_credential_runtime_binding_not_armed" ||
+		candidateCredentialPlan["provider_type"] != "github" ||
+		candidateCredentialPlan["operation_name"] != "create_branch_ref" ||
+		candidateCredentialPlan["endpoint_key"] != "github.create_branch_ref" ||
+		candidateCredentialPlan["auth_scheme"] != "bearer_token" ||
+		candidateCredentialPlan["credential_source_kind"] != "provider_account_token_env" ||
+		candidateCredentialPlan["requires_provider_account"] != true ||
+		candidateCredentialPlan["requires_allowed_token_env"] != true ||
+		candidateCredentialPlan["requires_runtime_token_present"] != true ||
+		candidateCredentialPlan["requires_mutation_arming"] != true ||
+		candidateCredentialPlan["credential_bound"] != false ||
+		candidateCredentialPlan["authorization_header_materialized"] != false ||
+		candidateCredentialPlan["token_env_name_included"] != false ||
+		candidateCredentialPlan["token_value_included"] != false ||
+		candidateCredentialPlan["token_stored"] != false ||
+		candidateCredentialPlan["headers_included"] != false ||
+		candidateCredentialPlan["external_call_made"] != false ||
+		candidateCredentialPlan["provider_api_call_made"] != false ||
+		candidateCredentialPlan["provider_api_mutation"] != "disabled" ||
+		candidateCredentialPlan["contains_token"] != false ||
+		candidateCredentialPlan["contains_provider_url"] != false ||
+		candidateCredentialPlan["contains_repository_ref"] != false ||
+		candidateCredentialPlan["contains_branch_name"] != false ||
+		candidateCredentialPlan["contains_file_content"] != false ||
+		candidateCredentialPlan["credential_boundary_redacted"] != true {
+		t.Fatalf("attempt execution candidate credential plan = %#v", candidateCredentialPlan)
+	}
+	candidateCredentialBlockedReasons := stringSliceFromAny(candidateCredentialPlan["blocked_reasons"])
+	if len(candidateCredentialBlockedReasons) != 3 ||
+		candidateCredentialBlockedReasons[0] != "provider_credential_runtime_binding_not_armed" ||
+		candidateCredentialBlockedReasons[1] != "provider_review_adapter_not_implemented" ||
+		candidateCredentialBlockedReasons[2] != "provider_review_mutation_not_armed" {
+		t.Fatalf("attempt execution candidate credential blocked reasons = %#v", candidateCredentialBlockedReasons)
+	}
 	candidateGates := sliceOfMapsFromAny(candidate["gates"])
 	if len(candidateGates) != 5 ||
 		candidateGates[0]["gate"] != "attempt_operation_ready" ||
@@ -3615,6 +3653,20 @@ func TestProviderReviewAttemptResponseDiagnosticSanitizers(t *testing.T) {
 		}
 		if got := providerReviewAdapterKindForProvider(item.provider); got != item.adapter {
 			t.Fatalf("providerReviewAdapterKindForProvider(%q) = %q, want %q", item.provider, got, item.adapter)
+		}
+	}
+	for _, item := range []struct {
+		input string
+		want  string
+	}{
+		{"github", "github"},
+		{"gitea", "gitea"},
+		{"GitHub", ""},
+		{"raw_provider", ""},
+		{"", ""},
+	} {
+		if got := safeProviderReviewProviderType(item.input); got != item.want {
+			t.Fatalf("safeProviderReviewProviderType(%q) = %q, want %q", item.input, got, item.want)
 		}
 	}
 	for _, item := range []struct {
@@ -3945,6 +3997,98 @@ func TestProviderReviewAttemptAdapterResponsePlan(t *testing.T) {
 	})
 }
 
+func TestProviderReviewAttemptAdapterCredentialBindingPlan(t *testing.T) {
+	for _, item := range []struct {
+		name         string
+		provider     string
+		operation    string
+		endpoint     string
+		authScheme   string
+		wantNonEmpty bool
+	}{
+		{
+			name:         "github branch ref uses bearer token",
+			provider:     "github",
+			operation:    "create_branch_ref",
+			endpoint:     "github.create_branch_ref",
+			authScheme:   "bearer_token",
+			wantNonEmpty: true,
+		},
+		{
+			name:         "gitea review request uses token auth",
+			provider:     "gitea",
+			operation:    "open_review_request",
+			endpoint:     "gitea.open_review",
+			authScheme:   "token",
+			wantNonEmpty: true,
+		},
+		{
+			name:         "unknown provider returns empty plan",
+			provider:     "raw_provider",
+			operation:    "create_branch_ref",
+			wantNonEmpty: false,
+		},
+		{
+			name:         "unknown operation returns empty plan",
+			provider:     "github",
+			operation:    "raw_operation",
+			wantNonEmpty: false,
+		},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			plan := providerReviewAttemptAdapterCredentialBindingPlan(item.provider, item.operation)
+			if !item.wantNonEmpty {
+				if len(plan) != 0 {
+					t.Fatalf("credential binding plan should be empty: %#v", plan)
+				}
+				return
+			}
+			if plan["mode"] != "redacted_attempt_adapter_credential_binding_plan" ||
+				plan["credential_binding_state"] != "blocked" ||
+				plan["credential_binding_ready"] != false ||
+				plan["credential_binding_ready_reason"] != "provider_credential_runtime_binding_not_armed" ||
+				plan["provider_type"] != item.provider ||
+				plan["operation_name"] != item.operation ||
+				plan["endpoint_key"] != item.endpoint ||
+				plan["auth_scheme"] != item.authScheme ||
+				plan["credential_source_kind"] != "provider_account_token_env" ||
+				plan["requires_provider_account"] != true ||
+				plan["requires_allowed_token_env"] != true ||
+				plan["requires_runtime_token_present"] != true ||
+				plan["credential_bound"] != false ||
+				plan["authorization_header_materialized"] != false ||
+				plan["token_env_name_included"] != false ||
+				plan["token_value_included"] != false ||
+				plan["token_stored"] != false ||
+				plan["headers_included"] != false ||
+				plan["external_call_made"] != false ||
+				plan["provider_api_call_made"] != false ||
+				plan["provider_api_mutation"] != "disabled" ||
+				plan["contains_token"] != false ||
+				plan["contains_provider_url"] != false ||
+				plan["contains_repository_ref"] != false ||
+				plan["contains_branch_name"] != false ||
+				plan["contains_file_content"] != false ||
+				plan["credential_boundary_redacted"] != true {
+				t.Fatalf("credential binding plan = %#v", plan)
+			}
+			blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
+			if len(blockedReasons) != 3 ||
+				blockedReasons[0] != "provider_credential_runtime_binding_not_armed" ||
+				blockedReasons[1] != "provider_review_adapter_not_implemented" ||
+				blockedReasons[2] != "provider_review_mutation_not_armed" {
+				t.Fatalf("credential binding blocked reasons = %#v", blockedReasons)
+			}
+			encoded, _ := json.Marshal(plan)
+			for _, leak := range []string{"ASSOPS_TEMPLATE_PROVIDER_TOKEN", "secret-token", "Authorization", "raw_provider"} {
+				if strings.Contains(string(encoded), leak) {
+					t.Fatalf("credential binding plan leaked %q: %s", leak, encoded)
+				}
+			}
+		})
+	}
+}
+
 func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T) {
 	t.Run("returns empty dispatch plan for empty operation", func(t *testing.T) {
 		if got := providerReviewAttemptAdapterDispatchPlan(nil, nil, nil, nil, nil); len(got) != 0 {
@@ -3999,6 +4143,9 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 		}
 		if responsePlan := mapFromAny(dispatchPlan["response_plan"]); len(responsePlan) != 0 {
 			t.Fatalf("unknown operation response plan should be empty: %#v", responsePlan)
+		}
+		if credentialPlan := mapFromAny(dispatchPlan["credential_binding_plan"]); len(credentialPlan) != 0 {
+			t.Fatalf("unknown operation credential binding plan should be empty: %#v", credentialPlan)
 		}
 		blockedReasons := stringSliceFromAny(dispatchPlan["blocked_reasons"])
 		if len(blockedReasons) != 5 ||

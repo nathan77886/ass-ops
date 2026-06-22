@@ -10913,6 +10913,15 @@ func safeProviderReviewEndpointKey(value string) string {
 	}
 }
 
+func safeProviderReviewProviderType(value string) string {
+	switch cleanOptionalText(value) {
+	case "github", "gitea":
+		return cleanOptionalText(value)
+	default:
+		return ""
+	}
+}
+
 func safeProviderReviewStatusClasses(items []string) []string {
 	out := make([]string, 0, len(items))
 	seen := map[string]bool{}
@@ -11139,6 +11148,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 		"response_handler":             safeProviderReviewResponseHandlerName(stringFromMap(requestSummary, "response_handler")),
 		"transport_plan":               providerReviewAttemptAdapterTransportPlan(providerType, operationName),
 		"response_plan":                providerReviewAttemptAdapterResponsePlan(operation, requestSummary, responseDiagnostics),
+		"credential_binding_plan":      providerReviewAttemptAdapterCredentialBindingPlan(providerType, operationName),
 		"idempotency_key_kind":         "operation_scope_hash",
 		"requires_attempt_claim":       true,
 		"requires_idempotency_claim":   true,
@@ -11165,6 +11175,50 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 		"blocked_reasons":              blockedReasons,
 		"dispatch_boundary_redacted":   true,
 		"provider_request_id_included": false,
+	}
+}
+
+func providerReviewAttemptAdapterCredentialBindingPlan(providerType, operationName string) map[string]any {
+	providerType = safeProviderReviewProviderType(providerType)
+	operationName = safeProviderReviewAttemptOperationName(operationName)
+	authScheme := providerReviewAuthSchemeForProvider(providerType)
+	if providerType == "" || operationName == "" || authScheme == "" {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"mode":                              "redacted_attempt_adapter_credential_binding_plan",
+		"credential_binding_state":          "blocked",
+		"credential_binding_ready":          false,
+		"credential_binding_ready_reason":   "provider_credential_runtime_binding_not_armed",
+		"provider_type":                     providerType,
+		"operation_name":                    operationName,
+		"endpoint_key":                      providerReviewEndpointKey(providerType, providerReviewEndpointOperationForAttempt(operationName)),
+		"auth_scheme":                       authScheme,
+		"credential_source_kind":            "provider_account_token_env",
+		"requires_provider_account":         true,
+		"requires_allowed_token_env":        true,
+		"requires_runtime_token_present":    true,
+		"requires_mutation_arming":          true,
+		"credential_bound":                  false,
+		"authorization_header_materialized": false,
+		"token_env_name_included":           false,
+		"token_value_included":              false,
+		"token_stored":                      false,
+		"headers_included":                  false,
+		"external_call_made":                false,
+		"provider_api_call_made":            false,
+		"provider_api_mutation":             "disabled",
+		"contains_token":                    false,
+		"contains_provider_url":             false,
+		"contains_repository_ref":           false,
+		"contains_branch_name":              false,
+		"contains_file_content":             false,
+		"blocked_reasons": []string{
+			"provider_credential_runtime_binding_not_armed",
+			"provider_review_adapter_not_implemented",
+			"provider_review_mutation_not_armed",
+		},
+		"credential_boundary_redacted": true,
 	}
 }
 
