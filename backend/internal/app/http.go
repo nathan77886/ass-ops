@@ -11137,6 +11137,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, adapter
 		"payload_shape":                providerReviewPayloadShapeForOperation(operationName),
 		"payload_builder":              safeProviderReviewPayloadBuilderName(stringFromMap(requestSummary, "payload_builder")),
 		"response_handler":             safeProviderReviewResponseHandlerName(stringFromMap(requestSummary, "response_handler")),
+		"transport_plan":               providerReviewAttemptAdapterTransportPlan(providerType, operationName),
 		"idempotency_key_kind":         "operation_scope_hash",
 		"requires_attempt_claim":       true,
 		"requires_idempotency_claim":   true,
@@ -11163,6 +11164,43 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, adapter
 		"blocked_reasons":              blockedReasons,
 		"dispatch_boundary_redacted":   true,
 		"provider_request_id_included": false,
+	}
+}
+
+func providerReviewAttemptAdapterTransportPlan(providerType, operationName string) map[string]any {
+	providerType = providerReviewProviderFromEndpointKey(providerReviewEndpointKey(providerType, providerReviewEndpointOperationForAttempt(operationName)))
+	operationName = safeProviderReviewAttemptOperationName(operationName)
+	if providerType == "" || operationName == "" {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"mode":                          "redacted_attempt_adapter_transport_plan",
+		"provider_type":                 providerType,
+		"operation_name":                operationName,
+		"method":                        providerReviewMethodForOperation(operationName),
+		"endpoint_key":                  providerReviewEndpointKey(providerType, providerReviewEndpointOperationForAttempt(operationName)),
+		"payload_shape":                 providerReviewPayloadShapeForOperation(operationName),
+		"auth_scheme":                   providerReviewAuthSchemeForProvider(providerType),
+		"accept_header":                 providerReviewAcceptHeaderForProvider(providerType),
+		"content_type":                  "application/json",
+		"timeout_seconds":               15,
+		"expected_success_classes":      providerReviewExpectedSuccessClassesForOperation(operationName),
+		"retryable_status_classes":      []string{"5xx"},
+		"diagnostic_fields":             []string{"status_code_class", "provider_request_id_present", "rate_limit_remaining_present", "retry_after_present", "provider_error_code_present"},
+		"request_body_included":         false,
+		"response_body_included":        false,
+		"headers_included":              false,
+		"authorization_header_included": false,
+		"auth_header_redacted":          true,
+		"provider_url_included":         false,
+		"external_call_made":            false,
+		"provider_api_call_made":        false,
+		"provider_api_mutation":         "disabled",
+		"contains_token":                false,
+		"contains_provider_url":         false,
+		"contains_repository_ref":       false,
+		"contains_branch_name":          false,
+		"contains_file_content":         false,
 	}
 }
 
@@ -11294,6 +11332,50 @@ func providerReviewPayloadShapeForOperation(operationName string) string {
 		return "review_request"
 	default:
 		return ""
+	}
+}
+
+func providerReviewEndpointOperationForAttempt(operationName string) string {
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref":
+		return "create_branch_ref"
+	case "commit_starter_files":
+		return "commit_files"
+	case "open_review_request":
+		return "open_review"
+	default:
+		return ""
+	}
+}
+
+func providerReviewAuthSchemeForProvider(provider string) string {
+	switch strings.ToLower(cleanOptionalText(provider)) {
+	case "github":
+		return "bearer_token"
+	case "gitea":
+		return "token"
+	default:
+		return ""
+	}
+}
+
+func providerReviewAcceptHeaderForProvider(provider string) string {
+	switch strings.ToLower(cleanOptionalText(provider)) {
+	case "github":
+		return "application/vnd.github+json"
+	case "gitea":
+		return "application/json"
+	default:
+		return ""
+	}
+}
+
+func providerReviewExpectedSuccessClassesForOperation(operationName string) []string {
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref", "commit_starter_files", "open_review_request":
+		return []string{"2xx"}
+	default:
+		return []string{}
 	}
 }
 

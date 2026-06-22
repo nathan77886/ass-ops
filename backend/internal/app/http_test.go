@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -3188,6 +3189,49 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateDispatchPlan["dispatch_boundary_redacted"] != true {
 		t.Fatalf("attempt execution candidate dispatch plan = %#v", candidateDispatchPlan)
 	}
+	candidateTransportPlan := mapFromAny(candidateDispatchPlan["transport_plan"])
+	if candidateTransportPlan["mode"] != "redacted_attempt_adapter_transport_plan" ||
+		candidateTransportPlan["provider_type"] != "github" ||
+		candidateTransportPlan["operation_name"] != "create_branch_ref" ||
+		candidateTransportPlan["method"] != "POST" ||
+		candidateTransportPlan["endpoint_key"] != "github.create_branch_ref" ||
+		candidateTransportPlan["payload_shape"] != "ref_from_target_branch" ||
+		candidateTransportPlan["auth_scheme"] != "bearer_token" ||
+		candidateTransportPlan["accept_header"] != "application/vnd.github+json" ||
+		candidateTransportPlan["content_type"] != "application/json" ||
+		candidateTransportPlan["timeout_seconds"] != 15 ||
+		candidateTransportPlan["request_body_included"] != false ||
+		candidateTransportPlan["response_body_included"] != false ||
+		candidateTransportPlan["headers_included"] != false ||
+		candidateTransportPlan["authorization_header_included"] != false ||
+		candidateTransportPlan["auth_header_redacted"] != true ||
+		candidateTransportPlan["provider_url_included"] != false ||
+		candidateTransportPlan["provider_api_call_made"] != false ||
+		candidateTransportPlan["provider_api_mutation"] != "disabled" ||
+		candidateTransportPlan["contains_token"] != false ||
+		candidateTransportPlan["contains_provider_url"] != false ||
+		candidateTransportPlan["contains_repository_ref"] != false ||
+		candidateTransportPlan["contains_branch_name"] != false ||
+		candidateTransportPlan["contains_file_content"] != false {
+		t.Fatalf("attempt execution candidate transport plan = %#v", candidateTransportPlan)
+	}
+	candidateTransportSuccessClasses := stringSliceFromAny(candidateTransportPlan["expected_success_classes"])
+	if len(candidateTransportSuccessClasses) != 1 || candidateTransportSuccessClasses[0] != "2xx" {
+		t.Fatalf("attempt execution candidate transport success classes = %#v", candidateTransportSuccessClasses)
+	}
+	candidateTransportRetryClasses := stringSliceFromAny(candidateTransportPlan["retryable_status_classes"])
+	if len(candidateTransportRetryClasses) != 1 || candidateTransportRetryClasses[0] != "5xx" {
+		t.Fatalf("attempt execution candidate transport retry classes = %#v", candidateTransportRetryClasses)
+	}
+	candidateTransportDiagnostics := stringSliceFromAny(candidateTransportPlan["diagnostic_fields"])
+	if len(candidateTransportDiagnostics) != 5 ||
+		candidateTransportDiagnostics[0] != "status_code_class" ||
+		candidateTransportDiagnostics[1] != "provider_request_id_present" ||
+		candidateTransportDiagnostics[2] != "rate_limit_remaining_present" ||
+		candidateTransportDiagnostics[3] != "retry_after_present" ||
+		candidateTransportDiagnostics[4] != "provider_error_code_present" {
+		t.Fatalf("attempt execution candidate transport diagnostics = %#v", candidateTransportDiagnostics)
+	}
 	candidateDispatchBlockedReasons := stringSliceFromAny(candidateDispatchPlan["blocked_reasons"])
 	if len(candidateDispatchBlockedReasons) != 3 ||
 		candidateDispatchBlockedReasons[0] != "provider_review_attempt_claim_not_recorded" ||
@@ -3540,6 +3584,67 @@ func TestProviderReviewAttemptResponseDiagnosticSanitizers(t *testing.T) {
 			t.Fatalf("providerReviewPayloadShapeForOperation(%q) = %q, want %q", item.operation, got, item.shape)
 		}
 	}
+	for _, item := range []struct {
+		operation         string
+		endpointOperation string
+		successClasses    []string
+	}{
+		{"create_branch_ref", "create_branch_ref", []string{"2xx"}},
+		{"commit_starter_files", "commit_files", []string{"2xx"}},
+		{"open_review_request", "open_review", []string{"2xx"}},
+		{"raw_operation", "", []string{}},
+	} {
+		if got := providerReviewEndpointOperationForAttempt(item.operation); got != item.endpointOperation {
+			t.Fatalf("providerReviewEndpointOperationForAttempt(%q) = %q, want %q", item.operation, got, item.endpointOperation)
+		}
+		if got := providerReviewExpectedSuccessClassesForOperation(item.operation); !reflect.DeepEqual(got, item.successClasses) {
+			t.Fatalf("providerReviewExpectedSuccessClassesForOperation(%q) = %#v, want %#v", item.operation, got, item.successClasses)
+		}
+	}
+	for _, item := range []struct {
+		provider string
+		auth     string
+		accept   string
+	}{
+		{"github", "bearer_token", "application/vnd.github+json"},
+		{"GitHub", "bearer_token", "application/vnd.github+json"},
+		{"gitea", "token", "application/json"},
+		{"Gitea", "token", "application/json"},
+		{"raw_provider", "", ""},
+	} {
+		if got := providerReviewAuthSchemeForProvider(item.provider); got != item.auth {
+			t.Fatalf("providerReviewAuthSchemeForProvider(%q) = %q, want %q", item.provider, got, item.auth)
+		}
+		if got := providerReviewAcceptHeaderForProvider(item.provider); got != item.accept {
+			t.Fatalf("providerReviewAcceptHeaderForProvider(%q) = %q, want %q", item.provider, got, item.accept)
+		}
+	}
+	for _, item := range []struct {
+		provider  string
+		operation string
+		endpoint  string
+		auth      string
+		accept    string
+	}{
+		{"github", "create_branch_ref", "github.create_branch_ref", "bearer_token", "application/vnd.github+json"},
+		{"gitea", "create_branch_ref", "gitea.create_branch_ref", "token", "application/json"},
+		{"gitea", "commit_starter_files", "gitea.commit_files", "token", "application/json"},
+		{"gitea", "open_review_request", "gitea.open_review", "token", "application/json"},
+	} {
+		transportPlan := providerReviewAttemptAdapterTransportPlan(item.provider, item.operation)
+		if transportPlan["mode"] != "redacted_attempt_adapter_transport_plan" ||
+			transportPlan["provider_type"] != item.provider ||
+			transportPlan["operation_name"] != item.operation ||
+			transportPlan["endpoint_key"] != item.endpoint ||
+			transportPlan["auth_scheme"] != item.auth ||
+			transportPlan["accept_header"] != item.accept ||
+			transportPlan["provider_api_call_made"] != false ||
+			transportPlan["provider_api_mutation"] != "disabled" ||
+			transportPlan["contains_token"] != false ||
+			transportPlan["contains_provider_url"] != false {
+			t.Fatalf("providerReviewAttemptAdapterTransportPlan(%q, %q) = %#v", item.provider, item.operation, transportPlan)
+		}
+	}
 }
 
 func TestProviderReviewAttemptDependencySanitizers(t *testing.T) {
@@ -3693,6 +3798,9 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 			dispatchPlan["contains_branch_name"] != false ||
 			dispatchPlan["contains_file_content"] != false {
 			t.Fatalf("unknown operation dispatch plan should be redacted: %#v", dispatchPlan)
+		}
+		if transportPlan := mapFromAny(dispatchPlan["transport_plan"]); len(transportPlan) != 0 {
+			t.Fatalf("unknown operation transport plan should be empty: %#v", transportPlan)
 		}
 		blockedReasons := stringSliceFromAny(dispatchPlan["blocked_reasons"])
 		if len(blockedReasons) != 5 ||

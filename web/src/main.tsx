@@ -1071,6 +1071,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptClaimPlanMode = typeof attemptClaimPlan.mode === 'string' ? attemptClaimPlan.mode.replaceAll('_', ' ') : 'redacted attempt execution claim plan';
   const attemptDispatchPlan = attemptExecutionCandidate.dispatch_plan || {};
   const attemptDispatchPlanMode = typeof attemptDispatchPlan.mode === 'string' ? attemptDispatchPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter dispatch plan';
+  const attemptTransportPlan = attemptDispatchPlan.transport_plan || {};
+  const attemptTransportPlanMode = typeof attemptTransportPlan.mode === 'string' ? attemptTransportPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter transport plan';
   const attemptExecutionCandidateGates = Array.isArray(attemptExecutionCandidate.gates) ? attemptExecutionCandidate.gates : [];
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
   return (
@@ -1382,6 +1384,16 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>{String(attemptDispatchPlan.method || 'redacted method')}</Tag>
           <Tag>{String(attemptDispatchPlan.payload_shape || 'redacted payload')}</Tag>
           <Tag>{String(attemptDispatchPlan.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {attemptTransportPlan.mode ? (
+        <Space size={4} wrap>
+          <Tag>{attemptTransportPlanMode}</Tag>
+          <Tag>{String(attemptTransportPlan.auth_scheme || 'redacted auth')}</Tag>
+          <Tag>{String(attemptTransportPlan.accept_header || 'redacted accept')}</Tag>
+          <Tag>timeout {Number(attemptTransportPlan.timeout_seconds || 0)}s</Tag>
+          <Tag>{String(attemptTransportPlan.provider_api_mutation || 'disabled')}</Tag>
+          <Tag>auth redacted</Tag>
         </Space>
       ) : null}
       {attemptExecutionCandidateGates.length ? (
