@@ -10972,6 +10972,7 @@ func providerReviewAttemptExecutionCandidate(operations []map[string]any, nextOp
 		"requires_idempotency_ledger":   true,
 		"requires_response_diagnostics": true,
 		"requires_mutation_arming":      true,
+		"adapter_contract":              map[string]any{},
 		"adapter_implemented":           false,
 		"mutation_armed":                false,
 		"external_call_made":            false,
@@ -11007,11 +11008,53 @@ func providerReviewAttemptExecutionCandidate(operations []map[string]any, nextOp
 		candidate["endpoint_key"] = endpointKey
 		candidate["operation_order"] = intFromAny(operation["operation_order"], 0)
 		candidate["status"] = "blocked"
+		candidate["adapter_contract"] = providerReviewAttemptCandidateAdapterContract(operation, requestSummary, responseDiagnostics)
 		candidate["gates"] = providerReviewAttemptExecutionCandidateGates(true, idempotencyReady, responseReady)
 		return candidate
 	}
 	candidate["blocked_reasons"] = []string{"provider_review_attempt_not_found"}
 	return candidate
+}
+
+func providerReviewAttemptCandidateAdapterContract(operation, requestSummary, responseDiagnostics map[string]any) map[string]any {
+	if len(operation) == 0 {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"mode":                            "redacted_attempt_adapter_contract",
+		"operation_name":                  safeProviderReviewAttemptOperationName(stringFromMap(operation, "name")),
+		"endpoint_key":                    safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key")),
+		"operation_order":                 intFromAny(operation["operation_order"], 0),
+		"payload_builder":                 safeProviderReviewPayloadBuilderName(stringFromMap(requestSummary, "payload_builder")),
+		"response_handler":                safeProviderReviewResponseHandlerName(stringFromMap(requestSummary, "response_handler")),
+		"idempotency_key_kind":            "operation_scope_hash",
+		"response_status":                 safeProviderReviewAttemptResponseStatus(stringFromMap(responseDiagnostics, "status")),
+		"success_status_class":            safeProviderReviewStatusClass(stringFromMap(responseDiagnostics, "success_status_class")),
+		"retryable_status_classes":        safeProviderReviewStatusClasses(stringSliceFromAny(responseDiagnostics["retryable_status_classes"])),
+		"adapter_call_state":              "blocked",
+		"requires_provider_client":        true,
+		"requires_request_builder":        true,
+		"requires_response_handler":       true,
+		"requires_idempotency_ledger":     true,
+		"requires_response_diagnostics":   true,
+		"requires_mutation_arming":        true,
+		"adapter_implemented":             false,
+		"mutation_armed":                  false,
+		"request_body_included":           false,
+		"response_body_included":          false,
+		"headers_included":                false,
+		"idempotency_key_included":        false,
+		"external_call_made":              false,
+		"provider_api_call_made":          false,
+		"provider_api_mutation":           "disabled",
+		"contains_token":                  false,
+		"contains_provider_url":           false,
+		"contains_repository_ref":         false,
+		"contains_branch_name":            false,
+		"contains_file_content":           false,
+		"activation_requirements":         []string{"provider_api_adapter_implemented", "provider_review_mutation_armed", "operator_approval_still_valid", "idempotency_ledger_claim"},
+		"adapter_input_boundary_redacted": true,
+	}
 }
 
 func providerReviewAttemptExecutionCandidateGates(candidateReady, idempotencyReady, responseDiagnosticsReady bool) []map[string]any {

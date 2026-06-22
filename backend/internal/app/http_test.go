@@ -2839,6 +2839,26 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		resultAttemptCandidate["adapter_implemented"] != false {
 		t.Fatalf("approval result attempt candidate should be blocked/redacted: %#v", resultAttemptCandidate)
 	}
+	resultAttemptAdapterContract := mapFromAny(resultAttemptCandidate["adapter_contract"])
+	if resultAttemptAdapterContract["mode"] != "redacted_attempt_adapter_contract" ||
+		resultAttemptAdapterContract["operation_name"] != "open_review_request" ||
+		resultAttemptAdapterContract["endpoint_key"] != "github.open_review" ||
+		resultAttemptAdapterContract["payload_builder"] != "build_redacted_provider_request" ||
+		resultAttemptAdapterContract["response_handler"] != "handle_provider_response" ||
+		resultAttemptAdapterContract["adapter_call_state"] != "blocked" ||
+		resultAttemptAdapterContract["provider_api_call_made"] != false ||
+		resultAttemptAdapterContract["provider_api_mutation"] != "disabled" ||
+		resultAttemptAdapterContract["contains_token"] != false ||
+		resultAttemptAdapterContract["contains_provider_url"] != false ||
+		resultAttemptAdapterContract["contains_repository_ref"] != false ||
+		resultAttemptAdapterContract["contains_branch_name"] != false ||
+		resultAttemptAdapterContract["contains_file_content"] != false {
+		t.Fatalf("approval result attempt adapter contract should be blocked/redacted: %#v", resultAttemptAdapterContract)
+	}
+	resultAttemptRetryable := stringSliceFromAny(resultAttemptAdapterContract["retryable_status_classes"])
+	if len(resultAttemptRetryable) != 1 || resultAttemptRetryable[0] != "5xx" {
+		t.Fatalf("approval result attempt adapter contract retry classes should be redacted/allowlisted: %#v", resultAttemptRetryable)
+	}
 	resultAttemptOperations := sliceOfMapsFromAny(resultAttemptLedger["operations"])
 	if len(resultAttemptOperations) != 1 ||
 		resultAttemptOperations[0]["idempotency_key_included"] != false ||
@@ -3063,6 +3083,38 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidate["contains_provider_url"] != false {
 		t.Fatalf("attempt execution candidate = %#v", candidate)
 	}
+	candidateAdapterContract := mapFromAny(candidate["adapter_contract"])
+	if candidateAdapterContract["mode"] != "redacted_attempt_adapter_contract" ||
+		candidateAdapterContract["operation_name"] != "create_branch_ref" ||
+		candidateAdapterContract["endpoint_key"] != "github.create_branch_ref" ||
+		candidateAdapterContract["operation_order"] != 10 ||
+		candidateAdapterContract["payload_builder"] != "build_redacted_branch_ref_request" ||
+		candidateAdapterContract["response_handler"] != "handle_branch_ref_response" ||
+		candidateAdapterContract["idempotency_key_kind"] != "operation_scope_hash" ||
+		candidateAdapterContract["response_status"] != "pending" ||
+		candidateAdapterContract["success_status_class"] != "" ||
+		candidateAdapterContract["adapter_call_state"] != "blocked" ||
+		candidateAdapterContract["adapter_implemented"] != false ||
+		candidateAdapterContract["mutation_armed"] != false ||
+		candidateAdapterContract["request_body_included"] != false ||
+		candidateAdapterContract["headers_included"] != false ||
+		candidateAdapterContract["provider_api_call_made"] != false ||
+		candidateAdapterContract["provider_api_mutation"] != "disabled" ||
+		candidateAdapterContract["contains_token"] != false ||
+		candidateAdapterContract["contains_provider_url"] != false ||
+		candidateAdapterContract["contains_repository_ref"] != false ||
+		candidateAdapterContract["contains_branch_name"] != false ||
+		candidateAdapterContract["contains_file_content"] != false {
+		t.Fatalf("attempt execution candidate adapter contract = %#v", candidateAdapterContract)
+	}
+	candidateActivationRequirements := stringSliceFromAny(candidateAdapterContract["activation_requirements"])
+	if len(candidateActivationRequirements) != 4 ||
+		candidateActivationRequirements[0] != "provider_api_adapter_implemented" ||
+		candidateActivationRequirements[1] != "provider_review_mutation_armed" ||
+		candidateActivationRequirements[2] != "operator_approval_still_valid" ||
+		candidateActivationRequirements[3] != "idempotency_ledger_claim" {
+		t.Fatalf("attempt execution candidate activation requirements = %#v", candidateActivationRequirements)
+	}
 	candidateGates := sliceOfMapsFromAny(candidate["gates"])
 	if len(candidateGates) != 5 ||
 		candidateGates[0]["gate"] != "attempt_operation_ready" ||
@@ -3241,6 +3293,11 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 	retryable := stringSliceFromAny(responseDiagnostics["retryable_status_classes"])
 	if len(retryable) != 2 || retryable[0] != "5xx" || retryable[1] != "4xx" {
 		t.Fatalf("persisted attempt retryable classes = %#v", retryable)
+	}
+	persistedCandidateAdapterContract := mapFromAny(candidate["adapter_contract"])
+	persistedRetryable := stringSliceFromAny(persistedCandidateAdapterContract["retryable_status_classes"])
+	if len(persistedRetryable) != 0 {
+		t.Fatalf("persisted attempt adapter contract retry classes = %#v", persistedRetryable)
 	}
 	encoded, _ := json.Marshal(summary)
 	for _, leak := range []string{"idempotency_key_material", "idempotency_key_hash", "secret-token", "api.github.example.test", "secret-repo", "raw_builder", "raw_handler", "do-not-include", "raw_attempt_response_diagnostics"} {
@@ -3455,6 +3512,45 @@ func TestProviderReviewAttemptOrchestrationSummaryBlocksUnknownStatus(t *testing
 }
 
 func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T) {
+	t.Run("redacts unknown adapter contract operation name", func(t *testing.T) {
+		contract := providerReviewAttemptCandidateAdapterContract(
+			map[string]any{
+				"name":            "raw_operation",
+				"endpoint_key":    "github.secret_endpoint",
+				"operation_order": 99,
+			},
+			map[string]any{
+				"payload_builder":  "raw_builder",
+				"response_handler": "raw_handler",
+			},
+			map[string]any{
+				"status":                   "raw_status",
+				"success_status_class":     "3xx",
+				"retryable_status_classes": []any{"5xx", "secret-token", "4xx"},
+			},
+		)
+		if contract["operation_name"] != "" ||
+			contract["endpoint_key"] != "" ||
+			contract["payload_builder"] != "build_redacted_provider_request" ||
+			contract["response_handler"] != "handle_provider_response" ||
+			contract["response_status"] != "blocked" ||
+			contract["success_status_class"] != "" ||
+			contract["provider_api_call_made"] != false ||
+			contract["provider_api_mutation"] != "disabled" ||
+			contract["contains_token"] != false {
+			t.Fatalf("unknown operation adapter contract should be redacted: %#v", contract)
+		}
+		retryable := stringSliceFromAny(contract["retryable_status_classes"])
+		if len(retryable) != 2 || retryable[0] != "5xx" || retryable[1] != "4xx" {
+			t.Fatalf("unknown operation retryable classes should be allowlisted: %#v", retryable)
+		}
+		encoded, _ := json.Marshal(contract)
+		for _, leak := range []string{"raw_operation", "github.secret_endpoint", "raw_builder", "raw_handler", "raw_status", "secret-token"} {
+			if strings.Contains(string(encoded), leak) {
+				t.Fatalf("unknown operation adapter contract leaked %q: %s", leak, encoded)
+			}
+		}
+	})
 	t.Run("uses first known ready operation name", func(t *testing.T) {
 		summary := providerReviewAttemptOrchestrationSummary([]map[string]any{
 			{

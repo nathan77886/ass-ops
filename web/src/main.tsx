@@ -1065,6 +1065,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptLedger = result.provider_review_attempt_ledger?.status ? result.provider_review_attempt_ledger : (persistedAttemptLedger || {});
   const attemptOrchestration = attemptLedger.orchestration || {};
   const attemptExecutionCandidate = attemptOrchestration.execution_candidate || {};
+  const attemptAdapterContract = attemptExecutionCandidate.adapter_contract || {};
+  const attemptAdapterContractMode = typeof attemptAdapterContract.mode === 'string' ? attemptAdapterContract.mode.replaceAll('_', ' ') : 'redacted attempt adapter contract';
   const attemptExecutionCandidateGates = Array.isArray(attemptExecutionCandidate.gates) ? attemptExecutionCandidate.gates : [];
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
   return (
@@ -1329,6 +1331,17 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>next {String(attemptExecutionCandidate.next_operation || '-')}</Tag>
           <Tag>{String(attemptExecutionCandidate.endpoint_key || 'provider.api')}</Tag>
           <Tag>{String(attemptExecutionCandidate.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {attemptAdapterContract.mode ? (
+        <Space size={4} wrap>
+          <Tag>{attemptAdapterContractMode}</Tag>
+          <Tag>{String(attemptAdapterContract.payload_builder || 'build_redacted_provider_request')}</Tag>
+          <Tag>{String(attemptAdapterContract.response_handler || 'handle_provider_response')}</Tag>
+          <Tag>response {String(attemptAdapterContract.response_status || 'pending')}</Tag>
+          <Tag color={attemptAdapterContract.adapter_call_state === 'blocked' ? 'red' : 'gold'}>
+            adapter {String(attemptAdapterContract.adapter_call_state || 'blocked')}
+          </Tag>
         </Space>
       ) : null}
       {attemptExecutionCandidateGates.length ? (
