@@ -340,7 +340,7 @@ func TestProvisionTemplateRepositoryReportsProtectedBranchStrategy(t *testing.T)
 		t.Fatalf("execution guardrail = %#v", guardrail)
 	}
 	if !containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_execution_enabled") ||
-		!containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_api_adapter") {
+		!containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_mutation_armed") {
 		t.Fatalf("execution guardrail blocked reasons = %#v", guardrail)
 	}
 	request := mapFromAny(executionPlan["execution_request"])
@@ -461,12 +461,13 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	reconciliation := mapFromAny(githubPlan["provider_review_reconciliation"])
 	if reconciliation["status"] != "blocked" ||
 		reconciliation["mode"] != "preflight_reconciliation" ||
-		reconciliation["adapter_status"] != "missing" ||
+		reconciliation["adapter_status"] != "planned" ||
 		reconciliation["external_call_made"] != false ||
 		reconciliation["provider_api_mutation"] != "disabled" {
 		t.Fatalf("github provider review reconciliation = %#v", reconciliation)
 	}
-	if !containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_api_adapter") ||
+	if containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_api_adapter") ||
+		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_mutation_armed") ||
 		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "starter_file_payload_staged") ||
 		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_api_request_plan_ready") ||
 		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_execution_enabled") ||
@@ -480,7 +481,7 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	}
 	adapterContract := mapFromAny(reconciliation["adapter_contract"])
 	if adapterContract["status"] != "planned" ||
-		adapterContract["adapter_status"] != "missing" ||
+		adapterContract["adapter_status"] != "planned" ||
 		adapterContract["contract_version"] != "provider-review-v1" ||
 		adapterContract["external_call_made"] != false ||
 		adapterContract["provider_api_mutation"] != "disabled" {
@@ -489,6 +490,7 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	adapterOperations := sliceOfMapsFromAny(adapterContract["operations"])
 	if len(adapterOperations) != 3 ||
 		adapterOperations[0]["required_capability"] != "branch_ref_write" ||
+		adapterOperations[0]["adapter_status"] != "planned" ||
 		adapterOperations[1]["required_capability"] != "file_content_write" ||
 		adapterOperations[2]["required_capability"] != "review_request_write" {
 		t.Fatalf("github provider review adapter operations = %#v", adapterOperations)
@@ -528,6 +530,7 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	}
 	idempotencyPlan := mapFromAny(reconciliation["idempotency_plan"])
 	if idempotencyPlan["status"] != "planned" ||
+		idempotencyPlan["adapter_status"] != "planned" ||
 		idempotencyPlan["mode"] != "redacted_idempotency_plan" ||
 		idempotencyPlan["idempotency_key_included"] != false ||
 		idempotencyPlan["contains_repository_ref"] != false ||
@@ -543,7 +546,7 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 		t.Fatalf("github provider review idempotency operations = %#v", idempotencyOperations)
 	}
 	gates := sliceOfMapsFromAny(githubGuardrail["gates"])
-	if len(gates) != 4 || gates[0]["gate"] != "provider_review_execution_enabled" || gates[2]["status"] != "ready" {
+	if len(gates) != 5 || gates[0]["gate"] != "provider_review_execution_enabled" || gates[1]["status"] != "ready" || gates[2]["gate"] != "provider_review_mutation_armed" || gates[3]["status"] != "ready" {
 		t.Fatalf("github execution guardrail gates = %#v", gates)
 	}
 	githubRequest := mapFromAny(githubPlan["execution_request"])
@@ -563,11 +566,12 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 		t.Fatalf("gitea execution plan = %#v", giteaPlan)
 	}
 	enabledGuardrail := templateProviderReviewExecutionGuardrail("github", "pull_request", "assops/template/demo-main", "main", true)
-	if enabledGuardrail["execution_mode"] != "adapter_blocked" || enabledGuardrail["execution_enabled"] != false {
-		t.Fatalf("enabled guardrail should remain adapter-blocked: %#v", enabledGuardrail)
+	if enabledGuardrail["execution_mode"] != "mutation_blocked" || enabledGuardrail["execution_enabled"] != false {
+		t.Fatalf("enabled guardrail should remain mutation-blocked: %#v", enabledGuardrail)
 	}
-	if !containsString(stringSliceFromAny(enabledGuardrail["blocked_reasons"]), "provider_review_api_adapter") {
-		t.Fatalf("enabled guardrail should still require adapter: %#v", enabledGuardrail)
+	if containsString(stringSliceFromAny(enabledGuardrail["blocked_reasons"]), "provider_review_api_adapter") ||
+		!containsString(stringSliceFromAny(enabledGuardrail["blocked_reasons"]), "provider_review_mutation_armed") {
+		t.Fatalf("enabled guardrail should still require mutation arming: %#v", enabledGuardrail)
 	}
 	readyAPIPlan := templateProviderReviewAPIRequestPlan("github", "pull_request", "assops/template/demo-main", "main", map[string]any{
 		"status":           "ready",

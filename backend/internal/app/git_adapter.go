@@ -710,37 +710,41 @@ func providerReviewExecutionTargetSummary(provider, reviewKind string, apiReques
 	status := "blocked"
 	if branchRefsReady && starterReady && planReady {
 		status = "adapter_blocked"
+		if stringFromMap(reconciliation, "adapter_status") == "planned" {
+			status = "mutation_blocked"
+		}
 	}
 	return map[string]any{
-		"status":                         status,
-		"mode":                           "redacted_execution_target_summary",
-		"provider_type":                  provider,
-		"review_kind":                    reviewKind,
-		"source_branch":                  sourceBranch,
-		"target_branch":                  targetBranch,
-		"branch_refs_ready":              branchRefsReady,
-		"starter_file_payload_ready":     starterReady,
-		"provider_api_request_ready":     planReady,
-		"file_count":                     fileCount,
-		"operation_count":                len(operations),
-		"operations":                     operations,
-		"adapter_status":                 cleanOptionalText(stringFromMap(reconciliation, "adapter_status")),
-		"blocked_reasons":                blockedReasons,
-		"external_call_made":             false,
-		"provider_api_call_made":         false,
-		"provider_api_mutation":          "disabled",
-		"payload_redacted":               true,
-		"contains_token":                 false,
-		"contains_provider_url":          false,
-		"contains_repository_ref":        false,
-		"contains_file_content":          false,
-		"idempotency_key_included":       false,
-		"requires_persisted_attempt":     true,
-		"requires_response_diagnostics":  true,
-		"requires_provider_api_adapter":  true,
-		"requires_operator_review":       true,
-		"future_adapter_input_boundary":  "branch_ref_commit_review_request",
-		"adapter_mutation_currently_off": true,
+		"status":                          status,
+		"mode":                            "redacted_execution_target_summary",
+		"provider_type":                   provider,
+		"review_kind":                     reviewKind,
+		"source_branch":                   sourceBranch,
+		"target_branch":                   targetBranch,
+		"branch_refs_ready":               branchRefsReady,
+		"starter_file_payload_ready":      starterReady,
+		"provider_api_request_ready":      planReady,
+		"file_count":                      fileCount,
+		"operation_count":                 len(operations),
+		"operations":                      operations,
+		"adapter_status":                  cleanOptionalText(stringFromMap(reconciliation, "adapter_status")),
+		"blocked_reasons":                 blockedReasons,
+		"external_call_made":              false,
+		"provider_api_call_made":          false,
+		"provider_api_mutation":           "disabled",
+		"payload_redacted":                true,
+		"contains_token":                  false,
+		"contains_provider_url":           false,
+		"contains_repository_ref":         false,
+		"contains_file_content":           false,
+		"idempotency_key_included":        false,
+		"requires_persisted_attempt":      true,
+		"requires_response_diagnostics":   true,
+		"requires_provider_api_adapter":   true,
+		"requires_adapter_mutation_armed": true,
+		"requires_operator_review":        true,
+		"future_adapter_input_boundary":   "branch_ref_commit_review_request",
+		"adapter_mutation_currently_off":  true,
 	}
 }
 
@@ -826,9 +830,9 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 	planReady := fmt.Sprint(apiRequestPlan["status"]) == "ready"
 	credentialConfigured := boolValueFromAny(credentialStrategy["token_env_configured"])
 	credentialPresent := boolValueFromAny(credentialStrategy["token_env_present"])
-	// Keep this false until branch/ref, starter-file commit, and review-request
-	// adapters are implemented together with matching adapter status and gates.
-	adapterReady := false
+	adapterStatus := providerReviewAdapterStatus(provider, reviewKind)
+	adapterReady := adapterStatus == "planned"
+	mutationArmed := false
 	executionEnabledConfig := boolValueFromAny(guardrail["execution_enabled_config"])
 	gates := []map[string]any{
 		{
@@ -872,11 +876,20 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		},
 		{
 			"gate":              "provider_review_api_adapter",
-			"status":            "blocked",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[adapterReady],
 			"provider_type":     provider,
 			"review_kind":       reviewKind,
-			"adapter_status":    adapterContract["adapter_status"],
-			"message":           "Provider branch creation, starter-file commit, and PR/MR adapters are not wired yet.",
+			"adapter_status":    adapterStatus,
+			"message":           "Provider branch creation, starter-file commit, and PR/MR adapter contract is registered for supported providers.",
+			"sensitive_payload": false,
+		},
+		{
+			"gate":              "provider_review_mutation_armed",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[mutationArmed],
+			"provider_type":     provider,
+			"review_kind":       reviewKind,
+			"adapter_status":    adapterStatus,
+			"message":           "Provider API mutation remains disabled until the execution adapter is explicitly armed after rehearsal.",
 			"sensitive_payload": false,
 		},
 	}
@@ -887,7 +900,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		}
 	}
 	return map[string]any{
-		"status":                 map[bool]string{true: "ready", false: "blocked"}[executionEnabledConfig && providerSupported && starterReady && planReady && credentialConfigured && credentialPresent && adapterReady],
+		"status":                 map[bool]string{true: "ready", false: "blocked"}[executionEnabledConfig && providerSupported && starterReady && planReady && credentialConfigured && credentialPresent && adapterReady && mutationArmed],
 		"mode":                   "preflight_reconciliation",
 		"provider_type":          provider,
 		"review_kind":            reviewKind,
@@ -896,7 +909,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		"request_envelopes":      providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload),
 		"response_diagnostics":   providerReviewAdapterResponseDiagnostics(provider, reviewKind),
 		"idempotency_plan":       providerReviewAdapterIdempotencyPlan(provider, reviewKind),
-		"adapter_status":         "missing",
+		"adapter_status":         adapterStatus,
 		"external_call_made":     false,
 		"provider_api_call_made": false,
 		"provider_api_mutation":  "disabled",
@@ -906,26 +919,26 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 			{
 				"name":               "create_branch_ref",
 				"endpoint_key":       providerReviewEndpointKey(provider, "create_branch_ref"),
-				"status":             "blocked",
-				"blocked_reason":     "provider_review_api_adapter",
+				"status":             "planned",
+				"blocked_reason":     "provider_review_mutation_armed",
 				"external_call_made": false,
 			},
 			{
 				"name":               "commit_starter_files",
 				"endpoint_key":       providerReviewEndpointKey(provider, "commit_files"),
-				"status":             "blocked",
-				"blocked_reason":     "provider_review_api_adapter",
+				"status":             "planned",
+				"blocked_reason":     "provider_review_mutation_armed",
 				"external_call_made": false,
 			},
 			{
 				"name":               "open_review_request",
 				"endpoint_key":       providerReviewEndpointKey(provider, "open_review"),
-				"status":             "blocked",
-				"blocked_reason":     "provider_review_api_adapter",
+				"status":             "planned",
+				"blocked_reason":     "provider_review_mutation_armed",
 				"external_call_made": false,
 			},
 		},
-		"next_step": "Implement provider branch/ref, starter-file commit, and review-request adapters behind the existing approval and guardrail contract.",
+		"next_step": "Rehearse and arm the provider review execution adapter before enabling provider API mutation.",
 	}
 }
 
@@ -933,6 +946,7 @@ func providerReviewAdapterContract(provider, reviewKind string, requestInputs ..
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
 	supported := provider == "github" || provider == "gitea"
+	adapterStatus := providerReviewAdapterStatus(provider, reviewKind)
 	apiRequestPlan := map[string]any{}
 	starterFilePayload := map[string]any{}
 	if len(requestInputs) > 0 {
@@ -943,7 +957,7 @@ func providerReviewAdapterContract(provider, reviewKind string, requestInputs ..
 	}
 	return map[string]any{
 		"status":                map[bool]string{true: "planned", false: "unsupported"}[supported],
-		"adapter_status":        "missing",
+		"adapter_status":        adapterStatus,
 		"contract_version":      "provider-review-v1",
 		"provider_type":         provider,
 		"review_kind":           reviewKind,
@@ -955,8 +969,24 @@ func providerReviewAdapterContract(provider, reviewKind string, requestInputs ..
 		"request_envelopes":     providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload),
 		"response_diagnostics":  providerReviewAdapterResponseDiagnostics(provider, reviewKind),
 		"idempotency_plan":      providerReviewAdapterIdempotencyPlan(provider, reviewKind),
-		"next_step":             "Implement operation adapters only after provider credentials, approval, payload staging, and protected-branch rules pass preflight.",
+		"next_step":             "Rehearse and arm operation adapters only after provider credentials, approval, payload staging, and protected-branch rules pass preflight.",
 	}
+}
+
+func providerReviewAdapterStatus(provider, reviewKind string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	switch provider {
+	case "github":
+		if reviewKind == "pull_request" {
+			return "planned"
+		}
+	case "gitea":
+		if reviewKind == "merge_request" {
+			return "planned"
+		}
+	}
+	return "missing"
 }
 
 func providerReviewAdapterRequestEnvelopes(provider, reviewKind string, apiRequestPlan, starterFilePayload map[string]any) []map[string]any {
@@ -1048,7 +1078,7 @@ func providerReviewAdapterRequestEnvelope(
 		"api_call":                false,
 		"provider_api_mutation":   "disabled",
 		"execution_status":        "blocked",
-		"blocked_reason":          "provider_review_api_adapter",
+		"blocked_reason":          "provider_review_mutation_armed",
 		"readiness":               readiness,
 	}
 }
@@ -1068,7 +1098,7 @@ func providerReviewAdapterResponseDiagnostics(provider, reviewKind string) map[s
 		"mode":                   "redacted_response_diagnostics",
 		"provider_type":          provider,
 		"review_kind":            reviewKind,
-		"adapter_status":         "missing",
+		"adapter_status":         providerReviewAdapterStatus(provider, reviewKind),
 		"external_call_made":     false,
 		"provider_api_call_made": false,
 		"provider_api_mutation":  "disabled",
@@ -1119,7 +1149,7 @@ func providerReviewAdapterIdempotencyPlan(provider, reviewKind string) map[strin
 		"mode":                       "redacted_idempotency_plan",
 		"provider_type":              provider,
 		"review_kind":                reviewKind,
-		"adapter_status":             "missing",
+		"adapter_status":             providerReviewAdapterStatus(provider, reviewKind),
 		"external_call_made":         false,
 		"provider_api_call_made":     false,
 		"provider_api_mutation":      "disabled",
@@ -1187,6 +1217,7 @@ func providerReviewAdapterIdempotencyOperation(provider, name, endpointOperation
 }
 
 func providerReviewAdapterContractOperations(provider, reviewKind string) []map[string]any {
+	adapterStatus := providerReviewAdapterStatus(provider, reviewKind)
 	scope := "contents:write"
 	reviewScope := "pull_requests:write"
 	if provider == "gitea" {
@@ -1200,7 +1231,7 @@ func providerReviewAdapterContractOperations(provider, reviewKind string) []map[
 			"required_capability":   "branch_ref_write",
 			"required_scope":        scope,
 			"payload_shape":         "ref_from_target_branch",
-			"adapter_status":        "missing",
+			"adapter_status":        adapterStatus,
 			"execution_status":      "blocked",
 			"external_call_made":    false,
 			"provider_api_mutation": "disabled",
@@ -1214,7 +1245,7 @@ func providerReviewAdapterContractOperations(provider, reviewKind string) []map[
 			"required_capability":   "file_content_write",
 			"required_scope":        scope,
 			"payload_shape":         "content_redacted_file_batch",
-			"adapter_status":        "missing",
+			"adapter_status":        adapterStatus,
 			"execution_status":      "blocked",
 			"external_call_made":    false,
 			"provider_api_mutation": "disabled",
@@ -1228,7 +1259,7 @@ func providerReviewAdapterContractOperations(provider, reviewKind string) []map[
 			"required_capability":   "review_request_write",
 			"required_scope":        reviewScope,
 			"payload_shape":         reviewKind,
-			"adapter_status":        "missing",
+			"adapter_status":        adapterStatus,
 			"execution_status":      "blocked",
 			"external_call_made":    false,
 			"provider_api_mutation": "disabled",
@@ -1296,6 +1327,9 @@ func templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, s
 	sourceBranch = strings.TrimSpace(sourceBranch)
 	targetBranch = strings.TrimSpace(targetBranch)
 	branchReady := sourceBranch != "" && targetBranch != "" && isSafeGitRefPart(sourceBranch) && isSafeGitRefPart(targetBranch)
+	adapterStatus := providerReviewAdapterStatus(provider, reviewKind)
+	adapterReady := adapterStatus == "planned"
+	mutationArmed := false
 	configStatus := "blocked"
 	configMessage := "Set ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION=true only after provider branch, commit, and review adapters are ready."
 	if enableRequested {
@@ -1312,10 +1346,20 @@ func templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, s
 		},
 		{
 			"gate":              "provider_review_api_adapter",
-			"status":            "blocked",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[adapterReady],
 			"provider_type":     provider,
 			"review_kind":       reviewKind,
-			"message":           "Provider branch creation, starter-file commit, and PR/MR API adapters are not implemented yet.",
+			"adapter_status":    adapterStatus,
+			"message":           "Provider branch creation, starter-file commit, and PR/MR API adapter contract is registered for supported providers.",
+			"sensitive_payload": false,
+		},
+		{
+			"gate":              "provider_review_mutation_armed",
+			"status":            map[bool]string{true: "ready", false: "blocked"}[mutationArmed],
+			"provider_type":     provider,
+			"review_kind":       reviewKind,
+			"adapter_status":    adapterStatus,
+			"message":           "Provider API mutation remains disabled until the execution adapter is explicitly armed after rehearsal.",
 			"sensitive_payload": false,
 		},
 		{
@@ -1341,7 +1385,7 @@ func templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, s
 	}
 	mode := "disabled"
 	if enableRequested {
-		mode = "adapter_blocked"
+		mode = "mutation_blocked"
 	}
 	return map[string]any{
 		"execution_mode":           mode,
@@ -1357,7 +1401,7 @@ func templateProviderReviewExecutionGuardrailWithStaging(provider, reviewKind, s
 		"review_request_allowed":   false,
 		"blocked_reasons":          blocked,
 		"gates":                    gates,
-		"next_step":                "Implement provider branch, commit, and review adapters, then enable the guarded execution path in a controlled environment.",
+		"next_step":                "Rehearse and arm provider branch, commit, and review adapters before enabling provider API mutation.",
 	}
 }
 

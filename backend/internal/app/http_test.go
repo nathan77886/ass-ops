@@ -1500,12 +1500,13 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 	}
 	reconciliation := mapFromAny(payload["provider_review_reconciliation"])
 	if reconciliation["status"] != "blocked" ||
-		reconciliation["adapter_status"] != "missing" ||
+		reconciliation["adapter_status"] != "planned" ||
 		reconciliation["external_call_made"] != false ||
 		reconciliation["provider_api_mutation"] != "disabled" {
 		t.Fatalf("provider review reconciliation = %#v", reconciliation)
 	}
-	if !containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_api_adapter") {
+	if containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_api_adapter") ||
+		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_mutation_armed") {
 		t.Fatalf("provider review reconciliation blocked reasons = %#v", reconciliation)
 	}
 	if containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "starter_file_payload_staged") ||
@@ -1519,7 +1520,7 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 		t.Fatalf("provider review reconciliation operations = %#v", reconcileOperations)
 	}
 	targetSummary := mapFromAny(payload["provider_review_target_summary"])
-	if targetSummary["status"] != "adapter_blocked" ||
+	if targetSummary["status"] != "mutation_blocked" ||
 		targetSummary["mode"] != "redacted_execution_target_summary" ||
 		targetSummary["branch_refs_ready"] != true ||
 		targetSummary["starter_file_payload_ready"] != true ||
@@ -1593,15 +1594,16 @@ func TestProjectTemplateProviderReviewApprovalPayloadUsesRuntimeGuardrailConfig(
 		t.Fatalf("projectTemplateProviderReviewApprovalPayloadForConfig: %v", err)
 	}
 	guardrail := mapFromAny(payload["execution_guardrail"])
-	if guardrail["execution_mode"] != "adapter_blocked" || guardrail["execution_enabled_config"] != true || guardrail["execution_enabled"] != false {
+	if guardrail["execution_mode"] != "mutation_blocked" || guardrail["execution_enabled_config"] != true || guardrail["execution_enabled"] != false {
 		t.Fatalf("runtime guardrail should reflect enabled config while staying blocked: %#v", guardrail)
 	}
 	apiPlan := mapFromAny(payload["provider_api_request_plan"])
 	if apiPlan["status"] != "ready" || apiPlan["file_count"] != 1 {
 		t.Fatalf("runtime api request plan = %#v", apiPlan)
 	}
-	if !containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_api_adapter") {
-		t.Fatalf("runtime guardrail should remain adapter-blocked: %#v", guardrail)
+	if containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_api_adapter") ||
+		!containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_mutation_armed") {
+		t.Fatalf("runtime guardrail should remain mutation-blocked: %#v", guardrail)
 	}
 }
 
@@ -1673,13 +1675,14 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 		t.Fatalf("provider review approval result should remain audit-only: %#v", result)
 	}
 	guardrail := mapFromAny(result["execution_guardrail"])
-	if guardrail["execution_mode"] != "adapter_blocked" ||
+	if guardrail["execution_mode"] != "mutation_blocked" ||
 		guardrail["execution_enabled_config"] != true ||
 		guardrail["branch_creation_allowed"] != false ||
 		guardrail["review_request_allowed"] != false {
 		t.Fatalf("provider review execution guardrail should stay blocked: %#v", guardrail)
 	}
-	if !containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_api_adapter") ||
+	if containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_api_adapter") ||
+		!containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_mutation_armed") ||
 		containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "starter_file_payload_staged") {
 		t.Fatalf("provider review execution blocked reasons = %#v", guardrail)
 	}
@@ -1696,12 +1699,13 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 	}
 	reconciliation := mapFromAny(result["provider_review_reconciliation"])
 	if reconciliation["status"] != "blocked" ||
-		reconciliation["adapter_status"] != "missing" ||
+		reconciliation["adapter_status"] != "planned" ||
 		reconciliation["external_call_made"] != false ||
 		reconciliation["provider_api_mutation"] != "disabled" {
 		t.Fatalf("provider review execution reconciliation = %#v", reconciliation)
 	}
-	if !containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_api_adapter") {
+	if containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_api_adapter") ||
+		!containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_review_mutation_armed") {
 		t.Fatalf("provider review execution reconciliation blocked reasons = %#v", reconciliation)
 	}
 	if containsString(stringSliceFromAny(reconciliation["blocked_reasons"]), "provider_credential_configured") ||
@@ -1709,7 +1713,7 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 		t.Fatalf("provider review execution reconciliation should preserve credential preflight: %#v", reconciliation)
 	}
 	targetSummary := mapFromAny(result["provider_review_target_summary"])
-	if targetSummary["status"] != "adapter_blocked" ||
+	if targetSummary["status"] != "mutation_blocked" ||
 		targetSummary["provider_api_call_made"] != false ||
 		targetSummary["provider_api_mutation"] != "disabled" ||
 		targetSummary["requires_provider_api_adapter"] != true ||
@@ -1744,16 +1748,16 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 				"token":           "secret-token",
 			},
 			"execution_guardrail": map[string]any{
-				"execution_mode":           "adapter_blocked",
+				"execution_mode":           "mutation_blocked",
 				"execution_enabled_config": true,
 				"provider_type":            "github",
 				"review_kind":              "pull_request",
 				"source_branch":            "assops/template/demo-main",
 				"target_branch":            "main",
 				"api_base_url":             "https://api.github.example.test",
-				"blocked_reasons":          []any{"provider_review_api_adapter"},
+				"blocked_reasons":          []any{"provider_review_mutation_armed"},
 				"gates": []map[string]any{
-					{"gate": "provider_review_api_adapter", "status": "blocked", "message": "adapter blocked", "token": "secret-token"},
+					{"gate": "provider_review_mutation_armed", "status": "blocked", "message": "mutation blocked", "token": "secret-token"},
 				},
 			},
 			"credential_strategy": map[string]any{
@@ -1916,8 +1920,8 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 				"external_call_made":    true,
 				"provider_api_mutation": "enabled",
 				"api_base_url":          "https://api.github.example.test",
-				"blocked_reasons":       []any{"provider_review_api_adapter"},
-				"gates":                 []map[string]any{{"gate": "provider_review_api_adapter", "status": "blocked", "token": "secret-token"}},
+				"blocked_reasons":       []any{"provider_review_mutation_armed"},
+				"gates":                 []map[string]any{{"gate": "provider_review_mutation_armed", "status": "blocked", "token": "secret-token"}},
 				"operations":            []map[string]any{{"name": "open_review_request", "endpoint_key": "github.open_review", "status": "ready", "url": "https://api.github.example.test/repos/acme/secret-repo/pulls", "external_call_made": true}},
 				"request_envelopes": []map[string]any{
 					{
@@ -2034,7 +2038,7 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 				"provider_api_request_ready": true,
 				"file_count":                 1,
 				"adapter_status":             "<script>alert(1)</script>",
-				"blocked_reasons":            []any{"provider_review_api_adapter", "<script>alert(1)</script>", strings.Repeat("x", 140)},
+				"blocked_reasons":            []any{"provider_review_mutation_armed", "<script>alert(1)</script>", strings.Repeat("x", 140)},
 				"external_call_made":         true,
 				"provider_api_call_made":     true,
 				"provider_api_mutation":      "enabled",
@@ -2077,7 +2081,7 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 					"provider_api_request_ready": true,
 					"file_count":                 1,
 					"adapter_status":             "<script>alert(1)</script>",
-					"blocked_reasons":            []any{"provider_review_api_adapter", "<script>alert(1)</script>", strings.Repeat("x", 140)},
+					"blocked_reasons":            []any{"provider_review_mutation_armed", "<script>alert(1)</script>", strings.Repeat("x", 140)},
 					"external_call_made":         true,
 					"provider_api_call_made":     true,
 					"provider_api_mutation":      "enabled",
@@ -2181,7 +2185,7 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		t.Fatalf("target summary audit should be sanitized: %#v", targetSummary)
 	}
 	targetBlockedReasons := stringSliceFromAny(targetSummary["blocked_reasons"])
-	if len(targetBlockedReasons) != 1 || targetBlockedReasons[0] != "provider_review_api_adapter" {
+	if len(targetBlockedReasons) != 1 || targetBlockedReasons[0] != "provider_review_mutation_armed" {
 		t.Fatalf("target summary blocked reasons should be allowlisted: %#v", targetBlockedReasons)
 	}
 	targetOperations := sliceOfMapsFromAny(targetSummary["operations"])

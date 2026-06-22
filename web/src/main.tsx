@@ -1122,12 +1122,13 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
       ) : null}
       {targetSummary.status ? (
         <Space size={4} wrap>
-          <Tag color={targetSummary.status === 'adapter_blocked' ? 'blue' : targetSummary.status === 'ready' ? 'green' : 'gold'}>target {String(targetSummary.status).replaceAll('_', ' ')}</Tag>
+          <Tag color={targetSummary.status === 'adapter_blocked' || targetSummary.status === 'mutation_blocked' ? 'blue' : targetSummary.status === 'ready' ? 'green' : 'gold'}>target {String(targetSummary.status).replaceAll('_', ' ')}</Tag>
           <Tag>{String(targetSummary.mode || 'redacted_execution_target_summary').replaceAll('_', ' ')}</Tag>
           {!targetSummarySafe ? <Tag color="red">target not redacted</Tag> : null}
           <Tag>{targetSummary.branch_refs_ready === true ? 'branches ready' : 'branches blocked'}</Tag>
           <Tag>{targetSummary.starter_file_payload_ready === true ? 'starter ready' : 'starter blocked'}</Tag>
           <Tag>files {Number(targetSummary.file_count || 0)}</Tag>
+          <Tag color={targetSummary.adapter_mutation_currently_off === true ? 'blue' : 'red'}>{targetSummary.adapter_mutation_currently_off === true ? 'mutation off' : 'mutation armed'}</Tag>
           <Tag>adapter {String(targetSummary.adapter_status || 'missing')}</Tag>
         </Space>
       ) : null}
