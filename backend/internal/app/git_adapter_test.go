@@ -526,6 +526,22 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 		responseDiagnosticOperations[2]["endpoint_key"] != "github.open_review" {
 		t.Fatalf("github provider review response diagnostic operations = %#v", responseDiagnosticOperations)
 	}
+	idempotencyPlan := mapFromAny(reconciliation["idempotency_plan"])
+	if idempotencyPlan["status"] != "planned" ||
+		idempotencyPlan["mode"] != "redacted_idempotency_plan" ||
+		idempotencyPlan["idempotency_key_included"] != false ||
+		idempotencyPlan["contains_repository_ref"] != false ||
+		idempotencyPlan["contains_branch_name"] != false ||
+		idempotencyPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("github provider review idempotency plan = %#v", idempotencyPlan)
+	}
+	idempotencyOperations := sliceOfMapsFromAny(idempotencyPlan["operations"])
+	if len(idempotencyOperations) != 3 ||
+		idempotencyOperations[0]["replay_check"] != "detect_existing_branch_ref" ||
+		idempotencyOperations[1]["conflict_policy"] != "block_on_content_or_parent_conflict" ||
+		idempotencyOperations[2]["replay_check"] != "detect_existing_open_review" {
+		t.Fatalf("github provider review idempotency operations = %#v", idempotencyOperations)
+	}
 	gates := sliceOfMapsFromAny(githubGuardrail["gates"])
 	if len(gates) != 4 || gates[0]["gate"] != "provider_review_execution_enabled" || gates[2]["status"] != "ready" {
 		t.Fatalf("github execution guardrail gates = %#v", gates)

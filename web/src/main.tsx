@@ -1048,6 +1048,8 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
     : (Array.isArray(adapterContract.request_envelopes) ? adapterContract.request_envelopes : []);
   const responseDiagnostics = reconciliation.response_diagnostics || adapterContract.response_diagnostics || {};
   const responseDiagnosticOperations = Array.isArray(responseDiagnostics.operations) ? responseDiagnostics.operations : [];
+  const idempotencyPlan = reconciliation.idempotency_plan || adapterContract.idempotency_plan || {};
+  const idempotencyOperations = Array.isArray(idempotencyPlan.operations) ? idempotencyPlan.operations : [];
   return (
     <Space direction="vertical" size={8} className="full">
       <Space size={4} wrap>
@@ -1170,6 +1172,23 @@ function ProviderReviewApprovalAudit({ value }: { value?: AnyRow }) {
           {responseDiagnosticOperations.map((operation: AnyRow, index: number) => (
             <Tag key={String(operation.endpoint_key || operation.name || `response-diagnostic-${index}`)}>
               {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.status || 'pending')}
+            </Tag>
+          ))}
+        </Space>
+      ) : null}
+      {idempotencyPlan.status ? (
+        <Space size={4} wrap>
+          <Tag color={idempotencyPlan.status === 'ready' ? 'green' : 'blue'}>idempotency {String(idempotencyPlan.status)}</Tag>
+          <Tag>{String(idempotencyPlan.mode || 'redacted_idempotency_plan').replaceAll('_', ' ')}</Tag>
+          <Tag>{idempotencyPlan.requires_persisted_attempt === true ? 'persisted attempt required' : 'no persisted attempt'}</Tag>
+          <Tag>{idempotencyPlan.idempotency_key_included === true ? 'key included' : 'key redacted'}</Tag>
+        </Space>
+      ) : null}
+      {idempotencyOperations.length ? (
+        <Space size={4} wrap>
+          {idempotencyOperations.map((operation: AnyRow, index: number) => (
+            <Tag key={String(operation.endpoint_key || operation.name || `idempotency-operation-${index}`)}>
+              {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.replay_check || operation.conflict_policy || 'planned')}
             </Tag>
           ))}
         </Space>

@@ -1838,6 +1838,51 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 							},
 						},
 					},
+					"idempotency_plan": map[string]any{
+						"status":                     "ready",
+						"mode":                       "raw_idempotency_plan",
+						"provider_type":              "github",
+						"review_kind":                "pull_request",
+						"adapter_status":             "ready",
+						"external_call_made":         true,
+						"provider_api_call_made":     true,
+						"provider_api_mutation":      "enabled",
+						"contains_token":             true,
+						"contains_provider_url":      true,
+						"contains_repository_ref":    true,
+						"contains_branch_name":       true,
+						"contains_file_content":      true,
+						"idempotency_key_included":   true,
+						"idempotency_key_material":   "fake-repo:fake/namespace/fake-ref:fake-token",
+						"requires_persisted_attempt": true,
+						"retry_after_diagnostics":    true,
+						"operations": []map[string]any{
+							{
+								"name":                          "commit_starter_files",
+								"endpoint_key":                  "github.commit_files",
+								"status":                        "ready",
+								"idempotency_key_kind":          "raw_key",
+								"idempotency_key_included":      true,
+								"idempotency_key_material":      "fake-repo:fake/namespace/fake-ref:fake-token",
+								"replay_check":                  "detect_existing_commit_batch",
+								"conflict_policy":               "block_on_content_or_parent_conflict",
+								"retry_policy":                  "retry_only_after_response_diagnostics",
+								"requires_persisted_attempt":    true,
+								"contains_token":                true,
+								"contains_provider_url":         true,
+								"contains_repository_ref":       true,
+								"contains_branch_name":          true,
+								"contains_file_content":         true,
+								"external_call_made":            true,
+								"provider_api_call_made":        true,
+								"provider_api_mutation":         "enabled",
+								"response_diagnostics_required": true,
+								"branch":                        "assops/template/demo-main",
+								"repo":                          "secret-repo",
+								"token":                         "secret-token",
+							},
+						},
+					},
 				},
 				"adapter_status":        "ready",
 				"external_call_made":    true,
@@ -1900,6 +1945,51 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 							"external_call_made":       true,
 							"provider_api_mutation":    "enabled",
 							"url":                      "https://api.github.example.test/repos/acme/secret-repo/pulls",
+						},
+					},
+				},
+				"idempotency_plan": map[string]any{
+					"status":                     "ready",
+					"mode":                       "raw_idempotency_plan",
+					"provider_type":              "github",
+					"review_kind":                "pull_request",
+					"adapter_status":             "ready",
+					"external_call_made":         true,
+					"provider_api_call_made":     true,
+					"provider_api_mutation":      "enabled",
+					"contains_token":             true,
+					"contains_provider_url":      true,
+					"contains_repository_ref":    true,
+					"contains_branch_name":       true,
+					"contains_file_content":      true,
+					"idempotency_key_included":   true,
+					"idempotency_key_material":   "fake-repo:fake/namespace/fake-ref:fake-token",
+					"requires_persisted_attempt": true,
+					"retry_after_diagnostics":    true,
+					"operations": []map[string]any{
+						{
+							"name":                          "open_review_request",
+							"endpoint_key":                  "github.open_review",
+							"status":                        "ready",
+							"idempotency_key_kind":          "raw_key",
+							"idempotency_key_included":      true,
+							"idempotency_key_material":      "fake-repo:fake/namespace/fake-ref:fake-token",
+							"replay_check":                  "detect_existing_open_review",
+							"conflict_policy":               "reuse_existing_review_request",
+							"retry_policy":                  "retry_only_after_response_diagnostics",
+							"requires_persisted_attempt":    true,
+							"contains_token":                true,
+							"contains_provider_url":         true,
+							"contains_repository_ref":       true,
+							"contains_branch_name":          true,
+							"contains_file_content":         true,
+							"external_call_made":            true,
+							"provider_api_call_made":        true,
+							"provider_api_mutation":         "enabled",
+							"response_diagnostics_required": true,
+							"branch":                        "assops/template/demo-main",
+							"repo":                          "secret-repo",
+							"token":                         "secret-token",
 						},
 					},
 				},
@@ -1989,6 +2079,37 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		contractResponseOperations[0]["provider_api_mutation"] != "disabled" {
 		t.Fatalf("adapter contract response diagnostic operations should be sanitized: %#v", contractResponseOperations)
 	}
+	contractIdempotencyPlan := mapFromAny(adapterContract["idempotency_plan"])
+	if contractIdempotencyPlan["external_call_made"] != false ||
+		contractIdempotencyPlan["mode"] != "redacted_idempotency_plan" ||
+		contractIdempotencyPlan["provider_api_call_made"] != false ||
+		contractIdempotencyPlan["provider_api_mutation"] != "disabled" ||
+		contractIdempotencyPlan["contains_token"] != false ||
+		contractIdempotencyPlan["contains_provider_url"] != false ||
+		contractIdempotencyPlan["contains_repository_ref"] != false ||
+		contractIdempotencyPlan["contains_branch_name"] != false ||
+		contractIdempotencyPlan["contains_file_content"] != false ||
+		contractIdempotencyPlan["idempotency_key_included"] != false ||
+		contractIdempotencyPlan["idempotency_key_material"] != "redacted_required_material_only" {
+		t.Fatalf("adapter contract idempotency plan should be sanitized: %#v", contractIdempotencyPlan)
+	}
+	contractIdempotencyOperations := sliceOfMapsFromAny(contractIdempotencyPlan["operations"])
+	if len(contractIdempotencyOperations) != 1 ||
+		contractIdempotencyOperations[0]["idempotency_key_included"] != false ||
+		contractIdempotencyOperations[0]["idempotency_key_kind"] != "operation_scope_hash" ||
+		contractIdempotencyOperations[0]["idempotency_key_material"] != "redacted_required_material_only" ||
+		contractIdempotencyOperations[0]["contains_repository_ref"] != false ||
+		contractIdempotencyOperations[0]["contains_branch_name"] != false ||
+		contractIdempotencyOperations[0]["contains_file_content"] != false ||
+		contractIdempotencyOperations[0]["external_call_made"] != false ||
+		contractIdempotencyOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("adapter contract idempotency operations should be sanitized: %#v", contractIdempotencyOperations)
+	}
+	for _, field := range []string{"branch", "repo", "token"} {
+		if _, ok := contractIdempotencyOperations[0][field]; ok {
+			t.Fatalf("adapter contract idempotency operation should not expose %s: %#v", field, contractIdempotencyOperations[0])
+		}
+	}
 	requestEnvelopes := sliceOfMapsFromAny(reconciliation["request_envelopes"])
 	if len(requestEnvelopes) != 1 ||
 		requestEnvelopes[0]["api_call"] != false ||
@@ -2024,6 +2145,37 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		responseOperations[0]["provider_api_mutation"] != "disabled" {
 		t.Fatalf("response diagnostic operations should be sanitized: %#v", responseOperations)
 	}
+	idempotencyPlan := mapFromAny(reconciliation["idempotency_plan"])
+	if idempotencyPlan["external_call_made"] != false ||
+		idempotencyPlan["mode"] != "redacted_idempotency_plan" ||
+		idempotencyPlan["provider_api_call_made"] != false ||
+		idempotencyPlan["provider_api_mutation"] != "disabled" ||
+		idempotencyPlan["contains_token"] != false ||
+		idempotencyPlan["contains_provider_url"] != false ||
+		idempotencyPlan["contains_repository_ref"] != false ||
+		idempotencyPlan["contains_branch_name"] != false ||
+		idempotencyPlan["contains_file_content"] != false ||
+		idempotencyPlan["idempotency_key_included"] != false ||
+		idempotencyPlan["idempotency_key_material"] != "redacted_required_material_only" {
+		t.Fatalf("idempotency plan should be sanitized: %#v", idempotencyPlan)
+	}
+	idempotencyOperations := sliceOfMapsFromAny(idempotencyPlan["operations"])
+	if len(idempotencyOperations) != 1 ||
+		idempotencyOperations[0]["idempotency_key_included"] != false ||
+		idempotencyOperations[0]["idempotency_key_kind"] != "operation_scope_hash" ||
+		idempotencyOperations[0]["idempotency_key_material"] != "redacted_required_material_only" ||
+		idempotencyOperations[0]["contains_repository_ref"] != false ||
+		idempotencyOperations[0]["contains_branch_name"] != false ||
+		idempotencyOperations[0]["contains_file_content"] != false ||
+		idempotencyOperations[0]["external_call_made"] != false ||
+		idempotencyOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("idempotency operations should be sanitized: %#v", idempotencyOperations)
+	}
+	for _, field := range []string{"branch", "repo", "token"} {
+		if _, ok := idempotencyOperations[0][field]; ok {
+			t.Fatalf("idempotency operation should not expose %s: %#v", field, idempotencyOperations[0])
+		}
+	}
 	credential := mapFromAny(audit["credential_strategy"])
 	if credential["token_stored"] != false || credential["external_call_made"] != false || credential["token_env_present"] != true {
 		t.Fatalf("credential audit should force no stored token/no external call while preserving safe presence: %#v", credential)
@@ -2047,7 +2199,7 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		t.Fatalf("approval result reconciliation audit should force disabled/no-call: %#v", resultReconciliation)
 	}
 	encoded, _ := json.Marshal(audit)
-	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`} {
+	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_idempotency_plan", "raw_key"} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
 		}
@@ -2099,6 +2251,14 @@ func TestOperationApprovalPayloadAuditProviderReviewAllowsMissingResponseDiagnos
 	contractResponseDiagnostics := mapFromAny(adapterContract["response_diagnostics"])
 	if len(contractResponseDiagnostics) != 0 {
 		t.Fatalf("missing contract response diagnostics should remain empty: %#v", contractResponseDiagnostics)
+	}
+	idempotencyPlan := mapFromAny(reconciliation["idempotency_plan"])
+	if len(idempotencyPlan) != 0 {
+		t.Fatalf("missing idempotency plan should remain empty: %#v", idempotencyPlan)
+	}
+	contractIdempotencyPlan := mapFromAny(adapterContract["idempotency_plan"])
+	if len(contractIdempotencyPlan) != 0 {
+		t.Fatalf("missing contract idempotency plan should remain empty: %#v", contractIdempotencyPlan)
 	}
 }
 

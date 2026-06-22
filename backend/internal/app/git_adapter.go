@@ -819,6 +819,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		"adapter_contract":       adapterContract,
 		"request_envelopes":      providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload),
 		"response_diagnostics":   providerReviewAdapterResponseDiagnostics(provider, reviewKind),
+		"idempotency_plan":       providerReviewAdapterIdempotencyPlan(provider, reviewKind),
 		"adapter_status":         "missing",
 		"external_call_made":     false,
 		"provider_api_call_made": false,
@@ -877,6 +878,7 @@ func providerReviewAdapterContract(provider, reviewKind string, requestInputs ..
 		"operations":            providerReviewAdapterContractOperations(provider, reviewKind),
 		"request_envelopes":     providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload),
 		"response_diagnostics":  providerReviewAdapterResponseDiagnostics(provider, reviewKind),
+		"idempotency_plan":      providerReviewAdapterIdempotencyPlan(provider, reviewKind),
 		"next_step":             "Implement operation adapters only after provider credentials, approval, payload staging, and protected-branch rules pass preflight.",
 	}
 }
@@ -1030,6 +1032,81 @@ func providerReviewAdapterResponseDiagnosticOperation(provider, name, endpointOp
 		"contains_provider_url":    false,
 		"external_call_made":       false,
 		"provider_api_mutation":    "disabled",
+	}
+}
+
+func providerReviewAdapterIdempotencyPlan(provider, reviewKind string) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	return map[string]any{
+		"status":                     "planned",
+		"mode":                       "redacted_idempotency_plan",
+		"provider_type":              provider,
+		"review_kind":                reviewKind,
+		"adapter_status":             "missing",
+		"external_call_made":         false,
+		"provider_api_call_made":     false,
+		"provider_api_mutation":      "disabled",
+		"contains_token":             false,
+		"contains_provider_url":      false,
+		"contains_repository_ref":    false,
+		"contains_branch_name":       false,
+		"contains_file_content":      false,
+		"idempotency_key_included":   false,
+		"idempotency_key_material":   "redacted_required_material_only",
+		"requires_persisted_attempt": true,
+		"retry_after_diagnostics":    true,
+		"operations":                 providerReviewAdapterIdempotencyOperations(provider),
+	}
+}
+
+func providerReviewAdapterIdempotencyOperations(provider string) []map[string]any {
+	return []map[string]any{
+		providerReviewAdapterIdempotencyOperation(
+			provider,
+			"create_branch_ref",
+			"create_branch_ref",
+			"detect_existing_branch_ref",
+			"treat_existing_matching_ref_as_success",
+		),
+		providerReviewAdapterIdempotencyOperation(
+			provider,
+			"commit_starter_files",
+			"commit_files",
+			"detect_existing_commit_batch",
+			"block_on_content_or_parent_conflict",
+		),
+		providerReviewAdapterIdempotencyOperation(
+			provider,
+			"open_review_request",
+			"open_review",
+			"detect_existing_open_review",
+			"reuse_existing_review_request",
+		),
+	}
+}
+
+func providerReviewAdapterIdempotencyOperation(provider, name, endpointOperation, replayCheck, conflictPolicy string) map[string]any {
+	return map[string]any{
+		"name":                          name,
+		"endpoint_key":                  providerReviewEndpointKey(provider, endpointOperation),
+		"status":                        "planned",
+		"idempotency_key_kind":          "operation_scope_hash",
+		"idempotency_key_included":      false,
+		"idempotency_key_material":      "redacted_required_material_only",
+		"replay_check":                  replayCheck,
+		"conflict_policy":               conflictPolicy,
+		"retry_policy":                  "retry_only_after_response_diagnostics",
+		"requires_persisted_attempt":    true,
+		"contains_token":                false,
+		"contains_provider_url":         false,
+		"contains_repository_ref":       false,
+		"contains_branch_name":          false,
+		"contains_file_content":         false,
+		"external_call_made":            false,
+		"provider_api_mutation":         "disabled",
+		"provider_api_call_made":        false,
+		"response_diagnostics_required": true,
 	}
 }
 
