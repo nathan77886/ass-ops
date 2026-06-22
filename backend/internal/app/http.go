@@ -8727,12 +8727,15 @@ func (s *Server) providerReviewAttemptLedgerForApproval(ctx context.Context, app
 			replay_check,
 			conflict_policy,
 			retry_policy,
+			operation_order,
+			depends_on_operation,
+			dependency_status,
 			provider_api_call_made,
 			provider_api_mutation,
 			external_call_made
 		FROM provider_review_attempts
 		WHERE operation_approval_id=$1
-		ORDER BY created_at ASC, operation_name ASC`, approvalID)
+		ORDER BY operation_order ASC, created_at ASC, operation_name ASC`, approvalID)
 	if err != nil {
 		return nil, err
 	}
@@ -8869,6 +8872,9 @@ func sanitizedProviderReviewAttemptLedger(value map[string]any) map[string]any {
 			"replay_check":             cleanOptionalText(stringFromMap(operation, "replay_check")),
 			"conflict_policy":          cleanOptionalText(stringFromMap(operation, "conflict_policy")),
 			"retry_policy":             cleanOptionalText(stringFromMap(operation, "retry_policy")),
+			"operation_order":          intFromAny(operation["operation_order"], 0),
+			"depends_on_operation":     safeProviderReviewAttemptDependencyName(stringFromMap(operation, "depends_on_operation")),
+			"dependency_status":        safeProviderReviewAttemptDependencyStatus(stringFromMap(operation, "dependency_status")),
 			"external_call_made":       false,
 			"provider_api_call_made":   false,
 			"provider_api_mutation":    "disabled",
@@ -10308,6 +10314,7 @@ func (s *Server) recordProviderReviewAttemptLedger(ctx context.Context, tx *sqlx
 			continue
 		}
 		endpointKey := cleanOptionalText(stringFromMap(operation, "endpoint_key"))
+		dependency := providerReviewAttemptDependency(name)
 		requestSummary := providerReviewAttemptRequestSummary(operation)
 		responseDiagnostics := providerReviewAttemptResponseDiagnostics(reconciliation, endpointKey)
 		requestJSON, err := jsonParam(requestSummary)
@@ -10334,6 +10341,9 @@ func (s *Server) recordProviderReviewAttemptLedger(ctx context.Context, tx *sqlx
 				replay_check,
 				conflict_policy,
 				retry_policy,
+				operation_order,
+				depends_on_operation,
+				dependency_status,
 				idempotency_key_kind,
 				idempotency_key_hash,
 				idempotency_key_material,
@@ -10354,18 +10364,21 @@ func (s *Server) recordProviderReviewAttemptLedger(ctx context.Context, tx *sqlx
 				$7,
 				$8,
 				$9,
+				$10,
+				$11,
+				$12,
 				'operation_scope_hash',
 				'',
-				$10::jsonb,
-				$11::jsonb,
-				$12::jsonb,
+				$13::jsonb,
+				$14::jsonb,
+				$15::jsonb,
 				false,
 				'disabled',
 				false
 			)
 			ON CONFLICT (operation_approval_id, operation_name) DO UPDATE
 			SET updated_at=now()
-			RETURNING id, operation_name, endpoint_key, status, replay_check, conflict_policy, retry_policy, provider_api_call_made, provider_api_mutation, external_call_made`,
+			RETURNING id, operation_name, endpoint_key, status, replay_check, conflict_policy, retry_policy, operation_order, depends_on_operation, dependency_status, provider_api_call_made, provider_api_mutation, external_call_made`,
 			approvalID,
 			projectTemplateRunID,
 			provider,
@@ -10375,6 +10388,9 @@ func (s *Server) recordProviderReviewAttemptLedger(ctx context.Context, tx *sqlx
 			cleanOptionalText(stringFromMap(operation, "replay_check")),
 			cleanOptionalText(stringFromMap(operation, "conflict_policy")),
 			cleanOptionalText(stringFromMap(operation, "retry_policy")),
+			dependency["operation_order"],
+			dependency["depends_on_operation"],
+			dependency["dependency_status"],
 			idempotencyJSON,
 			requestJSON,
 			responseJSON,
@@ -10385,6 +10401,19 @@ func (s *Server) recordProviderReviewAttemptLedger(ctx context.Context, tx *sqlx
 		attempts = append(attempts, attempt)
 	}
 	return providerReviewAttemptLedgerSummary(attempts), nil
+}
+
+func providerReviewAttemptDependency(operationName string) map[string]any {
+	switch cleanOptionalText(operationName) {
+	case "create_branch_ref":
+		return map[string]any{"operation_order": 10, "depends_on_operation": "", "dependency_status": "independent"}
+	case "commit_starter_files":
+		return map[string]any{"operation_order": 20, "depends_on_operation": "create_branch_ref", "dependency_status": "waiting_for_dependency"}
+	case "open_review_request":
+		return map[string]any{"operation_order": 30, "depends_on_operation": "commit_starter_files", "dependency_status": "waiting_for_dependency"}
+	default:
+		return map[string]any{"operation_order": 100, "depends_on_operation": "", "dependency_status": "independent"}
+	}
 }
 
 func providerReviewAttemptRequestSummary(operation map[string]any) map[string]any {
@@ -10447,6 +10476,9 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 			"replay_check":             cleanOptionalText(stringFromMap(attempt, "replay_check")),
 			"conflict_policy":          cleanOptionalText(stringFromMap(attempt, "conflict_policy")),
 			"retry_policy":             cleanOptionalText(stringFromMap(attempt, "retry_policy")),
+			"operation_order":          intFromAny(attempt["operation_order"], 0),
+			"depends_on_operation":     safeProviderReviewAttemptDependencyName(stringFromMap(attempt, "depends_on_operation")),
+			"dependency_status":        safeProviderReviewAttemptDependencyStatus(stringFromMap(attempt, "dependency_status")),
 			"external_call_made":       false,
 			"provider_api_call_made":   false,
 			"provider_api_mutation":    "disabled",
@@ -10471,6 +10503,24 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 		"contains_repository_ref":  false,
 		"contains_branch_name":     false,
 		"contains_file_content":    false,
+	}
+}
+
+func safeProviderReviewAttemptDependencyStatus(value string) string {
+	switch cleanOptionalText(value) {
+	case "independent", "waiting_for_dependency", "dependency_satisfied", "dependency_failed":
+		return cleanOptionalText(value)
+	default:
+		return "independent"
+	}
+}
+
+func safeProviderReviewAttemptDependencyName(value string) string {
+	switch cleanOptionalText(value) {
+	case "", "create_branch_ref", "commit_starter_files":
+		return cleanOptionalText(value)
+	default:
+		return ""
 	}
 }
 

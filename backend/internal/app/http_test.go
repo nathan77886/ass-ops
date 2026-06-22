@@ -2488,10 +2488,13 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		endpoint string
 		replay   string
 		conflict string
+		order    int
+		depends  string
+		depStat  string
 	}{
-		{"create_branch_ref", "github.create_branch_ref", "detect_existing_branch_ref", "treat_existing_matching_ref_as_success"},
-		{"commit_starter_files", "github.commit_files", "detect_existing_commit_batch", "block_on_content_or_parent_conflict"},
-		{"open_review_request", "github.open_review", "detect_existing_open_review", "reuse_existing_review_request"},
+		{"create_branch_ref", "github.create_branch_ref", "detect_existing_branch_ref", "treat_existing_matching_ref_as_success", 10, "", "independent"},
+		{"commit_starter_files", "github.commit_files", "detect_existing_commit_batch", "block_on_content_or_parent_conflict", 20, "create_branch_ref", "waiting_for_dependency"},
+		{"open_review_request", "github.open_review", "detect_existing_open_review", "reuse_existing_review_request", 30, "commit_starter_files", "waiting_for_dependency"},
 	} {
 		mock.ExpectQuery(`(?s)INSERT INTO provider_review_attempts.*RETURNING id, operation_name`).
 			WillReturnRows(sqlmock.NewRows([]string{
@@ -2502,6 +2505,9 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 				"replay_check",
 				"conflict_policy",
 				"retry_policy",
+				"operation_order",
+				"depends_on_operation",
+				"dependency_status",
 				"provider_api_call_made",
 				"provider_api_mutation",
 				"external_call_made",
@@ -2513,6 +2519,9 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 				item.replay,
 				item.conflict,
 				"retry_only_after_response_diagnostics",
+				item.order,
+				item.depends,
+				item.depStat,
 				false,
 				"disabled",
 				false,
@@ -2537,7 +2546,12 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		t.Fatalf("attempt ledger summary = %#v", summary)
 	}
 	operations := sliceOfMapsFromAny(summary["operations"])
-	if len(operations) != 3 || operations[0]["endpoint_key"] != "github.create_branch_ref" || operations[2]["replay_check"] != "detect_existing_open_review" {
+	if len(operations) != 3 ||
+		operations[0]["endpoint_key"] != "github.create_branch_ref" ||
+		operations[0]["operation_order"] != 10 ||
+		operations[1]["depends_on_operation"] != "create_branch_ref" ||
+		operations[2]["replay_check"] != "detect_existing_open_review" ||
+		operations[2]["dependency_status"] != "waiting_for_dependency" {
 		t.Fatalf("attempt ledger operations = %#v", operations)
 	}
 	encoded, _ := json.Marshal(summary)
@@ -2568,6 +2582,9 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 			"replay_check",
 			"conflict_policy",
 			"retry_policy",
+			"operation_order",
+			"depends_on_operation",
+			"dependency_status",
 			"provider_api_call_made",
 			"provider_api_mutation",
 			"external_call_made",
@@ -2579,6 +2596,9 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 			"detect_existing_open_review",
 			"reuse_existing_review_request",
 			"retry_only_after_response_diagnostics",
+			30,
+			"commit_starter_files",
+			"waiting_for_dependency",
 			false,
 			"disabled",
 			false,
@@ -2598,6 +2618,9 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 	if len(operations) != 1 ||
 		operations[0]["name"] != "open_review_request" ||
 		operations[0]["endpoint_key"] != "github.open_review" ||
+		operations[0]["operation_order"] != 30 ||
+		operations[0]["depends_on_operation"] != "commit_starter_files" ||
+		operations[0]["dependency_status"] != "waiting_for_dependency" ||
 		operations[0]["idempotency_key_included"] != false {
 		t.Fatalf("attempt ledger operations = %#v", operations)
 	}
@@ -2638,6 +2661,9 @@ func TestProviderReviewAttemptLedgerForApprovalHandlesEmptyInputAndRows(t *testi
 			"replay_check",
 			"conflict_policy",
 			"retry_policy",
+			"operation_order",
+			"depends_on_operation",
+			"dependency_status",
 			"provider_api_call_made",
 			"provider_api_mutation",
 			"external_call_made",
@@ -2651,6 +2677,42 @@ func TestProviderReviewAttemptLedgerForApprovalHandlesEmptyInputAndRows(t *testi
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptDependencySanitizers(t *testing.T) {
+	for _, item := range []struct {
+		input string
+		want  string
+	}{
+		{"independent", "independent"},
+		{"waiting_for_dependency", "waiting_for_dependency"},
+		{"dependency_satisfied", "dependency_satisfied"},
+		{"dependency_failed", "dependency_failed"},
+		{"", "independent"},
+		{"running", "independent"},
+		{"<script>alert(1)</script>", "independent"},
+		{strings.Repeat("x", 200), "independent"},
+	} {
+		if got := safeProviderReviewAttemptDependencyStatus(item.input); got != item.want {
+			t.Fatalf("safeProviderReviewAttemptDependencyStatus(%q) = %q, want %q", item.input, got, item.want)
+		}
+	}
+	for _, item := range []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"create_branch_ref", "create_branch_ref"},
+		{"commit_starter_files", "commit_starter_files"},
+		{"open_review_request", ""},
+		{"secret-repo", ""},
+		{"<script>alert(1)</script>", ""},
+		{strings.Repeat("x", 200), ""},
+	} {
+		if got := safeProviderReviewAttemptDependencyName(item.input); got != item.want {
+			t.Fatalf("safeProviderReviewAttemptDependencyName(%q) = %q, want %q", item.input, got, item.want)
+		}
 	}
 }
 
@@ -4690,6 +4752,10 @@ func TestProviderReviewAttemptsMigrationAndFreshInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}
+	dependencyMigration, err := os.ReadFile("../../migrations/015_provider_review_attempt_dependencies.sql")
+	if err != nil {
+		t.Fatalf("read dependency migration: %v", err)
+	}
 	for _, token := range []string{
 		"CREATE TABLE IF NOT EXISTS provider_review_attempts",
 		"operation_approval_id UUID NOT NULL REFERENCES operation_approvals",
@@ -4705,6 +4771,20 @@ func TestProviderReviewAttemptsMigrationAndFreshInit(t *testing.T) {
 			t.Fatalf("migration missing %q", token)
 		}
 	}
+	for _, token := range []string{
+		"ADD COLUMN IF NOT EXISTS operation_order",
+		"ADD COLUMN IF NOT EXISTS depends_on_operation",
+		"ADD COLUMN IF NOT EXISTS dependency_status",
+		"pg_constraint",
+		"provider_review_attempts_dependency_status_check",
+		"provider_review_attempts_depends_on_operation_check",
+		"WHERE operation_order = 0",
+		"idx_provider_review_attempts_approval_order",
+	} {
+		if !strings.Contains(string(dependencyMigration), token) {
+			t.Fatalf("dependency migration missing %q", token)
+		}
+	}
 	for _, path := range []string{"../../../deploy/docker-compose.yml", "../../../deploy/compose.prod.yml"} {
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -4712,6 +4792,9 @@ func TestProviderReviewAttemptsMigrationAndFreshInit(t *testing.T) {
 		}
 		if !strings.Contains(string(content), "014_provider_review_attempts.sql") {
 			t.Fatalf("%s missing 014_provider_review_attempts.sql init mount", path)
+		}
+		if !strings.Contains(string(content), "015_provider_review_attempt_dependencies.sql") {
+			t.Fatalf("%s missing 015_provider_review_attempt_dependencies.sql init mount", path)
 		}
 	}
 }

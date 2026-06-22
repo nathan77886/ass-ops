@@ -1257,9 +1257,15 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
       {attemptOperations.length ? (
         <Space size={4} wrap>
           {attemptOperations.map((operation: AnyRow, index: number) => (
-            <Tag key={`${String(operation.id || operation.endpoint_key || operation.name || 'attempt')}-${index}`}>
-              {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.status || 'planned')}
-            </Tag>
+            <Space.Compact key={`${String(operation.id || operation.endpoint_key || operation.name || 'attempt')}-${index}`}>
+              <Tag>
+                {Number(operation.operation_order || index + 1)} {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.status || 'planned')}
+                {operation.depends_on_operation ? ` after ${String(operation.depends_on_operation)}` : ''}
+              </Tag>
+              <Tag color={operation.dependency_status === 'dependency_failed' ? 'red' : operation.dependency_status === 'dependency_satisfied' ? 'green' : operation.dependency_status === 'waiting_for_dependency' ? 'gold' : 'default'}>
+                {String(operation.dependency_status || 'independent').replaceAll('_', ' ')}
+              </Tag>
+            </Space.Compact>
           ))}
         </Space>
       ) : null}
