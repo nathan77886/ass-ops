@@ -1530,6 +1530,21 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 		adapterRehearsal["provider_api_mutation"] != "disabled" {
 		t.Fatalf("provider review adapter rehearsal = %#v", adapterRehearsal)
 	}
+	mutationArmingPlan := mapFromAny(reconciliation["mutation_arming_plan"])
+	if mutationArmingPlan["status"] != "blocked" ||
+		mutationArmingPlan["execution_enabled_config"] != false ||
+		mutationArmingPlan["adapter_rehearsal_ready"] != true ||
+		mutationArmingPlan["mutation_armed"] != false ||
+		mutationArmingPlan["provider_api_call_made"] != false ||
+		mutationArmingPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("provider review mutation arming plan = %#v", mutationArmingPlan)
+	}
+	armingReasons := stringSliceFromAny(mutationArmingPlan["blocked_reasons"])
+	if !containsString(armingReasons, "provider_review_execution_enabled") ||
+		!containsString(armingReasons, "provider_review_mutation_armed") ||
+		containsString(armingReasons, "provider_review_adapter_rehearsal") {
+		t.Fatalf("provider review mutation arming reasons = %#v", armingReasons)
+	}
 	targetSummary := mapFromAny(payload["provider_review_target_summary"])
 	if targetSummary["status"] != "mutation_blocked" ||
 		targetSummary["mode"] != "redacted_execution_target_summary" ||
@@ -1615,6 +1630,15 @@ func TestProjectTemplateProviderReviewApprovalPayloadUsesRuntimeGuardrailConfig(
 	if containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_api_adapter") ||
 		!containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_mutation_armed") {
 		t.Fatalf("runtime guardrail should remain mutation-blocked: %#v", guardrail)
+	}
+	reconciliation := mapFromAny(payload["provider_review_reconciliation"])
+	mutationArmingPlan := mapFromAny(reconciliation["mutation_arming_plan"])
+	if mutationArmingPlan["status"] != "blocked" ||
+		mutationArmingPlan["execution_enabled_config"] != true ||
+		mutationArmingPlan["adapter_rehearsal_ready"] != false ||
+		mutationArmingPlan["mutation_armed"] != false ||
+		mutationArmingPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("runtime mutation arming plan should still require rehearsal and stay mutation-off: %#v", mutationArmingPlan)
 	}
 }
 
@@ -1995,6 +2019,30 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 						},
 					},
 				},
+				"mutation_arming_plan": map[string]any{
+					"status":                         "armed",
+					"mode":                           "raw_mutation_arming_plan",
+					"provider_type":                  "github",
+					"review_kind":                    "pull_request",
+					"required_config":                "SECRET_CONFIG",
+					"execution_enabled_config":       true,
+					"adapter_rehearsal_ready":        true,
+					"mutation_armed":                 true,
+					"blocked_reasons":                []any{"provider_review_mutation_armed", "provider_review_adapter_rehearsal", "<script>alert(1)</script>"},
+					"external_call_made":             true,
+					"provider_api_call_made":         true,
+					"provider_api_mutation":          "enabled",
+					"contains_token":                 true,
+					"contains_provider_url":          true,
+					"contains_repository_ref":        true,
+					"contains_file_content":          true,
+					"requires_operator_review":       false,
+					"requires_adapter_rehearsal":     false,
+					"adapter_mutation_currently_off": false,
+					"token":                          "secret-token",
+					"url":                            "https://api.github.example.test/repos/acme/secret-repo",
+					"content":                        "do-not-include",
+				},
 				"response_diagnostics": map[string]any{
 					"status":                 "ready",
 					"mode":                   "raw_response_diagnostics",
@@ -2366,6 +2414,29 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		adapterRehearsalOperations[0]["provider_api_mutation"] != "disabled" {
 		t.Fatalf("adapter rehearsal operations should be sanitized: %#v", adapterRehearsalOperations)
 	}
+	mutationArmingPlan := mapFromAny(reconciliation["mutation_arming_plan"])
+	if mutationArmingPlan["mode"] != "redacted_mutation_arming_plan" ||
+		mutationArmingPlan["status"] != "ready_to_arm" ||
+		mutationArmingPlan["required_config"] != "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION" ||
+		mutationArmingPlan["mutation_armed"] != false ||
+		mutationArmingPlan["external_call_made"] != false ||
+		mutationArmingPlan["provider_api_call_made"] != false ||
+		mutationArmingPlan["provider_api_mutation"] != "disabled" ||
+		mutationArmingPlan["contains_token"] != false ||
+		mutationArmingPlan["contains_provider_url"] != false ||
+		mutationArmingPlan["contains_repository_ref"] != false ||
+		mutationArmingPlan["contains_file_content"] != false ||
+		mutationArmingPlan["requires_operator_review"] != true ||
+		mutationArmingPlan["requires_adapter_rehearsal"] != true ||
+		mutationArmingPlan["adapter_mutation_currently_off"] != true {
+		t.Fatalf("mutation arming plan should be sanitized: %#v", mutationArmingPlan)
+	}
+	mutationArmingReasons := stringSliceFromAny(mutationArmingPlan["blocked_reasons"])
+	if !containsString(mutationArmingReasons, "provider_review_mutation_armed") ||
+		!containsString(mutationArmingReasons, "provider_review_adapter_rehearsal") ||
+		containsString(mutationArmingReasons, "<script>alert(1)</script>") {
+		t.Fatalf("mutation arming reasons should be allowlisted: %#v", mutationArmingReasons)
+	}
 	responseDiagnostics := mapFromAny(reconciliation["response_diagnostics"])
 	if responseDiagnostics["external_call_made"] != false ||
 		responseDiagnostics["mode"] != "redacted_response_diagnostics" ||
@@ -2501,7 +2572,7 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		}
 	}
 	encoded, _ := json.Marshal(audit)
-	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_adapter_rehearsal", "raw_attempt_ledger", "raw_attempt_orchestration", "raw_key"} {
+	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_adapter_rehearsal", "raw_mutation_arming_plan", "SECRET_CONFIG", "raw_attempt_ledger", "raw_attempt_orchestration", "raw_key"} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
 		}
@@ -2950,6 +3021,53 @@ func TestProviderReviewAdapterRehearsalSanitizerRecomputesStatus(t *testing.T) {
 	empty := sanitizedProviderReviewAdapterRehearsal(map[string]any{"status": "ready"})
 	if empty["status"] != "not_recorded" || empty["mutation_arming_candidate"] != false {
 		t.Fatalf("empty rehearsal should be not recorded: %#v", empty)
+	}
+}
+
+func TestProviderReviewMutationArmingPlanSanitizerKeepsMutationOff(t *testing.T) {
+	armed := sanitizedProviderReviewMutationArmingPlan(map[string]any{
+		"status":                   "armed",
+		"mode":                     "raw_mutation_arming_plan",
+		"required_config":          "SECRET_CONFIG",
+		"execution_enabled_config": true,
+		"adapter_rehearsal_ready":  true,
+		"mutation_armed":           true,
+		"external_call_made":       true,
+		"provider_api_call_made":   true,
+		"provider_api_mutation":    "enabled",
+		"contains_token":           true,
+		"contains_provider_url":    true,
+		"contains_repository_ref":  true,
+		"contains_file_content":    true,
+		"blocked_reasons":          []any{"provider_review_mutation_armed", "<script>alert(1)</script>"},
+	})
+	if armed["status"] != "ready_to_arm" ||
+		armed["mode"] != "redacted_mutation_arming_plan" ||
+		armed["required_config"] != "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION" ||
+		armed["mutation_armed"] != false ||
+		armed["external_call_made"] != false ||
+		armed["provider_api_call_made"] != false ||
+		armed["provider_api_mutation"] != "disabled" ||
+		armed["contains_token"] != false ||
+		armed["contains_provider_url"] != false ||
+		armed["contains_repository_ref"] != false ||
+		armed["contains_file_content"] != false ||
+		armed["adapter_mutation_currently_off"] != true {
+		t.Fatalf("armed mutation plan should be downgraded and redacted: %#v", armed)
+	}
+	reasons := stringSliceFromAny(armed["blocked_reasons"])
+	if !containsString(reasons, "provider_review_mutation_armed") ||
+		containsString(reasons, "<script>alert(1)</script>") {
+		t.Fatalf("mutation arming reasons should be allowlisted: %#v", reasons)
+	}
+
+	blocked := sanitizedProviderReviewMutationArmingPlan(map[string]any{
+		"status":                   "ready_to_arm",
+		"execution_enabled_config": true,
+		"adapter_rehearsal_ready":  false,
+	})
+	if blocked["status"] != "blocked" || blocked["mutation_armed"] != false || blocked["provider_api_mutation"] != "disabled" {
+		t.Fatalf("blocked mutation plan should remain mutation-off: %#v", blocked)
 	}
 }
 

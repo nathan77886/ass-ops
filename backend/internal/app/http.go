@@ -8842,6 +8842,7 @@ func safeProviderReviewBlockedReasons(items []string) []string {
 		"provider_credential_configured":      true,
 		"provider_token_env_present":          true,
 		"provider_review_api_adapter":         true,
+		"provider_review_adapter_rehearsal":   true,
 		"provider_review_mutation_armed":      true,
 		"review_branches_valid":               true,
 		"review_target_summary_ready":         true,
@@ -8981,6 +8982,7 @@ func sanitizedProviderReviewReconciliation(value map[string]any) map[string]any 
 		"adapter_contract":       sanitizedProviderReviewAdapterContract(mapFromAny(value["adapter_contract"])),
 		"request_envelopes":      sanitizedProviderReviewAdapterRequestEnvelopes(mapSliceFromAny(value["request_envelopes"])),
 		"adapter_rehearsal":      sanitizedProviderReviewAdapterRehearsal(mapFromAny(value["adapter_rehearsal"])),
+		"mutation_arming_plan":   sanitizedProviderReviewMutationArmingPlan(mapFromAny(value["mutation_arming_plan"])),
 		"response_diagnostics":   sanitizedProviderReviewAdapterResponseDiagnostics(mapFromAny(value["response_diagnostics"])),
 		"idempotency_plan":       sanitizedProviderReviewAdapterIdempotencyPlan(mapFromAny(value["idempotency_plan"])),
 		"adapter_status":         cleanOptionalText(stringFromMap(value, "adapter_status")),
@@ -8991,6 +8993,52 @@ func sanitizedProviderReviewReconciliation(value map[string]any) map[string]any 
 		"gates":                  sanitizedProviderReviewGates(mapSliceFromAny(value["gates"])),
 		"operations":             sanitizedProviderReviewReconciliationOperations(mapSliceFromAny(value["operations"])),
 		"next_step":              cleanOptionalText(stringFromMap(value, "next_step")),
+	}
+}
+
+func sanitizedProviderReviewMutationArmingPlan(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	executionEnabled := boolOnlyFromAny(value["execution_enabled_config"])
+	rehearsalReady := boolOnlyFromAny(value["adapter_rehearsal_ready"])
+	status := safeProviderReviewMutationArmingStatus(stringFromMap(value, "status"))
+	if status == "armed" {
+		status = "ready_to_arm"
+	}
+	if !executionEnabled || !rehearsalReady {
+		status = "blocked"
+	}
+	return map[string]any{
+		"status":                         status,
+		"mode":                           "redacted_mutation_arming_plan",
+		"provider_type":                  cleanOptionalText(stringFromMap(value, "provider_type")),
+		"review_kind":                    cleanOptionalText(stringFromMap(value, "review_kind")),
+		"required_config":                "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION",
+		"execution_enabled_config":       executionEnabled,
+		"adapter_rehearsal_ready":        rehearsalReady,
+		"mutation_armed":                 false,
+		"blocked_reasons":                safeProviderReviewBlockedReasons(stringSliceFromAny(value["blocked_reasons"])),
+		"external_call_made":             false,
+		"provider_api_call_made":         false,
+		"provider_api_mutation":          "disabled",
+		"contains_token":                 false,
+		"contains_provider_url":          false,
+		"contains_repository_ref":        false,
+		"contains_file_content":          false,
+		"requires_operator_review":       true,
+		"requires_adapter_rehearsal":     true,
+		"adapter_mutation_currently_off": true,
+		"next_step":                      cleanOptionalText(stringFromMap(value, "next_step")),
+	}
+}
+
+func safeProviderReviewMutationArmingStatus(value string) string {
+	switch cleanOptionalText(value) {
+	case "blocked", "ready_to_arm", "armed":
+		return cleanOptionalText(value)
+	default:
+		return "blocked"
 	}
 }
 

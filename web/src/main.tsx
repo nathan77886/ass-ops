@@ -1050,6 +1050,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const reconciliationGates = Array.isArray(reconciliation.gates) ? reconciliation.gates : [];
   const reconciliationOperations = Array.isArray(reconciliation.operations) ? reconciliation.operations : [];
   const adapterRehearsal = reconciliation.adapter_rehearsal || {};
+  const mutationArmingPlan = reconciliation.mutation_arming_plan || {};
   const adapterRehearsalOperations = Array.isArray(adapterRehearsal.operations) ? adapterRehearsal.operations : [];
   const adapterOperations = Array.isArray(adapterContract.operations) ? adapterContract.operations : [];
   const requestEnvelopes = Array.isArray(reconciliation.request_envelopes)
@@ -1169,6 +1170,15 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
               {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.status || 'blocked')}
             </Tag>
           ))}
+        </Space>
+      ) : null}
+      {mutationArmingPlan.status ? (
+        <Space size={4} wrap>
+          <Tag color={mutationArmingPlan.status === 'ready_to_arm' ? 'green' : 'gold'}>arming {String(mutationArmingPlan.status).replaceAll('_', ' ')}</Tag>
+          <Tag>{mutationArmingPlan.execution_enabled_config === true ? 'execution config ready' : 'execution config blocked'}</Tag>
+          <Tag>{mutationArmingPlan.adapter_rehearsal_ready === true ? 'rehearsal ready' : 'rehearsal blocked'}</Tag>
+          <Tag color={mutationArmingPlan.adapter_mutation_currently_off === true ? 'blue' : 'red'}>{mutationArmingPlan.adapter_mutation_currently_off === true ? 'mutation off' : 'mutation armed'}</Tag>
+          <Tag>{String(mutationArmingPlan.provider_api_mutation || 'disabled')}</Tag>
         </Space>
       ) : null}
       {adapterContract.status ? (

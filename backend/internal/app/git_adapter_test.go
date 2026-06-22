@@ -531,6 +531,23 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 		containsString(rehearsalReasons, "provider_review_mutation_armed") {
 		t.Fatalf("github provider review adapter rehearsal reasons = %#v", rehearsalReasons)
 	}
+	mutationArmingPlan := mapFromAny(reconciliation["mutation_arming_plan"])
+	if mutationArmingPlan["status"] != "blocked" ||
+		mutationArmingPlan["mode"] != "redacted_mutation_arming_plan" ||
+		mutationArmingPlan["required_config"] != "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION" ||
+		mutationArmingPlan["execution_enabled_config"] != false ||
+		mutationArmingPlan["adapter_rehearsal_ready"] != false ||
+		mutationArmingPlan["mutation_armed"] != false ||
+		mutationArmingPlan["provider_api_mutation"] != "disabled" ||
+		mutationArmingPlan["provider_api_call_made"] != false {
+		t.Fatalf("github provider review mutation arming plan = %#v", mutationArmingPlan)
+	}
+	armingReasons := stringSliceFromAny(mutationArmingPlan["blocked_reasons"])
+	if !containsString(armingReasons, "provider_review_execution_enabled") ||
+		!containsString(armingReasons, "provider_review_adapter_rehearsal") ||
+		!containsString(armingReasons, "provider_review_mutation_armed") {
+		t.Fatalf("github provider review mutation arming reasons = %#v", armingReasons)
+	}
 	responseDiagnostics := mapFromAny(reconciliation["response_diagnostics"])
 	if responseDiagnostics["status"] != "pending" ||
 		responseDiagnostics["mode"] != "redacted_response_diagnostics" ||

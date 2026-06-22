@@ -836,6 +836,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 	executionEnabledConfig := boolValueFromAny(guardrail["execution_enabled_config"])
 	requestEnvelopes := providerReviewAdapterRequestEnvelopes(provider, reviewKind, apiRequestPlan, starterFilePayload)
 	adapterRehearsal := providerReviewAdapterRehearsal(provider, reviewKind, adapterStatus, credentialStrategy, requestEnvelopes)
+	mutationArmingPlan := providerReviewMutationArmingPlan(provider, reviewKind, executionEnabledConfig, mutationArmed, adapterRehearsal)
 	gates := []map[string]any{
 		{
 			"gate":              "provider_supported",
@@ -910,6 +911,7 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 		"adapter_contract":       adapterContract,
 		"request_envelopes":      requestEnvelopes,
 		"adapter_rehearsal":      adapterRehearsal,
+		"mutation_arming_plan":   mutationArmingPlan,
 		"response_diagnostics":   providerReviewAdapterResponseDiagnostics(provider, reviewKind),
 		"idempotency_plan":       providerReviewAdapterIdempotencyPlan(provider, reviewKind),
 		"adapter_status":         adapterStatus,
@@ -942,6 +944,51 @@ func templateProviderReviewExecutionReconciliation(provider, reviewKind string, 
 			},
 		},
 		"next_step": "Rehearse and arm the provider review execution adapter before enabling provider API mutation.",
+	}
+}
+
+func providerReviewMutationArmingPlan(provider, reviewKind string, executionEnabledConfig, mutationArmed bool, adapterRehearsal map[string]any) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	rehearsalReady := stringFromMap(adapterRehearsal, "status") == "ready" && boolValueFromAny(adapterRehearsal["mutation_arming_candidate"])
+	blockedReasons := []string{}
+	if !executionEnabledConfig {
+		blockedReasons = append(blockedReasons, "provider_review_execution_enabled")
+	}
+	if !rehearsalReady {
+		blockedReasons = append(blockedReasons, "provider_review_adapter_rehearsal")
+	}
+	if !mutationArmed {
+		blockedReasons = append(blockedReasons, "provider_review_mutation_armed")
+	}
+	status := "blocked"
+	if executionEnabledConfig && rehearsalReady && !mutationArmed {
+		status = "ready_to_arm"
+	}
+	if mutationArmed && executionEnabledConfig && rehearsalReady {
+		status = "armed"
+	}
+	return map[string]any{
+		"status":                         status,
+		"mode":                           "redacted_mutation_arming_plan",
+		"provider_type":                  provider,
+		"review_kind":                    reviewKind,
+		"required_config":                "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION",
+		"execution_enabled_config":       executionEnabledConfig,
+		"adapter_rehearsal_ready":        rehearsalReady,
+		"mutation_armed":                 mutationArmed,
+		"blocked_reasons":                blockedReasons,
+		"external_call_made":             false,
+		"provider_api_call_made":         false,
+		"provider_api_mutation":          "disabled",
+		"contains_token":                 false,
+		"contains_provider_url":          false,
+		"contains_repository_ref":        false,
+		"contains_file_content":          false,
+		"requires_operator_review":       true,
+		"requires_adapter_rehearsal":     true,
+		"adapter_mutation_currently_off": true,
+		"next_step":                      "Only arm provider review mutation after rehearsal evidence, operator approval, and environment-specific rollout controls are reviewed.",
 	}
 }
 
