@@ -1332,6 +1332,11 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
               <Tag color={operation.dependency_status === 'dependency_failed' ? 'red' : operation.dependency_status === 'dependency_satisfied' ? 'green' : operation.dependency_status === 'waiting_for_dependency' ? 'gold' : 'default'}>
                 {String(operation.dependency_status || 'independent').replaceAll('_', ' ')}
               </Tag>
+              {operation.request_summary?.payload_builder ? (
+                <Tag>
+                  {String(operation.request_summary.payload_builder)} / {String(operation.request_summary.response_handler || 'handle_provider_response')}
+                </Tag>
+              ) : null}
             </Space.Compact>
           ))}
         </Space>

@@ -8731,6 +8731,7 @@ func (s *Server) providerReviewAttemptLedgerForApproval(ctx context.Context, app
 			operation_order,
 			depends_on_operation,
 			dependency_status,
+			request_summary,
 			provider_api_call_made,
 			provider_api_mutation,
 			external_call_made
@@ -8880,6 +8881,7 @@ func sanitizedProviderReviewAttemptLedger(value map[string]any) map[string]any {
 			"operation_order":          intFromAny(operation["operation_order"], 0),
 			"depends_on_operation":     safeProviderReviewAttemptDependencyName(stringFromMap(operation, "depends_on_operation")),
 			"dependency_status":        safeProviderReviewAttemptDependencyStatus(stringFromMap(operation, "dependency_status")),
+			"request_summary":          sanitizedProviderReviewAttemptRequestSummary(mapFromAny(operation["request_summary"])),
 			"external_call_made":       false,
 			"provider_api_call_made":   false,
 			"provider_api_mutation":    "disabled",
@@ -10554,7 +10556,7 @@ func (s *Server) recordProviderReviewAttemptLedger(ctx context.Context, tx *sqlx
 		}
 		endpointKey := cleanOptionalText(stringFromMap(operation, "endpoint_key"))
 		dependency := providerReviewAttemptDependency(name)
-		requestSummary := providerReviewAttemptRequestSummary(operation)
+		requestSummary := providerReviewAttemptRequestSummary(operation, providerReviewExecutionBlueprintOperationForEndpoint(reconciliation, endpointKey))
 		responseDiagnostics := providerReviewAttemptResponseDiagnostics(reconciliation, endpointKey)
 		requestJSON, err := jsonParam(requestSummary)
 		if err != nil {
@@ -10616,8 +10618,18 @@ func (s *Server) recordProviderReviewAttemptLedger(ctx context.Context, tx *sqlx
 				false
 			)
 			ON CONFLICT (operation_approval_id, operation_name) DO UPDATE
-			SET updated_at=now()
-			RETURNING id, operation_name, endpoint_key, status, replay_check, conflict_policy, retry_policy, operation_order, depends_on_operation, dependency_status, provider_api_call_made, provider_api_mutation, external_call_made`,
+			SET endpoint_key=EXCLUDED.endpoint_key,
+				status=EXCLUDED.status,
+				replay_check=EXCLUDED.replay_check,
+				conflict_policy=EXCLUDED.conflict_policy,
+				retry_policy=EXCLUDED.retry_policy,
+				operation_order=EXCLUDED.operation_order,
+				depends_on_operation=EXCLUDED.depends_on_operation,
+				dependency_status=EXCLUDED.dependency_status,
+				request_summary=EXCLUDED.request_summary,
+				response_diagnostics=EXCLUDED.response_diagnostics,
+				updated_at=now()
+			RETURNING id, operation_name, endpoint_key, status, replay_check, conflict_policy, retry_policy, operation_order, depends_on_operation, dependency_status, request_summary, response_diagnostics, provider_api_call_made, provider_api_mutation, external_call_made`,
 			approvalID,
 			projectTemplateRunID,
 			provider,
@@ -10642,6 +10654,19 @@ func (s *Server) recordProviderReviewAttemptLedger(ctx context.Context, tx *sqlx
 	return providerReviewAttemptLedgerSummary(attempts), nil
 }
 
+func providerReviewExecutionBlueprintOperationForEndpoint(reconciliation map[string]any, endpointKey string) map[string]any {
+	if endpointKey == "" {
+		return map[string]any{}
+	}
+	blueprint := mapFromAny(reconciliation["execution_blueprint"])
+	for _, operation := range mapSliceFromAny(blueprint["operations"]) {
+		if cleanOptionalText(stringFromMap(operation, "endpoint_key")) == endpointKey {
+			return operation
+		}
+	}
+	return map[string]any{}
+}
+
 func providerReviewAttemptDependency(operationName string) map[string]any {
 	switch cleanOptionalText(operationName) {
 	case "create_branch_ref":
@@ -10655,18 +10680,31 @@ func providerReviewAttemptDependency(operationName string) map[string]any {
 	}
 }
 
-func providerReviewAttemptRequestSummary(operation map[string]any) map[string]any {
+func providerReviewAttemptRequestSummary(operation, executionBlueprintOperation map[string]any) map[string]any {
 	return map[string]any{
-		"mode":                     "redacted_attempt_request_summary",
-		"operation_name":           cleanOptionalText(stringFromMap(operation, "name")),
-		"endpoint_key":             cleanOptionalText(stringFromMap(operation, "endpoint_key")),
-		"idempotency_key_kind":     "operation_scope_hash",
-		"idempotency_key_included": false,
-		"contains_token":           false,
-		"contains_provider_url":    false,
-		"contains_repository_ref":  false,
-		"contains_branch_name":     false,
-		"contains_file_content":    false,
+		"mode":                        "redacted_attempt_request_summary",
+		"operation_name":              safeProviderReviewAttemptOperationName(stringFromMap(operation, "name")),
+		"endpoint_key":                cleanOptionalText(stringFromMap(operation, "endpoint_key")),
+		"payload_builder":             safeProviderReviewPayloadBuilderName(stringFromMap(executionBlueprintOperation, "payload_builder")),
+		"response_handler":            safeProviderReviewResponseHandlerName(stringFromMap(executionBlueprintOperation, "response_handler")),
+		"execution_status":            safeProviderReviewAdapterExecutionStatus(stringFromMap(executionBlueprintOperation, "execution_status")),
+		"request_body_included":       false,
+		"headers_included":            false,
+		"idempotency_key_kind":        "operation_scope_hash",
+		"idempotency_key_included":    false,
+		"requires_provider_client":    true,
+		"requires_request_builder":    true,
+		"requires_response_handler":   true,
+		"requires_idempotency_ledger": true,
+		"provider_api_call_made":      false,
+		"provider_api_mutation":       "disabled",
+		"external_call_made":          false,
+		"payload_redacted":            true,
+		"contains_token":              false,
+		"contains_provider_url":       false,
+		"contains_repository_ref":     false,
+		"contains_branch_name":        false,
+		"contains_file_content":       false,
 	}
 }
 
@@ -10726,6 +10764,7 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 			"operation_order":          intFromAny(attempt["operation_order"], 0),
 			"depends_on_operation":     safeProviderReviewAttemptDependencyName(stringFromMap(attempt, "depends_on_operation")),
 			"dependency_status":        safeProviderReviewAttemptDependencyStatus(stringFromMap(attempt, "dependency_status")),
+			"request_summary":          sanitizedProviderReviewAttemptRequestSummary(mapFromAny(attempt["request_summary"])),
 			"external_call_made":       false,
 			"provider_api_call_made":   false,
 			"provider_api_mutation":    "disabled",
@@ -10752,6 +10791,37 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 		"contains_repository_ref":  false,
 		"contains_branch_name":     false,
 		"contains_file_content":    false,
+	}
+}
+
+func sanitizedProviderReviewAttemptRequestSummary(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"mode":                        "redacted_attempt_request_summary",
+		"operation_name":              safeProviderReviewAttemptOperationName(stringFromMap(value, "operation_name")),
+		"endpoint_key":                cleanOptionalText(stringFromMap(value, "endpoint_key")),
+		"payload_builder":             safeProviderReviewPayloadBuilderName(stringFromMap(value, "payload_builder")),
+		"response_handler":            safeProviderReviewResponseHandlerName(stringFromMap(value, "response_handler")),
+		"execution_status":            safeProviderReviewAdapterExecutionStatus(stringFromMap(value, "execution_status")),
+		"request_body_included":       false,
+		"headers_included":            false,
+		"idempotency_key_kind":        "operation_scope_hash",
+		"idempotency_key_included":    false,
+		"requires_provider_client":    true,
+		"requires_request_builder":    true,
+		"requires_response_handler":   true,
+		"requires_idempotency_ledger": true,
+		"provider_api_call_made":      false,
+		"provider_api_mutation":       "disabled",
+		"external_call_made":          false,
+		"payload_redacted":            true,
+		"contains_token":              false,
+		"contains_provider_url":       false,
+		"contains_repository_ref":     false,
+		"contains_branch_name":        false,
+		"contains_file_content":       false,
 	}
 }
 

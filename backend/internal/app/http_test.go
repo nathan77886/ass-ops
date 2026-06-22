@@ -2430,9 +2430,32 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 							"provider_api_mutation":    "enabled",
 							"idempotency_key_included": true,
 							"idempotency_key_material": "fake-repo:fake/namespace/fake-ref:fake-token",
-							"branch":                   "assops/template/demo-main",
-							"repo":                     "secret-repo",
-							"token":                    "secret-token",
+							"request_summary": map[string]any{
+								"mode":                     "raw_attempt_request_summary",
+								"operation_name":           "open_review_request",
+								"endpoint_key":             "github.open_review",
+								"payload_builder":          "raw_builder",
+								"response_handler":         "raw_handler",
+								"execution_status":         "ready",
+								"request_body_included":    true,
+								"headers_included":         true,
+								"idempotency_key_included": true,
+								"external_call_made":       true,
+								"provider_api_call_made":   true,
+								"provider_api_mutation":    "enabled",
+								"contains_token":           true,
+								"contains_provider_url":    true,
+								"contains_repository_ref":  true,
+								"contains_branch_name":     true,
+								"contains_file_content":    true,
+								"token":                    "secret-token",
+								"url":                      "https://api.github.example.test/repos/acme/secret-repo/pulls",
+								"repo":                     "secret-repo",
+								"content":                  "do-not-include",
+							},
+							"branch": "assops/template/demo-main",
+							"repo":   "secret-repo",
+							"token":  "secret-token",
 						},
 					},
 				},
@@ -2795,6 +2818,23 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		resultAttemptOperations[0]["provider_api_mutation"] != "disabled" {
 		t.Fatalf("approval result attempt operations should be sanitized: %#v", resultAttemptOperations)
 	}
+	resultAttemptRequestSummary := mapFromAny(resultAttemptOperations[0]["request_summary"])
+	if resultAttemptRequestSummary["mode"] != "redacted_attempt_request_summary" ||
+		resultAttemptRequestSummary["payload_builder"] != "build_redacted_provider_request" ||
+		resultAttemptRequestSummary["response_handler"] != "handle_provider_response" ||
+		resultAttemptRequestSummary["execution_status"] != "blocked" ||
+		resultAttemptRequestSummary["request_body_included"] != false ||
+		resultAttemptRequestSummary["headers_included"] != false ||
+		resultAttemptRequestSummary["provider_api_call_made"] != false ||
+		resultAttemptRequestSummary["provider_api_mutation"] != "disabled" ||
+		resultAttemptRequestSummary["idempotency_key_included"] != false ||
+		resultAttemptRequestSummary["contains_token"] != false ||
+		resultAttemptRequestSummary["contains_provider_url"] != false ||
+		resultAttemptRequestSummary["contains_repository_ref"] != false ||
+		resultAttemptRequestSummary["contains_branch_name"] != false ||
+		resultAttemptRequestSummary["contains_file_content"] != false {
+		t.Fatalf("approval result attempt request summary should be sanitized: %#v", resultAttemptRequestSummary)
+	}
 	for _, field := range []string{"branch", "repo", "token", "idempotency_key_material"} {
 		if _, ok := resultAttemptOperations[0][field]; ok {
 			t.Fatalf("approval result attempt operation should not expose %s: %#v", field, resultAttemptOperations[0])
@@ -2900,10 +2940,12 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		order    int
 		depends  string
 		depStat  string
+		request  []byte
+		response []byte
 	}{
-		{"create_branch_ref", "github.create_branch_ref", "detect_existing_branch_ref", "treat_existing_matching_ref_as_success", 10, "", "independent"},
-		{"commit_starter_files", "github.commit_files", "detect_existing_commit_batch", "block_on_content_or_parent_conflict", 20, "create_branch_ref", "waiting_for_dependency"},
-		{"open_review_request", "github.open_review", "detect_existing_open_review", "reuse_existing_review_request", 30, "commit_starter_files", "waiting_for_dependency"},
+		{"create_branch_ref", "github.create_branch_ref", "detect_existing_branch_ref", "treat_existing_matching_ref_as_success", 10, "", "independent", []byte(`{"mode":"redacted_attempt_request_summary","operation_name":"create_branch_ref","endpoint_key":"github.create_branch_ref","payload_builder":"build_redacted_branch_ref_request","response_handler":"handle_branch_ref_response","execution_status":"ready_for_adapter_implementation","request_body_included":false,"headers_included":false,"idempotency_key_kind":"operation_scope_hash","idempotency_key_included":false,"requires_provider_client":true,"requires_request_builder":true,"requires_response_handler":true,"requires_idempotency_ledger":true,"provider_api_call_made":false,"provider_api_mutation":"disabled","external_call_made":false,"payload_redacted":true,"contains_token":false,"contains_provider_url":false,"contains_repository_ref":false,"contains_branch_name":false,"contains_file_content":false}`), []byte(`{"mode":"redacted_attempt_response_diagnostics","endpoint_key":"github.create_branch_ref","status":"pending","response_body_included":false,"headers_included":false,"contains_token":false,"contains_provider_url":false,"provider_api_call_made":false,"provider_api_mutation":"disabled","external_call_made":false}`)},
+		{"commit_starter_files", "github.commit_files", "detect_existing_commit_batch", "block_on_content_or_parent_conflict", 20, "create_branch_ref", "waiting_for_dependency", []byte(`{"mode":"redacted_attempt_request_summary","operation_name":"commit_starter_files","endpoint_key":"github.commit_files","payload_builder":"build_redacted_file_batch_request","response_handler":"handle_commit_files_response","execution_status":"ready_for_adapter_implementation","request_body_included":false,"headers_included":false,"idempotency_key_kind":"operation_scope_hash","idempotency_key_included":false,"requires_provider_client":true,"requires_request_builder":true,"requires_response_handler":true,"requires_idempotency_ledger":true,"provider_api_call_made":false,"provider_api_mutation":"disabled","external_call_made":false,"payload_redacted":true,"contains_token":false,"contains_provider_url":false,"contains_repository_ref":false,"contains_branch_name":false,"contains_file_content":false}`), []byte(`{"mode":"redacted_attempt_response_diagnostics","endpoint_key":"github.commit_files","status":"pending","response_body_included":false,"headers_included":false,"contains_token":false,"contains_provider_url":false,"provider_api_call_made":false,"provider_api_mutation":"disabled","external_call_made":false}`)},
+		{"open_review_request", "github.open_review", "detect_existing_open_review", "reuse_existing_review_request", 30, "commit_starter_files", "waiting_for_dependency", []byte(`{"mode":"redacted_attempt_request_summary","operation_name":"open_review_request","endpoint_key":"github.open_review","payload_builder":"build_redacted_review_request","response_handler":"handle_review_request_response","execution_status":"ready_for_adapter_implementation","request_body_included":false,"headers_included":false,"idempotency_key_kind":"operation_scope_hash","idempotency_key_included":false,"requires_provider_client":true,"requires_request_builder":true,"requires_response_handler":true,"requires_idempotency_ledger":true,"provider_api_call_made":false,"provider_api_mutation":"disabled","external_call_made":false,"payload_redacted":true,"contains_token":false,"contains_provider_url":false,"contains_repository_ref":false,"contains_branch_name":false,"contains_file_content":false}`), []byte(`{"mode":"redacted_attempt_response_diagnostics","endpoint_key":"github.open_review","status":"pending","response_body_included":false,"headers_included":false,"contains_token":false,"contains_provider_url":false,"provider_api_call_made":false,"provider_api_mutation":"disabled","external_call_made":false}`)},
 	} {
 		mock.ExpectQuery(`(?s)INSERT INTO provider_review_attempts.*RETURNING id, operation_name`).
 			WillReturnRows(sqlmock.NewRows([]string{
@@ -2917,6 +2959,8 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 				"operation_order",
 				"depends_on_operation",
 				"dependency_status",
+				"request_summary",
+				"response_diagnostics",
 				"provider_api_call_made",
 				"provider_api_mutation",
 				"external_call_made",
@@ -2931,6 +2975,8 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 				item.order,
 				item.depends,
 				item.depStat,
+				item.request,
+				item.response,
 				false,
 				"disabled",
 				false,
@@ -2973,6 +3019,23 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		operations[2]["dependency_status"] != "waiting_for_dependency" {
 		t.Fatalf("attempt ledger operations = %#v", operations)
 	}
+	requestSummary := mapFromAny(operations[2]["request_summary"])
+	if requestSummary["mode"] != "redacted_attempt_request_summary" ||
+		requestSummary["payload_builder"] != "build_redacted_review_request" ||
+		requestSummary["response_handler"] != "handle_review_request_response" ||
+		requestSummary["execution_status"] != "ready_for_adapter_implementation" ||
+		requestSummary["request_body_included"] != false ||
+		requestSummary["headers_included"] != false ||
+		requestSummary["provider_api_call_made"] != false ||
+		requestSummary["provider_api_mutation"] != "disabled" ||
+		requestSummary["payload_redacted"] != true ||
+		requestSummary["contains_token"] != false ||
+		requestSummary["contains_provider_url"] != false ||
+		requestSummary["contains_repository_ref"] != false ||
+		requestSummary["contains_branch_name"] != false ||
+		requestSummary["contains_file_content"] != false {
+		t.Fatalf("attempt request summary = %#v", requestSummary)
+	}
 	encoded, _ := json.Marshal(summary)
 	for _, leak := range []string{"assops/template/demo-main", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "idempotency_key_material"} {
 		if strings.Contains(string(encoded), leak) {
@@ -3004,6 +3067,7 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 			"operation_order",
 			"depends_on_operation",
 			"dependency_status",
+			"request_summary",
 			"provider_api_call_made",
 			"provider_api_mutation",
 			"external_call_made",
@@ -3018,6 +3082,7 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 			30,
 			"commit_starter_files",
 			"waiting_for_dependency",
+			[]byte(`{"mode":"raw_attempt_request_summary","operation_name":"open_review_request","endpoint_key":"github.open_review","payload_builder":"raw_builder","response_handler":"raw_handler","execution_status":"ready","request_body_included":true,"headers_included":true,"idempotency_key_included":true,"external_call_made":true,"provider_api_call_made":true,"provider_api_mutation":"enabled","contains_token":true,"contains_provider_url":true,"contains_repository_ref":true,"contains_branch_name":true,"contains_file_content":true,"token":"secret-token","url":"https://api.github.example.test/repos/acme/secret-repo/pulls","repo":"secret-repo","content":"do-not-include"}`),
 			false,
 			"disabled",
 			false,
@@ -3050,8 +3115,25 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 		operations[0]["idempotency_key_included"] != false {
 		t.Fatalf("attempt ledger operations = %#v", operations)
 	}
+	requestSummary := mapFromAny(operations[0]["request_summary"])
+	if requestSummary["mode"] != "redacted_attempt_request_summary" ||
+		requestSummary["payload_builder"] != "build_redacted_provider_request" ||
+		requestSummary["response_handler"] != "handle_provider_response" ||
+		requestSummary["execution_status"] != "blocked" ||
+		requestSummary["request_body_included"] != false ||
+		requestSummary["headers_included"] != false ||
+		requestSummary["provider_api_call_made"] != false ||
+		requestSummary["provider_api_mutation"] != "disabled" ||
+		requestSummary["idempotency_key_included"] != false ||
+		requestSummary["contains_token"] != false ||
+		requestSummary["contains_provider_url"] != false ||
+		requestSummary["contains_repository_ref"] != false ||
+		requestSummary["contains_branch_name"] != false ||
+		requestSummary["contains_file_content"] != false {
+		t.Fatalf("persisted attempt request summary = %#v", requestSummary)
+	}
 	encoded, _ := json.Marshal(summary)
-	for _, leak := range []string{"idempotency_key_material", "idempotency_key_hash", "request_summary", "secret-token", "api.github.example.test", "secret-repo"} {
+	for _, leak := range []string{"idempotency_key_material", "idempotency_key_hash", "secret-token", "api.github.example.test", "secret-repo", "raw_builder", "raw_handler"} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("persisted attempt ledger leaked %q: %s", leak, encoded)
 		}
@@ -3090,6 +3172,7 @@ func TestProviderReviewAttemptLedgerForApprovalHandlesEmptyInputAndRows(t *testi
 			"operation_order",
 			"depends_on_operation",
 			"dependency_status",
+			"request_summary",
 			"provider_api_call_made",
 			"provider_api_mutation",
 			"external_call_made",
