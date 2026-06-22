@@ -810,6 +810,7 @@ function Projects() {
 	const [open, setOpen] = useState(false);
 	const [templateOpen, setTemplateOpen] = useState(false);
 	const [templateDetailOpen, setTemplateDetailOpen] = useState(false);
+	const [requestingReviewID, setRequestingReviewID] = useState('');
 	const [selectedTemplate, setSelectedTemplate] = useState<AnyRow>();
 	async function createFromTemplate(values: AnyRow) {
 		if (!selectedTemplate) return;
@@ -833,6 +834,18 @@ function Projects() {
 			templateRuns.reload();
 		} catch (error: any) {
 			message.error(error.message || 'Could not retry template provision');
+		}
+  }
+	async function requestProviderReviewExecution(row: AnyRow) {
+		setRequestingReviewID(row.id);
+		try {
+			await api(`/api/project-template-runs/${row.id}/request-provider-review-execution`, { method: 'POST', body: '{}' });
+			message.success('Provider review execution approval requested');
+			templateRuns.reload();
+		} catch (error: any) {
+			message.error(error.message || 'Could not request provider review execution');
+		} finally {
+			setRequestingReviewID('');
 		}
   }
   return (
@@ -878,7 +891,16 @@ function Projects() {
           { title: 'Steps', render: (_, row) => Array.isArray(row.steps) ? `${row.steps.filter((step: AnyRow) => step.status === 'completed').length}/${row.steps.length}` : '-' },
           { title: 'Error', render: (_, row) => templateRunErrorText(row) },
           { title: 'Created', dataIndex: 'created_at' },
-          { title: 'Action', render: (_, row) => canRetryTemplateProvision(row) ? <Button size="small" title={templateProvisionRetryTitle(row)} onClick={() => retryTemplateProvision(row)}>Retry provision</Button> : '-' }
+          { title: 'Action', render: (_, row) => {
+            const guidance = templateProvisionGuidance(row);
+            return (
+              <Space>
+                {canRetryTemplateProvision(row) ? <Button size="small" title={templateProvisionRetryTitle(row)} onClick={() => retryTemplateProvision(row)}>Retry provision</Button> : null}
+                {guidance.executionRequestStatus === 'approval_ready' ? <Button size="small" loading={requestingReviewID === row.id} disabled={Boolean(requestingReviewID)} onClick={() => requestProviderReviewExecution(row)}>Request review</Button> : null}
+                {!canRetryTemplateProvision(row) && guidance.executionRequestStatus !== 'approval_ready' ? '-' : null}
+              </Space>
+            );
+          } }
         ]}
       />
       <CreateModal title="Create project" open={open} setOpen={setOpen} fields={['name', 'slug', 'description']} onSubmit={(v) => api('/api/projects', { method: 'POST', body: JSON.stringify(v) }).then(projects.reload)} />

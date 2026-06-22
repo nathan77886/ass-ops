@@ -1409,6 +1409,95 @@ func TestApprovalNotificationStatusSuccessAndFailure(t *testing.T) {
 	}
 }
 
+func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
+	plan := templateProviderReviewExecutionPlan("github", map[string]any{
+		"mode":            "pull_request",
+		"provider_type":   "github",
+		"proposed_branch": "assops/template/demo-main",
+		"target_branch":   "main",
+	})
+	run := map[string]any{
+		"id":         "11111111-1111-1111-1111-111111111111",
+		"project_id": "22222222-2222-2222-2222-222222222222",
+		"result": map[string]any{
+			"details": map[string]any{
+				"repository_reconciliation": map[string]any{
+					"provider_review_readiness": map[string]any{
+						"execution_plan": plan,
+					},
+				},
+			},
+		},
+	}
+	payload, err := projectTemplateProviderReviewApprovalPayload(run)
+	if err != nil {
+		t.Fatalf("projectTemplateProviderReviewApprovalPayload: %v", err)
+	}
+	if payload["kind"] != "project_template_provider_review_execute" ||
+		payload["project_template_run_id"] != "11111111-1111-1111-1111-111111111111" ||
+		payload["provider_api_call_made"] != false ||
+		payload["provider_api_mutation"] != "disabled" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	request := mapFromAny(payload["execution_request"])
+	if request["status"] != "approval_ready" ||
+		request["approval_action"] != templateProviderReviewExecuteApprovalAction ||
+		request["payload_redacted"] != true ||
+		request["contains_token"] != false {
+		t.Fatalf("execution request = %#v", request)
+	}
+	encoded, _ := json.Marshal(payload)
+	for _, leak := range []string{"ASSOPS_TEMPLATE_PROVIDER_TOKEN", "secret-token", "api_base_url"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("provider review approval payload leaked %q: %s", leak, encoded)
+		}
+	}
+
+	blockedRun := map[string]any{
+		"id": "11111111-1111-1111-1111-111111111111",
+		"result": map[string]any{
+			"details": map[string]any{
+				"repository_reconciliation": map[string]any{
+					"provider_review_readiness": map[string]any{
+						"execution_plan": map[string]any{
+							"execution_request": map[string]any{"status": "blocked"},
+						},
+					},
+				},
+			},
+		},
+	}
+	if _, err := projectTemplateProviderReviewApprovalPayload(blockedRun); err == nil {
+		t.Fatal("blocked provider review execution request should not build an approval payload")
+	}
+}
+
+func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
+	server := &Server{}
+	result, operationID, err := server.executeApprovedOperation(context.Background(), nil, map[string]any{
+		"requested_by": "11111111-1111-1111-1111-111111111111",
+		"request_payload": map[string]any{
+			"kind":                    "project_template_provider_review_execute",
+			"project_template_run_id": "22222222-2222-2222-2222-222222222222",
+			"execution_request": map[string]any{
+				"status":                "approval_ready",
+				"provider_api_mutation": "disabled",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("executeApprovedOperation: %v", err)
+	}
+	if operationID != "" {
+		t.Fatalf("provider review approval should not create an operation id, got %q", operationID)
+	}
+	if result["provider_api_call_made"] != false ||
+		result["provider_api_mutation"] != "disabled" ||
+		result["execution_enabled"] != false {
+		t.Fatalf("provider review approval result should remain audit-only: %#v", result)
+	}
+}
+
 func TestRepoSyncRunFiltersFromRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/repo-sync-runs?asset_id=%20asset-1%20&status=%20failed%20&ref=%20refs/heads/main%20&since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z", nil)
 	got, err := repoSyncRunFiltersFromRequest(req)
@@ -3299,6 +3388,35 @@ func TestApprovalDelegationMigrationAndFreshInit(t *testing.T) {
 		}
 		if !strings.Contains(string(content), "012_approval_delegations.sql") {
 			t.Fatalf("%s missing 012_approval_delegations.sql init mount", path)
+		}
+	}
+}
+
+func TestProviderReviewApprovalRuleMigrationAndFreshInit(t *testing.T) {
+	migration, err := os.ReadFile("../../migrations/013_provider_review_approval_rule.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	for _, token := range []string{
+		"project_template_run",
+		"project_template.provider_review.execute",
+		"provider_review_execution",
+		"provider_api_mutation",
+		"required_approval_count",
+		"escalation_after_minutes",
+		"ON CONFLICT (resource_type, action) DO UPDATE",
+	} {
+		if !strings.Contains(string(migration), token) {
+			t.Fatalf("migration missing %q", token)
+		}
+	}
+	for _, path := range []string{"../../../deploy/docker-compose.yml", "../../../deploy/compose.prod.yml"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(content), "013_provider_review_approval_rule.sql") {
+			t.Fatalf("%s missing 013_provider_review_approval_rule.sql init mount", path)
 		}
 	}
 }

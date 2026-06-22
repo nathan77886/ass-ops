@@ -40,6 +40,7 @@ services:
       - ../backend/migrations/010_approval_rule_audit.sql:/docker-entrypoint-initdb.d/010_approval_rule_audit.sql:ro
       - ../backend/migrations/011_approval_escalations.sql:/docker-entrypoint-initdb.d/011_approval_escalations.sql:ro
       - ../backend/migrations/012_approval_delegations.sql:/docker-entrypoint-initdb.d/012_approval_delegations.sql:ro
+      - ../backend/migrations/013_provider_review_approval_rule.sql:/docker-entrypoint-initdb.d/013_provider_review_approval_rule.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U assops -d assops"]
       interval: 5s

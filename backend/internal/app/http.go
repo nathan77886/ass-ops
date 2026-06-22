@@ -82,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/project-templates/{id}/create-project", s.createProjectFromTemplate)
 		r.Get("/api/project-template-runs", s.listProjectTemplateRuns)
 		r.Post("/api/project-template-runs/{id}/retry-provision", s.retryProjectTemplateProvision)
+		r.Post("/api/project-template-runs/{id}/request-provider-review-execution", s.requestProjectTemplateProviderReviewExecution)
 		r.Get("/api/provider-accounts", s.listProviderAccounts)
 		r.Post("/api/provider-accounts", s.createProviderAccount)
 		r.Post("/api/provider-accounts/execute-token-rotation-plan", s.executeProviderAccountTokenRotationPlan)
@@ -820,6 +821,104 @@ func (s *Server) retryProjectTemplateProvision(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"operation": op, "run": run})
+}
+
+func (s *Server) requestProjectTemplateProviderReviewExecution(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePolicy(w, r, PolicyResource{Type: "project_template"}, "create") {
+		return
+	}
+	user := currentUser(r)
+	run, err := queryOne(r.Context(), s.store.DB, `
+		SELECT ptr.*, pt.name AS template_name
+		FROM project_template_runs ptr
+		LEFT JOIN project_templates pt ON pt.id=ptr.project_template_id
+		WHERE ptr.id=$1
+			AND ($2 OR ptr.requested_by=$3 OR EXISTS (
+				SELECT 1 FROM project_members pm
+				WHERE pm.project_id=ptr.project_id AND pm.user_id=$3
+			))`,
+		chi.URLParam(r, "id"),
+		userCanReadAllProjects(user),
+		userIDOrNil(user),
+	)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	payload, err := projectTemplateProviderReviewApprovalPayload(run)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	requestedBy := ""
+	if user != nil {
+		requestedBy = user.ID
+	}
+	if requestedBy == "" {
+		writeError(w, http.StatusForbidden, "provider review execution approval requires a user")
+		return
+	}
+	title := "execute provider review for template run " + fmt.Sprint(run["template_name"])
+	approval, err := s.createOperationApproval(
+		r.Context(),
+		PolicyResource{
+			Type:      "project_template_run",
+			ID:        cleanOptionalID(fmt.Sprint(run["id"])),
+			ProjectID: cleanOptionalID(fmt.Sprint(run["project_id"])),
+		},
+		templateProviderReviewExecuteApprovalAction,
+		title,
+		payload,
+		requestedBy,
+	)
+	if err != nil {
+		if isUniqueViolation(err, "idx_operation_approvals_pending_once") {
+			writeError(w, http.StatusConflict, "provider review execution approval is already pending")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not request provider review execution approval")
+		return
+	}
+	delete(approval, "request_payload")
+	writeJSON(w, http.StatusAccepted, map[string]any{"approval": approval})
+}
+
+func projectTemplateProviderReviewApprovalPayload(run map[string]any) (map[string]any, error) {
+	result := mapFromAny(run["result"])
+	details := mapFromAny(result["details"])
+	reconciliation := mapFromAny(details["repository_reconciliation"])
+	readiness := mapFromAny(reconciliation["provider_review_readiness"])
+	executionPlan := mapFromAny(readiness["execution_plan"])
+	executionRequest := mapFromAny(executionPlan["execution_request"])
+	if executionRequest["status"] != "approval_ready" {
+		return nil, fmt.Errorf("provider review execution request is not approval ready")
+	}
+	projectTemplateRunID := cleanOptionalID(fmt.Sprint(run["id"]))
+	if projectTemplateRunID == "" {
+		return nil, fmt.Errorf("template run id is required")
+	}
+	request := map[string]any{
+		"status":                   executionRequest["status"],
+		"approval_action":          executionRequest["approval_action"],
+		"resource_type":            executionRequest["resource_type"],
+		"provider_type":            executionRequest["provider_type"],
+		"review_kind":              executionRequest["review_kind"],
+		"source_branch":            executionRequest["source_branch"],
+		"target_branch":            executionRequest["target_branch"],
+		"payload_redacted":         true,
+		"contains_token":           false,
+		"provider_api_mutation":    "disabled",
+		"requires_operator_review": true,
+	}
+	return map[string]any{
+		"kind":                    "project_template_provider_review_execute",
+		"project_template_run_id": projectTemplateRunID,
+		"project_id":              cleanOptionalID(fmt.Sprint(run["project_id"])),
+		"execution_request":       request,
+		"provider_api_call_made":  false,
+		"provider_api_mutation":   "disabled",
+		"message":                 "Provider review execution is approval-gated; provider API mutation remains disabled in the first version.",
+	}, nil
 }
 
 func canRetryTemplateProvision(run map[string]any) bool {
@@ -9475,6 +9574,15 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			return nil, "", err
 		}
 		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
+	case "project_template_provider_review_execute":
+		return map[string]any{
+			"project_template_run_id": stringFromMap(payload, "project_template_run_id"),
+			"execution_request":       mapFromAny(payload["execution_request"]),
+			"provider_api_call_made":  false,
+			"provider_api_mutation":   "disabled",
+			"execution_enabled":       false,
+			"message":                 "Provider review execution approval was recorded; provider API branch creation and PR/MR mutation remain disabled.",
+		}, "", nil
 	default:
 		return nil, "", fmt.Errorf("unsupported approval payload")
 	}
