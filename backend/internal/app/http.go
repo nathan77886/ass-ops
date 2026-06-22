@@ -3645,6 +3645,9 @@ func (s *Server) replayWebhookEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not record webhook replay")
 		return
 	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "webhook_event.replay") {
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit webhook replay")
 		return
@@ -3745,6 +3748,9 @@ func (s *Server) receiveGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	event, eventErr := s.recordWebhookEventTx(r.Context(), tx, connection, "workflow_run", deliveryID, true, status, errorMessage, payload, result)
 	if eventErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not record GitHub webhook event")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "webhook_event.github_workflow_run") {
 		return
 	}
 	if err := tx.Commit(); err != nil {
@@ -3855,13 +3861,7 @@ func (s *Server) receiveGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not record webhook event")
 		return
 	}
-	if _, err := tx.ExecContext(r.Context(), `
-		UPDATE webhook_connections
-		SET last_delivery_status=$2,
-			last_delivery_error='',
-			updated_at=now()
-		WHERE id=$1`, connectionID, status); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update webhook connection")
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "webhook_event.gitea_push") {
 		return
 	}
 	if err := tx.Commit(); err != nil {
