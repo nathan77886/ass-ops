@@ -292,8 +292,12 @@ function githubActionsSummary(rows: AnyRow[]) {
 
 function templateProvisionSummary(row: AnyRow) {
   const details = row.result?.details || {};
+  const reconciliation = details.repository_reconciliation || {};
   if (row.result?.repository_provisioned) return { color: 'green', label: 'provisioned', detail: '' };
   if (row.status === 'provisioning') return { color: 'blue', label: 'provisioning', detail: '' };
+  if (reconciliation.kind === 'existing_repository') return { color: 'gold', label: 'needs reconcile', detail: 'existing repository' };
+  if (reconciliation.kind === 'protected_branch') return { color: 'gold', label: 'guarded', detail: 'protected branch' };
+  if (reconciliation.kind === 'missing_token') return { color: 'red', label: 'token', detail: 'not configured' };
   if (details.starter_push_skipped && details.repository_exists) return { color: 'gold', label: 'push skipped', detail: 'repository exists' };
   if (details.starter_push_skipped) return { color: 'gold', label: 'push skipped', detail: shortText(row.result?.repository_provision_reason || details.reason, 44) };
   if (details.provider_status) return { color: 'red', label: `HTTP ${details.provider_status}`, detail: shortText(details.provider_error, 44) };
@@ -304,6 +308,7 @@ function templateProvisionSummary(row: AnyRow) {
 
 function templateProvisionGuidance(row: AnyRow) {
   const details = row.result?.details || {};
+  const reconciliation = details.repository_reconciliation || {};
   if (row.result?.repository_provisioned) {
     return {
       status: 'ready',
@@ -320,6 +325,20 @@ function templateProvisionGuidance(row: AnyRow) {
       title: 'Provisioning in progress',
       detail: 'The worker is still reconciling repository provisioning for this template run.',
       next: 'Wait for the run to finish before retrying.'
+    };
+  }
+  if (reconciliation.kind) {
+    const titles: Record<string, string> = {
+      existing_repository: 'Existing repository needs reconciliation',
+      protected_branch: 'Protected branch guard is active',
+      missing_token: 'Provider token is not configured'
+    };
+    return {
+      status: reconciliation.kind === 'missing_token' ? 'token' : 'manual reconcile',
+      color: reconciliation.kind === 'missing_token' ? 'red' : 'gold',
+      title: titles[String(reconciliation.kind)] || 'Repository needs reconciliation',
+      detail: String(reconciliation.action_required || details.reason || row.result?.repository_provision_reason || 'Repository provisioning needs operator review.'),
+      next: String(reconciliation.retry_after || 'Retry after the missing provider condition is fixed.')
     };
   }
   if (details.repository_exists && details.starter_push_skipped) {

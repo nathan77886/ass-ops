@@ -280,6 +280,7 @@ func (e *GitExecutor) ProvisionTemplateRepository(ctx context.Context, repo map[
 			result.Details["remote_url"] = remoteURL
 			result.Details["default_branch"] = defaultBranch
 			result.Details["file_count"] = len(files)
+			result.Details["repository_reconciliation"] = templateRepositoryReconciliation("existing_repository", repo, remote, defaultBranch, len(files))
 			return result, nil
 		}
 	}
@@ -300,6 +301,7 @@ func (e *GitExecutor) ProvisionTemplateRepository(ctx context.Context, repo map[
 		result.Details["remote_url"] = remoteURL
 		result.Details["default_branch"] = defaultBranch
 		result.Details["file_count"] = len(files)
+		result.Details["repository_reconciliation"] = templateRepositoryReconciliation("protected_branch", repo, remote, defaultBranch, len(files))
 		return result, nil
 	}
 	if strings.EqualFold(strings.TrimSpace(fmt.Sprint(remote["provider_type"])), "local_bare") ||
@@ -414,6 +416,7 @@ func (e *GitExecutor) provisionExternalTemplateRepository(ctx context.Context, r
 		result.Details["reason"] = "external template provider token is not configured"
 		result.Details["provider_type"] = spec.Provider
 		result.Details["token_configured"] = false
+		result.Details["repository_reconciliation"] = templateRepositoryReconciliation("missing_token", repo, remote, defaultBranchFromRow(repo), 0)
 		return nil
 	}
 	if err := validateTemplateProviderURL(ctx, spec.CreateURL); err != nil {
@@ -500,6 +503,45 @@ func setTemplateProviderDiagnostics(result *gitExecutionResult, spec externalTem
 	if message = truncateProviderError(message, providerDiagnosticErrorLimit); message != "" {
 		result.Details["provider_error"] = message
 	}
+}
+
+func templateRepositoryReconciliation(kind string, repo, remote map[string]any, defaultBranch string, fileCount int) map[string]any {
+	provider := strings.ToLower(strings.TrimSpace(firstNonEmptyString(
+		stringFromMap(remote, "provider_type"),
+		stringFromMap(remote, "kind"),
+	)))
+	summary := map[string]any{
+		"kind":               kind,
+		"provider_type":      provider,
+		"remote_id":          remote["id"],
+		"repository_key":     repo["repo_key"],
+		"default_branch":     defaultBranch,
+		"file_count":         fileCount,
+		"starter_push_state": "skipped",
+		"credential_strategy": map[string]any{
+			"mode":         "provider_account_token_env",
+			"token_stored": false,
+		},
+	}
+	switch kind {
+	case "existing_repository":
+		summary["guardrail"] = "existing_repository_push_blocked"
+		summary["action_required"] = "Review the existing repository contents before allowing ASSOPS to push starter files."
+		summary["retry_after"] = "Set allow_existing_repository_push only after the repository is confirmed safe to overwrite or extend."
+	case "protected_branch":
+		summary["guardrail"] = "protected_branch_push_blocked"
+		summary["action_required"] = "Review provider branch protection and choose a provider-specific reconciliation path."
+		summary["retry_after"] = "Configure a branch strategy or set allow_protected_branch_push only after branch protection is approved."
+	case "missing_token":
+		summary["guardrail"] = "provider_token_missing"
+		summary["action_required"] = "Rotate the provider account to a configured token environment and run the provider health check."
+		summary["retry_after"] = "Retry after the provider account check succeeds."
+	default:
+		summary["guardrail"] = "manual_reconciliation_required"
+		summary["action_required"] = "Review template remote metadata before retrying repository provisioning."
+		summary["retry_after"] = "Retry after the missing provider condition is fixed."
+	}
+	return summary
 }
 
 func templateProviderAlreadyExists(status int, body []byte) bool {

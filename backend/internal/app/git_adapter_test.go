@@ -275,6 +275,13 @@ func TestProvisionTemplateRepositorySkipsStarterPushForProtectedExternalRemote(t
 	if !strings.Contains(fmt.Sprint(result.Details["reason"]), "marked protected") {
 		t.Fatalf("reason = %v", result.Details["reason"])
 	}
+	reconcile := mapFromAny(result.Details["repository_reconciliation"])
+	if reconcile["kind"] != "protected_branch" || reconcile["guardrail"] != "protected_branch_push_blocked" {
+		t.Fatalf("reconciliation = %#v", reconcile)
+	}
+	if reconcile["default_branch"] != "main" || reconcile["file_count"] != 1 {
+		t.Fatalf("reconciliation branch/file count = %#v", reconcile)
+	}
 }
 
 func TestProvisionTemplateRepositorySkipsExternalProviderWithoutToken(t *testing.T) {
@@ -310,6 +317,14 @@ func TestProvisionTemplateRepositorySkipsExternalProviderWithoutToken(t *testing
 	}
 	if result.Details["reason"] != "external template provider token is not configured" {
 		t.Fatalf("reason = %v", result.Details["reason"])
+	}
+	reconcile := mapFromAny(result.Details["repository_reconciliation"])
+	if reconcile["kind"] != "missing_token" || reconcile["guardrail"] != "provider_token_missing" {
+		t.Fatalf("reconciliation = %#v", reconcile)
+	}
+	encoded, _ := json.Marshal(reconcile)
+	if strings.Contains(string(encoded), "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITEA_MISSING") {
+		t.Fatalf("reconciliation leaked token env: %s", encoded)
 	}
 }
 
@@ -532,6 +547,38 @@ func TestProvisionTemplateRepositorySkipsStarterPushWhenExternalRepositoryExists
 	}
 	if !strings.Contains(fmt.Sprint(result.Details["reason"]), "already exists") {
 		t.Fatalf("reason = %v", result.Details["reason"])
+	}
+	reconcile := mapFromAny(result.Details["repository_reconciliation"])
+	if reconcile["kind"] != "existing_repository" || reconcile["guardrail"] != "existing_repository_push_blocked" {
+		t.Fatalf("reconciliation = %#v", reconcile)
+	}
+	credentialStrategy := mapFromAny(reconcile["credential_strategy"])
+	if credentialStrategy["token_stored"] != false {
+		t.Fatalf("credential strategy should not expose token values: %#v", credentialStrategy)
+	}
+	encoded, _ := json.Marshal(reconcile)
+	if strings.Contains(string(encoded), "secret-token") || strings.Contains(string(encoded), "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_TEST") {
+		t.Fatalf("reconciliation leaked token material: %s", encoded)
+	}
+}
+
+func TestTemplateRepositoryReconciliationUnknownKind(t *testing.T) {
+	got := templateRepositoryReconciliation(
+		"provider_policy",
+		map[string]any{"repo_key": "billing-service"},
+		map[string]any{"id": "remote-1", "provider_type": "github"},
+		"main",
+		2,
+	)
+	if got["kind"] != "provider_policy" || got["guardrail"] != "manual_reconciliation_required" {
+		t.Fatalf("reconciliation = %#v", got)
+	}
+	if got["provider_type"] != "github" || got["repository_key"] != "billing-service" {
+		t.Fatalf("reconciliation identifiers = %#v", got)
+	}
+	credentialStrategy := mapFromAny(got["credential_strategy"])
+	if credentialStrategy["token_stored"] != false {
+		t.Fatalf("credential strategy should not store token values: %#v", credentialStrategy)
 	}
 }
 
