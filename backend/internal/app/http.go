@@ -5419,10 +5419,51 @@ func assetInventorySQL() string {
 			END,
 			'webhook_connections',
 			wc.id::text,
-			jsonb_build_object('provider', wc.provider, 'source_remote_id', wc.source_remote_id, 'enabled', wc.enabled, 'last_delivery_error', wc.last_delivery_error),
+			jsonb_build_object(
+				'provider', wc.provider,
+				'source_remote_id', wc.source_remote_id,
+				'enabled', wc.enabled,
+				'has_last_delivery_error', wc.last_delivery_error <> ''
+			),
 			wc.created_at,
 			wc.updated_at
 		FROM webhook_connections wc
+		UNION ALL
+		SELECT
+			'webhook_event:' || we.id::text,
+			COALESCE(we.project_id::text, wc.project_id::text, ''),
+			'webhook_event',
+			COALESCE(NULLIF(we.event_type, ''), we.provider || ' webhook'),
+			we.id::text,
+			we.provider,
+			'webhook',
+			we.id::text,
+			we.status,
+			CASE
+				WHEN NOT we.signature_valid THEN 'high'
+				WHEN we.status IN ('failed', 'rejected') THEN 'high'
+				WHEN we.status IN ('received', 'processing') THEN 'warning'
+				ELSE 'normal'
+			END,
+			'webhook_events',
+			we.id::text,
+			jsonb_build_object(
+				'webhook_connection_id', we.webhook_connection_id,
+				'provider', we.provider,
+				'event_type', we.event_type,
+				'delivery_id', we.delivery_id,
+				'signature_valid', we.signature_valid,
+				'matched_repo_sync_asset_id', we.matched_repo_sync_asset_id,
+				'operation_run_id', we.operation_run_id,
+				'processed_at', we.processed_at,
+				'has_payload', we.payload <> '{}'::jsonb,
+				'has_result', we.result <> '{}'::jsonb,
+				'has_error', we.error_message <> ''
+			),
+			we.received_at,
+			COALESCE(we.processed_at, we.received_at)
+		FROM webhook_events we
+		LEFT JOIN webhook_connections wc ON wc.id=we.webhook_connection_id
 		UNION ALL
 		SELECT
 			'github_action_run:' || gh.id::text,
@@ -5929,6 +5970,43 @@ func assetRelationInventorySQL() string {
 		FROM project_template_files ptf
 		JOIN project_template_runs ptr ON ptr.id=ptf.project_template_run_id
 		UNION ALL
+		-- Connection deletion nulls webhook_events.webhook_connection_id, so historical
+		-- webhook events remain as assets while this connection edge naturally disappears.
+		SELECT
+			'webhook_connection:' || wc.id::text || ':received:webhook_event:' || we.id::text,
+			COALESCE(we.project_id::text, wc.project_id::text, ''),
+			'webhook_connection:' || wc.id::text,
+			'webhook_event:' || we.id::text,
+			'received_webhook_event',
+			jsonb_build_object('provider', we.provider, 'event_type', we.event_type, 'status', we.status),
+			we.received_at
+		FROM webhook_events we
+		JOIN webhook_connections wc ON wc.id=we.webhook_connection_id
+		UNION ALL
+		SELECT
+			'webhook_event:' || we.id::text || ':matched_repo_sync:repo_sync:' || rsa.id::text,
+			COALESCE(we.project_id::text, rsa.project_id::text, ''),
+			'webhook_event:' || we.id::text,
+			'repo_sync:' || rsa.id::text,
+			'matched_repo_sync',
+			jsonb_build_object('provider', we.provider, 'event_type', we.event_type, 'status', we.status),
+			we.received_at
+		FROM webhook_events we
+		JOIN repo_sync_assets rsa ON rsa.id=we.matched_repo_sync_asset_id
+		UNION ALL
+		SELECT
+			'webhook_event:' || we.id::text || ':triggered_operation:operation_run:' || op.id::text,
+			COALESCE(we.project_id::text, op.project_id::text, ''),
+			'webhook_event:' || we.id::text,
+			'operation_run:' || op.id::text,
+			'triggered_operation',
+			jsonb_build_object('provider', we.provider, 'event_type', we.event_type, 'status', we.status),
+			we.received_at
+		FROM webhook_events we
+		JOIN operation_runs op ON op.id=we.operation_run_id
+		UNION ALL
+		-- Compatibility edge for older graph consumers that linked connections straight
+		-- to operations before webhook_event became a first-class asset node.
 		SELECT
 			'webhook_connection:' || wc.id::text || ':triggered_operation:operation_run:' || op.id::text,
 			wc.project_id::text,
