@@ -97,6 +97,26 @@ func TestSensitiveArgoConfigRequiresElevatedRole(t *testing.T) {
 	}
 }
 
+func TestRollbackPointReadinessSQLIncludesPreviewOnlyFields(t *testing.T) {
+	sql := rollbackPointReadinessSQL()
+	for _, token := range []string{
+		"false AS rollback_executable",
+		"'read_only_preview' AS rollback_execution_mode",
+		"AS rollback_readiness",
+		"AS rollback_readiness_reason",
+		"rp.status, '')='expired'",
+		"rp.revision, '')=''",
+		"THEN 'previewable'",
+		"rollback point has revision metadata; execution remains disabled in this first version",
+		"dt.namespace AS deployment_namespace",
+		"dt.cluster_name AS deployment_cluster_name",
+	} {
+		if !strings.Contains(sql, token) {
+			t.Fatalf("rollbackPointReadinessSQL missing %s", token)
+		}
+	}
+}
+
 func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 	sql := assetInventorySQL()
 	for _, token := range []string{

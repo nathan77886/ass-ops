@@ -124,7 +124,7 @@ Recommended next slice:
 
 ### 5. Deployment Is Still Read-Model Only
 
-Argo app sync is real, and Argo sync now derives `deployment_targets` by project/environment/cluster/namespace, records latest `deployment_records`, captures `rollback_points` when Argo reports a revision or images, links these objects in the asset relation graph, and shows a read-only deployment posture summary with target count, unhealthy target count, environment count, and available rollback points. This makes "where is this app deployed?", "is anything unhealthy?", and "what could I roll back to?" visible, but deploy execution, k8s cluster credentials, Helm releases, secrets, and actual rollback execution are still not implemented.
+Argo app sync is real, and Argo sync now derives `deployment_targets` by project/environment/cluster/namespace, records latest `deployment_records`, captures `rollback_points` when Argo reports a revision or images, links these objects in the asset relation graph, and shows a read-only deployment posture summary with target count, unhealthy target count, environment count, available rollback points, and rollback readiness preview/reasons. This makes "where is this app deployed?", "is anything unhealthy?", "what could I roll back to?", and "why is rollback still preview-only?" visible, but deploy execution, k8s cluster credentials, Helm releases, secrets, and actual rollback execution are still not implemented.
 
 Recommended next slice:
 

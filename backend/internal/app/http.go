@@ -9276,15 +9276,37 @@ func (s *Server) listRollbackPoints(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "rollback_point", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT rp.*, dt.name AS deployment_target_name, dr.status AS deployment_status
+	items, err := queryMaps(r.Context(), s.store.DB, rollbackPointReadinessSQL(), projectID)
+	writeQueryResult(w, items, err)
+}
+
+func rollbackPointReadinessSQL() string {
+	return `
+		SELECT rp.*,
+			dt.name AS deployment_target_name,
+			dt.namespace AS deployment_namespace,
+			dt.cluster_name AS deployment_cluster_name,
+			dr.status AS deployment_status,
+			false AS rollback_executable,
+			'read_only_preview' AS rollback_execution_mode,
+			CASE
+				WHEN COALESCE(rp.status, '')='expired' THEN 'blocked'
+				WHEN COALESCE(rp.revision, '')='' THEN 'incomplete'
+				WHEN COALESCE(rp.status, '')='available' THEN 'previewable'
+				ELSE 'blocked'
+			END AS rollback_readiness,
+			CASE
+				WHEN COALESCE(rp.status, '')='expired' THEN 'rollback point is expired'
+				WHEN COALESCE(rp.revision, '')='' THEN 'rollback point has no captured revision'
+				WHEN COALESCE(rp.status, '')='available' THEN 'rollback point has revision metadata; execution remains disabled in this first version'
+				ELSE 'rollback point is not available'
+			END AS rollback_readiness_reason
 		FROM rollback_points rp
 		LEFT JOIN deployment_targets dt ON dt.id=rp.deployment_target_id
 		LEFT JOIN deployment_records dr ON dr.id=rp.deployment_record_id
 		WHERE rp.project_id=$1
 		ORDER BY rp.captured_at DESC
-		LIMIT 500`, projectID)
-	writeQueryResult(w, items, err)
+		LIMIT 500`
 }
 
 func validPublicHTTPURL(ctx context.Context, value string) bool {

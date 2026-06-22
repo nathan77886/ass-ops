@@ -2106,13 +2106,26 @@ function argoStatusColor(status: any) {
   }
 }
 
+function rollbackReadinessColor(status: any) {
+  switch (String(status || '').toLowerCase()) {
+    case 'previewable':
+      return 'blue';
+    case 'incomplete':
+      return 'orange';
+    case 'blocked':
+      return 'red';
+    default:
+      return 'default';
+  }
+}
+
 function buildDeploymentPosture(targets: AnyRow[], records: AnyRow[], rollbackPoints: AnyRow[]) {
   const unhealthyTargets = targets.filter((row) => deploymentStatusUnhealthy(row.status)).length;
   const environments = new Set([
     ...targets.map((row) => String(row.environment || '').trim()).filter(Boolean),
     ...records.map((row) => String(row.environment || '').trim()).filter(Boolean)
   ]).size;
-  const availableRollbacks = rollbackPoints.filter((row) => String(row.status || '').toLowerCase() !== 'expired').length;
+  const availableRollbacks = rollbackPoints.filter((row) => String(row.rollback_readiness || '').toLowerCase() === 'previewable').length;
   const latestRecord = records[0];
   const summary = targets.length === 0
     ? 'No deployment targets yet'
@@ -2318,6 +2331,9 @@ function ConfigPage() {
             { title: 'Target', dataIndex: 'deployment_target_name' },
             { title: 'Environment', dataIndex: 'environment' },
             { title: 'Revision', dataIndex: 'revision' },
+            { title: 'Readiness', render: (_, row) => <Tag color={rollbackReadinessColor(row.rollback_readiness)}>{row.rollback_readiness || 'unknown'}</Tag> },
+            { title: 'Reason', dataIndex: 'rollback_readiness_reason', render: (value) => value || '-' },
+            { title: 'Mode', dataIndex: 'rollback_execution_mode', render: (value) => <Tag>{value || 'read_only_preview'}</Tag> },
             { title: 'Status', render: (_, row) => <Tag color={argoStatusColor(row.status)}>{row.status}</Tag> },
             { title: 'Captured', dataIndex: 'captured_at' }
           ]} />
