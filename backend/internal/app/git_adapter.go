@@ -599,6 +599,8 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 	reviewKind := templateProviderReviewKind(provider, mode)
 	executionRequest := templateProviderReviewExecutionRequest(provider, reviewKind, sourceBranch, targetBranch)
 	guardrail := templateProviderReviewExecutionGuardrail(provider, reviewKind, sourceBranch, targetBranch, false)
+	// Starter files are staged later when the approval payload is built.
+	apiRequestPlan := templateProviderReviewAPIRequestPlan(provider, reviewKind, sourceBranch, targetBranch, nil)
 	steps := []map[string]any{
 		{
 			"name":      "create_branch",
@@ -629,21 +631,106 @@ func templateProviderReviewExecutionPlan(provider string, branchStrategy map[str
 		},
 	}
 	return map[string]any{
-		"mode":                  "dry_run",
-		"provider_type":         provider,
-		"strategy_mode":         mode,
-		"review_kind":           reviewKind,
-		"source_branch":         sourceBranch,
-		"target_branch":         targetBranch,
-		"execution_enabled":     false,
-		"external_call_made":    false,
-		"requires_approval":     true,
-		"approval_action":       templateProviderReviewExecuteApprovalAction,
-		"provider_api_mutation": "disabled",
-		"execution_request":     executionRequest,
-		"execution_guardrail":   guardrail,
-		"steps":                 steps,
-		"message":               "Provider review execution request is prepared for approval, but branch creation, starter-file commits, and PR/MR creation remain disabled.",
+		"mode":                      "dry_run",
+		"provider_type":             provider,
+		"strategy_mode":             mode,
+		"review_kind":               reviewKind,
+		"source_branch":             sourceBranch,
+		"target_branch":             targetBranch,
+		"execution_enabled":         false,
+		"external_call_made":        false,
+		"requires_approval":         true,
+		"approval_action":           templateProviderReviewExecuteApprovalAction,
+		"provider_api_mutation":     "disabled",
+		"execution_request":         executionRequest,
+		"execution_guardrail":       guardrail,
+		"provider_api_request_plan": apiRequestPlan,
+		"steps":                     steps,
+		"message":                   "Provider review execution request is prepared for approval, but branch creation, starter-file commits, and PR/MR creation remain disabled.",
+	}
+}
+
+func templateProviderReviewAPIRequestPlan(provider, reviewKind, sourceBranch, targetBranch string, starterFilePayload map[string]any) map[string]any {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	reviewKind = strings.ToLower(strings.TrimSpace(reviewKind))
+	sourceBranch = strings.TrimSpace(sourceBranch)
+	targetBranch = strings.TrimSpace(targetBranch)
+	fileCount := intFromAny(starterFilePayload["file_count"], 0)
+	ready := sourceBranch != "" &&
+		targetBranch != "" &&
+		isSafeGitRefPart(sourceBranch) &&
+		isSafeGitRefPart(targetBranch) &&
+		starterFilePayloadReady(starterFilePayload)
+	status := "blocked"
+	blockedReasons := []string{}
+	if sourceBranch == "" || targetBranch == "" || !isSafeGitRefPart(sourceBranch) || !isSafeGitRefPart(targetBranch) {
+		blockedReasons = append(blockedReasons, "review_branches_valid")
+	}
+	if !starterFilePayloadReady(starterFilePayload) {
+		blockedReasons = append(blockedReasons, "starter_file_payload_staged")
+	}
+	if ready {
+		status = "ready"
+	}
+	return map[string]any{
+		"status":                 status,
+		"mode":                   "redacted_request_plan",
+		"provider_type":          provider,
+		"review_kind":            reviewKind,
+		"source_branch":          sourceBranch,
+		"target_branch":          targetBranch,
+		"file_count":             fileCount,
+		"payload_redacted":       true,
+		"contains_token":         false,
+		"contains_file_content":  false,
+		"provider_api_call_made": false,
+		"provider_api_mutation":  "disabled",
+		"blocked_reasons":        blockedReasons,
+		"operations": []map[string]any{
+			{
+				"name":                  "create_branch_ref",
+				"method":                "POST",
+				"endpoint_key":          providerReviewEndpointKey(provider, "create_branch_ref"),
+				"payload_shape":         "ref_from_target_branch",
+				"payload_redacted":      true,
+				"contains_token":        false,
+				"contains_file_content": false,
+				"api_call":              false,
+			},
+			{
+				"name":                  "commit_starter_files",
+				"method":                "PUT",
+				"endpoint_key":          providerReviewEndpointKey(provider, "commit_files"),
+				"payload_shape":         "content_redacted_file_batch",
+				"file_count":            fileCount,
+				"payload_redacted":      true,
+				"contains_token":        false,
+				"contains_file_content": false,
+				"api_call":              false,
+			},
+			{
+				"name":                  "open_review_request",
+				"method":                "POST",
+				"endpoint_key":          providerReviewEndpointKey(provider, "open_review"),
+				"payload_shape":         reviewKind,
+				"payload_redacted":      true,
+				"contains_token":        false,
+				"contains_file_content": false,
+				"api_call":              false,
+			},
+		},
+	}
+}
+
+func providerReviewEndpointKey(provider, operation string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	switch provider {
+	case "github":
+		return "github." + operation
+	case "gitea":
+		return "gitea." + operation
+	default:
+		return "provider." + operation
 	}
 }
 

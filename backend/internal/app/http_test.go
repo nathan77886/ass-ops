@@ -1463,6 +1463,24 @@ func TestProjectTemplateProviderReviewApprovalPayload(t *testing.T) {
 	if len(starterFiles) != 1 || starterFiles[0]["path"] != "README.md" {
 		t.Fatalf("starter file summaries = %#v", starterFiles)
 	}
+	apiPlan := mapFromAny(payload["provider_api_request_plan"])
+	if apiPlan["status"] != "ready" ||
+		apiPlan["payload_redacted"] != true ||
+		apiPlan["contains_token"] != false ||
+		apiPlan["contains_file_content"] != false ||
+		apiPlan["provider_api_call_made"] != false ||
+		apiPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("provider api request plan = %#v", apiPlan)
+	}
+	operations := sliceOfMapsFromAny(apiPlan["operations"])
+	if len(operations) != 3 || operations[0]["name"] != "create_branch_ref" || operations[1]["name"] != "commit_starter_files" || operations[2]["name"] != "open_review_request" {
+		t.Fatalf("provider api request plan operations = %#v", operations)
+	}
+	for _, operation := range operations {
+		if operation["api_call"] != false || operation["contains_token"] != false || operation["contains_file_content"] != false {
+			t.Fatalf("provider api request plan operation should be redacted/no-call: %#v", operation)
+		}
+	}
 	request := mapFromAny(payload["execution_request"])
 	if request["status"] != "approval_ready" ||
 		request["approval_action"] != templateProviderReviewExecuteApprovalAction ||
@@ -1523,6 +1541,10 @@ func TestProjectTemplateProviderReviewApprovalPayloadUsesRuntimeGuardrailConfig(
 	guardrail := mapFromAny(payload["execution_guardrail"])
 	if guardrail["execution_mode"] != "adapter_blocked" || guardrail["execution_enabled_config"] != true || guardrail["execution_enabled"] != false {
 		t.Fatalf("runtime guardrail should reflect enabled config while staying blocked: %#v", guardrail)
+	}
+	apiPlan := mapFromAny(payload["provider_api_request_plan"])
+	if apiPlan["status"] != "ready" || apiPlan["file_count"] != 1 {
+		t.Fatalf("runtime api request plan = %#v", apiPlan)
 	}
 	if !containsString(stringSliceFromAny(guardrail["blocked_reasons"]), "provider_review_api_adapter") {
 		t.Fatalf("runtime guardrail should remain adapter-blocked: %#v", guardrail)
@@ -1603,9 +1625,18 @@ func TestExecuteApprovedOperationProviderReviewIsAuditOnly(t *testing.T) {
 	if starterPayload["status"] != "ready" || starterPayload["content_included"] != false {
 		t.Fatalf("provider review execution starter file payload = %#v", starterPayload)
 	}
+	apiPlan := mapFromAny(result["provider_api_request_plan"])
+	if apiPlan["status"] != "ready" ||
+		apiPlan["provider_api_call_made"] != false ||
+		apiPlan["provider_api_mutation"] != "disabled" ||
+		apiPlan["contains_file_content"] != false {
+		t.Fatalf("provider review execution api request plan = %#v", apiPlan)
+	}
 	encoded, _ := json.Marshal(result)
-	if strings.Contains(string(encoded), "forged-content") {
-		t.Fatalf("provider review execution result leaked forged content: %s", encoded)
+	for _, leak := range []string{"forged-content", "api_base_url", "secret-token"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("provider review execution result leaked %q: %s", leak, encoded)
+		}
 	}
 }
 

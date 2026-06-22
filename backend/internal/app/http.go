@@ -906,6 +906,13 @@ func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, p
 		providerReviewExecutionEnabled,
 		starterFilePayloadReady(starterFilePayload),
 	)
+	providerAPIRequestPlan := templateProviderReviewAPIRequestPlan(
+		stringFromMap(executionRequest, "provider_type"),
+		stringFromMap(executionRequest, "review_kind"),
+		stringFromMap(executionRequest, "source_branch"),
+		stringFromMap(executionRequest, "target_branch"),
+		starterFilePayload,
+	)
 	projectTemplateRunID := cleanOptionalID(fmt.Sprint(run["id"]))
 	if projectTemplateRunID == "" {
 		return nil, fmt.Errorf("template run id is required")
@@ -924,15 +931,16 @@ func projectTemplateProviderReviewApprovalPayloadForConfig(run map[string]any, p
 		"requires_operator_review": true,
 	}
 	return map[string]any{
-		"kind":                    "project_template_provider_review_execute",
-		"project_template_run_id": projectTemplateRunID,
-		"project_id":              cleanOptionalID(fmt.Sprint(run["project_id"])),
-		"execution_request":       request,
-		"execution_guardrail":     executionGuardrail,
-		"starter_file_payload":    starterFilePayload,
-		"provider_api_call_made":  false,
-		"provider_api_mutation":   "disabled",
-		"message":                 "Provider review execution is approval-gated; provider API mutation remains disabled in the first version.",
+		"kind":                      "project_template_provider_review_execute",
+		"project_template_run_id":   projectTemplateRunID,
+		"project_id":                cleanOptionalID(fmt.Sprint(run["project_id"])),
+		"execution_request":         request,
+		"execution_guardrail":       executionGuardrail,
+		"starter_file_payload":      starterFilePayload,
+		"provider_api_request_plan": providerAPIRequestPlan,
+		"provider_api_call_made":    false,
+		"provider_api_mutation":     "disabled",
+		"message":                   "Provider review execution is approval-gated; provider API mutation remains disabled in the first version.",
 	}, nil
 }
 
@@ -9659,6 +9667,13 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 	case "project_template_provider_review_execute":
 		request := mapFromAny(payload["execution_request"])
 		starterFilePayload := providerReviewStarterFilePayloadForExecution(ctx, tx, payload)
+		providerAPIRequestPlan := templateProviderReviewAPIRequestPlan(
+			stringFromMap(request, "provider_type"),
+			stringFromMap(request, "review_kind"),
+			stringFromMap(request, "source_branch"),
+			stringFromMap(request, "target_branch"),
+			starterFilePayload,
+		)
 		guardrail := templateProviderReviewExecutionGuardrailWithStaging(
 			stringFromMap(request, "provider_type"),
 			stringFromMap(request, "review_kind"),
@@ -9668,14 +9683,15 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			starterFilePayloadReady(starterFilePayload),
 		)
 		return map[string]any{
-			"project_template_run_id": stringFromMap(payload, "project_template_run_id"),
-			"execution_request":       request,
-			"execution_guardrail":     guardrail,
-			"starter_file_payload":    starterFilePayload,
-			"provider_api_call_made":  false,
-			"provider_api_mutation":   "disabled",
-			"execution_enabled":       false,
-			"message":                 "Provider review execution approval was recorded; provider API branch creation and PR/MR mutation remain disabled.",
+			"project_template_run_id":   stringFromMap(payload, "project_template_run_id"),
+			"execution_request":         request,
+			"execution_guardrail":       guardrail,
+			"starter_file_payload":      starterFilePayload,
+			"provider_api_request_plan": providerAPIRequestPlan,
+			"provider_api_call_made":    false,
+			"provider_api_mutation":     "disabled",
+			"execution_enabled":         false,
+			"message":                   "Provider review execution approval was recorded; provider API branch creation and PR/MR mutation remain disabled.",
 		}, "", nil
 	default:
 		return nil, "", fmt.Errorf("unsupported approval payload")

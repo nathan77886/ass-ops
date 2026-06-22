@@ -442,6 +442,22 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	if githubGuardrail["execution_enabled_config"] != false {
 		t.Fatalf("github execution guardrail should record disabled config: %#v", githubGuardrail)
 	}
+	githubAPIPlan := mapFromAny(githubPlan["provider_api_request_plan"])
+	if githubAPIPlan["status"] != "blocked" ||
+		githubAPIPlan["payload_redacted"] != true ||
+		githubAPIPlan["contains_token"] != false ||
+		githubAPIPlan["contains_file_content"] != false ||
+		githubAPIPlan["provider_api_call_made"] != false ||
+		githubAPIPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("github provider api request plan = %#v", githubAPIPlan)
+	}
+	if !containsString(stringSliceFromAny(githubAPIPlan["blocked_reasons"]), "starter_file_payload_staged") {
+		t.Fatalf("github provider api request plan blocked reasons = %#v", githubAPIPlan)
+	}
+	apiOperations := sliceOfMapsFromAny(githubAPIPlan["operations"])
+	if len(apiOperations) != 3 || apiOperations[0]["endpoint_key"] != "github.create_branch_ref" {
+		t.Fatalf("github provider api request operations = %#v", apiOperations)
+	}
 	gates := sliceOfMapsFromAny(githubGuardrail["gates"])
 	if len(gates) != 4 || gates[0]["gate"] != "provider_review_execution_enabled" || gates[2]["status"] != "ready" {
 		t.Fatalf("github execution guardrail gates = %#v", gates)
@@ -468,6 +484,19 @@ func TestTemplateProviderReviewExecutionPlanUsesProviderTerms(t *testing.T) {
 	}
 	if !containsString(stringSliceFromAny(enabledGuardrail["blocked_reasons"]), "provider_review_api_adapter") {
 		t.Fatalf("enabled guardrail should still require adapter: %#v", enabledGuardrail)
+	}
+	readyAPIPlan := templateProviderReviewAPIRequestPlan("github", "pull_request", "assops/template/demo-main", "main", map[string]any{
+		"status":           "ready",
+		"file_count":       2,
+		"content_included": false,
+	})
+	if readyAPIPlan["status"] != "ready" || readyAPIPlan["file_count"] != 2 {
+		t.Fatalf("ready provider api request plan = %#v", readyAPIPlan)
+	}
+	for _, operation := range sliceOfMapsFromAny(readyAPIPlan["operations"]) {
+		if operation["api_call"] != false || operation["payload_redacted"] != true || operation["contains_token"] != false || operation["contains_file_content"] != false {
+			t.Fatalf("ready api operation should be redacted/no-call: %#v", operation)
+		}
 	}
 	for _, tt := range []struct {
 		name   string
