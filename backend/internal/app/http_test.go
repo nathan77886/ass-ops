@@ -209,6 +209,11 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		"'agent_task'",
 		"FROM agent_tasks at",
 		"'latest_plan_status', latest_plan.status",
+		"'agent_tool_call'",
+		"FROM agent_tool_calls atc",
+		"'has_input', atc.input <> '{}'::jsonb",
+		"'has_output', atc.output <> '{}'::jsonb",
+		"'has_error', atc.error_message <> ''",
 		"'node_agent'",
 	} {
 		if !strings.Contains(sql, token) {
@@ -217,6 +222,15 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 	}
 	if regexp.MustCompile(`\boar\.metadata\b`).MatchString(sql) {
 		t.Fatalf("operation approval rule metadata should not be exposed in assetInventorySQL")
+	}
+	for _, forbidden := range []*regexp.Regexp{
+		regexp.MustCompile(`'input'\s*,\s*atc\.input`),
+		regexp.MustCompile(`'output'\s*,\s*atc\.output`),
+		regexp.MustCompile(`'error_message'\s*,\s*atc\.error_message`),
+	} {
+		if forbidden.MatchString(sql) {
+			t.Fatalf("agent tool call sensitive payload should not be exposed in assetInventorySQL: %s", forbidden)
+		}
 	}
 	for _, forbidden := range []*regexp.Regexp{
 		regexp.MustCompile(`\bptr\.input\b`),
@@ -235,6 +249,12 @@ func TestAssetRelationInventorySQLIncludesAgentTaskEdges(t *testing.T) {
 		"'project:' || p.id::text || ':owns:agent_task:' || at.id::text",
 		"'agent_task:' || at.id::text || ':uses_runtime:ai_runtime:' || runtime.id::text",
 		"'uses_runtime'",
+		"'agent_task:' || at.id::text || ':records_tool_call:agent_tool_call:' || atc.id::text",
+		"'operation_run:' || op.id::text || ':ran_tool_call:agent_tool_call:' || atc.id::text",
+		"COALESCE(atc.project_id::text, at.project_id::text, '')",
+		"JOIN agent_tasks at ON at.id=atc.agent_task_id",
+		"'records_tool_call'",
+		"'ran_tool_call'",
 		"WHERE ar.project_id=at.project_id OR ar.project_id IS NULL",
 		"CASE WHEN ar.status='verified' THEN 0 ELSE 1 END",
 	} {
@@ -378,6 +398,8 @@ func TestAssetRelationInventorySQLIncludesCoreRelations(t *testing.T) {
 		"'owns_template_run'",
 		"'instantiates_template'",
 		"'produced_template_file'",
+		"'records_tool_call'",
+		"'ran_tool_call'",
 		"FROM asset_relations ar",
 		"ar.metadata->>'source'='manual'",
 	} {
@@ -390,6 +412,9 @@ func TestAssetRelationInventorySQLIncludesCoreRelations(t *testing.T) {
 		regexp.MustCompile(`\bptr\.result\b`),
 		regexp.MustCompile(`'error_message'\s*,`),
 		regexp.MustCompile(`\bptf\.content\b`),
+		regexp.MustCompile(`'input'\s*,\s*atc\.input`),
+		regexp.MustCompile(`'output'\s*,\s*atc\.output`),
+		regexp.MustCompile(`'error_message'\s*,\s*atc\.error_message`),
 	} {
 		if forbidden.MatchString(sql) {
 			t.Fatalf("project template run relation metadata should not expose sensitive payload: %s", forbidden)

@@ -5606,6 +5606,35 @@ func assetInventorySQL() string {
 		) latest_plan ON true
 		UNION ALL
 		SELECT
+			'agent_tool_call:' || atc.id::text,
+			COALESCE(atc.project_id::text, at.project_id::text, ''),
+			'agent_tool_call',
+			atc.tool_name,
+			atc.tool_name,
+			'AI tool call audit',
+			'assops_agent',
+			atc.id::text,
+			atc.status,
+			CASE WHEN atc.status='failed' THEN 'high' ELSE 'normal' END,
+			'agent_tool_calls',
+			atc.id::text,
+			jsonb_build_object(
+				'agent_task_id', atc.agent_task_id,
+				'operation_run_id', atc.operation_run_id,
+				'project_id', COALESCE(atc.project_id, at.project_id),
+				'tool_name', atc.tool_name,
+				'started_at', atc.started_at,
+				'finished_at', atc.finished_at,
+				'has_input', atc.input <> '{}'::jsonb,
+				'has_output', atc.output <> '{}'::jsonb,
+				'has_error', atc.error_message <> ''
+			),
+			atc.created_at,
+			atc.updated_at
+		FROM agent_tool_calls atc
+		JOIN agent_tasks at ON at.id=atc.agent_task_id
+		UNION ALL
+		SELECT
 			'worker_node:' || wn.id::text,
 			'',
 			'node_agent',
@@ -6119,6 +6148,29 @@ func assetRelationInventorySQL() string {
 				ar.updated_at DESC
 			LIMIT 1
 		) runtime ON true
+		UNION ALL
+		SELECT
+			'agent_task:' || at.id::text || ':records_tool_call:agent_tool_call:' || atc.id::text,
+			COALESCE(atc.project_id::text, at.project_id::text, ''),
+			'agent_task:' || at.id::text,
+			'agent_tool_call:' || atc.id::text,
+			'records_tool_call',
+			jsonb_build_object('tool_name', atc.tool_name, 'status', atc.status),
+			atc.created_at
+		FROM agent_tool_calls atc
+		JOIN agent_tasks at ON at.id=atc.agent_task_id
+		UNION ALL
+		SELECT
+			'operation_run:' || op.id::text || ':ran_tool_call:agent_tool_call:' || atc.id::text,
+			COALESCE(atc.project_id::text, at.project_id::text, ''),
+			'operation_run:' || op.id::text,
+			'agent_tool_call:' || atc.id::text,
+			'ran_tool_call',
+			jsonb_build_object('tool_name', atc.tool_name, 'status', atc.status),
+			atc.created_at
+		FROM agent_tool_calls atc
+		JOIN agent_tasks at ON at.id=atc.agent_task_id
+		JOIN operation_runs op ON op.id=atc.operation_run_id
 		UNION ALL
 		SELECT
 			ar.id::text,
