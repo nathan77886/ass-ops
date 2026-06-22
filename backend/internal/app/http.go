@@ -5174,6 +5174,36 @@ func assetInventorySQL() string {
 		FROM project_templates pt
 		UNION ALL
 		SELECT
+			'project_template_run:' || ptr.id::text,
+			COALESCE(ptr.project_id::text, ''),
+			'project_template_run',
+			ptr.project_name,
+			ptr.project_name,
+			ptr.project_slug,
+			'project_template',
+			ptr.id::text,
+			ptr.status,
+			CASE
+				WHEN ptr.status='failed' THEN 'high'
+				WHEN ptr.status IN ('queued', 'running') THEN 'warning'
+				ELSE 'normal'
+			END,
+			'project_template_runs',
+			ptr.id::text,
+			jsonb_build_object(
+				'project_template_id', ptr.project_template_id,
+				'operation_run_id', ptr.operation_run_id,
+				'project_id', ptr.project_id,
+				'started_at', ptr.started_at,
+				'finished_at', ptr.finished_at,
+				'step_count', jsonb_array_length(ptr.steps),
+				'has_error', ptr.error_message <> ''
+			),
+			ptr.created_at,
+			ptr.updated_at
+		FROM project_template_runs ptr
+		UNION ALL
+		SELECT
 			'provider_account:' || pa.id::text,
 			'',
 			'provider_account',
@@ -5815,6 +5845,17 @@ func assetRelationInventorySQL() string {
 		WHERE op.operation_type='argo.apps.sync'
 		UNION ALL
 		SELECT
+			'operation_run:' || op.id::text || ':created_template_run:project_template_run:' || ptr.id::text,
+			COALESCE(ptr.project_id::text, op.project_id::text, ''),
+			'operation_run:' || op.id::text,
+			'project_template_run:' || ptr.id::text,
+			'created_template_run',
+			jsonb_build_object('status', ptr.status),
+			ptr.created_at
+		FROM project_template_runs ptr
+		JOIN operation_runs op ON op.id=ptr.operation_run_id
+		UNION ALL
+		SELECT
 			'operation_run:' || op.id::text || ':created_from_template:project_template:' || pt.id::text,
 			COALESCE(ptr.project_id::text, ''),
 			'operation_run:' || op.id::text,
@@ -5825,6 +5866,39 @@ func assetRelationInventorySQL() string {
 		FROM project_template_runs ptr
 		JOIN operation_runs op ON op.id=ptr.operation_run_id
 		JOIN project_templates pt ON pt.id=ptr.project_template_id
+		UNION ALL
+		SELECT
+			'project:' || p.id::text || ':owns:project_template_run:' || ptr.id::text,
+			p.id::text,
+			'project:' || p.id::text,
+			'project_template_run:' || ptr.id::text,
+			'owns_template_run',
+			jsonb_build_object('status', ptr.status),
+			ptr.created_at
+		FROM project_template_runs ptr
+		JOIN projects p ON p.id=ptr.project_id
+		UNION ALL
+		SELECT
+			'project_template_run:' || ptr.id::text || ':instantiates:project_template:' || pt.id::text,
+			COALESCE(ptr.project_id::text, ''),
+			'project_template_run:' || ptr.id::text,
+			'project_template:' || pt.id::text,
+			'instantiates_template',
+			jsonb_build_object('status', ptr.status),
+			ptr.created_at
+		FROM project_template_runs ptr
+		JOIN project_templates pt ON pt.id=ptr.project_template_id
+		UNION ALL
+		SELECT
+			'project_template_run:' || ptr.id::text || ':produced_file:template_file:' || ptf.id::text,
+			COALESCE(ptr.project_id::text, ptf.project_id::text, ''),
+			'project_template_run:' || ptr.id::text,
+			'template_file:' || ptf.id::text,
+			'produced_template_file',
+			jsonb_build_object('path', ptf.path, 'status', ptf.status),
+			ptf.created_at
+		FROM project_template_files ptf
+		JOIN project_template_runs ptr ON ptr.id=ptf.project_template_run_id
 		UNION ALL
 		SELECT
 			'webhook_connection:' || wc.id::text || ':triggered_operation:operation_run:' || op.id::text,

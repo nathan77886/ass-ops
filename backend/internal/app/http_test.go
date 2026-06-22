@@ -174,6 +174,10 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 	for _, token := range []string{
 		"'project' AS asset_type",
 		"'project_template'",
+		"'project_template_run'",
+		"FROM project_template_runs ptr",
+		"'step_count', jsonb_array_length(ptr.steps)",
+		"'has_error', ptr.error_message <> ''",
 		"'provider_account'",
 		"'template_file'",
 		"'repository'",
@@ -214,6 +218,15 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 	if regexp.MustCompile(`\boar\.metadata\b`).MatchString(sql) {
 		t.Fatalf("operation approval rule metadata should not be exposed in assetInventorySQL")
 	}
+	for _, forbidden := range []*regexp.Regexp{
+		regexp.MustCompile(`\bptr\.input\b`),
+		regexp.MustCompile(`\bptr\.result\b`),
+		regexp.MustCompile(`'error_message'\s*,`),
+	} {
+		if forbidden.MatchString(sql) {
+			t.Fatalf("project template run sensitive payload should not be exposed in assetInventorySQL: %s", forbidden)
+		}
+	}
 }
 
 func TestAssetRelationInventorySQLIncludesAgentTaskEdges(t *testing.T) {
@@ -251,7 +264,11 @@ func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
 		"'operation_run:' || op.id::text || ':executed_on:ssh_machine:' || sm.id::text",
 		"'operation_run:' || op.id::text || ':executed_agent_task:agent_task:' || at.id::text",
 		"'operation_run:' || op.id::text || ':synced_argo_connection:argo_connection:' || ac.id::text",
+		"'operation_run:' || op.id::text || ':created_template_run:project_template_run:' || ptr.id::text",
 		"'operation_run:' || op.id::text || ':created_from_template:project_template:' || pt.id::text",
+		"'project:' || p.id::text || ':owns:project_template_run:' || ptr.id::text",
+		"'project_template_run:' || ptr.id::text || ':instantiates:project_template:' || pt.id::text",
+		"'project_template_run:' || ptr.id::text || ':produced_file:template_file:' || ptf.id::text",
 		"'webhook_connection:' || wc.id::text || ':triggered_operation:operation_run:' || op.id::text",
 		"'owns_operation'",
 		"'owns_approval'",
@@ -265,7 +282,11 @@ func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
 		"'executed_on'",
 		"'executed_agent_task'",
 		"'synced_argo_connection'",
+		"'created_template_run'",
 		"'created_from_template'",
+		"'owns_template_run'",
+		"'instantiates_template'",
+		"'produced_template_file'",
 		"'triggered_operation'",
 		"JOIN operation_runs op ON op.project_id=p.id",
 		"JOIN git_remotes gr ON gr.id=op.git_remote_id",
@@ -353,11 +374,25 @@ func TestAssetRelationInventorySQLIncludesCoreRelations(t *testing.T) {
 		"'deployed_to'",
 		"'hosts'",
 		"'has_rollback'",
+		"'created_template_run'",
+		"'owns_template_run'",
+		"'instantiates_template'",
+		"'produced_template_file'",
 		"FROM asset_relations ar",
 		"ar.metadata->>'source'='manual'",
 	} {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("assetRelationInventorySQL missing %s", token)
+		}
+	}
+	for _, forbidden := range []*regexp.Regexp{
+		regexp.MustCompile(`\bptr\.input\b`),
+		regexp.MustCompile(`\bptr\.result\b`),
+		regexp.MustCompile(`'error_message'\s*,`),
+		regexp.MustCompile(`\bptf\.content\b`),
+	} {
+		if forbidden.MatchString(sql) {
+			t.Fatalf("project template run relation metadata should not expose sensitive payload: %s", forbidden)
 		}
 	}
 }

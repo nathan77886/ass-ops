@@ -167,7 +167,7 @@ Implemented as real local code:
 - Agent task, generated plan, approve plan, approval-gated execute-plan operation enqueue, and simulation-only tool-call audit with patch workflow guardrails
 - Argo connection CRUD, Argo app sync/list, deployment posture summary, and rollback point visibility
 - SSH machine CRUD and controlled SSH command runs
-- Asset Center inventory search, cross-project graph search, saved graph views, selected-asset relation graph, status history, manual graph relation edits, operation-run asset visibility with target-asset links, and upstream/downstream dependency path queries
+- Asset Center inventory search, cross-project graph search, saved graph views, selected-asset relation graph, status history, manual graph relation edits, operation-run and project-template-run asset visibility with target/output links, and upstream/downstream dependency path queries
 - Canonical asset ledger backfill/sync from current domain tables, deduplicated asset status snapshots, plus best-effort refresh after key asset-producing writes and worker operation completion
 - Provider account management for GitHub/Gitea template repository creation, with masked token-env display and template account selectors
 - Gitea/GitHub webhook connection, HMAC verification, event audit, connection health summaries, RepoSyncAsset enqueue, and GitHub Actions read-model updates
@@ -181,7 +181,7 @@ Implemented as real local code:
 - assops-tool database migration history, locked migration apply, PostgreSQL backup/restore, retained backup, backup inspection, and guarded restore rehearsal commands
 - Explicit `assops-tool db seed-demo` scenario fixtures for local/demo environments, including sample RepoSync/Webhook/Actions/Argo/approval/asset graph data
 - First-pass Helm chart for Kubernetes-shaped gateway, worker, node-worker, web, migration job, and optional PostgreSQL resources
-- Project template runs can create GitHub/Gitea provider repositories through provider accounts or backward-compatible explicit metadata, show sanitized external provider diagnostics and reconciliation guidance on failure, retry repository provisioning for runs that already created project metadata, or initialize and push starter files to an explicitly configured local bare Git repository provider.
+- Project template runs can create GitHub/Gitea provider repositories through provider accounts or backward-compatible explicit metadata, appear as canonical assets linked to their template and starter-file outputs, show sanitized external provider diagnostics and reconciliation guidance on failure, retry repository provisioning for runs that already created project metadata, or initialize and push starter files to an explicitly configured local bare Git repository provider.
 
 Not yet first-class:
 
