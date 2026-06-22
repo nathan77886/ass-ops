@@ -123,7 +123,7 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		w.refreshCanonicalAssetsAfterOperation(ctx, opID, "failed")
+		w.refreshCanonicalAssetsAfterOperation(ctx, job, opID, "failed")
 		return adapterErr
 	}
 	if err := w.recordAdapterSuccess(ctx, tx, job, result); err != nil {
@@ -155,7 +155,7 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 		if failErr := failTx.Commit(); failErr != nil {
 			return errors.Join(err, failErr)
 		}
-		w.refreshCanonicalAssetsAfterOperation(ctx, opID, "failed")
+		w.refreshCanonicalAssetsAfterOperation(ctx, job, opID, "failed")
 		return err
 	}
 	resultJSON, _ := jsonParam(result)
@@ -175,11 +175,14 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	w.refreshCanonicalAssetsAfterOperation(ctx, opID, "completed")
+	w.refreshCanonicalAssetsAfterOperation(ctx, job, opID, "completed")
 	return nil
 }
 
-func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context, operationID, status string) {
+func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context, job map[string]any, operationID, status string) {
+	if canonicalAssetsSyncedInAdapterTransaction(job) {
+		return
+	}
 	result, err := w.store.SyncCanonicalAssets(ctx)
 	if err != nil {
 		if w.log != nil {
@@ -189,6 +192,16 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 	}
 	if w.log != nil {
 		w.log.Debug("canonical assets refreshed after operation", "operation_id", operationID, "status", status, "synced_assets", result.SyncedAssets, "inserted_relations", result.InsertedRelations)
+	}
+}
+
+func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
+	tool, _ := job["tool_name"].(string)
+	switch tool {
+	case "argo.apps.sync", "github.actions.sync", "project.create_from_template":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -494,8 +507,8 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 }
 
 func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, job map[string]any, result map[string]any, adapterErr error) error {
-	opID := fmt.Sprint(job["operation_run_id"])
-	tool := fmt.Sprint(job["tool_name"])
+	opID, _ := job["operation_run_id"].(string)
+	tool, _ := job["tool_name"].(string)
 	stdout, stderr := gitExecutionOutputFromMap(result)
 	switch tool {
 	case "repo.sync", "repo.sync_remote":
@@ -532,8 +545,12 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 			if err != nil {
 				return err
 			}
-			remoteID = strings.TrimSpace(fmt.Sprint(op["git_remote_id"]))
-			if remoteID == "" || remoteID == "<nil>" {
+			remoteID, _ = op["git_remote_id"].(string)
+			remoteID = strings.TrimSpace(remoteID)
+			if remoteID == "" {
+				if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+					return fmt.Errorf("syncing canonical assets for failed GitHub Actions sync without remote: %w", err)
+				}
 				return nil
 			}
 		}
@@ -545,7 +562,13 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 			SET last_sync_status='failed',
 				updated_at=now()
 			WHERE id=$1`, remoteID)
-		return err
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed GitHub Actions sync: %w", err)
+		}
+		return nil
 	case "argo.apps.sync":
 		connectionID := argoConnectionIDFromResult(result)
 		delete(result, "_argo_sync_result")
@@ -556,7 +579,13 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 					last_sync_error=$2,
 					updated_at=now()
 				WHERE id=(SELECT (input->>'argo_connection_id')::uuid FROM operation_runs WHERE id=$1 LIMIT 1)`, opID, adapterErr.Error())
-			return err
+			if err != nil {
+				return err
+			}
+			if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+				return fmt.Errorf("syncing canonical assets for failed Argo app sync: %w", err)
+			}
+			return nil
 		}
 		_, err := tx.ExecContext(ctx, `
 			UPDATE argo_connections
@@ -564,7 +593,13 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 				last_sync_error=$2,
 				updated_at=now()
 			WHERE id=$1`, connectionID, adapterErr.Error())
-		return err
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed Argo app sync: %w", err)
+		}
+		return nil
 	case "ssh.exec":
 		stdout, stderr := gitExecutionOutputFromMap(result)
 		exitCode := nullableIntFromMap(result, "exit_code")
@@ -604,7 +639,13 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 				finished_at=now(),
 				updated_at=now()
 			WHERE operation_run_id=$1`, opID, steps, adapterErr.Error())
-		return err
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed project template creation: %w", err)
+		}
+		return nil
 	case "project.template_provision_retry":
 		if result["_template_retry_recorded"] == true {
 			delete(result, "_template_retry_recorded")
@@ -643,8 +684,8 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 }
 
 func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, job map[string]any, result map[string]any) error {
-	opID := fmt.Sprint(job["operation_run_id"])
-	tool := fmt.Sprint(job["tool_name"])
+	opID, _ := job["operation_run_id"].(string)
+	tool, _ := job["tool_name"].(string)
 	stdout, stderr := gitExecutionOutputFromMap(result)
 	afterSHA, _ := result["after_sha"].(string)
 	switch tool {
@@ -704,7 +745,13 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 			SET last_sync_status='completed',
 				updated_at=now()
 			WHERE id=$1`, remoteID)
-		return err
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for GitHub Actions sync: %w", err)
+		}
+		return nil
 	case "argo.apps.sync":
 		return w.recordArgoSyncAdapterRun(ctx, tx, result)
 	case "ssh.exec":

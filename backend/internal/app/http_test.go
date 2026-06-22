@@ -1426,10 +1426,16 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		t.Fatalf("read worker.go: %v", err)
 	}
 	for _, token := range []string{
-		`refreshCanonicalAssetsAfterOperation(ctx, opID, "completed")`,
-		`refreshCanonicalAssetsAfterOperation(ctx, opID, "failed")`,
+		`refreshCanonicalAssetsAfterOperation(ctx, job, opID, "completed")`,
+		`refreshCanonicalAssetsAfterOperation(ctx, job, opID, "failed")`,
+		`canonicalAssetsSyncedInAdapterTransaction(job)`,
 		`SyncCanonicalAssetsWith(ctx, tx)`,
+		`syncing canonical assets for GitHub Actions sync`,
+		`syncing canonical assets for failed GitHub Actions sync`,
+		`syncing canonical assets for failed GitHub Actions sync without remote`,
 		`syncing canonical assets for Argo app sync`,
+		`syncing canonical assets for failed Argo app sync`,
+		`syncing canonical assets for failed project template creation`,
 	} {
 		if !strings.Contains(string(workerSource), token) {
 			t.Fatalf("worker.go missing canonical asset refresh hook %q", token)
