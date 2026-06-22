@@ -8886,6 +8886,7 @@ func sanitizedProviderReviewAttemptLedger(value map[string]any) map[string]any {
 		"mode":                     "redacted_attempt_ledger",
 		"attempt_count":            len(operations),
 		"operations":               operations,
+		"orchestration":            sanitizedProviderReviewAttemptOrchestration(mapFromAny(value["orchestration"]), operations),
 		"external_call_made":       false,
 		"provider_api_call_made":   false,
 		"provider_api_mutation":    "disabled",
@@ -10465,6 +10466,14 @@ func providerReviewAttemptResponseDiagnostics(reconciliation map[string]any, end
 	}
 }
 
+func sanitizedProviderReviewAttemptOrchestration(value map[string]any, operations []map[string]any) map[string]any {
+	summary := providerReviewAttemptOrchestrationSummary(operations)
+	if len(value) > 0 {
+		summary["status"] = safeProviderReviewAttemptOrchestrationStatus(stringFromMap(value, "status"))
+	}
+	return summary
+}
+
 func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]any {
 	operations := make([]map[string]any, 0, len(attempts))
 	for _, attempt := range attempts {
@@ -10489,11 +10498,13 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 	if len(operations) > 0 {
 		status = "recorded"
 	}
+	orchestration := providerReviewAttemptOrchestrationSummary(operations)
 	return map[string]any{
 		"status":                   status,
 		"mode":                     "redacted_attempt_ledger",
 		"attempt_count":            len(operations),
 		"operations":               operations,
+		"orchestration":            orchestration,
 		"external_call_made":       false,
 		"provider_api_call_made":   false,
 		"provider_api_mutation":    "disabled",
@@ -10503,6 +10514,101 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 		"contains_repository_ref":  false,
 		"contains_branch_name":     false,
 		"contains_file_content":    false,
+	}
+}
+
+func providerReviewAttemptOrchestrationSummary(operations []map[string]any) map[string]any {
+	summary := map[string]any{
+		"status":                     "not_recorded",
+		"mode":                       "redacted_attempt_orchestration",
+		"next_operation":             "",
+		"ready_count":                0,
+		"waiting_count":              0,
+		"blocked_count":              0,
+		"completed_count":            0,
+		"dependency_chain_status":    "not_recorded",
+		"external_call_made":         false,
+		"provider_api_call_made":     false,
+		"provider_api_mutation":      "disabled",
+		"idempotency_key_included":   false,
+		"requires_operator_review":   true,
+		"requires_adapter_execution": true,
+	}
+	if len(operations) == 0 {
+		return summary
+	}
+	nextOperation := ""
+	nextOperationSet := false
+	readyCount := 0
+	waitingCount := 0
+	blockedCount := 0
+	completedCount := 0
+	failed := false
+	for _, operation := range operations {
+		name := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+		status := cleanOptionalText(stringFromMap(operation, "status"))
+		dependencyStatus := safeProviderReviewAttemptDependencyStatus(stringFromMap(operation, "dependency_status"))
+		switch {
+		case dependencyStatus == "dependency_failed" || status == "failed" || status == "blocked":
+			blockedCount++
+			failed = true
+		case status == "completed":
+			completedCount++
+		case dependencyStatus == "waiting_for_dependency" || status == "running":
+			waitingCount++
+		case status == "planned" && (dependencyStatus == "independent" || dependencyStatus == "dependency_satisfied"):
+			readyCount++
+			if !nextOperationSet && name != "" {
+				nextOperation = name
+				nextOperationSet = true
+			}
+		default:
+			blockedCount++
+			failed = true
+		}
+	}
+	chainStatus := "ready"
+	if failed {
+		chainStatus = "blocked"
+	} else if waitingCount > 0 {
+		chainStatus = "waiting_for_dependency"
+	} else if completedCount == len(operations) {
+		chainStatus = "completed"
+	}
+	summary["status"] = "planned"
+	summary["next_operation"] = nextOperation
+	summary["ready_count"] = readyCount
+	summary["waiting_count"] = waitingCount
+	summary["blocked_count"] = blockedCount
+	summary["completed_count"] = completedCount
+	summary["dependency_chain_status"] = chainStatus
+	return summary
+}
+
+func safeProviderReviewAttemptOperationName(value string) string {
+	switch cleanOptionalText(value) {
+	case "create_branch_ref", "commit_starter_files", "open_review_request":
+		return cleanOptionalText(value)
+	default:
+		return ""
+	}
+}
+
+func safeProviderReviewAttemptDependencyChainStatus(value string) string {
+	switch cleanOptionalText(value) {
+	case "not_recorded", "ready", "waiting_for_dependency", "blocked", "completed":
+		return cleanOptionalText(value)
+	default:
+		return "not_recorded"
+	}
+}
+
+func safeProviderReviewAttemptOrchestrationStatus(value string) string {
+	switch cleanOptionalText(value) {
+	case "not_recorded", "planned", "running", "completed", "blocked":
+		return cleanOptionalText(value)
+	default:
+		return "not_recorded"
 	}
 }
 

@@ -2103,6 +2103,23 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 					"contains_repository_ref":  true,
 					"contains_branch_name":     true,
 					"contains_file_content":    true,
+					"orchestration": map[string]any{
+						"status":                     "<script>alert(1)</script>",
+						"mode":                       "raw_attempt_orchestration",
+						"next_operation":             "open_review_request",
+						"ready_count":                99,
+						"waiting_count":              98,
+						"blocked_count":              97,
+						"completed_count":            96,
+						"dependency_chain_status":    "ready",
+						"external_call_made":         true,
+						"provider_api_call_made":     true,
+						"provider_api_mutation":      "enabled",
+						"idempotency_key_included":   true,
+						"requires_operator_review":   false,
+						"requires_adapter_execution": false,
+						"token":                      "secret-token",
+					},
 					"operations": []map[string]any{
 						{
 							"id":                       "44444444-4444-4444-4444-444444444444",
@@ -2379,6 +2396,23 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		resultAttemptLedger["contains_file_content"] != false {
 		t.Fatalf("approval result attempt ledger should be sanitized: %#v", resultAttemptLedger)
 	}
+	resultAttemptOrchestration := mapFromAny(resultAttemptLedger["orchestration"])
+	if resultAttemptOrchestration["mode"] != "redacted_attempt_orchestration" ||
+		resultAttemptOrchestration["status"] != "not_recorded" ||
+		resultAttemptOrchestration["next_operation"] != "open_review_request" ||
+		resultAttemptOrchestration["ready_count"] != 1 ||
+		resultAttemptOrchestration["waiting_count"] != 0 ||
+		resultAttemptOrchestration["blocked_count"] != 0 ||
+		resultAttemptOrchestration["completed_count"] != 0 ||
+		resultAttemptOrchestration["dependency_chain_status"] != "ready" ||
+		resultAttemptOrchestration["external_call_made"] != false ||
+		resultAttemptOrchestration["provider_api_call_made"] != false ||
+		resultAttemptOrchestration["provider_api_mutation"] != "disabled" ||
+		resultAttemptOrchestration["idempotency_key_included"] != false ||
+		resultAttemptOrchestration["requires_operator_review"] != true ||
+		resultAttemptOrchestration["requires_adapter_execution"] != true {
+		t.Fatalf("approval result attempt orchestration should be sanitized: %#v", resultAttemptOrchestration)
+	}
 	resultAttemptOperations := sliceOfMapsFromAny(resultAttemptLedger["operations"])
 	if len(resultAttemptOperations) != 1 ||
 		resultAttemptOperations[0]["idempotency_key_included"] != false ||
@@ -2392,7 +2426,7 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		}
 	}
 	encoded, _ := json.Marshal(audit)
-	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_attempt_ledger", "raw_key"} {
+	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_attempt_ledger", "raw_attempt_orchestration", "raw_key"} {
 		if strings.Contains(string(encoded), leak) {
 			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
 		}
@@ -2545,6 +2579,16 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		summary["idempotency_key_included"] != false {
 		t.Fatalf("attempt ledger summary = %#v", summary)
 	}
+	orchestration := mapFromAny(summary["orchestration"])
+	if orchestration["mode"] != "redacted_attempt_orchestration" ||
+		orchestration["next_operation"] != "create_branch_ref" ||
+		orchestration["ready_count"] != 1 ||
+		orchestration["waiting_count"] != 2 ||
+		orchestration["blocked_count"] != 0 ||
+		orchestration["dependency_chain_status"] != "waiting_for_dependency" ||
+		orchestration["provider_api_mutation"] != "disabled" {
+		t.Fatalf("attempt orchestration summary = %#v", orchestration)
+	}
 	operations := sliceOfMapsFromAny(summary["operations"])
 	if len(operations) != 3 ||
 		operations[0]["endpoint_key"] != "github.create_branch_ref" ||
@@ -2613,6 +2657,13 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 		summary["provider_api_mutation"] != "disabled" ||
 		summary["idempotency_key_included"] != false {
 		t.Fatalf("attempt ledger summary = %#v", summary)
+	}
+	orchestration := mapFromAny(summary["orchestration"])
+	if orchestration["dependency_chain_status"] != "waiting_for_dependency" ||
+		orchestration["waiting_count"] != 1 ||
+		orchestration["next_operation"] != "" ||
+		orchestration["provider_api_call_made"] != false {
+		t.Fatalf("persisted attempt orchestration summary = %#v", orchestration)
 	}
 	operations := sliceOfMapsFromAny(summary["operations"])
 	if len(operations) != 1 ||
@@ -2702,6 +2753,39 @@ func TestProviderReviewAttemptDependencySanitizers(t *testing.T) {
 		input string
 		want  string
 	}{
+		{"not_recorded", "not_recorded"},
+		{"ready", "ready"},
+		{"waiting_for_dependency", "waiting_for_dependency"},
+		{"blocked", "blocked"},
+		{"completed", "completed"},
+		{"", "not_recorded"},
+		{"<script>alert(1)</script>", "not_recorded"},
+	} {
+		if got := safeProviderReviewAttemptDependencyChainStatus(item.input); got != item.want {
+			t.Fatalf("safeProviderReviewAttemptDependencyChainStatus(%q) = %q, want %q", item.input, got, item.want)
+		}
+	}
+	for _, item := range []struct {
+		input string
+		want  string
+	}{
+		{"not_recorded", "not_recorded"},
+		{"planned", "planned"},
+		{"running", "running"},
+		{"completed", "completed"},
+		{"blocked", "blocked"},
+		{"ready", "not_recorded"},
+		{"", "not_recorded"},
+		{"<script>alert(1)</script>", "not_recorded"},
+	} {
+		if got := safeProviderReviewAttemptOrchestrationStatus(item.input); got != item.want {
+			t.Fatalf("safeProviderReviewAttemptOrchestrationStatus(%q) = %q, want %q", item.input, got, item.want)
+		}
+	}
+	for _, item := range []struct {
+		input string
+		want  string
+	}{
 		{"", ""},
 		{"create_branch_ref", "create_branch_ref"},
 		{"commit_starter_files", "commit_starter_files"},
@@ -2714,6 +2798,52 @@ func TestProviderReviewAttemptDependencySanitizers(t *testing.T) {
 			t.Fatalf("safeProviderReviewAttemptDependencyName(%q) = %q, want %q", item.input, got, item.want)
 		}
 	}
+}
+
+func TestProviderReviewAttemptOrchestrationSummaryBlocksUnknownStatus(t *testing.T) {
+	summary := providerReviewAttemptOrchestrationSummary([]map[string]any{{
+		"name":              "create_branch_ref",
+		"status":            "retrying",
+		"dependency_status": "independent",
+	}})
+	if summary["ready_count"] != 0 ||
+		summary["blocked_count"] != 1 ||
+		summary["next_operation"] != "" ||
+		summary["dependency_chain_status"] != "blocked" {
+		t.Fatalf("unknown status orchestration summary = %#v", summary)
+	}
+}
+
+func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T) {
+	t.Run("uses first known ready operation name", func(t *testing.T) {
+		summary := providerReviewAttemptOrchestrationSummary([]map[string]any{
+			{
+				"name":              "unknown_operation",
+				"status":            "planned",
+				"dependency_status": "independent",
+			},
+			{
+				"name":              "commit_starter_files",
+				"status":            "planned",
+				"dependency_status": "dependency_satisfied",
+			},
+		})
+		if summary["ready_count"] != 2 || summary["next_operation"] != "commit_starter_files" || summary["dependency_chain_status"] != "ready" {
+			t.Fatalf("mixed operation name orchestration summary = %#v", summary)
+		}
+	})
+	t.Run("dependency failure wins over completed status", func(t *testing.T) {
+		summary := providerReviewAttemptOrchestrationSummary([]map[string]any{{
+			"name":              "commit_starter_files",
+			"status":            "completed",
+			"dependency_status": "dependency_failed",
+		}})
+		if summary["completed_count"] != 0 ||
+			summary["blocked_count"] != 1 ||
+			summary["dependency_chain_status"] != "blocked" {
+			t.Fatalf("conflicting dependency orchestration summary = %#v", summary)
+		}
+	})
 }
 
 func TestRepoSyncRunFiltersFromRequest(t *testing.T) {

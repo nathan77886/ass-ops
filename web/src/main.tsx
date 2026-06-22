@@ -1058,6 +1058,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const idempotencyPlan = reconciliation.idempotency_plan || adapterContract.idempotency_plan || {};
   const idempotencyOperations = Array.isArray(idempotencyPlan.operations) ? idempotencyPlan.operations : [];
   const attemptLedger = result.provider_review_attempt_ledger?.status ? result.provider_review_attempt_ledger : (persistedAttemptLedger || {});
+  const attemptOrchestration = attemptLedger.orchestration || {};
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
   return (
     <Space direction="vertical" size={8} className="full">
@@ -1252,6 +1253,18 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag color={attemptLedger.status === 'recorded' ? 'green' : 'gold'}>attempt ledger {String(attemptLedger.status)}</Tag>
           <Tag>attempts {Number(attemptLedger.attempt_count || 0)}</Tag>
           <Tag>{attemptLedger.idempotency_key_included === true ? 'key included' : 'key redacted'}</Tag>
+        </Space>
+      ) : null}
+      {attemptOrchestration.status && attemptOrchestration.status !== 'not_recorded' ? (
+        <Space size={4} wrap>
+          <Tag color={attemptOrchestration.dependency_chain_status === 'blocked' ? 'red' : attemptOrchestration.dependency_chain_status === 'ready' ? 'green' : attemptOrchestration.dependency_chain_status === 'waiting_for_dependency' ? 'gold' : 'default'}>
+            orchestration {String(attemptOrchestration.dependency_chain_status || attemptOrchestration.status).replaceAll('_', ' ')}
+          </Tag>
+          <Tag>next {String(attemptOrchestration.next_operation || '-')}</Tag>
+          <Tag>ready {Number(attemptOrchestration.ready_count || 0)}</Tag>
+          <Tag>waiting {Number(attemptOrchestration.waiting_count || 0)}</Tag>
+          <Tag>blocked {Number(attemptOrchestration.blocked_count || 0)}</Tag>
+          <Tag>completed {Number(attemptOrchestration.completed_count || 0)}</Tag>
         </Space>
       ) : null}
       {attemptOperations.length ? (
