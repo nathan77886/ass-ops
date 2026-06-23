@@ -11292,6 +11292,24 @@ func TestWriteSSEWithIDIncludesReplayCursor(t *testing.T) {
 	}
 }
 
+func TestOperationLogStreamClientErrorMessageIsGeneric(t *testing.T) {
+	var b strings.Builder
+	rawErr := "loading operation logs: pq: password=secret dbname=assops"
+	if err := writeSSE(&b, "stream_error", map[string]any{"message": operationLogStreamClientErrorMessage}); err != nil {
+		t.Fatalf("writeSSE stream_error: %v", err)
+	}
+	got := b.String()
+	if !strings.Contains(got, `event: stream_error`) ||
+		!strings.Contains(got, `data: {"message":"operation log stream failed"}`) {
+		t.Fatalf("stream_error payload = %q", got)
+	}
+	for _, leaked := range []string{"pq:", "password=", "dbname=", rawErr} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("stream_error leaked internal error detail %q in %q", leaked, got)
+		}
+	}
+}
+
 func TestOperationLogsMigrationUsesUUIDIDs(t *testing.T) {
 	content, err := os.ReadFile("../../migrations/001_init.sql")
 	if err != nil {

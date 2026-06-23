@@ -12747,7 +12747,7 @@ func (s *Server) streamOperationLogs(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.log.Warn("operation log stream failed", "operation_id", opID, "error", err)
 			if !errors.Is(err, errSSEWrite) {
-				_ = writeSSE(w, "stream_error", map[string]any{"message": err.Error()})
+				_ = writeSSE(w, "stream_error", map[string]any{"message": operationLogStreamClientErrorMessage})
 			}
 			flusher.Flush()
 			return
@@ -12768,6 +12768,8 @@ func (s *Server) streamOperationLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 var errSSEWrite = errors.New("sse write failed")
+
+const operationLogStreamClientErrorMessage = "operation log stream failed"
 
 const operationLogStreamBatchLimit = 200
 
