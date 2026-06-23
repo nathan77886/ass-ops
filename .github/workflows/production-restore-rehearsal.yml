@@ -140,6 +140,23 @@ jobs:
           fi
           unzip -tq .assops/input-backup/backup-artifact.zip >/dev/null
           unzip -q .assops/input-backup/backup-artifact.zip -d .assops/input-backup
+          dump_count="$(find .assops/input-backup -type f -name 'assops-*.dump' | wc -l | tr -d ' ')"
+          if [ "$dump_count" != "1" ]; then
+            echo "Retained backup artifact must contain exactly one assops-*.dump file; found $dump_count"
+            exit 1
+          fi
+          if find .assops/input-backup -type f \( \
+            -iname '.env' -o \
+            -iname '*.env' -o \
+            -iname '*kubeconfig*' -o \
+            -iname '*.kubeconfig' -o \
+            -iname '*.log' -o \
+            -iname '*.key' -o \
+            -iname '*.pem' \
+          \) | grep -q .; then
+            echo "Retained backup artifact contains disallowed secret/log-like files"
+            exit 1
+          fi
 
       - name: Resolve backup path
         id: backup

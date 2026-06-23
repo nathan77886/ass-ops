@@ -205,7 +205,7 @@ assops-tool release backup-schedule-plan \
   /backups/release-notes/backup-schedule-plan.md
 ```
 
-The generated plan includes the required environment secrets, a one-time `gh workflow run production-restore-rehearsal.yml` manual dispatch check, and the scheduled configuration values. Enable the scheduled trigger only after the manual dispatch succeeds against the chosen retained backup source.
+The generated plan includes the required environment secrets, a retained-backup publication contract, a one-time `gh workflow run production-restore-rehearsal.yml` manual dispatch check, and the scheduled configuration values. The publication contract is intentionally offline: it says the rehearsal workflow consumes exactly one retained `assops-*.dump` from an environment-owned backup job or read-only mounted store, records non-secret timestamp/source/retention/checksum metadata, and must not create, rotate, delete, overwrite, or publish retained backups itself. For artifact sources, the workflow also rejects artifacts that do not contain exactly one dump or that include `.env`, kubeconfig, log, key, or PEM-like files. Enable the scheduled trigger only after the manual dispatch succeeds against the chosen retained backup source.
 
 Set these repository variables to enable the scheduled path:
 

@@ -500,6 +500,18 @@ func releaseBackupSchedulePlan(repo, environment, runner, cronExpr, backupSource
 		fmt.Fprintf(&b, "- Use runner-local backup path `%s`.\n", sourceValue)
 	}
 	fmt.Fprintf(&b, "- %s\n\n", runnerNote)
+	fmt.Fprintf(&b, "## Retained Backup Publication Contract\n\n")
+	fmt.Fprintf(&b, "- Publication must be produced by the environment-owned retained backup job after `assops-tool db backup-retain` succeeds.\n")
+	fmt.Fprintf(&b, "- The published source must contain exactly one `assops-*.dump` backup for the rehearsal run.\n")
+	fmt.Fprintf(&b, "- Publication metadata must record the backup timestamp, source environment, retention window, and checksum location without embedding database URLs or credentials.\n")
+	fmt.Fprintf(&b, "- The rehearsal workflow is a consumer only; it must not create, rotate, delete, or overwrite retained backups.\n")
+	if sourceKind == "artifact" {
+		fmt.Fprintf(&b, "- Artifact `%s` must stay unexpired for at least `%d days` and remain private to repository Actions readers until the rehearsal report is attached to release notes.\n", sourceValue, retention)
+		fmt.Fprintf(&b, "- The artifact producer should upload only the dump and non-secret manifest/checksum metadata; do not include `.env`, database URLs, kubeconfigs, or raw logs.\n\n")
+	} else {
+		fmt.Fprintf(&b, "- Path `%s` must be mounted read-only on runner `%s`; the workflow only reads this file path and never publishes the backup itself.\n", sourceValue, runner)
+		fmt.Fprintf(&b, "- The mounted backup store owner must handle backup retention, checksum publication, and deletion outside this workflow.\n\n")
+	}
 	fmt.Fprintf(&b, "## Required GitHub Environment Secrets\n\n")
 	fmt.Fprintf(&b, "- `ASSOPS_REHEARSAL_DATABASE_URL`: disposable restore database URL; the database name must include rehearsal, restore, test, tmp, scratch, or disposable.\n")
 	fmt.Fprintf(&b, "- `ASSOPS_REHEARSAL_DATABASE_PASSWORD`: optional password passed through `PGPASSWORD` when the URL omits a password.\n")

@@ -343,6 +343,11 @@ func TestReleaseBackupSchedulePlanForArtifactSource(t *testing.T) {
 		"ASSOPS_PRODUCTION_RESTORE_REHEARSAL_BACKUP_ARTIFACT=retained-assops-backup",
 		"backup_artifact_name=\"retained-assops-backup\"",
 		"backup_path=''",
+		"Retained Backup Publication Contract",
+		"Publication must be produced by the environment-owned retained backup job",
+		"must contain exactly one `assops-*.dump` backup",
+		"must stay unexpired for at least `14 days`",
+		"do not include `.env`, database URLs, kubeconfigs, or raw logs",
 		"The checked-in schedule is `17 3 * * 1`",
 		"external",
 	} {
@@ -369,9 +374,36 @@ func TestReleaseBackupSchedulePlanForMountedPathSource(t *testing.T) {
 		"ASSOPS_PRODUCTION_RESTORE_REHEARSAL_BACKUP_PATH=/mnt/backups/assops-20260622-120000.dump",
 		"backup_artifact_name=''",
 		"backup_path=\"/mnt/backups/assops-20260622-120000.dump\"",
+		"Retained Backup Publication Contract",
+		"must be mounted read-only on runner `self-hosted-prod`",
+		"must handle backup retention, checksum publication, and deletion outside this workflow",
 	} {
 		if !strings.Contains(plan, want) {
 			t.Fatalf("path schedule plan missing %q in:\n%s", want, plan)
+		}
+	}
+	if strings.Contains(plan, "ASSOPS_REHEARSAL_DATABASE_PASSWORD=") {
+		t.Fatalf("path schedule plan should not include secret values:\n%s", plan)
+	}
+}
+
+func TestProductionRestoreRehearsalWorkflowValidatesArtifactContents(t *testing.T) {
+	content, err := os.ReadFile("../../../.github/workflows/production-restore-rehearsal.yml")
+	if err != nil {
+		t.Fatalf("read production restore rehearsal workflow: %v", err)
+	}
+	source := string(content)
+	for _, want := range []string{
+		"Retained backup artifact must contain exactly one assops-*.dump file",
+		"-iname '.env'",
+		"-iname '*kubeconfig*'",
+		"-iname '*.log'",
+		"-iname '*.key'",
+		"-iname '*.pem'",
+		"Retained backup artifact contains disallowed secret/log-like files",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("production restore rehearsal workflow missing %q", want)
 		}
 	}
 }
