@@ -592,18 +592,27 @@ function graphItems(graph: AnyRow = {}, key: string) {
 }
 
 function countRepositoryGraphLinks(graph: AnyRow = {}) {
-  return graphItems(graph, 'edges').reduce((counts, edge: AnyRow) => {
-    const relation = String(edge.relation_type || '');
-    const from = String(edge.from_asset_id || '');
-    const to = String(edge.to_asset_id || '');
+  const byRepository: Record<string, { project?: boolean; remotes: Record<string, boolean> }> = {};
+  const repositoryEntry = (assetID: string) => {
+    byRepository[assetID] ??= { remotes: {} };
+    return byRepository[assetID];
+  };
+  const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
+    const relation = String(edge.relation_type ?? '');
+    const from = String(edge.from_asset_id ?? '');
+    const to = String(edge.to_asset_id ?? '');
     if (relation === 'owns' && from.startsWith('project:') && to.startsWith('repository:')) {
-      counts.projectRepository += 1;
+      nextCounts.projectRepository += 1;
+      repositoryEntry(to).project = true;
     }
     if (relation === 'has_remote' && from.startsWith('repository:') && to.startsWith('git_remote:')) {
-      counts.repositoryRemotes += 1;
+      nextCounts.repositoryRemotes += 1;
+      repositoryEntry(from).remotes[to] = true;
     }
-    return counts;
-  }, { projectRepository: 0, repositoryRemotes: 0 });
+    return nextCounts;
+  }, { projectRepository: 0, repositoryRemotes: 0, completeRepos: 0 });
+  counts.completeRepos = Object.values(byRepository).filter((entry) => entry.project && Object.keys(entry.remotes).length >= 2).length;
+  return counts;
 }
 
 function countRepoSyncGraphLinks(graph: AnyRow = {}) {
@@ -813,7 +822,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'repositories',
       label: 'Attach source and mirror repositories',
       next: 'Add repository metadata and at least two Git remotes.',
-      ...readinessState((assetCounts.repository || 0) > 0 && (assetCounts.git_remote || 0) >= 2 && repositoryGraphLinks.projectRepository > 0 && repositoryGraphLinks.repositoryRemotes >= 2, `${assetCounts.repository || 0} repos / ${assetCounts.git_remote || 0} remotes / ${repositoryGraphLinks.projectRepository} project links / ${repositoryGraphLinks.repositoryRemotes} remote links`, (assetCounts.repository || 0) > 0 || (assetCounts.git_remote || 0) > 0 || repositoryGraphLinks.projectRepository > 0 || repositoryGraphLinks.repositoryRemotes > 0)
+      ...readinessState((assetCounts.repository || 0) > 0 && (assetCounts.git_remote || 0) >= 2 && repositoryGraphLinks.completeRepos > 0, `${assetCounts.repository || 0} repos / ${assetCounts.git_remote || 0} remotes / ${repositoryGraphLinks.completeRepos} complete repos / ${repositoryGraphLinks.projectRepository} project links / ${repositoryGraphLinks.repositoryRemotes} remote links`, (assetCounts.repository || 0) > 0 || (assetCounts.git_remote || 0) > 0 || repositoryGraphLinks.projectRepository > 0 || repositoryGraphLinks.repositoryRemotes > 0)
     },
     {
       key: 'repo_sync',

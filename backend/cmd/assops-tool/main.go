@@ -1321,7 +1321,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 
 	rows := []readinessRow{
 		readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0, assetCounts["project"], false),
-		readinessItem("repositories", "Attach source and mirror repositories", "Add repository metadata and at least two Git remotes.", assetCounts["repository"] > 0 && assetCounts["git_remote"] >= 2 && repositoryGraphLinks.ProjectRepository > 0 && repositoryGraphLinks.RepositoryRemotes >= 2, fmt.Sprintf("%d repos / %d remotes / %d project links / %d remote links", assetCounts["repository"], assetCounts["git_remote"], repositoryGraphLinks.ProjectRepository, repositoryGraphLinks.RepositoryRemotes), assetCounts["repository"] > 0 || assetCounts["git_remote"] > 0 || repositoryGraphLinks.ProjectRepository > 0 || repositoryGraphLinks.RepositoryRemotes > 0),
+		readinessItem("repositories", "Attach source and mirror repositories", "Add repository metadata and at least two Git remotes.", assetCounts["repository"] > 0 && assetCounts["git_remote"] >= 2 && repositoryGraphLinks.CompleteRepos > 0, fmt.Sprintf("%d repos / %d remotes / %d complete repos / %d project links / %d remote links", assetCounts["repository"], assetCounts["git_remote"], repositoryGraphLinks.CompleteRepos, repositoryGraphLinks.ProjectRepository, repositoryGraphLinks.RepositoryRemotes), assetCounts["repository"] > 0 || assetCounts["git_remote"] > 0 || repositoryGraphLinks.ProjectRepository > 0 || repositoryGraphLinks.RepositoryRemotes > 0),
 		readinessItem("repo_sync", "Define RepoSyncAsset", "Create a RepoSyncAsset between source and mirror remotes.", assetCounts["repo_sync"] > 0 && repoSyncGraphLinks.CompleteSyncs > 0, fmt.Sprintf("%d repo syncs / %d complete syncs / %d repository links / %d source links / %d target links", assetCounts["repo_sync"], repoSyncGraphLinks.CompleteSyncs, repoSyncGraphLinks.RepositorySync, repoSyncGraphLinks.SourceRemotes, repoSyncGraphLinks.TargetRemotes), assetCounts["repo_sync"] > 0 || repoSyncGraphLinks.RepositorySync > 0 || repoSyncGraphLinks.SourceRemotes > 0 || repoSyncGraphLinks.TargetRemotes > 0),
 		readinessItem("sync_trigger", "Trigger sync manually and from webhook", "Run a manual sync and receive or replay a Gitea webhook event.", syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0 && webhookSyncGraphLinks.CompleteChains > 0, fmt.Sprintf("%d sync ops / %d Gitea webhooks / %d Gitea events / %d complete webhook chains", syncTriggered, giteaWebhooks, giteaWebhookEvents, webhookSyncGraphLinks.CompleteChains), syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0 || webhookSyncGraphLinks.ConnectionEvents > 0 || webhookSyncGraphLinks.EventRepoSyncs > 0 || webhookSyncGraphLinks.EventOperations > 0),
 		readinessItem("github_actions", "See GitHub Actions state", "Sync GitHub Actions for the mirror remote or receive workflow_run webhooks.", assetCounts["pipeline_run"] > 0 && githubActionLinks.CompleteActionRuns > 0, fmt.Sprintf("%d pipeline runs / %d complete action chains / %d project links / %d remote links / %d action links", assetCounts["pipeline_run"], githubActionLinks.CompleteActionRuns, githubActionLinks.ProjectRepositories, githubActionLinks.RepositoryRemotes, githubActionLinks.RemoteActionRuns), assetCounts["pipeline_run"] > 0 || githubActionLinks.ProjectRepositories > 0 || githubActionLinks.RepositoryRemotes > 0 || githubActionLinks.RemoteActionRuns > 0),
@@ -1460,10 +1460,24 @@ func countAPITypeMetadata(rows []map[string]any, typ, key, value string) int {
 type repositoryGraphLinkCounts struct {
 	ProjectRepository int
 	RepositoryRemotes int
+	CompleteRepos     int
 }
 
 func countRepositoryGraphLinks(graph map[string]any) repositoryGraphLinkCounts {
 	counts := repositoryGraphLinkCounts{}
+	type repositoryLinks struct {
+		project bool
+		remotes map[string]bool
+	}
+	byRepository := map[string]*repositoryLinks{}
+	repositoryEntry := func(assetID string) *repositoryLinks {
+		entry := byRepository[assetID]
+		if entry == nil {
+			entry = &repositoryLinks{remotes: map[string]bool{}}
+			byRepository[assetID] = entry
+		}
+		return entry
+	}
 	for _, edge := range apiItemsByKey(graph, "edges") {
 		from := fmt.Sprint(edge["from_asset_id"])
 		to := fmt.Sprint(edge["to_asset_id"])
@@ -1471,11 +1485,18 @@ func countRepositoryGraphLinks(graph map[string]any) repositoryGraphLinkCounts {
 		case "owns":
 			if strings.HasPrefix(from, "project:") && strings.HasPrefix(to, "repository:") {
 				counts.ProjectRepository++
+				repositoryEntry(to).project = true
 			}
 		case "has_remote":
 			if strings.HasPrefix(from, "repository:") && strings.HasPrefix(to, "git_remote:") {
 				counts.RepositoryRemotes++
+				repositoryEntry(from).remotes[to] = true
 			}
+		}
+	}
+	for _, entry := range byRepository {
+		if entry.project && len(entry.remotes) >= 2 {
+			counts.CompleteRepos++
 		}
 	}
 	return counts
