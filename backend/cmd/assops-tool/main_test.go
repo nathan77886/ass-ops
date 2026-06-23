@@ -555,11 +555,11 @@ func TestFirstVersionReadinessReportRequiresGitHubActionGraphLink(t *testing.T) 
 	}, nil, nil, map[string]any{
 		"edges": []any{},
 	})
-	if got := readinessByKey(t, withoutLink, "github_actions"); got.Status != "partial" || got.Evidence != "1 pipeline runs / 0 graph links" {
+	if got := readinessByKey(t, withoutLink, "github_actions"); got.Status != "partial" || got.Evidence != "1 pipeline runs / 0 complete action chains / 0 project links / 0 remote links / 0 action links" {
 		t.Fatalf("github actions without graph link = %#v, want partial with link evidence", got)
 	}
 
-	withLink := firstVersionReadinessReportWithGraph([]map[string]any{
+	withActionLinkOnly := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "pipeline_run"},
 	}, nil, nil, map[string]any{
 		"edges": []any{
@@ -570,8 +570,21 @@ func TestFirstVersionReadinessReportRequiresGitHubActionGraphLink(t *testing.T) 
 			},
 		},
 	})
-	if got := readinessByKey(t, withLink, "github_actions"); got.Status != "ready" || got.Evidence != "1 pipeline runs / 1 graph links" {
-		t.Fatalf("github actions with graph link = %#v, want ready", got)
+	if got := readinessByKey(t, withActionLinkOnly, "github_actions"); got.Status != "partial" || got.Evidence != "1 pipeline runs / 0 complete action chains / 0 project links / 0 remote links / 1 action links" {
+		t.Fatalf("github actions with action link only = %#v, want partial without project chain", got)
+	}
+
+	withCompleteChain := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "pipeline_run"},
+	}, nil, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "project:1", "to_asset_id": "repository:10", "relation_type": "owns"},
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "git_remote:42", "relation_type": "has_remote"},
+			map[string]any{"from_asset_id": "git_remote:42", "to_asset_id": "github_action_run:101", "relation_type": "triggered_by"},
+		},
+	})
+	if got := readinessByKey(t, withCompleteChain, "github_actions"); got.Status != "ready" || got.Evidence != "1 pipeline runs / 1 complete action chains / 1 project links / 1 remote links / 1 action links" {
+		t.Fatalf("github actions with complete project chain = %#v, want ready", got)
 	}
 
 	wrongLink := firstVersionReadinessReportWithGraph(nil, nil, nil, map[string]any{
@@ -583,7 +596,7 @@ func TestFirstVersionReadinessReportRequiresGitHubActionGraphLink(t *testing.T) 
 			},
 		},
 	})
-	if got := readinessByKey(t, wrongLink, "github_actions"); got.Status != "missing" || got.Evidence != "0 pipeline runs / 0 graph links" {
+	if got := readinessByKey(t, wrongLink, "github_actions"); got.Status != "missing" || got.Evidence != "0 pipeline runs / 0 complete action chains / 0 project links / 0 remote links / 0 action links" {
 		t.Fatalf("github actions with unrelated graph edge = %#v, want missing", got)
 	}
 }
@@ -591,13 +604,18 @@ func TestFirstVersionReadinessReportRequiresGitHubActionGraphLink(t *testing.T) 
 func TestCountGitHubActionGraphLinks(t *testing.T) {
 	graph := map[string]any{
 		"edges": []any{
+			map[string]any{"from_asset_id": "project:1", "to_asset_id": "repository:1", "relation_type": "owns"},
+			map[string]any{"from_asset_id": "repository:1", "to_asset_id": "git_remote:1", "relation_type": "has_remote"},
 			map[string]any{"from_asset_id": "git_remote:1", "to_asset_id": "github_action_run:1", "relation_type": "triggered_by"},
+			map[string]any{"from_asset_id": "repository:2", "to_asset_id": "git_remote:2", "relation_type": "has_remote"},
+			map[string]any{"from_asset_id": "git_remote:2", "to_asset_id": "github_action_run:2", "relation_type": "triggered_by"},
 			map[string]any{"from_asset_id": "git_remote:2", "to_asset_id": "github_action_run:2", "relation_type": "owns"},
 			map[string]any{"from_asset_id": "repository:1", "to_asset_id": "github_action_run:3", "relation_type": "triggered_by"},
 		},
 	}
-	if got := countGitHubActionGraphLinks(graph); got != 1 {
-		t.Fatalf("countGitHubActionGraphLinks = %d, want 1", got)
+	got := countGitHubActionGraphLinks(graph)
+	if got.ProjectRepositories != 1 || got.RepositoryRemotes != 2 || got.RemoteActionRuns != 2 || got.CompleteActionRuns != 1 {
+		t.Fatalf("countGitHubActionGraphLinks = %#v, want project/remote/action counts and one complete action chain", got)
 	}
 }
 

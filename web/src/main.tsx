@@ -635,11 +635,40 @@ function countRepoSyncGraphLinks(graph: AnyRow = {}) {
 }
 
 function countGitHubActionGraphLinks(graph: AnyRow = {}) {
-  return graphItems(graph, 'edges').filter((edge: AnyRow) =>
-    String(edge.relation_type || '') === 'triggered_by' &&
-    String(edge.from_asset_id || '').startsWith('git_remote:') &&
-    String(edge.to_asset_id || '').startsWith('github_action_run:')
-  ).length;
+  const repositoriesWithProject: Record<string, boolean> = {};
+  const remoteRepositories: Record<string, Record<string, boolean>> = {};
+  const remoteActionRuns: Record<string, Record<string, boolean>> = {};
+  const addRemoteRepository = (remoteID: string, repositoryID: string) => {
+    remoteRepositories[remoteID] ??= {};
+    remoteRepositories[remoteID][repositoryID] = true;
+  };
+  const addRemoteActionRun = (remoteID: string, actionID: string) => {
+    remoteActionRuns[remoteID] ??= {};
+    remoteActionRuns[remoteID][actionID] = true;
+  };
+  const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
+    const relation = String(edge.relation_type || '');
+    const from = String(edge.from_asset_id || '');
+    const to = String(edge.to_asset_id || '');
+    if (relation === 'owns' && from.startsWith('project:') && to.startsWith('repository:')) {
+      nextCounts.projectRepositories += 1;
+      repositoriesWithProject[to] = true;
+    }
+    if (relation === 'has_remote' && from.startsWith('repository:') && to.startsWith('git_remote:')) {
+      nextCounts.repositoryRemotes += 1;
+      addRemoteRepository(to, from);
+    }
+    if (relation === 'triggered_by' && from.startsWith('git_remote:') && to.startsWith('github_action_run:')) {
+      nextCounts.remoteActionRuns += 1;
+      addRemoteActionRun(from, to);
+    }
+    return nextCounts;
+  }, { projectRepositories: 0, repositoryRemotes: 0, remoteActionRuns: 0, completeActionRuns: 0 });
+  counts.completeActionRuns = Object.entries(remoteActionRuns).reduce((total, [remoteID, actionRuns]) => {
+    const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
+    return hasProjectRepository ? total + Object.keys(actionRuns).length : total;
+  }, 0);
+  return counts;
 }
 
 function countWebhookSyncGraphLinks(graph: AnyRow = {}) {
@@ -802,7 +831,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'github_actions',
       label: 'See GitHub Actions state',
       next: 'Sync GitHub Actions for the mirror remote or receive workflow_run webhooks.',
-      ...readinessState((assetCounts.pipeline_run || 0) > 0 && githubActionLinks > 0, `${assetCounts.pipeline_run || 0} pipeline runs / ${githubActionLinks} graph links`, (assetCounts.pipeline_run || 0) > 0 || githubActionLinks > 0)
+      ...readinessState((assetCounts.pipeline_run || 0) > 0 && githubActionLinks.completeActionRuns > 0, `${assetCounts.pipeline_run || 0} pipeline runs / ${githubActionLinks.completeActionRuns} complete action chains / ${githubActionLinks.projectRepositories} project links / ${githubActionLinks.repositoryRemotes} remote links / ${githubActionLinks.remoteActionRuns} action links`, (assetCounts.pipeline_run || 0) > 0 || githubActionLinks.projectRepositories > 0 || githubActionLinks.repositoryRemotes > 0 || githubActionLinks.remoteActionRuns > 0)
     },
     {
       key: 'ssh',
