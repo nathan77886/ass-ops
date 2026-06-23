@@ -2662,6 +2662,11 @@ function ProjectDetail() {
                   <Tag>{versionValidation.provider_api_called ? 'provider API called' : 'local synced state'}</Tag>
                   {versionValidation.provider_refresh_plan ? <Tag color={versionValidation.provider_refresh_plan.plan_state === 'planned' ? 'blue' : versionValidation.provider_refresh_plan.plan_state === 'partial' ? 'gold' : 'red'}>refresh {versionValidation.provider_refresh_plan.plan_state}</Tag> : null}
                   {versionValidation.provider_refresh_plan ? <Tag>{versionValidation.provider_refresh_plan.step_count || 0} refresh steps</Tag> : null}
+                  {versionValidation.provider_refresh_plan?.execution_plan ? <Tag color={versionValidation.provider_refresh_plan.execution_plan.execution_state === 'ready_for_approval' ? 'blue' : versionValidation.provider_refresh_plan.execution_plan.execution_state === 'partial' ? 'gold' : 'red'}>execute {versionValidation.provider_refresh_plan.execution_plan.execution_state}</Tag> : null}
+                  {versionValidation.provider_refresh_plan?.execution_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.operation_enqueued ? 'operation enqueued' : 'no operation'}</Tag> : null}
+                  {versionValidation.provider_refresh_plan?.execution_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.synced_state_written ? 'state written' : 'no state write'}</Tag> : null}
+                  {versionValidation.provider_refresh_plan?.execution_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.secret_included ? 'secrets included' : 'no secrets'}</Tag> : null}
+                  {versionValidation.provider_refresh_plan?.execution_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.disabled_backends?.length || 0} disabled backends</Tag> : null}
                 </Space>
                 <JSONBlock value={versionValidation} />
               </Space>

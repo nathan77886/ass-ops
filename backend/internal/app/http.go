@@ -6209,6 +6209,7 @@ func projectVersionProviderRefreshPlan(repositories, remotes, argoConnections []
 	case planned > 0:
 		state = "partial"
 	}
+	executionPlan := projectVersionProviderRefreshExecutionPlan(steps, state)
 	return map[string]any{
 		"mode":                     "provider_refresh_plan_preview",
 		"plan_state":               state,
@@ -6221,7 +6222,90 @@ func projectVersionProviderRefreshPlan(repositories, remotes, argoConnections []
 		"step_count":               len(steps),
 		"steps":                    steps,
 		"required_live_rehearsal":  required,
+		"execution_plan":           executionPlan,
 		"required_operator_action": "Run the planned refresh operations, then re-open this validation preview.",
+	}
+}
+
+func projectVersionProviderRefreshExecutionPlan(steps []map[string]any, refreshPlanState string) map[string]any {
+	plannedKinds := []string{}
+	blockedKinds := []string{}
+	plannedTotal, blockedTotal := 0, 0
+	for _, step := range steps {
+		kind := strings.TrimSpace(fmt.Sprint(step["kind"]))
+		if kind == "" {
+			continue
+		}
+		switch strings.TrimSpace(fmt.Sprint(step["status"])) {
+		case "planned":
+			plannedTotal++
+			if !stringInSlice(plannedKinds, kind) {
+				plannedKinds = append(plannedKinds, kind)
+			}
+		default:
+			blockedTotal++
+			if kind == "remote_missing" {
+				continue
+			}
+			if !stringInSlice(blockedKinds, kind) {
+				blockedKinds = append(blockedKinds, kind)
+			}
+		}
+	}
+	executionState := "blocked"
+	if refreshPlanState == "planned" {
+		executionState = "ready_for_approval"
+	} else if refreshPlanState == "partial" {
+		executionState = "partial"
+	}
+	return map[string]any{
+		"mode":                          "provider_refresh_execution_plan_preview",
+		"execution_state":               executionState,
+		"refresh_plan_state":            refreshPlanState,
+		"execution_enabled":             false,
+		"external_call_made":            false,
+		"operation_enqueued":            false,
+		"worker_job_created":            false,
+		"git_fetch_performed":           false,
+		"provider_api_called":           false,
+		"argocd_api_called":             false,
+		"synced_state_written":          false,
+		"validation_reopened":           false,
+		"secret_included":               false,
+		"planned_step_count":            plannedTotal,
+		"blocked_step_count":            blockedTotal,
+		"unique_planned_kind_count":     len(plannedKinds),
+		"unique_blocked_kind_count":     len(blockedKinds),
+		"planned_refresh_kinds":         plannedKinds,
+		"blocked_refresh_kinds":         blockedKinds,
+		"required_controls":             []string{"operation_approval", "provider_account_binding", "git_remote_credential_review", "github_actions_scope_review", "argo_connection_review", "result_recording_audit", "validation_rerun"},
+		"disabled_backends":             []string{"git_fetch", "git_remote_sync", "github_actions_api_sync", "argocd_app_sync", "synced_state_write", "validation_rerun"},
+		"suppressed_fields":             []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "github_actions_response", "argo_response", "commit_body", "workflow_logs"},
+		"blocked_reasons":               []string{"provider_refresh_execution_backend_disabled", "provider_mutation_not_armed", "result_recording_not_wired"},
+		"execution_sequence":            []string{"request_operation_approval", "bind_provider_credentials", "claim_refresh_operation", "run_git_ref_fetch", "run_github_actions_refresh", "run_argocd_app_refresh", "record_synced_state", "rerun_validation_preview"},
+		"result_recording_plan":         projectVersionProviderRefreshResultRecordingPlan(plannedKinds),
+		"message":                       "Provider refresh execution is a redacted plan only; no Git fetch, provider API call, Argo call, synced-state write, or validation rerun is performed.",
+		"required_operator_action":      "Approve and run the planned refresh operation in a future execution path, then re-open ProjectVersion validation.",
+		"requires_project_visibility":   true,
+		"requires_manifest_consistency": true,
+	}
+}
+
+func projectVersionProviderRefreshResultRecordingPlan(plannedKinds []string) map[string]any {
+	return map[string]any{
+		"mode":                         "provider_refresh_result_recording_plan",
+		"recording_enabled":            false,
+		"result_written":               false,
+		"operation_log_written":        false,
+		"canonical_asset_sync_queued":  false,
+		"status_snapshot_written":      false,
+		"planned_refresh_kinds":        plannedKinds,
+		"required_result_fields":       []string{"operation_run_id", "refresh_kind", "status", "started_at", "finished_at", "synced_entity_count"},
+		"suppressed_fields":            []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response"},
+		"message":                      "Refresh results are not recorded by this preview; future execution must write sanitized status and counts only.",
+		"raw_response_included":        false,
+		"raw_git_output_included":      false,
+		"provider_request_id_included": false,
 	}
 }
 

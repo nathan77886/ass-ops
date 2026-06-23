@@ -1333,6 +1333,26 @@ func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
 	if refreshPlan["plan_state"] != "planned" || refreshPlan["external_call_made"] != false || refreshPlan["planned_count"] != 3 || refreshPlan["blocked_count"] != 0 {
 		t.Fatalf("refresh plan = %#v", refreshPlan)
 	}
+	executionPlan := mapFromAny(refreshPlan["execution_plan"])
+	if executionPlan["mode"] != "provider_refresh_execution_plan_preview" ||
+		executionPlan["execution_state"] != "ready_for_approval" ||
+		executionPlan["planned_step_count"] != 3 ||
+		executionPlan["blocked_step_count"] != 0 ||
+		executionPlan["unique_planned_kind_count"] != 3 ||
+		executionPlan["unique_blocked_kind_count"] != 0 {
+		t.Fatalf("refresh execution plan = %#v", executionPlan)
+	}
+	assertProviderRefreshExecutionPlanSafe(t, executionPlan)
+	for _, required := range []string{"operation_approval", "provider_account_binding", "result_recording_audit", "validation_rerun"} {
+		if !containsString(stringSliceFromAny(executionPlan["required_controls"]), required) {
+			t.Fatalf("execution plan required_controls missing %q: %#v", required, executionPlan)
+		}
+	}
+	for _, backend := range []string{"git_fetch", "github_actions_api_sync", "argocd_app_sync", "synced_state_write"} {
+		if !containsString(stringSliceFromAny(executionPlan["disabled_backends"]), backend) {
+			t.Fatalf("execution plan disabled_backends missing %q: %#v", backend, executionPlan)
+		}
+	}
 	steps := sliceOfMapsFromAny(refreshPlan["steps"])
 	for _, kind := range []string{"git_ref_fetch", "github_actions_api_refresh", "argocd_app_refresh"} {
 		if statusByKind(steps, kind) != "planned" {
@@ -1377,6 +1397,80 @@ func TestProjectVersionValidationPreviewReportsPartialAndBlockedChecks(t *testin
 	refreshPlan := mapFromAny(preview["provider_refresh_plan"])
 	if refreshPlan["plan_state"] != "partial" || refreshPlan["planned_count"] != 1 || refreshPlan["blocked_count"] != 2 {
 		t.Fatalf("refresh plan should show planned refresh plus blocked steps: %#v", refreshPlan)
+	}
+	executionPlan := mapFromAny(refreshPlan["execution_plan"])
+	if executionPlan["execution_state"] != "partial" ||
+		executionPlan["planned_step_count"] != 1 ||
+		executionPlan["blocked_step_count"] != 2 ||
+		executionPlan["unique_planned_kind_count"] != 1 ||
+		executionPlan["unique_blocked_kind_count"] != 1 ||
+		!containsString(stringSliceFromAny(executionPlan["planned_refresh_kinds"]), "git_ref_fetch") ||
+		!containsString(stringSliceFromAny(executionPlan["blocked_refresh_kinds"]), "github_actions_api_refresh") {
+		t.Fatalf("partial refresh execution plan = %#v", executionPlan)
+	}
+	assertProviderRefreshExecutionPlanSafe(t, executionPlan)
+}
+
+func TestProjectVersionProviderRefreshExecutionPlanBlocked(t *testing.T) {
+	refreshPlan := projectVersionProviderRefreshPlan(
+		[]map[string]any{
+			{"repo_key": "service", "remote_id": "missing-remote", "commit_sha": "abc123"},
+			{"repo_key": "deploy", "remote_id": "remote-1", "argo_revision": "rev-1"},
+		},
+		[]map[string]any{{"id": "remote-1", "remote_key": "github", "provider_type": "github"}},
+		nil,
+	)
+	if refreshPlan["plan_state"] != "blocked" {
+		t.Fatalf("refresh plan should be blocked: %#v", refreshPlan)
+	}
+	executionPlan := mapFromAny(refreshPlan["execution_plan"])
+	if executionPlan["execution_state"] != "blocked" ||
+		executionPlan["planned_step_count"] != 0 ||
+		executionPlan["blocked_step_count"] != 2 ||
+		executionPlan["unique_planned_kind_count"] != 0 ||
+		executionPlan["unique_blocked_kind_count"] != 1 ||
+		!containsString(stringSliceFromAny(executionPlan["blocked_refresh_kinds"]), "argocd_app_refresh") {
+		t.Fatalf("blocked refresh execution plan = %#v", executionPlan)
+	}
+	assertProviderRefreshExecutionPlanSafe(t, executionPlan)
+}
+
+func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
+	t.Helper()
+	if executionPlan["execution_enabled"] != false ||
+		executionPlan["operation_enqueued"] != false ||
+		executionPlan["worker_job_created"] != false ||
+		executionPlan["git_fetch_performed"] != false ||
+		executionPlan["provider_api_called"] != false ||
+		executionPlan["argocd_api_called"] != false ||
+		executionPlan["synced_state_written"] != false ||
+		executionPlan["validation_reopened"] != false ||
+		executionPlan["secret_included"] != false {
+		t.Fatalf("refresh execution plan should keep all execution flags false: %#v", executionPlan)
+	}
+	for _, field := range []string{"remote_url", "provider_token", "authorization_header", "git_credentials"} {
+		if !containsString(stringSliceFromAny(executionPlan["suppressed_fields"]), field) {
+			t.Fatalf("execution plan suppressed_fields missing %q: %#v", field, executionPlan["suppressed_fields"])
+		}
+	}
+	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
+	if resultPlan["recording_enabled"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["raw_response_included"] != false ||
+		resultPlan["raw_git_output_included"] != false ||
+		resultPlan["provider_request_id_included"] != false {
+		t.Fatalf("refresh result recording plan should keep all result flags false: %#v", resultPlan)
+	}
+	for _, field := range []string{"remote_url", "provider_token", "authorization_header", "raw_provider_response", "raw_git_output"} {
+		if !containsString(stringSliceFromAny(resultPlan["suppressed_fields"]), field) {
+			t.Fatalf("result plan suppressed_fields missing %q: %#v", field, resultPlan["suppressed_fields"])
+		}
+	}
+	encodedExecutionPlan, _ := json.Marshal(executionPlan)
+	for _, forbidden := range []string{"https://token@", "Bearer secret", "password=secret", "git@github.com:"} {
+		if strings.Contains(string(encodedExecutionPlan), forbidden) {
+			t.Fatalf("refresh execution plan leaked %q: %s", forbidden, encodedExecutionPlan)
+		}
 	}
 }
 
