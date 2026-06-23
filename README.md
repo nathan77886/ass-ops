@@ -161,6 +161,7 @@ Security defaults:
 - Provider review request materialization and response plans also reject mismatched payload-builder or response-handler names, so generic sanitized defaults cannot be staged for concrete provider operations.
 - Provider review dispatch metadata now requires both the execution claim plan and adapter contract to match the same operation and endpoint before downstream request validation can be treated as metadata-ready.
 - Provider review downstream subplans now require matching mode, operation, and endpoint identity before branch policy, provider-send, retry/backoff, response result recording, transaction, provider-call boundary, or execution-lock metadata can be treated as ready; invocation, activation, execution-lock, transaction, provider-call boundary, and request-validation preflight paths also require the execution claim plan itself to match the same operation and endpoint before accepting claim or idempotency metadata readiness.
+- Provider review transaction, provider-call boundary, and result-recording plans also require the response plan to carry the expected completed/planned/failed attempt-status transitions and dependency-unlock metadata for the same operation before treating response metadata as ready.
 
 ## MVP Boundaries
 

@@ -11793,7 +11793,7 @@ func providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, responseP
 		"transaction_state":                  "blocked",
 		"transaction_ready":                  false,
 		"transaction_ready_reason":           "provider_review_transaction_not_armed",
-		"transaction_metadata_ready":         providerReviewAttemptClaimPlanReadyForOperation(claimPlan, operationName, endpointKey) && providerReviewAttemptPlanMatchesOperation(responsePlan, providerReviewAttemptAdapterResponsePlanMode, operationName, endpointKey),
+		"transaction_metadata_ready":         providerReviewAttemptClaimPlanReadyForOperation(claimPlan, operationName, endpointKey) && providerReviewAttemptResponsePlanReadyForOperation(responsePlan, operationName, endpointKey),
 		"operation_name":                     operationName,
 		"endpoint_key":                       endpointKey,
 		"operation_order":                    intFromAny(operation["operation_order"], 0),
@@ -11863,7 +11863,7 @@ func providerReviewAttemptAdapterProviderCallBoundaryPlan(operation, claimPlan, 
 		return map[string]any{}
 	}
 	metadataReady := providerReviewAttemptClaimPlanReadyForOperation(claimPlan, operationName, endpointKey) &&
-		providerReviewAttemptPlanMatchesOperation(responsePlan, providerReviewAttemptAdapterResponsePlanMode, operationName, endpointKey)
+		providerReviewAttemptResponsePlanReadyForOperation(responsePlan, operationName, endpointKey)
 	return map[string]any{
 		"mode":                                  "redacted_attempt_adapter_provider_call_boundary_plan",
 		"provider_call_boundary_state":          "blocked",
@@ -12100,7 +12100,7 @@ func providerReviewAttemptAdapterResultRecordingPlan(operation, responsePlan map
 	}
 	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
-	if operationName == "" || endpointKey == "" || !providerReviewAttemptPlanMatchesOperation(responsePlan, providerReviewAttemptAdapterResponsePlanMode, operationName, endpointKey) {
+	if operationName == "" || endpointKey == "" || !providerReviewAttemptResponsePlanReadyForOperation(responsePlan, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	dependencyUnlockOperation := safeProviderReviewAttemptOperationName(stringFromMap(responsePlan, "dependency_unlocks_operation"))
@@ -12378,6 +12378,36 @@ func providerReviewAttemptClaimPlanReadyForOperation(plan map[string]any, operat
 func providerReviewAttemptClaimPlanIdempotencyReadyForOperation(plan map[string]any, operationName, endpointKey string) bool {
 	return boolOnlyFromAny(plan["idempotency_metadata_ready"]) &&
 		providerReviewAttemptPlanMatchesOperation(plan, "redacted_attempt_execution_claim_plan", operationName, endpointKey)
+}
+
+func providerReviewAttemptResponsePlanReadyForOperation(plan map[string]any, operationName, endpointKey string) bool {
+	if !providerReviewAttemptPlanMatchesOperation(plan, providerReviewAttemptAdapterResponsePlanMode, operationName, endpointKey) {
+		return false
+	}
+	expectedUnlockOperation := providerReviewAttemptDependencyUnlockOperation(operationName)
+	expectedDependencyStatus := providerReviewAttemptDependencyUnlockStatus(expectedUnlockOperation)
+	dependencyUnlockReady := cleanOptionalText(stringFromMap(plan, "dependency_unlocks_operation")) == expectedUnlockOperation
+	if expectedUnlockOperation != "" {
+		dependencyUnlockReady = safeProviderReviewAttemptOperationName(stringFromMap(plan, "dependency_unlocks_operation")) == expectedUnlockOperation
+	}
+	dependencyUpdateStatusReady := safeProviderReviewAttemptResponseDependencyStatus(stringFromMap(plan, "dependency_update_status")) == expectedDependencyStatus
+	requiresDependencyUpdate, hasRequiresDependencyUpdate := plan["requires_dependency_update"]
+	return safeProviderReviewAttemptStatus(stringFromMap(plan, "success_attempt_status")) == "completed" &&
+		safeProviderReviewAttemptStatus(stringFromMap(plan, "retry_attempt_status")) == "planned" &&
+		safeProviderReviewAttemptStatus(stringFromMap(plan, "failure_attempt_status")) == "failed" &&
+		dependencyUnlockReady &&
+		dependencyUpdateStatusReady &&
+		hasRequiresDependencyUpdate &&
+		boolOnlyFromAny(requiresDependencyUpdate) == (expectedUnlockOperation != "")
+}
+
+func safeProviderReviewAttemptResponseDependencyStatus(value string) string {
+	switch cleanOptionalText(value) {
+	case "", "dependency_satisfied":
+		return cleanOptionalText(value)
+	default:
+		return "blocked"
+	}
 }
 
 func providerReviewAttemptPayloadBuilderMatchesOperation(operationName, payloadBuilder string) bool {

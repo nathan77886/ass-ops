@@ -5230,6 +5230,52 @@ func TestProviderReviewAttemptAdapterResponsePlan(t *testing.T) {
 			t.Fatalf("mismatched response identity result plan should be empty: %#v", got)
 		}
 	})
+	t.Run("result recording plan rejects invalid response contract", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResultRecordingPlan(
+			map[string]any{
+				"name":            "create_branch_ref",
+				"endpoint_key":    "github.create_branch_ref",
+				"operation_order": 10,
+			},
+			map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "create_branch_ref",
+				"endpoint_key":                 "github.create_branch_ref",
+				"success_attempt_status":       "failed",
+				"retry_attempt_status":         "completed",
+				"failure_attempt_status":       "planned",
+				"dependency_unlocks_operation": "open_review_request",
+				"dependency_update_status":     "dependency_failed",
+				"requires_dependency_update":   true,
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("invalid response contract result plan should be empty: %#v", got)
+		}
+	})
+	t.Run("result recording plan rejects raw unlock on terminal operation", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResultRecordingPlan(
+			map[string]any{
+				"name":            "open_review_request",
+				"endpoint_key":    "github.open_review",
+				"operation_order": 30,
+			},
+			map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "open_review_request",
+				"endpoint_key":                 "github.open_review",
+				"success_attempt_status":       "completed",
+				"retry_attempt_status":         "planned",
+				"failure_attempt_status":       "failed",
+				"dependency_unlocks_operation": "raw-operation-secret",
+				"dependency_update_status":     "",
+				"requires_dependency_update":   false,
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("terminal response contract with raw unlock should be empty: %#v", got)
+		}
+	})
 }
 
 func TestProviderReviewAttemptAdapterRequestMaterializationPlan(t *testing.T) {
@@ -5636,6 +5682,209 @@ func TestProviderReviewAttemptPlanMatchesOperation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := providerReviewAttemptPlanMatchesOperation(tt.plan, tt.mode, tt.operation, tt.endpoint); got != tt.want {
 				t.Fatalf("providerReviewAttemptPlanMatchesOperation() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProviderReviewAttemptResponsePlanReadyForOperation(t *testing.T) {
+	validPlan := func(operation, endpoint string) map[string]any {
+		unlockOperation := providerReviewAttemptDependencyUnlockOperation(operation)
+		return map[string]any{
+			"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+			"operation_name":               operation,
+			"endpoint_key":                 endpoint,
+			"success_attempt_status":       "completed",
+			"retry_attempt_status":         "planned",
+			"failure_attempt_status":       "failed",
+			"dependency_unlocks_operation": unlockOperation,
+			"dependency_update_status":     providerReviewAttemptDependencyUnlockStatus(unlockOperation),
+			"requires_dependency_update":   unlockOperation != "",
+		}
+	}
+
+	tests := []struct {
+		name      string
+		plan      map[string]any
+		operation string
+		endpoint  string
+		want      bool
+	}{
+		{
+			name:      "branch response contract ready",
+			plan:      validPlan("create_branch_ref", "github.create_branch_ref"),
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+			want:      true,
+		},
+		{
+			name:      "commit response contract ready",
+			plan:      validPlan("commit_starter_files", "github.commit_files"),
+			operation: "commit_starter_files",
+			endpoint:  "github.commit_files",
+			want:      true,
+		},
+		{
+			name:      "terminal review response contract ready",
+			plan:      validPlan("open_review_request", "gitea.open_review"),
+			operation: "open_review_request",
+			endpoint:  "gitea.open_review",
+			want:      true,
+		},
+		{
+			name:      "nil plan",
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name:      "empty plan",
+			plan:      map[string]any{},
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name:     "empty operation",
+			plan:     validPlan("create_branch_ref", "github.create_branch_ref"),
+			endpoint: "github.create_branch_ref",
+		},
+		{
+			name:      "empty endpoint",
+			plan:      validPlan("create_branch_ref", "github.create_branch_ref"),
+			operation: "create_branch_ref",
+		},
+		{
+			name: "success status mismatch",
+			plan: map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "create_branch_ref",
+				"endpoint_key":                 "github.create_branch_ref",
+				"success_attempt_status":       "planned",
+				"retry_attempt_status":         "planned",
+				"failure_attempt_status":       "failed",
+				"dependency_unlocks_operation": "commit_starter_files",
+				"dependency_update_status":     "dependency_satisfied",
+				"requires_dependency_update":   true,
+			},
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name: "retry status mismatch",
+			plan: map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "create_branch_ref",
+				"endpoint_key":                 "github.create_branch_ref",
+				"success_attempt_status":       "completed",
+				"retry_attempt_status":         "completed",
+				"failure_attempt_status":       "failed",
+				"dependency_unlocks_operation": "commit_starter_files",
+				"dependency_update_status":     "dependency_satisfied",
+				"requires_dependency_update":   true,
+			},
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name: "failure status mismatch",
+			plan: map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "create_branch_ref",
+				"endpoint_key":                 "github.create_branch_ref",
+				"success_attempt_status":       "completed",
+				"retry_attempt_status":         "planned",
+				"failure_attempt_status":       "planned",
+				"dependency_unlocks_operation": "commit_starter_files",
+				"dependency_update_status":     "dependency_satisfied",
+				"requires_dependency_update":   true,
+			},
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name: "dependency unlock mismatch",
+			plan: map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "create_branch_ref",
+				"endpoint_key":                 "github.create_branch_ref",
+				"success_attempt_status":       "completed",
+				"retry_attempt_status":         "planned",
+				"failure_attempt_status":       "failed",
+				"dependency_unlocks_operation": "open_review_request",
+				"dependency_update_status":     "dependency_satisfied",
+				"requires_dependency_update":   true,
+			},
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name: "dependency update status mismatch",
+			plan: map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "create_branch_ref",
+				"endpoint_key":                 "github.create_branch_ref",
+				"success_attempt_status":       "completed",
+				"retry_attempt_status":         "planned",
+				"failure_attempt_status":       "failed",
+				"dependency_unlocks_operation": "commit_starter_files",
+				"dependency_update_status":     "independent",
+				"requires_dependency_update":   true,
+			},
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name: "terminal operation rejects raw unlock",
+			plan: map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "open_review_request",
+				"endpoint_key":                 "github.open_review",
+				"success_attempt_status":       "completed",
+				"retry_attempt_status":         "planned",
+				"failure_attempt_status":       "failed",
+				"dependency_unlocks_operation": "raw-operation-secret",
+				"dependency_update_status":     "",
+				"requires_dependency_update":   false,
+			},
+			operation: "open_review_request",
+			endpoint:  "github.open_review",
+		},
+		{
+			name: "requires dependency update mismatch",
+			plan: map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "commit_starter_files",
+				"endpoint_key":                 "github.commit_files",
+				"success_attempt_status":       "completed",
+				"retry_attempt_status":         "planned",
+				"failure_attempt_status":       "failed",
+				"dependency_unlocks_operation": "open_review_request",
+				"dependency_update_status":     "dependency_satisfied",
+				"requires_dependency_update":   false,
+			},
+			operation: "commit_starter_files",
+			endpoint:  "github.commit_files",
+		},
+		{
+			name: "requires dependency update missing",
+			plan: map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "open_review_request",
+				"endpoint_key":                 "github.open_review",
+				"success_attempt_status":       "completed",
+				"retry_attempt_status":         "planned",
+				"failure_attempt_status":       "failed",
+				"dependency_unlocks_operation": "",
+				"dependency_update_status":     "",
+			},
+			operation: "open_review_request",
+			endpoint:  "github.open_review",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := providerReviewAttemptResponsePlanReadyForOperation(tt.plan, tt.operation, tt.endpoint); got != tt.want {
+				t.Fatalf("providerReviewAttemptResponsePlanReadyForOperation() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -8556,6 +8805,20 @@ func TestProviderReviewAttemptAdapterTransactionPlan(t *testing.T) {
 	if mismatchedResponseModeBoundaryPlan["provider_call_boundary_metadata_ready"] != false {
 		t.Fatalf("mismatched response mode boundary plan = %#v", mismatchedResponseModeBoundaryPlan)
 	}
+	invalidResponseContractBoundaryPlan := providerReviewAttemptAdapterProviderCallBoundaryPlan(operation, claimPlan, map[string]any{
+		"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+		"operation_name":               "create_branch_ref",
+		"endpoint_key":                 "github.create_branch_ref",
+		"success_attempt_status":       "completed",
+		"retry_attempt_status":         "planned",
+		"failure_attempt_status":       "failed",
+		"dependency_unlocks_operation": "commit_starter_files",
+		"dependency_update_status":     "independent",
+		"requires_dependency_update":   true,
+	})
+	if invalidResponseContractBoundaryPlan["provider_call_boundary_metadata_ready"] != false {
+		t.Fatalf("invalid response contract boundary plan should not be metadata-ready: %#v", invalidResponseContractBoundaryPlan)
+	}
 	mismatchedResponseIdentityPlan := providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, map[string]any{
 		"mode":                         "redacted_attempt_adapter_response_plan",
 		"operation_name":               "commit_starter_files",
@@ -8584,12 +8847,17 @@ func TestProviderReviewAttemptAdapterTransactionPlan(t *testing.T) {
 		"dependency_unlocks_operation": "raw-operation-secret",
 		"dependency_update_status":     "raw-dependency-secret",
 	})
-	if redactedPlan["success_attempt_status"] != "blocked" ||
+	if redactedPlan["transaction_metadata_ready"] != false ||
+		redactedPlan["success_attempt_status"] != "blocked" ||
 		redactedPlan["retry_attempt_status"] != "blocked" ||
 		redactedPlan["failure_attempt_status"] != "blocked" ||
 		redactedPlan["dependency_unlocks_operation"] != "" ||
 		redactedPlan["dependency_update_status"] != "blocked" {
 		t.Fatalf("transaction plan should redact raw response values: %#v", redactedPlan)
+	}
+	redactedBoundaryPlan := mapFromAny(redactedPlan["provider_call_boundary_plan"])
+	if redactedBoundaryPlan["provider_call_boundary_metadata_ready"] != false {
+		t.Fatalf("transaction boundary should reject raw response contract: %#v", redactedBoundaryPlan)
 	}
 	encoded, _ = json.Marshal(redactedPlan)
 	for _, leak := range []string{"raw-success-secret", "raw-retry-secret", "raw-failure-secret", "raw-operation-secret", "raw-dependency-secret"} {
