@@ -5136,6 +5136,30 @@ func TestProviderReviewAttemptAdapterRequestMaterializationPlan(t *testing.T) {
 			operationName: "raw_operation",
 			endpointKey:   "github.create_branch_ref",
 		},
+		{
+			name:          "operation endpoint mismatch returns empty plan",
+			provider:      "github",
+			operationName: "create_branch_ref",
+			endpointKey:   "github.commit_files",
+		},
+		{
+			name:          "cross provider endpoint mismatch returns empty plan",
+			provider:      "github",
+			operationName: "create_branch_ref",
+			endpointKey:   "gitea.create_branch_ref",
+		},
+		{
+			name:          "commit operation review endpoint mismatch returns empty plan",
+			provider:      "github",
+			operationName: "commit_starter_files",
+			endpointKey:   "github.open_review",
+		},
+		{
+			name:          "unknown endpoint returns empty plan",
+			provider:      "github",
+			operationName: "create_branch_ref",
+			endpointKey:   "unknown.create_branch_ref",
+		},
 	} {
 		t.Run(item.name, func(t *testing.T) {
 			plan := providerReviewAttemptAdapterRequestMaterializationPlan(
@@ -5209,6 +5233,79 @@ func TestProviderReviewAttemptAdapterRequestMaterializationPlan(t *testing.T) {
 				if strings.Contains(string(encoded), leak) {
 					t.Fatalf("request materialization plan leaked %q: %s", leak, encoded)
 				}
+			}
+		})
+	}
+}
+
+func TestProviderReviewAttemptEndpointMatchesOperation(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		provider  string
+		operation string
+		endpoint  string
+		want      bool
+	}{
+		{
+			name:      "github branch ref",
+			provider:  "github",
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+			want:      true,
+		},
+		{
+			name:      "github starter files maps to commit files endpoint",
+			provider:  "github",
+			operation: "commit_starter_files",
+			endpoint:  "github.commit_files",
+			want:      true,
+		},
+		{
+			name:      "gitea review request",
+			provider:  "gitea",
+			operation: "open_review_request",
+			endpoint:  "gitea.open_review",
+			want:      true,
+		},
+		{
+			name:      "operation endpoint mismatch",
+			provider:  "github",
+			operation: "create_branch_ref",
+			endpoint:  "github.commit_files",
+		},
+		{
+			name:      "cross provider mismatch",
+			provider:  "github",
+			operation: "create_branch_ref",
+			endpoint:  "gitea.create_branch_ref",
+		},
+		{
+			name:      "unknown provider",
+			provider:  "raw_provider",
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name:      "unknown operation",
+			provider:  "github",
+			operation: "raw_operation",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name:      "unknown endpoint",
+			provider:  "github",
+			operation: "create_branch_ref",
+			endpoint:  "unknown.create_branch_ref",
+		},
+		{
+			name:      "empty endpoint",
+			provider:  "github",
+			operation: "create_branch_ref",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := providerReviewAttemptEndpointMatchesOperation(tt.provider, tt.operation, tt.endpoint); got != tt.want {
+				t.Fatalf("providerReviewAttemptEndpointMatchesOperation(%q, %q, %q) = %v, want %v", tt.provider, tt.operation, tt.endpoint, got, tt.want)
 			}
 		})
 	}
@@ -6136,6 +6233,42 @@ func TestProviderReviewAttemptAdapterProviderSendPlan(t *testing.T) {
 	); len(got) != 0 {
 		t.Fatalf("invalid operation provider send plan = %#v", got)
 	}
+	if got := providerReviewAttemptAdapterProviderSendPlan(
+		map[string]any{"name": "create_branch_ref", "endpoint_key": "github.commit_files"},
+		nil,
+		nil,
+		nil,
+		nil,
+	); len(got) != 0 {
+		t.Fatalf("mismatched operation endpoint provider send plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterProviderSendPlan(
+		map[string]any{"name": "commit_starter_files", "endpoint_key": "github.open_review"},
+		nil,
+		nil,
+		nil,
+		nil,
+	); len(got) != 0 {
+		t.Fatalf("commit operation review endpoint provider send plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterProviderSendPlan(
+		map[string]any{"name": "commit_starter_files", "endpoint_key": "gitea.create_branch_ref"},
+		nil,
+		nil,
+		nil,
+		nil,
+	); len(got) != 0 {
+		t.Fatalf("gitea commit operation branch endpoint provider send plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterProviderSendPlan(
+		map[string]any{"name": "create_branch_ref", "endpoint_key": "unknown.create_branch_ref"},
+		nil,
+		nil,
+		nil,
+		nil,
+	); len(got) != 0 {
+		t.Fatalf("unknown endpoint provider send plan = %#v", got)
+	}
 
 	readyOperation := map[string]any{"name": "create_branch_ref", "endpoint_key": "github.create_branch_ref", "operation_order": 10}
 	readyPlan := providerReviewAttemptAdapterProviderSendPlan(
@@ -6265,6 +6398,30 @@ func TestProviderReviewAttemptAdapterRetryBackoffPlan(t *testing.T) {
 		map[string]any{"mode": "raw_transport_plan"},
 	); len(got) != 0 {
 		t.Fatalf("raw transport retry backoff plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterRetryBackoffPlan(
+		map[string]any{"name": "create_branch_ref", "endpoint_key": "github.commit_files"},
+		map[string]any{"mode": "redacted_attempt_adapter_transport_plan"},
+	); len(got) != 0 {
+		t.Fatalf("mismatched operation endpoint retry backoff plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterRetryBackoffPlan(
+		map[string]any{"name": "commit_starter_files", "endpoint_key": "github.open_review"},
+		map[string]any{"mode": "redacted_attempt_adapter_transport_plan"},
+	); len(got) != 0 {
+		t.Fatalf("commit operation review endpoint retry backoff plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterRetryBackoffPlan(
+		map[string]any{"name": "commit_starter_files", "endpoint_key": "gitea.create_branch_ref"},
+		map[string]any{"mode": "redacted_attempt_adapter_transport_plan"},
+	); len(got) != 0 {
+		t.Fatalf("gitea commit operation branch endpoint retry backoff plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterRetryBackoffPlan(
+		map[string]any{"name": "create_branch_ref", "endpoint_key": "unknown.create_branch_ref"},
+		map[string]any{"mode": "redacted_attempt_adapter_transport_plan"},
+	); len(got) != 0 {
+		t.Fatalf("unknown endpoint retry backoff plan = %#v", got)
 	}
 }
 

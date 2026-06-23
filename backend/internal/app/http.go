@@ -11616,7 +11616,7 @@ func providerReviewAttemptAdapterProviderSendPlan(operation, requestPlan, creden
 	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
 	providerType := providerReviewProviderFromEndpointKey(endpointKey)
-	if operationName == "" || endpointKey == "" || providerType == "" {
+	if operationName == "" || endpointKey == "" || providerType == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	retryBackoffPlan := providerReviewAttemptAdapterRetryBackoffPlan(operation, transportPlan)
@@ -11696,7 +11696,8 @@ func providerReviewAttemptAdapterRetryBackoffPlan(operation, transportPlan map[s
 	}
 	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
-	if operationName == "" || endpointKey == "" || stringFromMap(transportPlan, "mode") != "redacted_attempt_adapter_transport_plan" {
+	providerType := providerReviewProviderFromEndpointKey(endpointKey)
+	if operationName == "" || endpointKey == "" || providerType == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) || stringFromMap(transportPlan, "mode") != "redacted_attempt_adapter_transport_plan" {
 		return map[string]any{}
 	}
 	return map[string]any{
@@ -11919,7 +11920,7 @@ func providerReviewAttemptAdapterRequestMaterializationPlan(operation, requestSu
 	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
 	endpointTemplateKey := providerReviewEndpointPathTemplateKeyForOperation(providerType, operationName)
-	if providerType == "" || operationName == "" || endpointKey == "" || endpointTemplateKey == "" {
+	if providerType == "" || operationName == "" || endpointKey == "" || endpointTemplateKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	return map[string]any{
@@ -12326,6 +12327,18 @@ func providerReviewEndpointOperationForAttempt(operationName string) string {
 	default:
 		return ""
 	}
+}
+
+func providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey string) bool {
+	providerType = safeProviderReviewProviderType(providerType)
+	operationName = safeProviderReviewAttemptOperationName(operationName)
+	endpointKey = safeProviderReviewEndpointKey(endpointKey)
+	endpointOperation := providerReviewEndpointOperationForAttempt(operationName)
+	return providerType != "" &&
+		operationName != "" &&
+		endpointKey != "" &&
+		endpointOperation != "" &&
+		endpointKey == providerReviewEndpointKey(providerType, endpointOperation)
 }
 
 func providerReviewEndpointPathTemplateKeyForOperation(providerType, operationName string) string {
