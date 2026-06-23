@@ -1718,16 +1718,35 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 		}
 	}
 	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
-	if resultPlan["recording_enabled"] != false ||
+	if resultPlan["mode"] != "provider_refresh_result_recording_plan" ||
+		resultPlan["result_recording_state"] != "blocked" ||
+		resultPlan["result_recording_ready"] != false ||
+		resultPlan["result_recording_ready_reason"] != "provider_refresh_execution_not_performed" ||
+		resultPlan["recording_enabled"] != false ||
 		resultPlan["result_written"] != false ||
+		resultPlan["operation_log_written"] != false ||
+		resultPlan["canonical_asset_sync_queued"] != false ||
+		resultPlan["status_snapshot_written"] != false ||
+		resultPlan["validation_rerun_recorded"] != false ||
 		resultPlan["raw_response_included"] != false ||
 		resultPlan["raw_git_output_included"] != false ||
+		resultPlan["raw_argo_response_included"] != false ||
 		resultPlan["provider_request_id_included"] != false {
 		t.Fatalf("refresh result recording plan should keep all result flags false: %#v", resultPlan)
 	}
-	for _, field := range []string{"remote_url", "provider_token", "authorization_header", "raw_provider_response", "raw_git_output"} {
+	for _, field := range []string{"operation_run_id", "refresh_kind", "status", "started_at", "finished_at", "synced_entity_count", "validation_rerun_status"} {
+		if !containsString(stringSliceFromAny(resultPlan["required_result_fields"]), field) {
+			t.Fatalf("result plan required_result_fields missing %q: %#v", field, resultPlan["required_result_fields"])
+		}
+	}
+	for _, field := range []string{"remote_url", "provider_token", "authorization_header", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"} {
 		if !containsString(stringSliceFromAny(resultPlan["suppressed_fields"]), field) {
 			t.Fatalf("result plan suppressed_fields missing %q: %#v", field, resultPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"provider_refresh_execution_not_performed", "synced_state_write_not_performed", "validation_rerun_not_performed"} {
+		if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), reason) {
+			t.Fatalf("result plan blocked_reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
 		}
 	}
 	encodedExecutionPlan, _ := json.Marshal(executionPlan)

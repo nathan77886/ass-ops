@@ -6640,19 +6640,25 @@ func projectVersionProviderRefreshExecutionPlan(steps []map[string]any, refreshP
 
 func projectVersionProviderRefreshResultRecordingPlan(plannedKinds []string) map[string]any {
 	return map[string]any{
-		"mode":                         "provider_refresh_result_recording_plan",
-		"recording_enabled":            false,
-		"result_written":               false,
-		"operation_log_written":        false,
-		"canonical_asset_sync_queued":  false,
-		"status_snapshot_written":      false,
-		"planned_refresh_kinds":        plannedKinds,
-		"required_result_fields":       []string{"operation_run_id", "refresh_kind", "status", "started_at", "finished_at", "synced_entity_count"},
-		"suppressed_fields":            []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response"},
-		"message":                      "Refresh results are not recorded by this preview; future execution must write sanitized status and counts only.",
-		"raw_response_included":        false,
-		"raw_git_output_included":      false,
-		"provider_request_id_included": false,
+		"mode":                          "provider_refresh_result_recording_plan",
+		"result_recording_state":        "blocked",
+		"result_recording_ready":        false,
+		"result_recording_ready_reason": "provider_refresh_execution_not_performed",
+		"recording_enabled":             false,
+		"result_written":                false,
+		"operation_log_written":         false,
+		"canonical_asset_sync_queued":   false,
+		"status_snapshot_written":       false,
+		"validation_rerun_recorded":     false,
+		"planned_refresh_kinds":         plannedKinds,
+		"required_result_fields":        []string{"operation_run_id", "refresh_kind", "status", "started_at", "finished_at", "synced_entity_count", "validation_rerun_status"},
+		"suppressed_fields":             []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
+		"blocked_reasons":               []string{"provider_refresh_execution_not_performed", "synced_state_write_not_performed", "validation_rerun_not_performed"},
+		"message":                       "Refresh results are not recorded by this preview; future execution must write sanitized status, counts, and validation rerun state only.",
+		"raw_response_included":         false,
+		"raw_git_output_included":       false,
+		"raw_argo_response_included":    false,
+		"provider_request_id_included":  false,
 	}
 }
 

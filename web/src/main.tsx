@@ -2707,6 +2707,9 @@ function ProjectDetail() {
                   {versionValidation.provider_refresh_plan?.execution_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.synced_state_written ? 'state written' : 'no state write'}</Tag> : null}
                   {versionValidation.provider_refresh_plan?.execution_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.secret_included ? 'secrets included' : 'no secrets'}</Tag> : null}
                   {versionValidation.provider_refresh_plan?.execution_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.disabled_backends?.length || 0} disabled backends</Tag> : null}
+                  {versionValidation.provider_refresh_plan?.execution_plan?.result_recording_plan ? <Tag color="gold">result {versionValidation.provider_refresh_plan.execution_plan.result_recording_plan.result_recording_state || 'blocked'}</Tag> : null}
+                  {versionValidation.provider_refresh_plan?.execution_plan?.result_recording_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.result_recording_plan.result_written ? 'result recorded' : 'no result record'}</Tag> : null}
+                  {versionValidation.provider_refresh_plan?.execution_plan?.result_recording_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.result_recording_plan.validation_rerun_recorded ? 'validation rerun recorded' : 'no validation rerun'}</Tag> : null}
                 </Space>
                 <JSONBlock value={versionValidation} />
               </Space>
