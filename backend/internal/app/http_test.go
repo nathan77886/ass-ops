@@ -1642,9 +1642,84 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 			t.Fatalf("disabled backends missing %q: %#v", backend, plan["disabled_backends"])
 		}
 	}
+	for _, step := range []string{"lookup_remote_tag_result", "persist_sanitized_tag_run_result", "refresh_github_actions_after_tag"} {
+		if !containsString(stringSliceFromAny(plan["live_rehearsal_sequence"]), step) {
+			t.Fatalf("live rehearsal sequence missing %q: %#v", step, plan["live_rehearsal_sequence"])
+		}
+	}
 	for _, field := range []string{"remote_url", "git_credentials", "provider_token", "authorization_header", "tag_message", "git_output", "github_actions_response"} {
 		if !containsString(stringSliceFromAny(plan["suppressed_fields"]), field) {
 			t.Fatalf("suppressed fields missing %q: %#v", field, plan["suppressed_fields"])
+		}
+	}
+	tagObserved := plan["live_remote_tag_success_observed"] == true
+	tagFailed := plan["live_remote_tag_failed_observed"] == true
+	wantSubplanState := "blocked"
+	if tagObserved {
+		wantSubplanState = "planned"
+	}
+	if tagFailed {
+		wantSubplanState = "failed"
+	}
+	wantLiveResultReason := "live_remote_tag_success_not_observed"
+	if tagObserved {
+		wantLiveResultReason = "repo_tag_run_result_update_not_wired"
+	}
+	if tagFailed {
+		wantLiveResultReason = "live_remote_tag_failed_observed"
+	}
+	wantActionsRefreshReason := "live_remote_tag_success_not_observed"
+	if tagObserved {
+		wantActionsRefreshReason = "github_actions_refresh_not_performed"
+	}
+	if tagFailed {
+		wantActionsRefreshReason = "live_remote_tag_failed_observed"
+	}
+	liveResultPlan := mapFromAny(plan["live_result_plan"])
+	if liveResultPlan["mode"] != "repo_tag_live_result_plan" ||
+		liveResultPlan["live_result_state"] != wantSubplanState ||
+		liveResultPlan["remote_tag_lookup_performed"] != false ||
+		liveResultPlan["repo_tag_run_result_written"] != false ||
+		liveResultPlan["operation_log_written"] != false ||
+		liveResultPlan["external_call_made"] != false ||
+		liveResultPlan["contains_token"] != false ||
+		liveResultPlan["contains_remote_url"] != false ||
+		liveResultPlan["contains_ref_name"] != false ||
+		liveResultPlan["contains_tag_message"] != false {
+		t.Fatalf("tag live result plan should stay disabled and redacted: %#v", liveResultPlan)
+	}
+	if plan["live_remote_tag_success_observed"] == true && liveResultPlan["repo_tag_run_result_write_planned"] != true {
+		t.Fatalf("observed tag should plan repo_tag_run result write: %#v", liveResultPlan)
+	}
+	if !containsString(stringSliceFromAny(liveResultPlan["blocked_reasons"]), wantLiveResultReason) ||
+		!containsString(stringSliceFromAny(liveResultPlan["execution_blockers"]), "live_remote_tag_result_write_not_performed") {
+		t.Fatalf("live result reasons/blockers = %#v", liveResultPlan)
+	}
+	for _, backend := range []string{"remote_tag_lookup", "repo_tag_run_update", "operation_log_write"} {
+		if !containsString(stringSliceFromAny(liveResultPlan["disabled_backends"]), backend) {
+			t.Fatalf("live result disabled backends missing %q: %#v", backend, liveResultPlan["disabled_backends"])
+		}
+	}
+	actionsRefreshPlan := mapFromAny(plan["actions_refresh_plan"])
+	if actionsRefreshPlan["mode"] != "repo_tag_github_actions_refresh_plan" ||
+		actionsRefreshPlan["refresh_state"] != wantSubplanState ||
+		actionsRefreshPlan["refresh_after_tag_success_required"] != true ||
+		actionsRefreshPlan["github_actions_refresh_performed"] != false ||
+		actionsRefreshPlan["github_action_runs_synced"] != false ||
+		actionsRefreshPlan["repo_tag_run_link_written"] != false ||
+		actionsRefreshPlan["external_call_made"] != false ||
+		actionsRefreshPlan["contains_token"] != false ||
+		actionsRefreshPlan["contains_remote_url"] != false ||
+		actionsRefreshPlan["contains_provider_response"] != false {
+		t.Fatalf("tag actions refresh plan should stay disabled and redacted: %#v", actionsRefreshPlan)
+	}
+	if !containsString(stringSliceFromAny(actionsRefreshPlan["blocked_reasons"]), wantActionsRefreshReason) ||
+		!containsString(stringSliceFromAny(actionsRefreshPlan["execution_blockers"]), "github_actions_refresh_not_performed") {
+		t.Fatalf("actions refresh reasons/blockers = %#v", actionsRefreshPlan)
+	}
+	for _, backend := range []string{"github_actions_api_sync", "github_action_run_link_write", "provider_response_recording"} {
+		if !containsString(stringSliceFromAny(actionsRefreshPlan["disabled_backends"]), backend) {
+			t.Fatalf("actions refresh disabled backends missing %q: %#v", backend, actionsRefreshPlan["disabled_backends"])
 		}
 	}
 	resultPlan := mapFromAny(plan["result_recording_plan"])
@@ -1656,6 +1731,8 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 		resultPlan["repo_tag_run_updated"] != false ||
 		resultPlan["github_action_runs_synced"] != false ||
 		resultPlan["remote_tag_success_recorded"] != false ||
+		resultPlan["live_result_subplan_recorded"] != false ||
+		resultPlan["actions_refresh_result_recorded"] != false ||
 		resultPlan["raw_git_output_recorded"] != false ||
 		resultPlan["raw_provider_response_recorded"] != false ||
 		resultPlan["contains_token"] != false ||
@@ -1664,7 +1741,7 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 		resultPlan["contains_tag_message"] != false {
 		t.Fatalf("tag rehearsal result plan should stay disabled and redacted: %#v", resultPlan)
 	}
-	for _, field := range []string{"tag_run_status", "tag_name_configured", "target_sha_configured", "target_remote_bound", "live_remote_tag_success_observed", "live_remote_tag_failed_observed", "github_actions_refresh_status"} {
+	for _, field := range []string{"tag_run_status", "tag_name_configured", "target_sha_configured", "target_remote_bound", "live_remote_tag_success_observed", "live_remote_tag_failed_observed", "live_result_state", "github_actions_refresh_status", "github_actions_refresh_state"} {
 		if !containsString(stringSliceFromAny(resultPlan["result_diagnostic_fields"]), field) {
 			t.Fatalf("result diagnostic fields missing %q: %#v", field, resultPlan["result_diagnostic_fields"])
 		}

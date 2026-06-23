@@ -6500,6 +6500,15 @@ func repoTagRemoteRehearsalPlan(run map[string]any) map[string]any {
 			"github_actions_refresh",
 			"remote_tag_success_recording",
 		},
+		"live_rehearsal_sequence": []string{
+			"approve_remote_tag_operation",
+			"create_or_verify_remote_tag",
+			"lookup_remote_tag_result",
+			"classify_live_remote_tag_result",
+			"persist_sanitized_tag_run_result",
+			"refresh_github_actions_after_tag",
+			"record_redacted_actions_refresh_result",
+		},
 		"disabled_backends": []string{
 			"git_tag",
 			"git_push",
@@ -6517,28 +6526,146 @@ func repoTagRemoteRehearsalPlan(run map[string]any) map[string]any {
 			"github_actions_response",
 		},
 		"blocked_reasons":       blockedReasons,
+		"live_result_plan":      repoTagLiveResultPlan(rehearsalState, tagObserved, tagFailed),
+		"actions_refresh_plan":  repoTagActionsRefreshPlan(rehearsalState, tagObserved, tagFailed),
 		"result_recording_plan": repoTagRemoteRehearsalResultRecordingPlan(),
 		"message":               "Remote tag success rehearsal is audit-only; no Git tag, push, provider refresh, remote lookup, or tag-run result update is performed.",
 	}
 }
 
+func repoTagLiveResultPlan(rehearsalState string, tagObserved, tagFailed bool) map[string]any {
+	resultState := "blocked"
+	if rehearsalState == "observed" {
+		resultState = "planned"
+	}
+	if tagFailed {
+		resultState = "failed"
+	}
+	return map[string]any{
+		"mode":                              "repo_tag_live_result_plan",
+		"live_result_state":                 resultState,
+		"live_remote_tag_success_observed":  tagObserved,
+		"live_remote_tag_failed_observed":   tagFailed,
+		"remote_tag_lookup_performed":       false,
+		"repo_tag_run_result_write_planned": tagObserved,
+		"repo_tag_run_result_written":       false,
+		"operation_log_written":             false,
+		"external_call_made":                false,
+		"contains_token":                    false,
+		"contains_remote_url":               false,
+		"contains_ref_name":                 false,
+		"contains_tag_message":              false,
+		"required_controls": []string{
+			"remote_tag_lookup",
+			"tag_result_classification",
+			"repo_tag_run_update",
+			"operation_log_summary",
+			"sanitized_result_recording",
+		},
+		"disabled_backends": []string{
+			"remote_tag_lookup",
+			"repo_tag_run_update",
+			"operation_log_write",
+		},
+		"suppressed_fields": []string{
+			"remote_url",
+			"git_credentials",
+			"provider_token",
+			"authorization_header",
+			"tag_message",
+			"git_output",
+		},
+		"blocked_reasons":    repoTagLiveResultBlockedReasons(tagObserved, tagFailed),
+		"execution_blockers": []string{"live_remote_tag_result_write_not_performed"},
+		"message":            "Live remote tag result persistence is planned only; no remote lookup, repo_tag_run update, or operation log write is performed.",
+	}
+}
+
+func repoTagLiveResultBlockedReasons(tagObserved, tagFailed bool) []string {
+	if tagObserved {
+		return []string{"repo_tag_run_result_update_not_wired"}
+	}
+	if tagFailed {
+		return []string{"live_remote_tag_failed_observed", "repo_tag_run_result_update_not_wired"}
+	}
+	return []string{"live_remote_tag_success_not_observed", "repo_tag_run_result_update_not_wired"}
+}
+
+func repoTagActionsRefreshPlan(rehearsalState string, tagObserved, tagFailed bool) map[string]any {
+	refreshState := "blocked"
+	if rehearsalState == "observed" {
+		refreshState = "planned"
+	}
+	if tagFailed {
+		refreshState = "failed"
+	}
+	return map[string]any{
+		"mode":                               "repo_tag_github_actions_refresh_plan",
+		"refresh_state":                      refreshState,
+		"refresh_after_tag_success_required": true,
+		"live_remote_tag_success_observed":   tagObserved,
+		"live_remote_tag_failed_observed":    tagFailed,
+		"github_actions_refresh_performed":   false,
+		"github_action_runs_synced":          false,
+		"repo_tag_run_link_written":          false,
+		"external_call_made":                 false,
+		"contains_token":                     false,
+		"contains_remote_url":                false,
+		"contains_provider_response":         false,
+		"required_controls": []string{
+			"github_actions_remote_review",
+			"github_actions_api_sync",
+			"action_run_linking",
+			"sanitized_refresh_result_recording",
+		},
+		"disabled_backends": []string{
+			"github_actions_api_sync",
+			"github_action_run_link_write",
+			"provider_response_recording",
+		},
+		"suppressed_fields": []string{
+			"provider_token",
+			"authorization_header",
+			"remote_url",
+			"github_actions_response",
+			"provider_response_body",
+			"provider_response_headers",
+		},
+		"blocked_reasons":    repoTagActionsRefreshBlockedReasons(tagObserved, tagFailed),
+		"execution_blockers": []string{"github_actions_refresh_not_performed"},
+		"message":            "GitHub Actions refresh after live tag success is planned only; no provider API call or action-run link write is performed.",
+	}
+}
+
+func repoTagActionsRefreshBlockedReasons(tagObserved, tagFailed bool) []string {
+	if tagObserved {
+		return []string{"github_actions_refresh_not_performed"}
+	}
+	if tagFailed {
+		return []string{"live_remote_tag_failed_observed", "github_actions_refresh_not_performed"}
+	}
+	return []string{"live_remote_tag_success_not_observed", "github_actions_refresh_not_performed"}
+}
+
 func repoTagRemoteRehearsalResultRecordingPlan() map[string]any {
 	return map[string]any{
-		"mode":                           "repo_tag_remote_rehearsal_result_recording_plan",
-		"result_recording_state":         "blocked",
-		"result_recording_ready":         false,
-		"result_recording_ready_reason":  "remote_tag_rehearsal_execution_not_performed",
-		"recording_enabled":              false,
-		"result_written":                 false,
-		"repo_tag_run_updated":           false,
-		"github_action_runs_synced":      false,
-		"remote_tag_success_recorded":    false,
-		"raw_git_output_recorded":        false,
-		"raw_provider_response_recorded": false,
-		"contains_token":                 false,
-		"contains_remote_url":            false,
-		"contains_ref_name":              false,
-		"contains_tag_message":           false,
+		"mode":                            "repo_tag_remote_rehearsal_result_recording_plan",
+		"result_recording_state":          "blocked",
+		"result_recording_ready":          false,
+		"result_recording_ready_reason":   "remote_tag_rehearsal_execution_not_performed",
+		"recording_enabled":               false,
+		"result_written":                  false,
+		"repo_tag_run_updated":            false,
+		"github_action_runs_synced":       false,
+		"remote_tag_success_recorded":     false,
+		"live_result_subplan_recorded":    false,
+		"actions_refresh_result_recorded": false,
+		"raw_git_output_recorded":         false,
+		"raw_provider_response_recorded":  false,
+		"contains_token":                  false,
+		"contains_remote_url":             false,
+		"contains_ref_name":               false,
+		"contains_tag_message":            false,
 		"result_recording_sequence": []string{
 			"classify_remote_tag_result",
 			"record_sanitized_tag_summary",
@@ -6552,7 +6679,9 @@ func repoTagRemoteRehearsalResultRecordingPlan() map[string]any {
 			"target_remote_bound",
 			"live_remote_tag_success_observed",
 			"live_remote_tag_failed_observed",
+			"live_result_state",
 			"github_actions_refresh_status",
+			"github_actions_refresh_state",
 		},
 		"suppressed_fields": []string{
 			"remote_url",

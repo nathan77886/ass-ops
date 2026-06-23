@@ -3255,10 +3255,14 @@ function GitRemotes() {
           { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{row.status}</Tag> },
           { title: 'Rehearsal', render: (_, row) => {
             const plan = row.remote_rehearsal_plan || {};
+            const liveResultPlan = plan.live_result_plan || {};
+            const actionsRefreshPlan = plan.actions_refresh_plan || {};
             const resultPlan = plan.result_recording_plan || {};
             return <Space size={4} wrap>
               <Tag color={plan.rehearsal_state === 'observed' ? 'green' : plan.rehearsal_state === 'blocked' || plan.rehearsal_state === 'failed' ? 'red' : 'gold'}>{plan.rehearsal_state || 'planned'}</Tag>
               <Tag>{plan.live_remote_tag_success_observed ? 'remote success' : 'no remote success'}</Tag>
+              <Tag color={liveResultPlan.live_result_state === 'planned' ? 'gold' : 'red'}>{liveResultPlan.repo_tag_run_result_written ? 'tag result saved' : liveResultPlan.live_result_state === 'failed' ? 'tag result failed' : 'tag result pending'}</Tag>
+              <Tag color={actionsRefreshPlan.refresh_state === 'planned' ? 'gold' : 'red'}>{actionsRefreshPlan.github_actions_refresh_performed ? 'actions refreshed' : actionsRefreshPlan.refresh_state === 'failed' ? 'actions refresh failed' : 'actions refresh pending'}</Tag>
               <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
             </Space>;
           } },
