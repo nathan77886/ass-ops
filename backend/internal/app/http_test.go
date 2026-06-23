@@ -1268,6 +1268,7 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 		resultPlan["commit_record_written"] != false ||
 		resultPlan["push_record_written"] != false ||
 		resultPlan["review_request_recorded"] != false ||
+		resultPlan["remote_review_subplan_recorded"] != false ||
 		resultPlan["project_version_pin_written"] != false ||
 		resultPlan["config_commit_sha_recorded"] != false ||
 		resultPlan["live_validation_recorded"] != false ||
@@ -1281,7 +1282,7 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 		resultPlan["contains_commit_message"] != false {
 		t.Fatalf("git commit result recording plan should stay disabled and redacted: %#v", resultPlan)
 	}
-	for _, required := range []string{"scaffold_file_count", "secret_scan_status", "commit_created", "push_performed", "review_request_created", "config_commit_sha_present", "live_validation_status"} {
+	for _, required := range []string{"scaffold_file_count", "secret_scan_status", "commit_created", "push_performed", "review_request_created", "remote_review_state", "config_commit_sha_present", "live_validation_status"} {
 		if !containsString(stringSliceFromAny(resultPlan["result_diagnostic_fields"]), required) {
 			t.Fatalf("result diagnostic fields missing %q: %#v", required, resultPlan["result_diagnostic_fields"])
 		}
@@ -1329,6 +1330,13 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 		!containsString(stringSliceFromAny(blockedApprovalPlan["blocked_reasons"]), "repository_role_is_not_config") ||
 		!containsString(stringSliceFromAny(blockedApprovalPlan["blocked_reasons"]), "config_remote_missing") {
 		t.Fatalf("blocked approval plan should explain missing config metadata: %#v", blockedApprovalPlan)
+	}
+	blockedRemoteReviewPlan := mapFromAny(blockedCommitPlan["remote_review_plan"])
+	if blockedRemoteReviewPlan["review_state"] != "blocked" ||
+		blockedRemoteReviewPlan["metadata_ready"] != false ||
+		!containsString(stringSliceFromAny(blockedRemoteReviewPlan["blocked_reasons"]), "config_remote_missing") ||
+		!containsString(stringSliceFromAny(blockedRemoteReviewPlan["blocked_reasons"]), "default_branch_missing") {
+		t.Fatalf("blocked remote review plan should explain missing remote/default branch metadata: %#v", blockedRemoteReviewPlan)
 	}
 	assertConfigRepositoryGitCommitSubplansSafe(t, blockedCommitPlan)
 
@@ -1420,6 +1428,63 @@ func assertConfigRepositoryGitCommitSubplansSafe(t *testing.T, commitPlan map[st
 	for _, reason := range []string{"git_workspace_backend_disabled", "secret_scan_not_performed", "git_commit_not_created", "provider_review_not_created"} {
 		if !containsString(stringSliceFromAny(workspacePlan["blocked_reasons"]), reason) {
 			t.Fatalf("config workspace blocked reasons missing %q: %#v", reason, workspacePlan["blocked_reasons"])
+		}
+	}
+
+	remoteReviewPlan := mapFromAny(commitPlan["remote_review_plan"])
+	if remoteReviewPlan["mode"] != "config_repository_remote_review_plan" ||
+		remoteReviewPlan["review_state"] == "" ||
+		remoteReviewPlan["git_push_performed"] != false ||
+		remoteReviewPlan["review_branch_pushed"] != false ||
+		remoteReviewPlan["provider_review_created"] != false ||
+		remoteReviewPlan["provider_review_link_recorded"] != false ||
+		remoteReviewPlan["external_call_made"] != false ||
+		remoteReviewPlan["contains_token"] != false ||
+		remoteReviewPlan["contains_remote_url"] != false ||
+		remoteReviewPlan["contains_branch_name"] != false ||
+		remoteReviewPlan["contains_commit_message"] != false ||
+		remoteReviewPlan["contains_provider_response"] != false {
+		t.Fatalf("config remote review plan should stay disabled and redacted: %#v", remoteReviewPlan)
+	}
+	if commitPlan["plan_state"] == "planned" && (remoteReviewPlan["metadata_ready"] != true || remoteReviewPlan["review_state"] != "planned") {
+		t.Fatalf("planned config commit should mark remote review metadata ready: %#v", remoteReviewPlan)
+	}
+	if remoteReviewPlan["protected_default_branch_avoided"] != true {
+		t.Fatalf("config remote review should avoid protected default branch: %#v", remoteReviewPlan)
+	}
+	for _, field := range []string{"operation_run_id", "repository_id", "remote_id", "review_branch_key", "base_branch_key", "commit_sha_status", "provider_review_status"} {
+		if !containsString(stringSliceFromAny(remoteReviewPlan["required_review_fields"]), field) {
+			t.Fatalf("config remote review required fields missing %q: %#v", field, remoteReviewPlan["required_review_fields"])
+		}
+	}
+	for _, control := range []string{"branch_policy_review", "protected_branch_avoidance", "provider_review_workflow", "provider_response_redaction", "operator_review_before_merge"} {
+		if !containsString(stringSliceFromAny(remoteReviewPlan["required_controls"]), control) {
+			t.Fatalf("config remote review controls missing %q: %#v", control, remoteReviewPlan["required_controls"])
+		}
+	}
+	for _, step := range []string{"derive_review_branch", "push_review_branch", "open_provider_review_request", "record_review_request_summary", "wait_for_operator_merge"} {
+		if !containsString(stringSliceFromAny(remoteReviewPlan["execution_sequence"]), step) {
+			t.Fatalf("config remote review sequence missing %q: %#v", step, remoteReviewPlan["execution_sequence"])
+		}
+	}
+	for _, backend := range []string{"git_push", "pull_request_create", "merge_request_create", "provider_review_link_write", "provider_response_recording"} {
+		if !containsString(stringSliceFromAny(remoteReviewPlan["disabled_backends"]), backend) {
+			t.Fatalf("config remote review disabled backend missing %q: %#v", backend, remoteReviewPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"remote_url", "branch_name", "commit_message", "commit_sha", "git_credentials", "provider_token", "authorization_header", "provider_response_body", "provider_response_headers"} {
+		if !containsString(stringSliceFromAny(remoteReviewPlan["suppressed_fields"]), field) {
+			t.Fatalf("config remote review suppressed_fields missing %q: %#v", field, remoteReviewPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"git_push_not_performed", "provider_review_workflow_not_wired", "provider_review_not_created"} {
+		if !containsString(stringSliceFromAny(remoteReviewPlan["blocked_reasons"]), reason) {
+			t.Fatalf("config remote review blocked reasons missing %q: %#v", reason, remoteReviewPlan["blocked_reasons"])
+		}
+	}
+	for _, blocker := range []string{"git_push_not_performed", "provider_review_workflow_not_wired"} {
+		if !containsString(stringSliceFromAny(remoteReviewPlan["execution_blockers"]), blocker) {
+			t.Fatalf("config remote review execution blockers missing %q: %#v", blocker, remoteReviewPlan["execution_blockers"])
 		}
 	}
 

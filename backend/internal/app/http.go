@@ -3178,6 +3178,7 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 	}
 	approvalPlan := configRepositoryGitCommitApprovalPlan(planState, blockedReasons)
 	workspacePlan := configRepositoryGitCommitWorkspacePlan(len(files), len(remotes), defaultBranch != "")
+	remoteReviewPlan := configRepositoryRemoteReviewPlan(planState, len(remotes), defaultBranch != "")
 	pinValidationPlan := configRepositoryProjectVersionPinValidationPlan(defaultBranch != "", len(remotes) > 0)
 	steps := []map[string]any{
 		{
@@ -3256,6 +3257,7 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		"required_project_version_metadata": []string{"repositories[].repo_key", "repositories[].remote_id", "repositories[].config_commit_sha"},
 		"approval_request_plan":             approvalPlan,
 		"workspace_execution_plan":          workspacePlan,
+		"remote_review_plan":                remoteReviewPlan,
 		"project_version_pin_plan":          pinValidationPlan,
 		"result_recording_plan":             configRepositoryGitCommitResultRecordingPlan(),
 		"message":                           "Config repository Git commit and live validation are planned only; no files, Git refs, provider requests, or ProjectVersion pins are written.",
@@ -3319,6 +3321,46 @@ func configRepositoryGitCommitWorkspacePlan(fileCount, remoteCount int, defaultB
 	}
 }
 
+func configRepositoryRemoteReviewPlan(planState string, remoteCount int, defaultBranchConfigured bool) map[string]any {
+	metadataReady := planState == "planned" && remoteCount > 0 && defaultBranchConfigured
+	reviewState := "blocked"
+	if metadataReady {
+		reviewState = "planned"
+	}
+	blockedReasons := []string{"git_push_not_performed", "provider_review_workflow_not_wired", "provider_review_not_created"}
+	if remoteCount == 0 {
+		blockedReasons = append(blockedReasons, "config_remote_missing")
+	}
+	if !defaultBranchConfigured {
+		blockedReasons = append(blockedReasons, "default_branch_missing")
+	}
+	return map[string]any{
+		"mode":                             "config_repository_remote_review_plan",
+		"review_state":                     reviewState,
+		"metadata_ready":                   metadataReady,
+		"review_branch_ready":              metadataReady,
+		"protected_default_branch_avoided": true,
+		"git_push_performed":               false,
+		"review_branch_pushed":             false,
+		"provider_review_created":          false,
+		"provider_review_link_recorded":    false,
+		"external_call_made":               false,
+		"contains_token":                   false,
+		"contains_remote_url":              false,
+		"contains_branch_name":             false,
+		"contains_commit_message":          false,
+		"contains_provider_response":       false,
+		"required_review_fields":           []string{"operation_run_id", "repository_id", "remote_id", "review_branch_key", "base_branch_key", "commit_sha_status", "provider_review_status"},
+		"required_controls":                []string{"branch_policy_review", "protected_branch_avoidance", "provider_review_workflow", "provider_response_redaction", "operator_review_before_merge"},
+		"execution_sequence":               []string{"derive_review_branch", "push_review_branch", "open_provider_review_request", "record_review_request_summary", "wait_for_operator_merge"},
+		"disabled_backends":                []string{"git_push", "pull_request_create", "merge_request_create", "provider_review_link_write", "provider_response_recording"},
+		"suppressed_fields":                []string{"remote_url", "branch_name", "commit_message", "commit_sha", "git_credentials", "provider_token", "authorization_header", "provider_response_body", "provider_response_headers"},
+		"blocked_reasons":                  blockedReasons,
+		"execution_blockers":               []string{"git_push_not_performed", "provider_review_workflow_not_wired"},
+		"message":                          "Config remote push and provider review creation are planned only; no review branch, provider request, URL, response, or branch name is persisted.",
+	}
+}
+
 func configRepositoryProjectVersionPinValidationPlan(defaultBranchConfigured, remoteConfigured bool) map[string]any {
 	metadataReady := defaultBranchConfigured && remoteConfigured
 	blockedReasons := []string{"project_version_pin_write_disabled", "live_remote_commit_validation_not_performed"}
@@ -3362,6 +3404,7 @@ func configRepositoryGitCommitResultRecordingPlan() map[string]any {
 		"commit_record_written":            false,
 		"push_record_written":              false,
 		"review_request_recorded":          false,
+		"remote_review_subplan_recorded":   false,
 		"project_version_pin_written":      false,
 		"config_commit_sha_recorded":       false,
 		"live_validation_recorded":         false,
@@ -3390,6 +3433,7 @@ func configRepositoryGitCommitResultRecordingPlan() map[string]any {
 			"commit_created",
 			"push_performed",
 			"review_request_created",
+			"remote_review_state",
 			"config_commit_sha_present",
 			"live_validation_status",
 		},

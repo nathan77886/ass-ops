@@ -2747,6 +2747,8 @@ function ProjectDetail() {
                   {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag>{configScaffold.data.git_commit_plan.approval_request_plan.request_ready ? 'request ready' : 'request disabled'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.workspace_execution_plan ? <Tag color="gold">workspace {configScaffold.data.git_commit_plan.workspace_execution_plan.workspace_state || 'blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.git_commit_created ? 'commit created' : 'no commit'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.remote_review_plan ? <Tag color={configScaffold.data.git_commit_plan.remote_review_plan.review_state === 'planned' ? 'gold' : 'red'}>review {configScaffold.data.git_commit_plan.remote_review_plan.review_state || 'blocked'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.remote_review_plan ? <Tag>{configScaffold.data.git_commit_plan.remote_review_plan.provider_review_created ? 'review created' : 'no review'}</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.live_commit_validation_performed ? 'live validation' : 'no live validation'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.project_version_pin_plan ? <Tag color="gold">pin {configScaffold.data.git_commit_plan.project_version_pin_plan.pin_state || 'blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag color="gold">result {configScaffold.data.git_commit_plan.result_recording_plan.result_recording_state || 'blocked'}</Tag> : null}
