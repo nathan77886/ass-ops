@@ -290,6 +290,12 @@ func TestReleasePromotionPlanIncludesVerificationAndRollout(t *testing.T) {
 		"assops-tool release validate-bundle",
 		"gh attestation verify",
 		"oci://ghcr.io/nathan77886/assops-gateway:v0.1.0",
+		"## Rollout Guardrails",
+		"preflight-only",
+		"protected environment",
+		"namespace-scoped kubeconfig",
+		"rollback point",
+		"operator approval",
 		"helm template assops deploy/helm/assops",
 		"helm upgrade --install assops deploy/helm/assops",
 	} {

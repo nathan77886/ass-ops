@@ -435,6 +435,9 @@ func releasePromotionPlan(repo, owner, version, artifactDir, rehearsalReport, he
 		fmt.Fprintf(&b, "gh attestation verify %q --repo %s\n", "oci://"+image, repo)
 	}
 	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "## Rollout Guardrails\n\n")
+	fmt.Fprintf(&b, "- The production promotion workflow defaults to preflight-only; do not set `rollout=true` until the protected environment, namespace-scoped kubeconfig, previous values overlay, rollback point, and operator approval have been reviewed.\n")
+	fmt.Fprintf(&b, "- Application pods should not need Kubernetes API credentials; keep rollout credentials isolated to the protected promotion workflow.\n\n")
 	fmt.Fprintf(&b, "## Rollout Commands\n\n```bash\n")
 	fmt.Fprintf(&b, "helm template assops deploy/helm/assops -f deploy/helm/assops/values.yaml -f %q >/tmp/assops-rendered.yaml\n", helmValuesPath)
 	fmt.Fprintf(&b, "helm upgrade --install assops deploy/helm/assops -f deploy/helm/assops/values.yaml -f %q\n", helmValuesPath)
