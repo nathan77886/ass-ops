@@ -286,6 +286,64 @@ func TestFirstVersionReadinessReportRequiresWebhookEventForSyncTrigger(t *testin
 	}
 }
 
+func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
+	withoutGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "repository"},
+		{"asset_type": "git_remote"},
+		{"asset_type": "git_remote"},
+	}, nil, nil, map[string]any{
+		"edges": []any{},
+	})
+	if got := readinessByKey(t, withoutGraphLinks, "repositories"); got.Status != "partial" || got.Evidence != "1 repos / 2 remotes / 0 project links / 0 remote links" {
+		t.Fatalf("repository readiness without graph links = %#v, want partial with graph evidence", got)
+	}
+
+	withGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "repository"},
+		{"asset_type": "git_remote"},
+		{"asset_type": "git_remote"},
+	}, nil, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "project:1", "to_asset_id": "repository:10", "relation_type": "owns"},
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "git_remote:100", "relation_type": "has_remote"},
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "git_remote:101", "relation_type": "has_remote"},
+		},
+	})
+	if got := readinessByKey(t, withGraphLinks, "repositories"); got.Status != "ready" || got.Evidence != "1 repos / 2 remotes / 1 project links / 2 remote links" {
+		t.Fatalf("repository readiness with graph links = %#v, want ready", got)
+	}
+
+	unrelatedGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "repository"},
+		{"asset_type": "git_remote"},
+		{"asset_type": "git_remote"},
+	}, nil, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "project:1", "to_asset_id": "git_remote:100", "relation_type": "owns"},
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "webhook_connection:1", "relation_type": "has_remote"},
+		},
+	})
+	if got := readinessByKey(t, unrelatedGraphLinks, "repositories"); got.Status != "partial" || got.Evidence != "1 repos / 2 remotes / 0 project links / 0 remote links" {
+		t.Fatalf("repository readiness with unrelated graph links = %#v, want partial without repository graph evidence", got)
+	}
+}
+
+func TestCountRepositoryGraphLinks(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "project:1", "to_asset_id": "repository:10", "relation_type": "owns"},
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "git_remote:100", "relation_type": "has_remote"},
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "git_remote:101", "relation_type": "has_remote"},
+			map[string]any{"from_asset_id": "project:1", "to_asset_id": "git_remote:100", "relation_type": "owns"},
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "webhook_connection:1", "relation_type": "has_remote"},
+		},
+	}
+	got := countRepositoryGraphLinks(graph)
+	if got.ProjectRepository != 1 || got.RepositoryRemotes != 2 {
+		t.Fatalf("countRepositoryGraphLinks = %#v, want 1 project link and 2 remote links", got)
+	}
+}
+
 func TestCountAPITypeMetadata(t *testing.T) {
 	rows := []map[string]any{
 		{"asset_type": "webhook_event", "metadata": map[string]any{"provider": "gitea"}},

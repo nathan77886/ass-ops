@@ -583,6 +583,21 @@ function graphItems(graph: AnyRow = {}, key: string) {
   return Array.isArray(graph[key]) ? graph[key] : [];
 }
 
+function countRepositoryGraphLinks(graph: AnyRow = {}) {
+  return graphItems(graph, 'edges').reduce((counts, edge: AnyRow) => {
+    const relation = String(edge.relation_type || '');
+    const from = String(edge.from_asset_id || '');
+    const to = String(edge.to_asset_id || '');
+    if (relation === 'owns' && from.startsWith('project:') && to.startsWith('repository:')) {
+      counts.projectRepository += 1;
+    }
+    if (relation === 'has_remote' && from.startsWith('repository:') && to.startsWith('git_remote:')) {
+      counts.repositoryRemotes += 1;
+    }
+    return counts;
+  }, { projectRepository: 0, repositoryRemotes: 0 });
+}
+
 function countGitHubActionGraphLinks(graph: AnyRow = {}) {
   return graphItems(graph, 'edges').filter((edge: AnyRow) =>
     String(edge.relation_type || '') === 'triggered_by' &&
@@ -616,6 +631,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const operationRuns = Math.max(assetCounts.operation_run || 0, operations.length);
   const operationLogs = countOperationRowsWithLogs(operations);
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
+  const repositoryGraphLinks = countRepositoryGraphLinks(graph);
   const githubActionLinks = countGitHubActionGraphLinks(graph);
   const graphNodes = graphItems(graph, 'nodes').length;
   const graphEdges = graphItems(graph, 'edges').length;
@@ -631,7 +647,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'repositories',
       label: 'Attach source and mirror repositories',
       next: 'Add repository metadata and at least two Git remotes.',
-      ...readinessState((assetCounts.repository || 0) > 0 && (assetCounts.git_remote || 0) >= 2, `${assetCounts.repository || 0} repos / ${assetCounts.git_remote || 0} remotes`, (assetCounts.repository || 0) > 0 || (assetCounts.git_remote || 0) > 0)
+      ...readinessState((assetCounts.repository || 0) > 0 && (assetCounts.git_remote || 0) >= 2 && repositoryGraphLinks.projectRepository > 0 && repositoryGraphLinks.repositoryRemotes >= 2, `${assetCounts.repository || 0} repos / ${assetCounts.git_remote || 0} remotes / ${repositoryGraphLinks.projectRepository} project links / ${repositoryGraphLinks.repositoryRemotes} remote links`, (assetCounts.repository || 0) > 0 || (assetCounts.git_remote || 0) > 0 || repositoryGraphLinks.projectRepository > 0 || repositoryGraphLinks.repositoryRemotes > 0)
     },
     {
       key: 'repo_sync',
