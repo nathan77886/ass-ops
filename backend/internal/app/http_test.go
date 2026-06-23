@@ -3363,6 +3363,59 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateDispatchPlan["dispatch_boundary_redacted"] != true {
 		t.Fatalf("attempt execution candidate dispatch plan = %#v", candidateDispatchPlan)
 	}
+	candidateRequestValidationPreflight := mapFromAny(candidateDispatchPlan["request_validation_preflight"])
+	if candidateRequestValidationPreflight["mode"] != "redacted_attempt_adapter_request_validation_preflight" ||
+		candidateRequestValidationPreflight["preflight_state"] != "blocked" ||
+		candidateRequestValidationPreflight["preflight_ready"] != false ||
+		candidateRequestValidationPreflight["preflight_ready_reason"] != "provider_review_request_validation_not_armed" ||
+		candidateRequestValidationPreflight["operation_name"] != "create_branch_ref" ||
+		candidateRequestValidationPreflight["endpoint_key"] != "github.create_branch_ref" ||
+		candidateRequestValidationPreflight["operation_order"] != 10 ||
+		candidateRequestValidationPreflight["provider_type"] != "github" ||
+		candidateRequestValidationPreflight["dispatch_metadata_ready"] != true ||
+		candidateRequestValidationPreflight["attempt_claim_metadata_ready"] != true ||
+		candidateRequestValidationPreflight["idempotency_metadata_ready"] != true ||
+		candidateRequestValidationPreflight["request_materialization_ready"] != false ||
+		candidateRequestValidationPreflight["branch_policy_metadata_ready"] != true ||
+		candidateRequestValidationPreflight["credential_binding_ready"] != false ||
+		candidateRequestValidationPreflight["transport_metadata_ready"] != true ||
+		candidateRequestValidationPreflight["response_recording_ready"] != false ||
+		candidateRequestValidationPreflight["transaction_metadata_ready"] != true ||
+		candidateRequestValidationPreflight["protected_branch_policy_check"] != false ||
+		candidateRequestValidationPreflight["token_env_check"] != false ||
+		candidateRequestValidationPreflight["request_validated"] != false ||
+		candidateRequestValidationPreflight["request_body_included"] != false ||
+		candidateRequestValidationPreflight["headers_included"] != false ||
+		candidateRequestValidationPreflight["authorization_header_included"] != false ||
+		candidateRequestValidationPreflight["provider_url_included"] != false ||
+		candidateRequestValidationPreflight["repository_ref_included"] != false ||
+		candidateRequestValidationPreflight["branch_name_included"] != false ||
+		candidateRequestValidationPreflight["file_content_included"] != false ||
+		candidateRequestValidationPreflight["external_call_made"] != false ||
+		candidateRequestValidationPreflight["provider_api_call_made"] != false ||
+		candidateRequestValidationPreflight["provider_api_mutation"] != "disabled" ||
+		candidateRequestValidationPreflight["contains_token"] != false ||
+		candidateRequestValidationPreflight["contains_provider_url"] != false ||
+		candidateRequestValidationPreflight["contains_repository_ref"] != false ||
+		candidateRequestValidationPreflight["contains_branch_name"] != false ||
+		candidateRequestValidationPreflight["contains_file_content"] != false ||
+		candidateRequestValidationPreflight["preflight_boundary_redacted"] != true ||
+		candidateRequestValidationPreflight["requires_request_materialization"] != true ||
+		candidateRequestValidationPreflight["requires_branch_policy_verification"] != true ||
+		candidateRequestValidationPreflight["requires_credential_binding"] != true ||
+		candidateRequestValidationPreflight["requires_transport_metadata"] != true ||
+		candidateRequestValidationPreflight["requires_response_recording"] != true ||
+		candidateRequestValidationPreflight["requires_transaction_boundary"] != true ||
+		candidateRequestValidationPreflight["requires_mutation_arming"] != true {
+		t.Fatalf("attempt execution candidate request validation preflight = %#v", candidateRequestValidationPreflight)
+	}
+	candidateRequestValidationBlockedReasons := stringSliceFromAny(candidateRequestValidationPreflight["blocked_reasons"])
+	if len(candidateRequestValidationBlockedReasons) != 3 ||
+		candidateRequestValidationBlockedReasons[0] != "provider_review_request_validation_not_armed" ||
+		candidateRequestValidationBlockedReasons[1] != "provider_review_adapter_not_implemented" ||
+		candidateRequestValidationBlockedReasons[2] != "provider_review_mutation_not_armed" {
+		t.Fatalf("attempt execution candidate request validation blocked reasons = %#v", candidateRequestValidationBlockedReasons)
+	}
 	candidateTransportPlan := mapFromAny(candidateDispatchPlan["transport_plan"])
 	if candidateTransportPlan["mode"] != "redacted_attempt_adapter_transport_plan" ||
 		candidateTransportPlan["transport_ready"] != true ||
@@ -7617,6 +7670,9 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 		if transactionPlan := mapFromAny(dispatchPlan["transaction_plan"]); len(transactionPlan) != 0 {
 			t.Fatalf("unknown operation transaction plan should be empty: %#v", transactionPlan)
 		}
+		if requestValidationPreflight := mapFromAny(dispatchPlan["request_validation_preflight"]); len(requestValidationPreflight) != 0 {
+			t.Fatalf("unknown operation request validation preflight should be empty: %#v", requestValidationPreflight)
+		}
 		if invocationPlan := mapFromAny(dispatchPlan["invocation_plan"]); len(invocationPlan) != 0 {
 			t.Fatalf("unknown operation invocation plan should be empty: %#v", invocationPlan)
 		}
@@ -7634,6 +7690,51 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 			if strings.Contains(string(encoded), leak) {
 				t.Fatalf("unknown operation dispatch plan leaked %q: %s", leak, encoded)
 			}
+		}
+	})
+	t.Run("keeps request validation preflight blocked when dispatch metadata is not ready", func(t *testing.T) {
+		operation := map[string]any{
+			"name":            "create_branch_ref",
+			"endpoint_key":    "github.create_branch_ref",
+			"operation_order": 10,
+		}
+		requestSummary := map[string]any{
+			"payload_builder":                 "build_redacted_branch_ref_request",
+			"response_handler":                "handle_branch_ref_response",
+			"requires_idempotency_ledger":     true,
+			"requires_response_diagnostics":   true,
+			"request_envelope_ready":          true,
+			"credential_preflight_ready":      true,
+			"provider_review_preflight_ready": true,
+		}
+		responseDiagnostics := map[string]any{
+			"mode":                 "redacted_attempt_response_diagnostics",
+			"status":               "pending",
+			"success_status_class": "2xx",
+			"retryable_status_classes": []string{
+				"5xx",
+			},
+		}
+		adapterContract := providerReviewAttemptCandidateAdapterContract(operation, requestSummary, responseDiagnostics)
+		claimPlan := providerReviewAttemptExecutionClaimPlan(operation, false, true)
+		dispatchPlan := providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, responseDiagnostics, adapterContract, claimPlan)
+		preflight := mapFromAny(dispatchPlan["request_validation_preflight"])
+		if preflight["mode"] != "redacted_attempt_adapter_request_validation_preflight" ||
+			preflight["preflight_state"] != "blocked" ||
+			preflight["preflight_ready"] != false ||
+			preflight["dispatch_metadata_ready"] != false ||
+			preflight["attempt_claim_metadata_ready"] != false ||
+			preflight["idempotency_metadata_ready"] != false ||
+			preflight["request_validated"] != false ||
+			preflight["provider_api_call_made"] != false ||
+			preflight["provider_api_mutation"] != "disabled" ||
+			preflight["contains_token"] != false ||
+			preflight["contains_provider_url"] != false ||
+			preflight["contains_repository_ref"] != false ||
+			preflight["contains_branch_name"] != false ||
+			preflight["contains_file_content"] != false ||
+			preflight["preflight_boundary_redacted"] != true {
+			t.Fatalf("metadata-not-ready request validation preflight = %#v", preflight)
 		}
 	})
 	t.Run("redacts unknown attempt claim plan fields", func(t *testing.T) {
