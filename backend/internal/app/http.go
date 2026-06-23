@@ -12347,6 +12347,7 @@ func providerReviewPayloadShapeForOperation(operationName string) string {
 }
 
 func providerReviewEndpointOperationForAttempt(operationName string) string {
+	// Attempt operation names describe ledger steps; endpoint operation names describe provider API routes.
 	switch safeProviderReviewAttemptOperationName(operationName) {
 	case "create_branch_ref":
 		return "create_branch_ref"

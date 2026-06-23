@@ -248,6 +248,9 @@ func TestProviderReviewAttemptAdapterSurfaceRejectsInvalidCombinations(t *testin
 		{name: "unknown provider", provider: "raw_provider", operation: "create_branch_ref", endpoint: "github.create_branch_ref"},
 		{name: "unknown operation", provider: "github", operation: "raw_operation", endpoint: "github.create_branch_ref"},
 		{name: "mismatched endpoint provider", provider: "github", operation: "create_branch_ref", endpoint: "gitea.create_branch_ref"},
+		{name: "branch operation with same-provider commit endpoint", provider: "github", operation: "create_branch_ref", endpoint: "github.commit_files"},
+		{name: "commit operation with same-provider review endpoint", provider: "github", operation: "commit_starter_files", endpoint: "github.open_review"},
+		{name: "review operation with same-provider branch endpoint", provider: "gitea", operation: "open_review_request", endpoint: "gitea.create_branch_ref"},
 		{name: "unknown endpoint", provider: "github", operation: "create_branch_ref", endpoint: "github.secret_endpoint"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

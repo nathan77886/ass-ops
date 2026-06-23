@@ -122,7 +122,7 @@ func (a disabledProviderReviewAdapterRuntime) PrepareInvocation(_ context.Contex
 		AdapterKind:        a.AdapterKind(),
 		OperationName:      operationName,
 		EndpointKey:        endpointKey,
-		OperationSupported: a.SupportsOperation(operationName) && providerReviewProviderFromEndpointKey(endpointKey) == safeProviderReviewProviderType(input.ProviderType),
+		OperationSupported: a.SupportsOperation(operationName) && providerReviewAttemptEndpointMatchesOperation(input.ProviderType, operationName, endpointKey),
 	}
 }
 
@@ -135,7 +135,7 @@ func (b disabledProviderReviewAttemptRequestBuilder) BuildPlan(input providerRev
 	operationName := safeProviderReviewAttemptOperationName(input.OperationName)
 	endpointKey := safeProviderReviewEndpointKey(input.EndpointKey)
 	endpointTemplateKey := providerReviewEndpointPathTemplateKeyForOperation(providerType, operationName)
-	if providerType == "" || operationName == "" || endpointKey == "" || endpointTemplateKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+	if providerType == "" || operationName == "" || endpointKey == "" || endpointTemplateKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	return map[string]any{
@@ -197,7 +197,7 @@ func (f disabledProviderReviewAttemptProviderClientFactory) BuildPlan(input prov
 	operationName := safeProviderReviewAttemptOperationName(input.OperationName)
 	endpointKey := safeProviderReviewEndpointKey(input.EndpointKey)
 	authScheme := providerReviewAuthSchemeForProvider(providerType)
-	if providerType == "" || operationName == "" || endpointKey == "" || authScheme == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+	if providerType == "" || operationName == "" || endpointKey == "" || authScheme == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	return map[string]any{
@@ -259,7 +259,7 @@ func (m disabledProviderReviewAttemptExecuteMethod) BuildPlan(input providerRevi
 	providerType := safeProviderReviewProviderType(input.ProviderType)
 	operationName := safeProviderReviewAttemptOperationName(input.OperationName)
 	endpointKey := safeProviderReviewEndpointKey(input.EndpointKey)
-	if providerType == "" || operationName == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+	if providerType == "" || operationName == "" || endpointKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	return map[string]any{
@@ -332,7 +332,7 @@ func (h disabledProviderReviewAttemptResponseHandler) BuildPlan(input providerRe
 	providerType := safeProviderReviewProviderType(input.ProviderType)
 	operationName := safeProviderReviewAttemptOperationName(input.OperationName)
 	endpointKey := safeProviderReviewEndpointKey(input.EndpointKey)
-	if providerType == "" || operationName == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+	if providerType == "" || operationName == "" || endpointKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	unlockOperation := providerReviewAttemptDependencyUnlockOperation(operationName)
@@ -396,7 +396,7 @@ func (a disabledProviderReviewAttemptLiveAdapter) BuildPlan(input providerReview
 	providerType := safeProviderReviewProviderType(input.ProviderType)
 	operationName := safeProviderReviewAttemptOperationName(input.OperationName)
 	endpointKey := safeProviderReviewEndpointKey(input.EndpointKey)
-	if providerType == "" || operationName == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+	if providerType == "" || operationName == "" || endpointKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	contractPlan := providerReviewAttemptLiveAdapterContractPlan(providerType, operationName, endpointKey, a.AdapterName())
@@ -467,7 +467,7 @@ func providerReviewAttemptLiveAdapterContractPlan(providerType, operationName, e
 	operationName = safeProviderReviewAttemptOperationName(operationName)
 	endpointKey = safeProviderReviewEndpointKey(endpointKey)
 	adapterName = cleanOptionalText(adapterName)
-	if providerType == "" || operationName == "" || endpointKey == "" || adapterName == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+	if providerType == "" || operationName == "" || endpointKey == "" || adapterName == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	builder := providerReviewAttemptRequestBuilderForOperation(operationName)
@@ -625,7 +625,7 @@ func providerReviewAttemptLiveAdapterPlan(providerType, operationName, endpointK
 	operationName = safeProviderReviewAttemptOperationName(operationName)
 	endpointKey = safeProviderReviewEndpointKey(endpointKey)
 	adapter := providerReviewAttemptLiveAdapterForProvider(providerType)
-	if adapter == nil || operationName == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+	if adapter == nil || operationName == "" || endpointKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	return adapter.BuildPlan(providerReviewAttemptLiveAdapterInput{
@@ -712,7 +712,7 @@ func providerReviewAttemptAdapterRequestBuilderPlan(providerType, operationName,
 	operationName = safeProviderReviewAttemptOperationName(operationName)
 	endpointKey = safeProviderReviewEndpointKey(endpointKey)
 	builder := providerReviewAttemptRequestBuilderForOperation(operationName)
-	if builder == nil || providerType == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+	if builder == nil || providerType == "" || endpointKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	return builder.BuildPlan(providerReviewAttemptRequestBuilderInput{
@@ -727,7 +727,7 @@ func providerReviewAttemptAdapterExecuteMethodPlan(providerType, operationName, 
 	operationName = safeProviderReviewAttemptOperationName(operationName)
 	endpointKey = safeProviderReviewEndpointKey(endpointKey)
 	method := providerReviewAttemptExecuteMethodForOperation(operationName)
-	if method == nil || providerType == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+	if method == nil || providerType == "" || endpointKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	return method.BuildPlan(providerReviewAttemptExecuteMethodInput{
@@ -742,7 +742,7 @@ func providerReviewAttemptAdapterProviderClientPlan(providerType, operationName,
 	operationName = safeProviderReviewAttemptOperationName(operationName)
 	endpointKey = safeProviderReviewEndpointKey(endpointKey)
 	factory := providerReviewAttemptProviderClientFactoryForProvider(providerType)
-	if factory == nil || operationName == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+	if factory == nil || operationName == "" || endpointKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	return factory.BuildPlan(providerReviewAttemptProviderClientInput{
@@ -770,7 +770,7 @@ func providerReviewAttemptAdapterResponseHandlerPlan(providerType, operationName
 	operationName = safeProviderReviewAttemptOperationName(operationName)
 	endpointKey = safeProviderReviewEndpointKey(endpointKey)
 	handler := providerReviewAttemptResponseHandlerForOperation(operationName)
-	if handler == nil || providerType == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+	if handler == nil || providerType == "" || endpointKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
 		return map[string]any{}
 	}
 	return handler.BuildPlan(providerReviewAttemptResponseHandlerInput{
