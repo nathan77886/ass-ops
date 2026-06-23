@@ -95,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/projects/{id}/versions", s.listProjectVersions)
 		r.Post("/api/projects/{id}/versions", s.createProjectVersion)
 		r.Get("/api/project-versions/{id}", s.getProjectVersion)
+		r.Get("/api/project-versions/{id}/validation", s.getProjectVersionValidation)
 		r.Get("/api/asset-graph-views", s.listAssetGraphViews)
 		r.Post("/api/asset-graph-views", s.createAssetGraphView)
 		r.Patch("/api/asset-graph-views/{id}", s.updateAssetGraphView)
@@ -2240,6 +2241,71 @@ func (s *Server) getProjectVersion(w http.ResponseWriter, r *http.Request) {
 		FROM project_versions
 		WHERE id=$1`, versionID)
 	writeQueryOne(w, item, err)
+}
+
+func (s *Server) getProjectVersionValidation(w http.ResponseWriter, r *http.Request) {
+	versionID := chi.URLParam(r, "id")
+	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: projectID}, "read") {
+		return
+	}
+	version, err := queryOne(r.Context(), s.store.DB, `
+		SELECT id, project_id, version, source, metadata, created_at
+		FROM project_versions
+		WHERE id=$1`, versionID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	remotes, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT gr.id, gr.latest_sha, r.repo_key, r.repo_role, r.name AS repository_name
+		FROM git_remotes gr
+		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
+		WHERE r.project_id=$1`, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load version remotes")
+		return
+	}
+	tagRuns, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT id, project_git_repository_id, target_remote_id, git_remote_id, tag_name, target_sha, status, created_at, finished_at
+		FROM repo_tag_runs
+		WHERE project_id=$1
+		ORDER BY created_at DESC
+		LIMIT 500`, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load tag runs")
+		return
+	}
+	actionRuns, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT id, git_remote_id, run_id, workflow_name, branch, commit_sha, status, conclusion, started_at, updated_at
+		FROM github_action_runs
+		WHERE git_remote_id IN (
+			SELECT gr.id
+			FROM git_remotes gr
+			JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
+			WHERE r.project_id=$1
+		)
+		ORDER BY updated_at DESC
+		LIMIT 500`, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load action runs")
+		return
+	}
+	argoApps, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT id, name, namespace, status, metadata, synced_at, updated_at
+		FROM argo_apps
+		WHERE project_id=$1
+		ORDER BY updated_at DESC
+		LIMIT 500`, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load Argo apps")
+		return
+	}
+	writeJSON(w, http.StatusOK, projectVersionValidationPreview(version, remotes, tagRuns, actionRuns, argoApps))
 }
 
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -5778,6 +5844,182 @@ func projectIDForProjectVersion(ctx context.Context, db sqlx.ExtContext, version
 		return "", ErrNotFound
 	}
 	return projectID, nil
+}
+
+func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, actionRuns, argoApps []map[string]any) map[string]any {
+	metadata := mapFromAny(version["metadata"])
+	repositories := mapSliceFromAny(metadata["repositories"])
+	items := make([]map[string]any, 0, len(repositories))
+	ready, partial, blocked := 0, 0, 0
+	for index, repoItem := range repositories {
+		item := projectVersionValidationItem(index, repoItem, remotes, tagRuns, actionRuns, argoApps)
+		switch item["status"] {
+		case "ready":
+			ready++
+		case "partial":
+			partial++
+		default:
+			blocked++
+		}
+		items = append(items, item)
+	}
+	overall := "blocked"
+	switch {
+	case len(items) > 0 && blocked == 0 && partial == 0:
+		overall = "ready"
+	case ready > 0 || partial > 0:
+		overall = "partial"
+	}
+	return map[string]any{
+		"version_id":              version["id"],
+		"version":                 version["version"],
+		"mode":                    "synced_state_validation_preview",
+		"validation_state":        overall,
+		"external_call_made":      false,
+		"provider_api_called":     false,
+		"git_fetch_performed":     false,
+		"argocd_api_called":       false,
+		"validation_source":       "local_synced_database_state",
+		"repository_count":        len(items),
+		"ready_count":             ready,
+		"partial_count":           partial,
+		"blocked_count":           blocked,
+		"items":                   items,
+		"required_live_rehearsal": []string{"git_ref_fetch", "github_actions_api_refresh", "argocd_app_refresh"},
+	}
+}
+
+func projectVersionValidationItem(index int, manifest map[string]any, remotes, tagRuns, actionRuns, argoApps []map[string]any) map[string]any {
+	remoteID := strings.TrimSpace(stringFromMap(manifest, "remote_id"))
+	commitSHA := strings.TrimSpace(firstNonEmptyString(stringFromMap(manifest, "commit_sha"), stringFromMap(manifest, "config_commit_sha")))
+	tagName := strings.TrimSpace(stringFromMap(manifest, "tag"))
+	actionRunID := strings.TrimSpace(stringFromMap(manifest, "github_action_run_id"))
+	argoRevision := strings.TrimSpace(stringFromMap(manifest, "argo_revision"))
+	checks := make([]map[string]any, 0, 5)
+	remote := findRowByID(remotes, remoteID)
+	checks = append(checks, validationCheck("remote_present", remote != nil, false, "manifest remote is available in synced database state"))
+	refChecksConfigured := commitSHA != "" || tagName != "" || actionRunID != "" || argoRevision != ""
+	if commitSHA != "" && remote != nil {
+		latestSHA := strings.TrimSpace(fmt.Sprint(remote["latest_sha"]))
+		checks = append(checks, validationCheck("commit_matches_remote_latest", latestSHA != "" && strings.EqualFold(latestSHA, commitSHA), latestSHA != "", "manifest commit matches synced remote latest_sha"))
+	}
+	if tagName != "" {
+		tagRun := findProjectVersionTagRun(tagRuns, remoteID, tagName, commitSHA)
+		checks = append(checks, validationCheck("tag_run_observed", tagRun != nil, len(tagRuns) > 0, "tag has a local repo_tag_run observation"))
+	}
+	if actionRunID != "" {
+		actionRun := findProjectVersionActionRun(actionRuns, remoteID, actionRunID, commitSHA)
+		checks = append(checks, validationCheck("github_action_run_observed", actionRun != nil, len(actionRuns) > 0, "GitHub Actions run has a local synced observation"))
+	}
+	if argoRevision != "" {
+		argoApp := findProjectVersionArgoRevision(argoApps, argoRevision)
+		checks = append(checks, validationCheck("argo_revision_observed", argoApp != nil, len(argoApps) > 0, "Argo revision has a local synced app observation"))
+	}
+	if remote != nil && !refChecksConfigured {
+		checks = append(checks, validationCheck("version_refs_configured", false, true, "manifest item has a remote but no commit, tag, action, or Argo revision to validate"))
+	}
+	status := validationStatus(checks)
+	return map[string]any{
+		"index":               index,
+		"repo_key":            manifest["repo_key"],
+		"repo_role":           manifest["repo_role"],
+		"remote_id":           remoteID,
+		"remote_key":          manifest["remote_key"],
+		"status":              status,
+		"checks":              checks,
+		"external_call_made":  false,
+		"secret_included":     false,
+		"credential_included": false,
+	}
+}
+
+func validationCheck(name string, ready, observed bool, message string) map[string]any {
+	status := "blocked"
+	if ready {
+		status = "ready"
+	} else if observed {
+		status = "partial"
+	}
+	return map[string]any{"name": name, "status": status, "message": message}
+}
+
+func validationStatus(checks []map[string]any) string {
+	if len(checks) == 0 {
+		return "blocked"
+	}
+	hasReady := false
+	hasPartial := false
+	for _, check := range checks {
+		switch check["status"] {
+		case "ready":
+			hasReady = true
+		case "partial":
+			hasPartial = true
+		default:
+			return "blocked"
+		}
+	}
+	if hasPartial {
+		return "partial"
+	}
+	if hasReady {
+		return "ready"
+	}
+	return "blocked"
+}
+
+func findRowByID(rows []map[string]any, id string) map[string]any {
+	for _, row := range rows {
+		if strings.TrimSpace(fmt.Sprint(row["id"])) == id {
+			return row
+		}
+	}
+	return nil
+}
+
+func findProjectVersionTagRun(rows []map[string]any, remoteID, tagName, commitSHA string) map[string]any {
+	for _, row := range rows {
+		if remoteID != "" && strings.TrimSpace(fmt.Sprint(row["target_remote_id"])) != remoteID && strings.TrimSpace(fmt.Sprint(row["git_remote_id"])) != remoteID {
+			continue
+		}
+		if tagName != "" && strings.TrimSpace(fmt.Sprint(row["tag_name"])) != tagName {
+			continue
+		}
+		if commitSHA != "" && !strings.EqualFold(strings.TrimSpace(fmt.Sprint(row["target_sha"])), commitSHA) {
+			continue
+		}
+		return row
+	}
+	return nil
+}
+
+func findProjectVersionActionRun(rows []map[string]any, remoteID, actionRunID, commitSHA string) map[string]any {
+	for _, row := range rows {
+		idMatches := strings.TrimSpace(fmt.Sprint(row["id"])) == actionRunID || strings.TrimSpace(fmt.Sprint(row["run_id"])) == actionRunID
+		if !idMatches {
+			continue
+		}
+		if remoteID != "" && strings.TrimSpace(fmt.Sprint(row["git_remote_id"])) != remoteID {
+			continue
+		}
+		if commitSHA != "" && !strings.EqualFold(strings.TrimSpace(fmt.Sprint(row["commit_sha"])), commitSHA) {
+			continue
+		}
+		return row
+	}
+	return nil
+}
+
+func findProjectVersionArgoRevision(rows []map[string]any, argoRevision string) map[string]any {
+	needle := strings.TrimSpace(argoRevision)
+	for _, row := range rows {
+		metadata := mapFromAny(row["metadata"])
+		revision := firstNonEmptyString(stringFromMap(metadata, "revision"), stringFromMap(metadata, "target_revision"))
+		if strings.EqualFold(strings.TrimSpace(revision), needle) {
+			return row
+		}
+	}
+	return nil
 }
 
 func defaultTargetRemoteIDs(ctx context.Context, db sqlx.ExtContext, repoID, sourceRemoteID string) ([]string, error) {

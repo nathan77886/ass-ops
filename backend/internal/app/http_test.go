@@ -1087,6 +1087,168 @@ func TestCreateProjectVersionRejectsOverlongVersion(t *testing.T) {
 	}
 }
 
+func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
+	preview := projectVersionValidationPreview(
+		map[string]any{
+			"id":      "version-1",
+			"version": "v0.1.0",
+			"metadata": map[string]any{"repositories": []any{
+				map[string]any{
+					"repo_key":             "service",
+					"repo_role":            "service",
+					"remote_id":            "remote-1",
+					"remote_key":           "github",
+					"commit_sha":           "ABC123",
+					"tag":                  "v0.1.0",
+					"github_action_run_id": "run-1",
+					"argo_revision":        "ABC123",
+				},
+			}},
+		},
+		[]map[string]any{{"id": "remote-1", "latest_sha": "abc123"}},
+		[]map[string]any{{"target_remote_id": "remote-1", "tag_name": "v0.1.0", "target_sha": "abc123"}},
+		[]map[string]any{{"id": "run-1", "git_remote_id": "remote-1", "commit_sha": "abc123"}},
+		[]map[string]any{{"metadata": map[string]any{"revision": "abc123"}}},
+	)
+	if preview["validation_state"] != "ready" ||
+		preview["external_call_made"] != false ||
+		preview["provider_api_called"] != false ||
+		preview["git_fetch_performed"] != false ||
+		preview["argocd_api_called"] != false ||
+		preview["validation_source"] != "local_synced_database_state" {
+		t.Fatalf("project version validation preview = %#v", preview)
+	}
+	items := sliceOfMapsFromAny(preview["items"])
+	if len(items) != 1 || items[0]["status"] != "ready" || items[0]["external_call_made"] != false || items[0]["secret_included"] != false {
+		t.Fatalf("validation items = %#v", items)
+	}
+	checks := sliceOfMapsFromAny(items[0]["checks"])
+	for _, name := range []string{"remote_present", "commit_matches_remote_latest", "tag_run_observed", "github_action_run_observed", "argo_revision_observed"} {
+		if statusByName(checks, name) != "ready" {
+			t.Fatalf("check %s not ready in %#v", name, checks)
+		}
+	}
+	rehearsal := stringSliceFromAny(preview["required_live_rehearsal"])
+	for _, required := range []string{"git_ref_fetch", "github_actions_api_refresh", "argocd_app_refresh"} {
+		if !containsString(rehearsal, required) {
+			t.Fatalf("required_live_rehearsal missing %q: %#v", required, rehearsal)
+		}
+	}
+}
+
+func TestProjectVersionValidationPreviewReportsPartialAndBlockedChecks(t *testing.T) {
+	preview := projectVersionValidationPreview(
+		map[string]any{
+			"id":      "version-1",
+			"version": "v0.1.0",
+			"metadata": map[string]any{"repositories": []any{
+				map[string]any{
+					"repo_key":             "service",
+					"remote_id":            "remote-1",
+					"commit_sha":           "want-sha",
+					"github_action_run_id": "run-1",
+				},
+				map[string]any{"repo_key": "missing", "remote_id": "remote-missing"},
+			}},
+		},
+		[]map[string]any{{"id": "remote-1", "latest_sha": "other-sha"}},
+		nil,
+		[]map[string]any{{"id": "run-1", "git_remote_id": "remote-1", "commit_sha": "other-sha"}},
+		nil,
+	)
+	if preview["validation_state"] != "partial" || preview["ready_count"] != 0 || preview["partial_count"] != 1 || preview["blocked_count"] != 1 {
+		t.Fatalf("validation summary = %#v", preview)
+	}
+	items := sliceOfMapsFromAny(preview["items"])
+	if len(items) != 2 || items[0]["status"] != "partial" || items[1]["status"] != "blocked" {
+		t.Fatalf("validation items = %#v", items)
+	}
+	checks := sliceOfMapsFromAny(items[0]["checks"])
+	if statusByName(checks, "remote_present") != "ready" ||
+		statusByName(checks, "commit_matches_remote_latest") != "partial" ||
+		statusByName(checks, "github_action_run_observed") != "partial" {
+		t.Fatalf("partial item checks = %#v", checks)
+	}
+}
+
+func TestProjectVersionValidationPreviewAvoidsArgoMetadataSubstringFalsePositive(t *testing.T) {
+	preview := projectVersionValidationPreview(
+		map[string]any{
+			"id":      "version-1",
+			"version": "v0.1.0",
+			"metadata": map[string]any{"repositories": []any{
+				map[string]any{"repo_key": "service", "remote_id": "remote-1", "argo_revision": "abc123"},
+				map[string]any{"repo_key": "config", "remote_id": "remote-1"},
+			}},
+		},
+		[]map[string]any{{"id": "remote-1", "latest_sha": "abc123"}},
+		nil,
+		nil,
+		[]map[string]any{{"metadata": map[string]any{"message": "mentions abc123", "revision": "different"}}},
+	)
+	items := sliceOfMapsFromAny(preview["items"])
+	if len(items) != 2 || items[0]["status"] != "partial" || items[1]["status"] != "partial" {
+		t.Fatalf("validation items = %#v", items)
+	}
+	checks := sliceOfMapsFromAny(items[0]["checks"])
+	if statusByName(checks, "argo_revision_observed") != "partial" {
+		t.Fatalf("argo revision should only match structured revision fields: %#v", checks)
+	}
+	remoteOnlyChecks := sliceOfMapsFromAny(items[1]["checks"])
+	if statusByName(remoteOnlyChecks, "version_refs_configured") != "partial" {
+		t.Fatalf("remote-only item should remain partial: %#v", remoteOnlyChecks)
+	}
+}
+
+func TestGetProjectVersionValidationHandlerScopesQueries(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, version, source, metadata, created_at\s+FROM project_versions\s+WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
+			AddRow("version-1", "project-1", "v0.1.0", "manual", []byte(`{"repositories":[{"repo_key":"service","remote_id":"remote-1","commit_sha":"abc123"}]}`), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT gr\.id, gr\.latest_sha, r\.repo_key, r\.repo_role, r\.name AS repository_name\s+FROM git_remotes gr\s+JOIN project_git_repositories r ON r\.id=gr\.project_git_repository_id\s+WHERE r\.project_id=\$1`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "latest_sha", "repo_key", "repo_role", "repository_name"}).AddRow("remote-1", "abc123", "service", "service", "Service"))
+	mock.ExpectQuery(`(?s)SELECT id, project_git_repository_id, target_remote_id, git_remote_id, tag_name, target_sha, status, created_at, finished_at\s+FROM repo_tag_runs\s+WHERE project_id=\$1`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "created_at", "finished_at"}))
+	mock.ExpectQuery(`(?s)SELECT id, git_remote_id, run_id, workflow_name, branch, commit_sha, status, conclusion, started_at, updated_at\s+FROM github_action_runs\s+WHERE git_remote_id IN`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "git_remote_id", "run_id", "workflow_name", "branch", "commit_sha", "status", "conclusion", "started_at", "updated_at"}))
+	mock.ExpectQuery(`(?s)SELECT id, name, namespace, status, metadata, synced_at, updated_at\s+FROM argo_apps\s+WHERE project_id=\$1`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "namespace", "status", "metadata", "synced_at", "updated_at"}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/project-versions/version-1/validation", nil)
+	req = withRouteParam(req, "id", "version-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.getProjectVersionValidation(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["mode"] != "synced_state_validation_preview" || payload["external_call_made"] != false || payload["validation_state"] != "ready" {
+		t.Fatalf("validation payload = %#v", payload)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestListSSHCommandRunsIncludesOperationType(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -11896,6 +12058,15 @@ func sliceOfMapsFromAny(value any) []map[string]any {
 func statusByGate(gates []map[string]any, gate string) string {
 	for _, item := range gates {
 		if fmt.Sprint(item["gate"]) == gate {
+			return fmt.Sprint(item["status"])
+		}
+	}
+	return ""
+}
+
+func statusByName(items []map[string]any, name string) string {
+	for _, item := range items {
+		if fmt.Sprint(item["name"]) == name {
 			return fmt.Sprint(item["status"])
 		}
 	}

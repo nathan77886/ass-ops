@@ -2520,6 +2520,8 @@ function ProjectDetail() {
   const versions = useLoad(() => project ? api(`/api/projects/${project.id}/versions`) : Promise.resolve({ items: [] }), [project?.id]);
   const [repoOpen, setRepoOpen] = useState(false);
   const [versionOpen, setVersionOpen] = useState(false);
+  const [versionValidation, setVersionValidation] = useState<AnyRow>();
+  const [validatingVersionID, setValidatingVersionID] = useState<string>();
   const [configInitializing, setConfigInitializing] = useState(false);
   const configRepo = repoRows.find((row: AnyRow) => row.repo_role === 'config');
   async function initializeConfigRepo() {
@@ -2561,6 +2563,18 @@ function ProjectDetail() {
     });
     versions.reload();
   }
+  async function validateVersion(row: AnyRow) {
+    setValidatingVersionID(row.id);
+    try {
+      const result = await api(`/api/project-versions/${row.id}/validation`);
+      setVersionValidation(result);
+      message.success('Version validation preview ready');
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setValidatingVersionID(undefined);
+    }
+  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Typography.Title level={2}>Project Detail</Typography.Title>
@@ -2587,6 +2601,19 @@ function ProjectDetail() {
           ]} />
           <CreateModal title="Create repository" open={repoOpen} setOpen={setRepoOpen} fields={['name', 'repo_key', 'display_name', 'repo_role', 'description', 'default_branch']} onSubmit={(v) => api(`/api/projects/${project.id}/git-repositories`, { method: 'POST', body: JSON.stringify(v) }).then(repos.reload)} />
           <Toolbar title="Versions" onCreate={() => setVersionOpen(true)} />
+          {versionValidation && (
+            <Card title="Version validation">
+              <Space direction="vertical" size={8} className="full">
+                <Space wrap>
+                  <Tag color={versionValidation.validation_state === 'ready' ? 'green' : versionValidation.validation_state === 'partial' ? 'gold' : 'red'}>{versionValidation.validation_state || 'blocked'}</Tag>
+                  <Tag>{versionValidation.external_call_made ? 'external call' : 'no external call'}</Tag>
+                  <Tag>{versionValidation.git_fetch_performed ? 'git fetch' : 'no git fetch'}</Tag>
+                  <Tag>{versionValidation.provider_api_called ? 'provider API called' : 'local synced state'}</Tag>
+                </Space>
+                <JSONBlock value={versionValidation} />
+              </Space>
+            </Card>
+          )}
           <Table<AnyRow>
             rowKey="id"
             dataSource={versions.data?.items || []}
@@ -2596,7 +2623,8 @@ function ProjectDetail() {
               { title: 'Version', dataIndex: 'version' },
               { title: 'Source', render: (_, row) => <Tag>{row.source || 'manual'}</Tag> },
               { title: 'Repositories', render: (_, row) => Array.isArray(row.metadata?.repositories) ? row.metadata.repositories.length : 0 },
-              { title: 'Created', render: (_, row) => shortText(row.created_at, 24) }
+              { title: 'Created', render: (_, row) => shortText(row.created_at, 24) },
+              { title: 'Validate', render: (_, row) => <Button size="small" loading={validatingVersionID === row.id} onClick={() => validateVersion(row)}>Validate</Button> }
             ]}
           />
           <VersionManifestModal open={versionOpen} setOpen={setVersionOpen} repos={repoRows} remotes={projectRemotes.data?.items || []} onSubmit={createVersion} />
