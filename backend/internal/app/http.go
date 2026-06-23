@@ -14893,13 +14893,38 @@ func argoPodLogQueryPreview(podName, containerName string, tailLines, sinceSecon
 	namespace := strings.TrimSpace(fmt.Sprint(target["namespace"]))
 	clusterName := strings.TrimSpace(fmt.Sprint(target["cluster_name"]))
 	status := strings.TrimSpace(fmt.Sprint(target["status"]))
+	if namespace == "<nil>" {
+		namespace = ""
+	}
+	if clusterName == "<nil>" {
+		clusterName = ""
+	}
+	if status == "<nil>" {
+		status = ""
+	}
 	blockedReasons := []string{"pod_log_backend_disabled", "kubernetes_client_not_bound"}
-	if namespace == "" || namespace == "<nil>" {
+	if namespace == "" {
 		blockedReasons = append(blockedReasons, "namespace_missing")
 	}
-	if clusterName == "" || clusterName == "<nil>" {
+	if clusterName == "" {
 		blockedReasons = append(blockedReasons, "cluster_name_missing")
 	}
+	query := map[string]any{
+		"pod_name":       podName,
+		"container_name": containerName,
+		"namespace":      namespace,
+		"tail_lines":     tailLines,
+		"since_seconds":  sinceSeconds,
+	}
+	deploymentTarget := map[string]any{
+		"id":           target["id"],
+		"name":         target["name"],
+		"environment":  target["environment"],
+		"cluster_name": clusterName,
+		"namespace":    namespace,
+		"status":       status,
+	}
+	retrievalPlan := argoPodLogRetrievalPlan(query, deploymentTarget, blockedReasons)
 	return map[string]any{
 		"mode":                "read_only_preview",
 		"query_state":         "blocked",
@@ -14910,27 +14935,88 @@ func argoPodLogQueryPreview(podName, containerName string, tailLines, sinceSecon
 		"log_body_included":   false,
 		"contains_secret":     false,
 		"contains_token":      false,
-		"deployment_target": map[string]any{
-			"id":           target["id"],
-			"name":         target["name"],
-			"environment":  target["environment"],
-			"cluster_name": clusterName,
-			"namespace":    namespace,
-			"status":       status,
-		},
-		"query": map[string]any{
-			"pod_name":       podName,
-			"container_name": containerName,
-			"namespace":      namespace,
-			"tail_lines":     tailLines,
-			"since_seconds":  sinceSeconds,
-		},
-		"required_controls": []string{"deployment_target_review", "kubeconfig_binding", "namespace_confirmation", "pod_name_confirmation", "operator_confirmation"},
-		"disabled_backends": []string{"kubectl_logs", "kubernetes_pod_log_api", "argocd_pod_logs"},
-		"suppressed_fields": []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret"},
-		"blocked_reasons":   blockedReasons,
-		"next_step":         "Bind a reviewed kubeconfig and implement approval-gated pod log retrieval before returning log bodies.",
+		"deployment_target":   deploymentTarget,
+		"query":               query,
+		"retrieval_plan":      retrievalPlan,
+		"required_controls":   []string{"deployment_target_review", "kubeconfig_binding", "namespace_confirmation", "pod_name_confirmation", "operator_confirmation"},
+		"disabled_backends":   []string{"kubectl_logs", "kubernetes_pod_log_api", "argocd_pod_logs"},
+		"suppressed_fields":   []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret"},
+		"blocked_reasons":     blockedReasons,
+		"next_step":           "Bind a reviewed kubeconfig and implement approval-gated pod log retrieval before returning log bodies.",
 	}
+}
+
+func argoPodLogRetrievalPlan(query, target map[string]any, blockedReasons []string) map[string]any {
+	steps := []map[string]any{
+		{
+			"kind":    "operation_approval",
+			"status":  "blocked",
+			"message": "pod log retrieval requires an approval-gated operation before any live backend can be enabled",
+		},
+		{
+			"kind":    "kubeconfig_binding",
+			"status":  "blocked",
+			"message": "bind a reviewed namespace-scoped kubeconfig outside the preview response",
+		},
+		{
+			"kind":    "target_scope_check",
+			"status":  podLogPlanStatus(strings.TrimSpace(fmt.Sprint(target["cluster_name"])) != "" && strings.TrimSpace(fmt.Sprint(target["namespace"])) != ""),
+			"message": "deployment target must carry cluster and namespace metadata",
+		},
+		{
+			"kind":    "pod_identity_confirmation",
+			"status":  podLogPlanStatus(strings.TrimSpace(fmt.Sprint(query["pod_name"])) != ""),
+			"message": "operator must provide an explicit pod name",
+		},
+		{
+			"kind":    "container_scope_confirmation",
+			"status":  "planned",
+			"message": "empty container name means provider default; explicit container narrows scope",
+		},
+		{
+			"kind":    "live_log_stream",
+			"status":  "blocked",
+			"message": "Kubernetes/Argo pod log backends are disabled in the first-version preview",
+		},
+	}
+	planned, blocked := 0, 0
+	for _, step := range steps {
+		step["external_call_made"] = false
+		step["secret_included"] = false
+		if step["status"] == "planned" {
+			planned++
+		} else {
+			blocked++
+		}
+	}
+	return map[string]any{
+		"mode":                         "pod_log_retrieval_plan_preview",
+		"plan_state":                   "blocked",
+		"execution_enabled":            false,
+		"external_call_made":           false,
+		"kubernetes_api_call":          false,
+		"argocd_api_call":              false,
+		"log_body_included":            false,
+		"kubeconfig_included":          false,
+		"contains_secret":              false,
+		"planned_count":                planned,
+		"blocked_count":                blocked,
+		"step_count":                   len(steps),
+		"steps":                        steps,
+		"blocked_reasons":              blockedReasons,
+		"required_live_controls":       []string{"operation_approval", "environment_review", "kubeconfig_binding", "namespace_confirmation", "pod_name_confirmation", "operator_confirmation"},
+		"disabled_backends":            []string{"kubectl_logs", "kubernetes_pod_log_api", "argocd_pod_logs"},
+		"suppressed_fields":            []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret"},
+		"required_operator_action":     "Review the target and pod identity, bind a namespace-scoped kubeconfig, then implement an approval-gated live log backend.",
+		"future_execution_result_type": "redacted_log_stream",
+	}
+}
+
+func podLogPlanStatus(ready bool) string {
+	if ready {
+		return "planned"
+	}
+	return "blocked"
 }
 
 func rollbackPointReadinessSQL(limit int) string {

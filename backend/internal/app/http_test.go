@@ -531,6 +531,27 @@ func TestArgoPodLogQueryPreviewIsReadOnlyAndRedacted(t *testing.T) {
 	if len(suppressed) != 7 || suppressed[0] != "kubeconfig" || suppressed[3] != "log_body" {
 		t.Fatalf("pod log suppressed fields = %#v", suppressed)
 	}
+	plan := mapFromAny(preview["retrieval_plan"])
+	if plan["mode"] != "pod_log_retrieval_plan_preview" ||
+		plan["plan_state"] != "blocked" ||
+		plan["execution_enabled"] != false ||
+		plan["external_call_made"] != false ||
+		plan["kubernetes_api_call"] != false ||
+		plan["argocd_api_call"] != false ||
+		plan["log_body_included"] != false ||
+		plan["kubeconfig_included"] != false ||
+		plan["contains_secret"] != false {
+		t.Fatalf("pod log retrieval plan guardrails = %#v", plan)
+	}
+	steps := sliceOfMapsFromAny(plan["steps"])
+	if len(steps) != 6 ||
+		statusByKind(steps, "operation_approval") != "blocked" ||
+		statusByKind(steps, "kubeconfig_binding") != "blocked" ||
+		statusByKind(steps, "target_scope_check") != "planned" ||
+		statusByKind(steps, "pod_identity_confirmation") != "planned" ||
+		statusByKind(steps, "live_log_stream") != "blocked" {
+		t.Fatalf("pod log retrieval steps = %#v", steps)
+	}
 }
 
 func TestArgoPodLogQueryPreviewReportsMissingTargetMetadata(t *testing.T) {
@@ -542,6 +563,11 @@ func TestArgoPodLogQueryPreviewReportsMissingTargetMetadata(t *testing.T) {
 	blockedReasons := stringSliceFromAny(preview["blocked_reasons"])
 	if !containsString(blockedReasons, "namespace_missing") || !containsString(blockedReasons, "cluster_name_missing") {
 		t.Fatalf("pod log blocked reasons = %#v", blockedReasons)
+	}
+	plan := mapFromAny(preview["retrieval_plan"])
+	steps := sliceOfMapsFromAny(plan["steps"])
+	if statusByKind(steps, "target_scope_check") != "blocked" || plan["blocked_count"] != 4 {
+		t.Fatalf("pod log retrieval plan should block missing target metadata: %#v", plan)
 	}
 }
 

@@ -4350,6 +4350,8 @@ function ConfigPage() {
                     <Tag>{podLogPreview.execution_enabled ? 'execution enabled' : 'execution disabled'}</Tag>
                     <Tag>{podLogPreview.kubernetes_api_call ? 'k8s called' : 'no k8s call'}</Tag>
                     <Tag>{podLogPreview.log_body_included ? 'log body included' : 'no log body'}</Tag>
+                    {podLogPreview.retrieval_plan ? <Tag color="red">retrieval {podLogPreview.retrieval_plan.plan_state || 'blocked'}</Tag> : null}
+                    {podLogPreview.retrieval_plan ? <Tag>{podLogPreview.retrieval_plan.step_count || 0} retrieval steps</Tag> : null}
                   </Space>
                   <JSONBlock value={podLogPreview} />
                 </Space>
