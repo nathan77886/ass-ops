@@ -12150,10 +12150,10 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 			"status":       "verified",
 		},
 	)
-	if len(steps) != 5 {
-		t.Fatalf("len(steps) = %d, want 5", len(steps))
+	if len(steps) != 6 {
+		t.Fatalf("len(steps) = %d, want 6", len(steps))
 	}
-	wantTools := []string{"context.generate", "plan.review", "runtime.check", "codex.execution.plan", "patch.prepare"}
+	wantTools := []string{"context.generate", "plan.review", "runtime.check", "worker.dispatch.plan", "codex.execution.plan", "patch.prepare"}
 	for i, tool := range wantTools {
 		if steps[i]["tool_name"] != tool {
 			t.Fatalf("step %d tool = %v, want %s", i, steps[i]["tool_name"], tool)
@@ -12181,11 +12181,33 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 	if _, ok := runtimeInput["config"]; ok {
 		t.Fatalf("runtime.check input should not expose runtime config: %#v", runtimeInput)
 	}
-	codexPlanInput := mapFromAny(steps[3]["input"])
+	workerDispatchInput := mapFromAny(steps[3]["input"])
+	if workerDispatchInput["mode"] != "redacted_worker_dispatch_plan" {
+		t.Fatalf("worker.dispatch.plan mode = %v, want redacted_worker_dispatch_plan", workerDispatchInput["mode"])
+	}
+	workerDispatchOutput := mapFromAny(steps[3]["output"])
+	workerDispatchPlan := mapFromAny(workerDispatchOutput["worker_dispatch_plan"])
+	if workerDispatchPlan["mode"] != "redacted_agent_worker_dispatch_plan" ||
+		workerDispatchPlan["dispatch_state"] != "blocked" ||
+		workerDispatchPlan["prerequisite_state"] != "metadata_available" ||
+		workerDispatchPlan["worker_claim_enabled"] != false ||
+		workerDispatchPlan["tool_invocation_enabled"] != false ||
+		workerDispatchPlan["tool_invoked"] != false ||
+		workerDispatchPlan["result_written"] != false {
+		t.Fatalf("worker.dispatch.plan should expose disabled worker dispatch boundary: %#v", workerDispatchPlan)
+	}
+	if !containsString(stringSliceFromAny(workerDispatchPlan["required_controls"]), "worker_capability_ai") ||
+		!containsString(stringSliceFromAny(workerDispatchPlan["allowed_tool_names"]), "context.generate") ||
+		!containsString(stringSliceFromAny(workerDispatchPlan["disabled_backends"]), "worker_tool_invoke") ||
+		!containsString(stringSliceFromAny(workerDispatchPlan["suppressed_fields"]), "tool_output") ||
+		!containsString(stringSliceFromAny(workerDispatchPlan["blocked_reasons"]), "result_callback_not_wired") {
+		t.Fatalf("worker.dispatch.plan missing controls/backends/suppression: %#v", workerDispatchPlan)
+	}
+	codexPlanInput := mapFromAny(steps[4]["input"])
 	if codexPlanInput["mode"] != "redacted_execution_plan" {
 		t.Fatalf("codex.execution.plan mode = %v, want redacted_execution_plan", codexPlanInput["mode"])
 	}
-	codexPlanOutput := mapFromAny(steps[3]["output"])
+	codexPlanOutput := mapFromAny(steps[4]["output"])
 	codexPlan := mapFromAny(codexPlanOutput["codex_execution_plan"])
 	if codexPlan["mode"] != "redacted_codex_execution_plan" ||
 		codexPlan["plan_state"] != "blocked" ||
@@ -12209,11 +12231,11 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 		!containsString(stringSliceFromAny(codexPlan["blocked_reasons"]), "repository_mutation_not_armed") {
 		t.Fatalf("codex.execution.plan missing redacted controls/backends/suppression: %#v", codexPlan)
 	}
-	patchInput := mapFromAny(steps[4]["input"])
+	patchInput := mapFromAny(steps[5]["input"])
 	if patchInput["mode"] != "simulation_only" {
 		t.Fatalf("patch.prepare mode = %v, want simulation_only", patchInput["mode"])
 	}
-	patchOutput := mapFromAny(steps[4]["output"])
+	patchOutput := mapFromAny(steps[5]["output"])
 	if !strings.Contains(fmt.Sprint(patchOutput["message"]), "code mutation remains disabled") {
 		t.Fatalf("patch.prepare output should document disabled mutation: %#v", patchOutput)
 	}
@@ -12308,6 +12330,83 @@ func TestAgentCodexExecutionPlan(t *testing.T) {
 			for _, forbidden := range []string{"do-not-serialize", "ASSOPS_", "OPENAI_", "GITHUB_TOKEN", "PRIVATE KEY"} {
 				if strings.Contains(string(encoded), forbidden) {
 					t.Fatalf("Codex execution plan should not expose sensitive config hints: %s", encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestAgentWorkerDispatchPlan(t *testing.T) {
+	tests := []struct {
+		name             string
+		runtime          map[string]any
+		wantPrerequisite string
+	}{
+		{
+			name:             "missing runtime keeps dispatch metadata blocked",
+			runtime:          map[string]any{},
+			wantPrerequisite: "metadata_blocked",
+		},
+		{
+			name: "verified runtime only makes dispatch metadata available",
+			runtime: map[string]any{
+				"name":         "Demo Codex",
+				"runtime_type": "codex-cli",
+				"codex_binary": "codex",
+				"status":       "verified",
+				"config":       map[string]any{"token": "do-not-serialize"},
+			},
+			wantPrerequisite: "metadata_available",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := agentWorkerDispatchPlan(tt.runtime)
+			if got["mode"] != "redacted_agent_worker_dispatch_plan" ||
+				got["dispatch_state"] != "blocked" ||
+				got["dispatch_ready"] != false ||
+				got["dispatch_ready_reason"] != "agent_worker_execution_backend_disabled" ||
+				got["prerequisite_state"] != tt.wantPrerequisite ||
+				got["execution_enabled"] != false ||
+				got["worker_claim_enabled"] != false ||
+				got["worker_job_created"] != false ||
+				got["worker_node_claimed"] != false ||
+				got["tool_invocation_enabled"] != false ||
+				got["tool_invoked"] != false ||
+				got["result_written"] != false ||
+				got["repository_mutation_allowed"] != false ||
+				got["external_call_made"] != false {
+				t.Fatalf("unexpected worker dispatch plan: %#v", got)
+			}
+			for _, required := range []string{"agent_execute_approval", "worker_capability_ai", "runtime_verification", "tool_allowlist", "result_callback_audit"} {
+				if !containsString(stringSliceFromAny(got["required_controls"]), required) {
+					t.Fatalf("required_controls missing %q: %#v", required, got["required_controls"])
+				}
+			}
+			for _, capability := range []string{"ai", "context.read", "agent.audit"} {
+				if !containsString(stringSliceFromAny(got["required_worker_capabilities"]), capability) {
+					t.Fatalf("required_worker_capabilities missing %q: %#v", capability, got["required_worker_capabilities"])
+				}
+			}
+			for _, tool := range []string{"context.generate", "runtime.check", "codex.execution.plan", "patch.prepare"} {
+				if !containsString(stringSliceFromAny(got["allowed_tool_names"]), tool) {
+					t.Fatalf("allowed_tool_names missing %q: %#v", tool, got["allowed_tool_names"])
+				}
+			}
+			for _, backend := range []string{"worker_claim", "worker_tool_invoke", "codex_cli_process", "git_push"} {
+				if !containsString(stringSliceFromAny(got["disabled_backends"]), backend) {
+					t.Fatalf("disabled_backends missing %q: %#v", backend, got["disabled_backends"])
+				}
+			}
+			for _, field := range []string{"runtime_config", "environment_variables", "tool_input", "tool_output", "token"} {
+				if !containsString(stringSliceFromAny(got["suppressed_fields"]), field) {
+					t.Fatalf("suppressed_fields missing %q: %#v", field, got["suppressed_fields"])
+				}
+			}
+			encoded, _ := json.Marshal(got)
+			for _, forbidden := range []string{"do-not-serialize", "ASSOPS_", "OPENAI_", "GITHUB_TOKEN", "PRIVATE KEY", "Bearer", "password"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("worker dispatch plan should not expose sensitive config hints: %s", encoded)
 				}
 			}
 		})

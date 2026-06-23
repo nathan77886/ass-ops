@@ -14368,6 +14368,19 @@ func agentExecutionAuditSteps(task, plan, op, runtime map[string]any) []map[stri
 		},
 		agentRuntimeCheckStep(taskID, opID, runtime),
 		{
+			"tool_name": "worker.dispatch.plan",
+			"input": map[string]any{
+				"agent_task_id":    taskID,
+				"agent_plan_id":    planID,
+				"operation_run_id": opID,
+				"mode":             "redacted_worker_dispatch_plan",
+			},
+			"output": map[string]any{
+				"message":              "worker-backed agent execution dispatch is planned for audit only; no worker is claimed and no tool is invoked",
+				"worker_dispatch_plan": agentWorkerDispatchPlan(runtime),
+			},
+		},
+		{
 			"tool_name": "codex.execution.plan",
 			"input": map[string]any{
 				"agent_task_id":    taskID,
@@ -14414,6 +14427,106 @@ func agentPatchWorkflowGuardrail() map[string]any {
 		"execution_readiness": agentExecutionReadinessGates(),
 		"next_step":           "Keep execution audit-only until Codex CLI runs, patch application, and PR creation are individually approval-gated.",
 		"message":             "Agent patch workflow is audit-only: Codex CLI, repository mutation, and pull request creation are disabled.",
+	}
+}
+
+func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
+	cliReadiness := agentCodexCLIReadiness(runtime)
+	runtimeReady := strings.TrimSpace(fmt.Sprint(cliReadiness["readiness"])) == "metadata_ready"
+	dispatchPrerequisite := "metadata_blocked"
+	if runtimeReady {
+		dispatchPrerequisite = "metadata_available"
+	}
+	return map[string]any{
+		"mode":                          "redacted_agent_worker_dispatch_plan",
+		"dispatch_state":                "blocked",
+		"dispatch_ready":                false,
+		"dispatch_ready_reason":         "agent_worker_execution_backend_disabled",
+		"prerequisite_state":            dispatchPrerequisite,
+		"execution_enabled":             false,
+		"worker_claim_enabled":          false,
+		"worker_job_created":            false,
+		"worker_node_claimed":           false,
+		"tool_invocation_enabled":       false,
+		"tool_invoked":                  false,
+		"external_call_made":            false,
+		"repository_mutation_allowed":   false,
+		"result_callback_enabled":       false,
+		"result_written":                false,
+		"context_snapshot_materialized": true,
+		"requires_operation_run":        true,
+		"requires_approved_plan":        true,
+		"requires_worker_capability":    true,
+		"requires_runtime_verification": true,
+		"requires_tool_allowlist":       true,
+		"requires_result_callback":      true,
+		"contains_token":                false,
+		"contains_runtime_config":       false,
+		"contains_prompt_body":          false,
+		"contains_tool_input":           false,
+		"contains_tool_output":          false,
+		"contains_workspace_path":       false,
+		"dispatch_boundary_redacted":    true,
+		"blocked_reasons": []string{
+			"agent_worker_execution_backend_disabled",
+			"worker_claim_not_enabled",
+			"tool_invocation_not_armed",
+			"result_callback_not_wired",
+		},
+		"required_controls": []string{
+			"agent_execute_approval",
+			"worker_capability_ai",
+			"runtime_verification",
+			"tool_allowlist",
+			"context_snapshot",
+			"result_callback_audit",
+			"human_result_review",
+		},
+		"required_worker_capabilities": []string{
+			"ai",
+			"context.read",
+			"agent.audit",
+		},
+		"allowed_tool_names": []string{
+			"context.generate",
+			"runtime.check",
+			"codex.execution.plan",
+			"patch.prepare",
+		},
+		"disabled_backends": []string{
+			"worker_claim",
+			"worker_tool_invoke",
+			"codex_cli_process",
+			"file_patch_apply",
+			"git_commit",
+			"git_push",
+			"pull_request_create",
+		},
+		"suppressed_fields": []string{
+			"runtime_config",
+			"environment_variables",
+			"authorization_header",
+			"workspace_path",
+			"repository_url",
+			"prompt_body",
+			"tool_input",
+			"tool_output",
+			"patch_content",
+			"diff_content",
+			"token",
+		},
+		"dispatch_sequence": []string{
+			"verify_operation_run",
+			"verify_approved_plan",
+			"select_ai_worker",
+			"bind_runtime_metadata",
+			"materialize_context_snapshot",
+			"invoke_allowlisted_tools",
+			"record_tool_results",
+			"mark_operation_complete",
+		},
+		"runtime_readiness": cliReadiness,
+		"message":           "Agent worker dispatch is a redacted audit boundary; worker claim, tool invocation, and result callback remain disabled.",
 	}
 }
 

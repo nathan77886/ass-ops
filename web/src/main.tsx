@@ -3931,6 +3931,22 @@ function AgentTasks() {
         {plan.message ? <Typography.Text type="secondary">{shortText(plan.message, 96)}</Typography.Text> : null}
       </Space>;
     }
+    if (row.tool_name === 'worker.dispatch.plan') {
+      const plan = output.worker_dispatch_plan || {};
+      const backends = Array.isArray(plan.disabled_backends) ? plan.disabled_backends : [];
+      const controls = Array.isArray(plan.required_controls) ? plan.required_controls : [];
+      const capabilities = Array.isArray(plan.required_worker_capabilities) ? plan.required_worker_capabilities : [];
+      return <Space size={4} wrap>
+        <Tag color="gold">{plan.dispatch_state || 'blocked'}</Tag>
+        <Tag color={plan.prerequisite_state === 'metadata_available' ? 'blue' : 'red'}>{plan.prerequisite_state || 'metadata_blocked'}</Tag>
+        <Tag color={plan.worker_claim_enabled === true ? 'red' : 'green'}>{plan.worker_claim_enabled === true ? 'Worker claim enabled' : 'No worker claim'}</Tag>
+        <Tag color={plan.tool_invocation_enabled === true ? 'red' : 'green'}>{plan.tool_invocation_enabled === true ? 'Tools enabled' : 'Tools blocked'}</Tag>
+        <Typography.Text>{capabilities.length} worker capabilit{capabilities.length === 1 ? 'y' : 'ies'}</Typography.Text>
+        <Typography.Text>{backends.length} disabled backend{backends.length === 1 ? '' : 's'}</Typography.Text>
+        <Typography.Text type="secondary">{controls.length} required control{controls.length === 1 ? '' : 's'}</Typography.Text>
+        {plan.message ? <Typography.Text type="secondary">{shortText(plan.message, 96)}</Typography.Text> : null}
+      </Space>;
+    }
     return <Typography.Text>{output.message || '-'}</Typography.Text>;
   }
   return (
