@@ -25,6 +25,7 @@ services:
       - ../backend/migrations/013_provider_review_approval_rule.sql:/docker-entrypoint-initdb.d/013_provider_review_approval_rule.sql:ro
       - ../backend/migrations/014_provider_review_attempts.sql:/docker-entrypoint-initdb.d/014_provider_review_attempts.sql:ro
       - ../backend/migrations/015_provider_review_attempt_dependencies.sql:/docker-entrypoint-initdb.d/015_provider_review_attempt_dependencies.sql:ro
+      - ../backend/migrations/016_project_versions_unique.sql:/docker-entrypoint-initdb.d/016_project_versions_unique.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U assops -d assops"]
       interval: 5s

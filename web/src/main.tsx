@@ -2473,7 +2473,21 @@ function ProjectDetail() {
   const projectPick = useSelectedRow(projectRows);
   const project = projectPick.selected;
   const repos = useLoad(() => project ? api(`/api/projects/${project.id}/git-repositories`) : Promise.resolve({ items: [] }), [project?.id]);
+  const versions = useLoad(() => project ? api(`/api/projects/${project.id}/versions`) : Promise.resolve({ items: [] }), [project?.id]);
   const [repoOpen, setRepoOpen] = useState(false);
+  const [versionOpen, setVersionOpen] = useState(false);
+  async function createVersion(values: AnyRow) {
+    if (!project) return;
+    await api(`/api/projects/${project.id}/versions`, {
+      method: 'POST',
+      body: JSON.stringify({
+        version: values.version,
+        source: values.source || 'manual',
+        metadata: parseJSONField(values.metadata_json)
+      })
+    });
+    versions.reload();
+  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Typography.Title level={2}>Project Detail</Typography.Title>
@@ -2493,6 +2507,20 @@ function ProjectDetail() {
             { title: 'Default branch', dataIndex: 'default_branch' }
           ]} />
           <CreateModal title="Create repository" open={repoOpen} setOpen={setRepoOpen} fields={['name', 'repo_key', 'display_name', 'repo_role', 'description', 'default_branch']} onSubmit={(v) => api(`/api/projects/${project.id}/git-repositories`, { method: 'POST', body: JSON.stringify(v) }).then(repos.reload)} />
+          <Toolbar title="Versions" onCreate={() => setVersionOpen(true)} />
+          <Table<AnyRow>
+            rowKey="id"
+            dataSource={versions.data?.items || []}
+            pagination={false}
+            expandable={{ expandedRowRender: (row) => <JSONBlock value={row.metadata} /> }}
+            columns={[
+              { title: 'Version', dataIndex: 'version' },
+              { title: 'Source', render: (_, row) => <Tag>{row.source || 'manual'}</Tag> },
+              { title: 'Repositories', render: (_, row) => Array.isArray(row.metadata?.repositories) ? row.metadata.repositories.length : 0 },
+              { title: 'Created', render: (_, row) => shortText(row.created_at, 24) }
+            ]}
+          />
+          <CreateModal title="Create version manifest" open={versionOpen} setOpen={setVersionOpen} fields={['version', 'source', 'metadata_json']} onSubmit={createVersion} />
         </>
       )}
     </Space>
@@ -4084,9 +4112,22 @@ function fieldInput(field: string) {
 
 function CreateModal({ title, open, setOpen, fields, onSubmit }: { title: string; open: boolean; setOpen: (v: boolean) => void; fields: string[]; onSubmit: (values: AnyRow) => Promise<any> }) {
   const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+  async function submit(values: AnyRow) {
+    setSubmitting(true);
+    try {
+      await onSubmit(values);
+      setOpen(false);
+      form.resetFields();
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setSubmitting(false);
+    }
+  }
   return (
-    <Modal title={title} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} destroyOnHidden>
-      <Form form={form} layout="vertical" onFinish={(values) => onSubmit(values).then(() => { setOpen(false); form.resetFields(); })}>
+    <Modal title={title} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={submitting} okButtonProps={{ disabled: submitting }} destroyOnHidden>
+      <Form form={form} layout="vertical" onFinish={submit}>
         {fields.map((field) => (
           <Form.Item key={field} name={field} label={field.replaceAll('_', ' ')} rules={fieldRules(field)}>
             {fieldInput(field)}

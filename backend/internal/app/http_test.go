@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-chi/chi/v5"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -26,6 +27,12 @@ type approvalRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f approvalRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+func withRouteParam(r *http.Request, key, value string) *http.Request {
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add(key, value)
+	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, routeContext))
 }
 
 func TestRefsSummary(t *testing.T) {
@@ -938,6 +945,77 @@ func TestCreateAssetRelationRollsBackWhenCanonicalSyncFails(t *testing.T) {
 	}
 }
 
+func TestProjectIDForProjectVersion(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := sqlx.NewDb(db, "sqlmock")
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+
+	projectID, err := projectIDForProjectVersion(context.Background(), store, "version-1")
+	if err != nil {
+		t.Fatalf("projectIDForProjectVersion: %v", err)
+	}
+	if projectID != "project-1" {
+		t.Fatalf("projectID = %q, want project-1", projectID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestCreateProjectVersionUpsertsByProjectAndVersion(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)INSERT INTO project_versions.*ON CONFLICT \(project_id, version\) DO UPDATE`).
+		WithArgs("project-1", "v0.1.0", "manual", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
+			AddRow("version-1", "project-1", "v0.1.0", "manual", []byte(`{"repositories":[]}`), time.Now()))
+
+	body := strings.NewReader(`{"version":" v0.1.0 ","metadata":{"repositories":[]}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/versions", body)
+	req = withRouteParam(req, "id", "project-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.createProjectVersion(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestCreateProjectVersionRejectsOverlongVersion(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	body := strings.NewReader(fmt.Sprintf(`{"version":%q}`, strings.Repeat("v", 201)))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/versions", body)
+	req = withRouteParam(req, "id", "project-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.createProjectVersion(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+}
+
 func TestProviderAccountsMigrationIncludesTableAndRemoteFK(t *testing.T) {
 	content, err := os.ReadFile("../../migrations/003_provider_accounts.sql")
 	if err != nil {
@@ -954,6 +1032,33 @@ func TestProviderAccountsMigrationIncludesTableAndRemoteFK(t *testing.T) {
 	} {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("provider account migration missing %s", token)
+		}
+	}
+}
+
+func TestProjectVersionsUniqueMigrationAndFreshInit(t *testing.T) {
+	migration, err := os.ReadFile("../../migrations/016_project_versions_unique.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	for _, token := range []string{
+		"DELETE FROM project_versions older",
+		"older.project_id = newer.project_id",
+		"older.version = newer.version",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_project_versions_project_version",
+		"ON project_versions(project_id, version)",
+	} {
+		if !strings.Contains(string(migration), token) {
+			t.Fatalf("project versions migration missing %q", token)
+		}
+	}
+	for _, path := range []string{"../../../deploy/docker-compose.yml", "../../../deploy/compose.prod.yml"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(content), "016_project_versions_unique.sql") {
+			t.Fatalf("%s missing 016_project_versions_unique.sql init mount", path)
 		}
 	}
 }

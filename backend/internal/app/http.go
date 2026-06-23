@@ -92,6 +92,9 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/provider-accounts/{id}/rotate-token-env", s.rotateProviderAccountTokenEnv)
 		r.Get("/api/projects/{id}", s.getProject)
 		r.Patch("/api/projects/{id}", s.updateProject)
+		r.Get("/api/projects/{id}/versions", s.listProjectVersions)
+		r.Post("/api/projects/{id}/versions", s.createProjectVersion)
+		r.Get("/api/project-versions/{id}", s.getProjectVersion)
 		r.Get("/api/asset-graph-views", s.listAssetGraphViews)
 		r.Post("/api/asset-graph-views", s.createAssetGraphView)
 		r.Patch("/api/asset-graph-views/{id}", s.updateAssetGraphView)
@@ -2156,6 +2159,85 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) listProjectVersions(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ProjectID: projectID}, "read") {
+		return
+	}
+	items, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT id, project_id, version, source, metadata, created_at
+		FROM project_versions
+		WHERE project_id=$1
+		ORDER BY created_at DESC`, projectID)
+	writeQueryResult(w, items, err)
+}
+
+func (s *Server) createProjectVersion(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ProjectID: projectID}, "create") {
+		return
+	}
+	var req struct {
+		Version  string         `json:"version"`
+		Source   string         `json:"source"`
+		Metadata map[string]any `json:"metadata"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.Version = strings.TrimSpace(req.Version)
+	if req.Version == "" {
+		writeError(w, http.StatusBadRequest, "version is required")
+		return
+	}
+	if len(req.Version) > 200 {
+		writeError(w, http.StatusBadRequest, "version must be 200 characters or fewer")
+		return
+	}
+	if strings.TrimSpace(req.Source) == "" {
+		req.Source = "manual"
+	}
+	metadata, err := jsonParam(req.Metadata)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "metadata must be valid json")
+		return
+	}
+	item, err := queryOne(r.Context(), s.store.DB, `
+		INSERT INTO project_versions(project_id, version, source, metadata)
+		VALUES ($1, $2, $3, $4::jsonb)
+		ON CONFLICT (project_id, version) DO UPDATE
+		SET source=EXCLUDED.source,
+			metadata=EXCLUDED.metadata
+		RETURNING id, project_id, version, source, metadata, created_at`,
+		projectID,
+		req.Version,
+		req.Source,
+		metadata,
+	)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not create project version")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) getProjectVersion(w http.ResponseWriter, r *http.Request) {
+	versionID := chi.URLParam(r, "id")
+	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: projectID}, "read") {
+		return
+	}
+	item, err := queryOne(r.Context(), s.store.DB, `
+		SELECT id, project_id, version, source, metadata, created_at
+		FROM project_versions
+		WHERE id=$1`, versionID)
+	writeQueryOne(w, item, err)
 }
 
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -5678,6 +5760,18 @@ func projectIDForGitRemote(ctx context.Context, db sqlx.ExtContext, remoteID str
 		return "", err
 	}
 	projectID := strings.TrimSpace(fmt.Sprint(remote["project_id"]))
+	if projectID == "" || projectID == "<nil>" {
+		return "", ErrNotFound
+	}
+	return projectID, nil
+}
+
+func projectIDForProjectVersion(ctx context.Context, db sqlx.ExtContext, versionID string) (string, error) {
+	version, err := queryOne(ctx, db, "SELECT project_id FROM project_versions WHERE id=$1", versionID)
+	if err != nil {
+		return "", err
+	}
+	projectID := strings.TrimSpace(fmt.Sprint(version["project_id"]))
 	if projectID == "" || projectID == "<nil>" {
 		return "", ErrNotFound
 	}
