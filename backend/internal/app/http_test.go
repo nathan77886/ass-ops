@@ -505,8 +505,9 @@ func TestArgoPodLogQueryPreviewIsReadOnlyAndRedacted(t *testing.T) {
 		"status":       "Healthy",
 	})
 	if preview["mode"] != "read_only_preview" ||
-		preview["query_state"] != "blocked" ||
+		preview["query_state"] != "ready_for_approval" ||
 		preview["execution_enabled"] != false ||
+		preview["operation_request_enabled"] != true ||
 		preview["external_call_made"] != false ||
 		preview["kubernetes_api_call"] != false ||
 		preview["argocd_api_call"] != false ||
@@ -533,8 +534,9 @@ func TestArgoPodLogQueryPreviewIsReadOnlyAndRedacted(t *testing.T) {
 	}
 	plan := mapFromAny(preview["retrieval_plan"])
 	if plan["mode"] != "pod_log_retrieval_plan_preview" ||
-		plan["plan_state"] != "blocked" ||
+		plan["plan_state"] != "ready_for_approval" ||
 		plan["execution_enabled"] != false ||
+		plan["operation_request_enabled"] != true ||
 		plan["external_call_made"] != false ||
 		plan["kubernetes_api_call"] != false ||
 		plan["argocd_api_call"] != false ||
@@ -545,16 +547,16 @@ func TestArgoPodLogQueryPreviewIsReadOnlyAndRedacted(t *testing.T) {
 	}
 	executionPlan := mapFromAny(plan["execution_plan"])
 	if executionPlan["mode"] != "pod_log_execution_plan_preview" ||
-		executionPlan["execution_state"] != "blocked" ||
+		executionPlan["execution_state"] != "ready_for_approval" ||
 		executionPlan["prerequisite_state"] != "metadata_available" ||
-		executionPlan["planned_step_count"] != 3 ||
-		executionPlan["blocked_step_count"] != 3 {
+		executionPlan["planned_step_count"] != 4 ||
+		executionPlan["blocked_step_count"] != 2 {
 		t.Fatalf("pod log execution plan = %#v", executionPlan)
 	}
 	assertPodLogExecutionPlanSafe(t, executionPlan)
 	steps := sliceOfMapsFromAny(plan["steps"])
 	if len(steps) != 6 ||
-		statusByKind(steps, "operation_approval") != "blocked" ||
+		statusByKind(steps, "operation_approval") != "planned" ||
 		statusByKind(steps, "kubeconfig_binding") != "blocked" ||
 		statusByKind(steps, "target_scope_check") != "planned" ||
 		statusByKind(steps, "pod_identity_confirmation") != "planned" ||
@@ -597,6 +599,200 @@ func TestArgoPodLogQueryPreviewReportsMissingTargetMetadata(t *testing.T) {
 	assertPodLogExecutionPlanSafe(t, executionPlan)
 }
 
+func TestCleanArgoPodLogRequestClampsRanges(t *testing.T) {
+	req, err := cleanArgoPodLogRequest(argoPodLogRequest{
+		DeploymentTargetID: " target-1 ",
+		PodName:            " api-7d9f ",
+		ContainerName:      " web ",
+		TailLines:          999999,
+		SinceSeconds:       -30,
+	})
+	if err != nil {
+		t.Fatalf("cleanArgoPodLogRequest: %v", err)
+	}
+	if req.DeploymentTargetID != "target-1" ||
+		req.PodName != "api-7d9f" ||
+		req.ContainerName != "web" ||
+		req.TailLines != 1000 ||
+		req.SinceSeconds != 0 {
+		t.Fatalf("cleaned pod log request = %#v", req)
+	}
+	req, err = cleanArgoPodLogRequest(argoPodLogRequest{DeploymentTargetID: "target-1", PodName: "api", TailLines: -1, SinceSeconds: 999999})
+	if err != nil {
+		t.Fatalf("cleanArgoPodLogRequest default: %v", err)
+	}
+	if req.TailLines != 200 || req.SinceSeconds != 86400 {
+		t.Fatalf("cleaned pod log range defaults = %#v", req)
+	}
+}
+
+func TestRequestArgoPodLogRetrievalCreatesApprovalForDeveloper(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
+		WithArgs("target-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
+			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members`).
+		WithArgs("project-1", "dev-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectQuery(`(?s)SELECT id, required_approver_roles, required_approval_count, expires_after_minutes, notification_channels, escalation_after_minutes, escalation_channels\s+FROM operation_approval_rules`).
+		WithArgs("deployment_target", "argo.pod_logs").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "required_approver_roles", "required_approval_count", "expires_after_minutes", "notification_channels", "escalation_after_minutes", "escalation_channels"}))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)INSERT INTO operation_approvals\(`).
+		WithArgs("project-1", "", "deployment_target", "target-1", "argo.pod_logs", "retrieve pod logs for api-7d9f", sqlmock.AnyArg(), sqlmock.AnyArg(), 1, sqlmock.AnyArg(), 0, sqlmock.AnyArg(), 1440, "dev-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "resource_type", "resource_id", "action", "title", "status", "requested_by"}).
+			AddRow("approval-1", "project-1", "deployment_target", "target-1", "argo.pod_logs", "retrieve pod logs for api-7d9f", "pending", "dev-1"))
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).
+		WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
+	mock.ExpectCommit()
+
+	body := strings.NewReader(`{"deployment_target_id":"target-1","pod_name":"api-7d9f","container_name":"web","tail_lines":500,"since_seconds":30}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/argo/pod-logs", body)
+	req = withRouteParam(req, "id", "project-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "dev-1", Role: "developer"}))
+	rr := httptest.NewRecorder()
+
+	server.requestArgoPodLogRetrieval(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["operation_type"] != "argo.pod_logs" || payload["worker_job_created"] != false || payload["log_body_included"] != false || mapFromAny(payload["approval"])["id"] != "approval-1" {
+		t.Fatalf("pod log approval response = %#v", payload)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRequestArgoPodLogRetrievalRejectsWhenAuditWorkerDisabled(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
+		WithArgs("target-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
+			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "", "Healthy"))
+
+	body := strings.NewReader(`{"deployment_target_id":"target-1","pod_name":"api-7d9f"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/argo/pod-logs", body)
+	req = withRouteParam(req, "id", "project-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.requestArgoPodLogRetrieval(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "pod log target metadata is incomplete") {
+		t.Fatalf("unexpected error body: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestExecuteApprovedOperationEnqueuesArgoPodLogAudit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	input := map[string]any{
+		"project_id":           "project-1",
+		"deployment_target_id": "target-1",
+		"cluster_name":         "prod-cluster",
+		"namespace":            "billing",
+		"pod_name":             "api-7d9f",
+		"tail_lines":           500,
+		"since_seconds":        30,
+	}
+	approval := map[string]any{
+		"id":              "approval-1",
+		"requested_by":    "dev-1",
+		"request_payload": map[string]any{"kind": "argo_pod_logs", "input": input},
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)INSERT INTO operation_runs\(project_id, git_remote_id, operation_type, title, input\)`).
+		WithArgs("project-1", "", "argo.pod_logs", "retrieve pod logs for api-7d9f", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "git_remote_id", "operation_type", "title", "input", "status"}).
+			AddRow("op-pod-logs", "project-1", "", "argo.pod_logs", "retrieve pod logs for api-7d9f", []byte(`{}`), "queued"))
+	mock.ExpectExec(`(?s)INSERT INTO worker_jobs\(operation_run_id, tool_name, payload, required_capabilities, preferred_node_kind\)`).
+		WithArgs("op-pod-logs", "argo.pod_logs", sqlmock.AnyArg(), sqlmock.AnyArg(), "control-worker").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+	tx, err := server.store.DB.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	result, operationRunID, err := server.executeApprovedOperation(context.Background(), tx, approval)
+	if err != nil {
+		t.Fatalf("executeApprovedOperation: %v", err)
+	}
+	if operationRunID != "op-pod-logs" || mapFromAny(result["operation"])["operation_type"] != "argo.pod_logs" {
+		t.Fatalf("approved pod log operation result = %#v, opID=%s", result, operationRunID)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestExecuteArgoPodLogAuditReturnsSanitizedMetadataOnly(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	worker := &ControlWorker{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	input := []byte(`{"deployment_target_id":"target-1","deployment_target_name":"prod","environment":"prod","cluster_name":"prod-cluster","namespace":"billing","pod_name":"api-7d9f","container_name":"web","tail_lines":500,"since_seconds":30}`)
+	mock.ExpectQuery(`SELECT \* FROM operation_runs WHERE id=\$1`).
+		WithArgs("op-pod-logs").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "input"}).AddRow("op-pod-logs", input))
+
+	result, err := worker.executeArgoPodLogAudit(context.Background(), "op-pod-logs", map[string]any{"adapter": true, "tool": "argo.pod_logs"})
+	if err != nil {
+		t.Fatalf("executeArgoPodLogAudit: %v", err)
+	}
+	if result["deployment_target_id"] != "target-1" ||
+		result["pod_name"] != "api-7d9f" ||
+		result["result_scope"] != "sanitized_metadata_only" ||
+		result["line_count"] != 0 ||
+		result["kubeconfig_bound"] != false ||
+		result["kubernetes_api_call"] != false ||
+		result["log_body_included"] != false ||
+		result["raw_response_included"] != false ||
+		result["secret_included"] != false {
+		t.Fatalf("pod log audit result = %#v", result)
+	}
+	encoded, _ := json.Marshal(result)
+	for _, forbidden := range []string{"apiVersion:", "kind: Secret", "Bearer secret", "actual log line"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("pod log audit leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 	t.Helper()
 	if executionPlan["execution_enabled"] != false ||
@@ -616,6 +812,13 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		executionPlan["kubeconfig_included"] != false ||
 		executionPlan["authorization_header_included"] != false {
 		t.Fatalf("pod log execution plan should keep all execution flags false: %#v", executionPlan)
+	}
+	if executionPlan["prerequisite_state"] == "metadata_available" {
+		if executionPlan["operation_request_enabled"] != true || executionPlan["audit_worker_job_enabled"] != true {
+			t.Fatalf("metadata-ready pod log execution plan should allow audit operation requests: %#v", executionPlan)
+		}
+	} else if executionPlan["operation_request_enabled"] != false || executionPlan["audit_worker_job_enabled"] != false {
+		t.Fatalf("metadata-blocked pod log execution plan should block audit operation requests: %#v", executionPlan)
 	}
 	for _, field := range []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret"} {
 		if !containsString(stringSliceFromAny(executionPlan["suppressed_fields"]), field) {
@@ -717,8 +920,6 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 	}
 	approvalPlan := mapFromAny(executionPlan["approval_request_plan"])
 	if approvalPlan["mode"] != "pod_log_approval_request_plan" ||
-		approvalPlan["request_ready"] != false ||
-		approvalPlan["request_ready_reason"] != "pod_log_live_execution_disabled" ||
 		approvalPlan["operation_created"] != false ||
 		approvalPlan["approval_request_created"] != false ||
 		approvalPlan["worker_job_created"] != false ||
@@ -727,12 +928,18 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		t.Fatalf("pod log approval request plan should stay disabled and redacted: %#v", approvalPlan)
 	}
 	if executionPlan["prerequisite_state"] == "metadata_available" && approvalPlan["request_state"] != "planned" {
-		t.Fatalf("metadata-ready pod log approval request plan should be planned but disabled: %#v", approvalPlan)
+		t.Fatalf("metadata-ready pod log approval request plan should be planned: %#v", approvalPlan)
+	}
+	if executionPlan["prerequisite_state"] == "metadata_available" && (approvalPlan["request_ready"] != true || approvalPlan["request_ready_reason"] != "pod_log_audit_operation_ready") {
+		t.Fatalf("metadata-ready pod log approval request plan should be request-ready: %#v", approvalPlan)
+	}
+	if executionPlan["prerequisite_state"] != "metadata_available" && (approvalPlan["request_ready"] != false || approvalPlan["request_ready_reason"] != "pod_log_metadata_incomplete") {
+		t.Fatalf("metadata-blocked pod log approval request plan should not be request-ready: %#v", approvalPlan)
 	}
 	if executionPlan["prerequisite_state"] == "metadata_available" && len(stringSliceFromAny(approvalPlan["blocked_reasons"])) != 0 {
 		t.Fatalf("metadata-ready pod log approval request plan should not report metadata blockers: %#v", approvalPlan["blocked_reasons"])
 	}
-	for _, reason := range []string{"pod_log_operation_not_created", "approval_policy_not_applied", "kubeconfig_binding_not_approved"} {
+	for _, reason := range []string{"pod_log_operation_not_created", "approval_policy_not_applied", "live_log_backend_disabled"} {
 		if !containsString(stringSliceFromAny(approvalPlan["execution_blockers"]), reason) {
 			t.Fatalf("pod log approval execution blockers missing %q: %#v", reason, approvalPlan["execution_blockers"])
 		}
@@ -748,11 +955,7 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		}
 	}
 	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
-	if resultPlan["recording_state"] != "blocked" ||
-		resultPlan["recording_ready"] != false ||
-		resultPlan["recording_ready_reason"] != "pod_log_execution_not_performed" ||
-		resultPlan["recording_enabled"] != false ||
-		resultPlan["result_written"] != false ||
+	if resultPlan["result_written"] != false ||
 		resultPlan["operation_log_written"] != false ||
 		resultPlan["log_body_included"] != false ||
 		resultPlan["redacted_log_body_included"] != false ||
@@ -764,6 +967,13 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		resultPlan["authorization_header_included"] != false {
 		t.Fatalf("pod log result recording plan should keep all result flags false: %#v", resultPlan)
 	}
+	if executionPlan["prerequisite_state"] == "metadata_available" {
+		if resultPlan["recording_state"] != "planned" || resultPlan["recording_ready"] != true || resultPlan["recording_enabled"] != true || resultPlan["status_snapshot_written"] != true || resultPlan["canonical_asset_sync_queued"] != true {
+			t.Fatalf("metadata-ready pod log result recording plan should be planned for sanitized audit metadata: %#v", resultPlan)
+		}
+	} else if resultPlan["recording_state"] != "blocked" || resultPlan["recording_ready"] != false || resultPlan["recording_enabled"] != false {
+		t.Fatalf("metadata-blocked pod log result recording plan should stay blocked: %#v", resultPlan)
+	}
 	for _, field := range []string{"operation_run_id", "approval_request_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at", "kubeconfig_binding_status", "pod_scope_status", "log_capture_status", "redaction_status"} {
 		if !containsString(stringSliceFromAny(resultPlan["required_result_fields"]), field) {
 			t.Fatalf("pod log result required fields missing %q: %#v", field, resultPlan["required_result_fields"])
@@ -774,7 +984,7 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 			t.Fatalf("pod log result suppressed_fields missing %q: %#v", field, resultPlan["suppressed_fields"])
 		}
 	}
-	for _, reason := range []string{"pod_log_execution_not_performed", "sanitized_log_result_not_recorded", "canonical_asset_sync_not_performed"} {
+	for _, reason := range []string{"live_log_backend_disabled", "sanitized_log_result_not_recorded"} {
 		if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), reason) {
 			t.Fatalf("pod log result blocked reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
 		}

@@ -198,7 +198,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "ssh.exec", "ssh.verify", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute":
+	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "ssh.exec", "ssh.verify", "argo.apps.sync", "argo.pod_logs", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute":
 		return true
 	default:
 		return false
@@ -540,6 +540,20 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 			return fmt.Errorf("syncing canonical assets for running Argo app sync: %w", err)
 		}
 		return nil
+	case "argo.pod_logs":
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, data)
+			VALUES ($1, $2, 'info', 'pod log audit worker started', jsonb_build_object(
+				'live_log_backend', 'disabled',
+				'kubeconfig_bound', false,
+				'log_body_included', false
+			))`, opID, job["id"]); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+			return fmt.Errorf("syncing canonical assets for running Argo pod log audit: %w", err)
+		}
+		return nil
 	case "project.create_from_template":
 		_, err := db.ExecContext(ctx, "UPDATE project_template_runs SET status='running', started_at=COALESCE(started_at, now()), updated_at=now() WHERE operation_run_id=$1", opID)
 		return err
@@ -615,6 +629,8 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 		syncResult, err := NewArgoSyncer().SyncApps(ctx, w.store.DB, opID)
 		mergeArgoSyncResult(result, syncResult)
 		return result, err
+	case "argo.pod_logs":
+		return w.executeArgoPodLogAudit(ctx, opID, result)
 	case "ssh.exec", "ssh.verify":
 		execution, err := NewSSHExecutor().Execute(ctx, w.store.DB, opID)
 		mergeSSHExecutionResult(result, execution)
@@ -748,6 +764,21 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed Argo app sync: %w", err)
+		}
+		return nil
+	case "argo.pod_logs":
+		safeError := "pod log audit worker failed; details are withheld from operation logs"
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, data)
+			VALUES ($1, $2, 'error', 'pod log audit worker failed', jsonb_build_object(
+				'error', $3,
+				'live_log_backend', 'disabled',
+				'log_body_included', false
+			))`, opID, job["id"], safeError); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed Argo pod log audit: %w", err)
 		}
 		return nil
 	case "ssh.exec", "ssh.verify":
@@ -947,6 +978,31 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 		return nil
 	case "argo.apps.sync":
 		return w.recordArgoSyncAdapterRun(ctx, tx, result)
+	case "argo.pod_logs":
+		data, err := jsonParam(map[string]any{
+			"deployment_target_id":  result["deployment_target_id"],
+			"pod_name":              result["pod_name"],
+			"container_name":        result["container_name"],
+			"namespace":             result["namespace"],
+			"cluster_name":          result["cluster_name"],
+			"result_scope":          result["result_scope"],
+			"line_count":            result["line_count"],
+			"kubeconfig_bound":      false,
+			"log_body_included":     false,
+			"raw_response_included": false,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, data)
+			VALUES ($1, $2, 'info', 'pod log audit completed without live log retrieval', $3::jsonb)`, opID, job["id"], data); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed Argo pod log audit: %w", err)
+		}
+		return nil
 	case "ssh.exec", "ssh.verify":
 		stdout, stderr := gitExecutionOutputFromMap(result)
 		exitCode := nullableIntFromMap(result, "exit_code")
@@ -1048,6 +1104,47 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 	default:
 		return nil
 	}
+}
+
+func (w *ControlWorker) executeArgoPodLogAudit(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
+	op, err := queryOne(ctx, w.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	if err != nil {
+		return result, fmt.Errorf("loading pod log operation: %w", err)
+	}
+	input := mapFromAny(op["input"])
+	targetID := cleanOptionalID(fmt.Sprint(input["deployment_target_id"]))
+	podName := cleanOptionalText(fmt.Sprint(input["pod_name"]))
+	namespace := cleanOptionalText(fmt.Sprint(input["namespace"]))
+	clusterName := cleanOptionalText(fmt.Sprint(input["cluster_name"]))
+	if targetID == "" || podName == "" || namespace == "" || clusterName == "" {
+		return result, fmt.Errorf("pod log audit operation is missing target metadata")
+	}
+	result["deployment_target_id"] = targetID
+	result["deployment_target_name"] = cleanOptionalText(fmt.Sprint(input["deployment_target_name"]))
+	result["environment"] = cleanOptionalText(fmt.Sprint(input["environment"]))
+	result["cluster_name"] = clusterName
+	result["namespace"] = namespace
+	result["pod_name"] = podName
+	result["container_name"] = cleanOptionalText(fmt.Sprint(input["container_name"]))
+	result["tail_lines"] = intFromAny(input["tail_lines"], 200)
+	result["since_seconds"] = intFromAny(input["since_seconds"], 0)
+	result["result_scope"] = "sanitized_metadata_only"
+	result["backend_state"] = "disabled"
+	result["live_log_backend"] = "disabled"
+	result["kubeconfig_bound"] = false
+	result["kubernetes_client_created"] = false
+	result["kubernetes_api_call"] = false
+	result["argocd_api_call"] = false
+	result["kubectl_command_invoked"] = false
+	result["log_stream_opened"] = false
+	result["log_body_included"] = false
+	result["redacted_log_body_included"] = false
+	result["raw_response_included"] = false
+	result["secret_included"] = false
+	result["line_count"] = 0
+	result["truncated"] = false
+	result["message"] = "pod log audit completed; live Kubernetes/Argo log retrieval remains disabled and no log body was returned"
+	return result, nil
 }
 
 func (w *ControlWorker) executeAgentTaskAudit(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {

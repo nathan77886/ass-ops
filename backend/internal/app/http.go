@@ -178,6 +178,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/projects/{id}/deployment-records", s.listDeploymentRecords)
 		r.Get("/api/projects/{id}/rollback-points", s.listRollbackPoints)
 		r.Post("/api/projects/{id}/argo/pod-log-query-preview", s.previewArgoPodLogQuery)
+		r.Post("/api/projects/{id}/argo/pod-logs", s.requestArgoPodLogRetrieval)
 		r.Post("/api/projects/{id}/webhook-connections", s.createWebhookConnection)
 		r.Get("/api/projects/{id}/webhook-connections", s.listWebhookConnections)
 		r.Get("/api/projects/{id}/webhook-events", s.listWebhookEvents)
@@ -12414,6 +12415,12 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			return nil, "", err
 		}
 		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
+	case "argo_pod_logs":
+		op, err := s.enqueueArgoPodLogOperationTx(ctx, tx, mapFromAny(payload["input"]))
+		if err != nil {
+			return nil, "", err
+		}
+		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "operation_cancel":
 		op, err := s.cancelOperationRun(ctx, tx, stringFromMap(payload, "operation_id"))
 		if err != nil {
@@ -16410,36 +16417,158 @@ func (s *Server) previewArgoPodLogQuery(w http.ResponseWriter, r *http.Request) 
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "deployment_target", ProjectID: projectID}, "read") {
 		return
 	}
-	var req struct {
-		DeploymentTargetID string `json:"deployment_target_id"`
-		PodName            string `json:"pod_name"`
-		ContainerName      string `json:"container_name"`
-		TailLines          int    `json:"tail_lines"`
-		SinceSeconds       int    `json:"since_seconds"`
-	}
+	var req argoPodLogRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	req.DeploymentTargetID = strings.TrimSpace(req.DeploymentTargetID)
-	req.PodName = strings.TrimSpace(req.PodName)
-	req.ContainerName = strings.TrimSpace(req.ContainerName)
-	if req.DeploymentTargetID == "" {
-		writeError(w, http.StatusBadRequest, "deployment_target_id is required")
+	cleaned, err := cleanArgoPodLogRequest(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.PodName == "" {
-		writeError(w, http.StatusBadRequest, "pod_name is required")
-		return
-	}
-	target, err := queryOne(r.Context(), s.store.DB, `
-		SELECT id, project_id, name, environment, cluster_name, namespace, status
-		FROM deployment_targets
-		WHERE id=$1 AND project_id=$2`, req.DeploymentTargetID, projectID)
+	target, err := loadArgoPodLogTarget(r.Context(), s.store.DB, projectID, cleaned.DeploymentTargetID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, argoPodLogQueryPreview(req.PodName, req.ContainerName, req.TailLines, req.SinceSeconds, target))
+	writeJSON(w, http.StatusOK, argoPodLogQueryPreview(cleaned.PodName, cleaned.ContainerName, cleaned.TailLines, cleaned.SinceSeconds, target))
+}
+
+type argoPodLogRequest struct {
+	DeploymentTargetID string `json:"deployment_target_id"`
+	PodName            string `json:"pod_name"`
+	ContainerName      string `json:"container_name"`
+	TailLines          int    `json:"tail_lines"`
+	SinceSeconds       int    `json:"since_seconds"`
+}
+
+func cleanArgoPodLogRequest(req argoPodLogRequest) (argoPodLogRequest, error) {
+	req.DeploymentTargetID = strings.TrimSpace(req.DeploymentTargetID)
+	req.PodName = strings.TrimSpace(req.PodName)
+	req.ContainerName = strings.TrimSpace(req.ContainerName)
+	if req.TailLines <= 0 {
+		req.TailLines = 200
+	}
+	if req.TailLines > 1000 {
+		req.TailLines = 1000
+	}
+	if req.SinceSeconds < 0 {
+		req.SinceSeconds = 0
+	}
+	if req.SinceSeconds > 86400 {
+		req.SinceSeconds = 86400
+	}
+	if req.DeploymentTargetID == "" {
+		return req, fmt.Errorf("deployment_target_id is required")
+	}
+	if req.PodName == "" {
+		return req, fmt.Errorf("pod_name is required")
+	}
+	return req, nil
+}
+
+func loadArgoPodLogTarget(ctx context.Context, db sqlx.ExtContext, projectID, deploymentTargetID string) (map[string]any, error) {
+	return queryOne(ctx, db, `
+		SELECT id, project_id, name, environment, cluster_name, namespace, status
+		FROM deployment_targets
+		WHERE id=$1 AND project_id=$2`, deploymentTargetID, projectID)
+}
+
+func (s *Server) requestArgoPodLogRetrieval(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	var req argoPodLogRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	cleaned, err := cleanArgoPodLogRequest(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	target, err := loadArgoPodLogTarget(r.Context(), s.store.DB, projectID, cleaned.DeploymentTargetID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	preview := argoPodLogQueryPreview(cleaned.PodName, cleaned.ContainerName, cleaned.TailLines, cleaned.SinceSeconds, target)
+	retrievalPlan := mapFromAny(preview["retrieval_plan"])
+	executionPlan := mapFromAny(retrievalPlan["execution_plan"])
+	if executionPlan["prerequisite_state"] != "metadata_available" || executionPlan["audit_worker_job_enabled"] != true {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":          "pod log target metadata is incomplete",
+			"execution_plan": executionPlan,
+		})
+		return
+	}
+	input := argoPodLogOperationInput(projectID, target, mapFromAny(preview["query"]), executionPlan)
+	payload := map[string]any{
+		"kind":                  "argo_pod_logs",
+		"project_id":            projectID,
+		"deployment_target_id":  cleaned.DeploymentTargetID,
+		"input":                 input,
+		"execution_plan_audit":  executionPlan,
+		"live_log_body_enabled": false,
+	}
+	resource := PolicyResource{Type: "deployment_target", ID: cleaned.DeploymentTargetID, ProjectID: projectID}
+	if !s.requireProjectMembershipForPolicy(w, r, resource) {
+		return
+	}
+	decision := NewPolicyChecker().Check(currentUser(r), resource, "argo.pod_logs")
+	if decision.Effect == PolicyDeny {
+		writeJSON(w, http.StatusForbidden, decision)
+		return
+	}
+	approval, err := s.createOperationApproval(r.Context(), resource, "argo.pod_logs", "retrieve pod logs for "+cleaned.PodName, payload, currentUser(r).ID)
+	if err != nil {
+		if isUniqueViolation(err, "idx_operation_approvals_pending_once") {
+			writeError(w, http.StatusConflict, "approval request is already pending")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not create pod log approval request")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"approval":           approval,
+		"decision":           decision,
+		"operation_type":     "argo.pod_logs",
+		"worker_job_created": false,
+		"log_body_included":  false,
+		"message":            "Pod log approval requested; worker job will be created only after approval.",
+	})
+}
+
+func argoPodLogOperationInput(projectID string, target, query, executionPlan map[string]any) map[string]any {
+	return map[string]any{
+		"project_id":             projectID,
+		"deployment_target_id":   cleanOptionalID(fmt.Sprint(target["id"])),
+		"deployment_target_name": cleanOptionalText(fmt.Sprint(target["name"])),
+		"environment":            cleanOptionalText(fmt.Sprint(target["environment"])),
+		"cluster_name":           cleanOptionalText(fmt.Sprint(target["cluster_name"])),
+		"namespace":              cleanOptionalText(fmt.Sprint(target["namespace"])),
+		"pod_name":               cleanOptionalText(fmt.Sprint(query["pod_name"])),
+		"container_name":         cleanOptionalText(fmt.Sprint(query["container_name"])),
+		"tail_lines":             intFromAny(query["tail_lines"], 200),
+		"since_seconds":          intFromAny(query["since_seconds"], 0),
+		"result_scope":           "sanitized_metadata_only",
+		"execution_mode":         "approval_gated_audit",
+		"live_log_backend":       "disabled",
+		"execution_plan":         executionPlan,
+	}
+}
+
+func (s *Server) enqueueArgoPodLogOperationTx(ctx context.Context, tx *sqlx.Tx, input map[string]any) (map[string]any, error) {
+	projectID := cleanOptionalID(fmt.Sprint(input["project_id"]))
+	targetID := cleanOptionalID(fmt.Sprint(input["deployment_target_id"]))
+	podName := cleanOptionalText(fmt.Sprint(input["pod_name"]))
+	if projectID == "" || targetID == "" || podName == "" {
+		return nil, fmt.Errorf("invalid pod log operation input")
+	}
+	title := "retrieve pod logs for " + podName
+	op, err := enqueueOperationTx(ctx, tx, projectID, "", "argo.pod_logs", title, input, []string{"argo", "kubernetes"}, "control-worker")
+	if err != nil {
+		return nil, fmt.Errorf("could not enqueue pod log operation")
+	}
+	return op, nil
 }
 
 func argoPodLogQueryPreview(podName, containerName string, tailLines, sinceSeconds int, target map[string]any) map[string]any {
@@ -16474,6 +16603,11 @@ func argoPodLogQueryPreview(podName, containerName string, tailLines, sinceSecon
 	if clusterName == "" {
 		blockedReasons = append(blockedReasons, "cluster_name_missing")
 	}
+	metadataReady := namespace != "" && clusterName != "" && strings.TrimSpace(podName) != ""
+	queryState := "blocked"
+	if metadataReady {
+		queryState = "ready_for_approval"
+	}
 	query := map[string]any{
 		"pod_name":       podName,
 		"container_name": containerName,
@@ -16491,32 +16625,38 @@ func argoPodLogQueryPreview(podName, containerName string, tailLines, sinceSecon
 	}
 	retrievalPlan := argoPodLogRetrievalPlan(query, deploymentTarget, blockedReasons)
 	return map[string]any{
-		"mode":                "read_only_preview",
-		"query_state":         "blocked",
-		"execution_enabled":   false,
-		"external_call_made":  false,
-		"kubernetes_api_call": false,
-		"argocd_api_call":     false,
-		"log_body_included":   false,
-		"contains_secret":     false,
-		"contains_token":      false,
-		"deployment_target":   deploymentTarget,
-		"query":               query,
-		"retrieval_plan":      retrievalPlan,
-		"required_controls":   []string{"deployment_target_review", "kubeconfig_binding", "namespace_confirmation", "pod_name_confirmation", "operator_confirmation"},
-		"disabled_backends":   []string{"kubectl_logs", "kubernetes_pod_log_api", "argocd_pod_logs"},
-		"suppressed_fields":   []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret"},
-		"blocked_reasons":     blockedReasons,
-		"next_step":           "Bind a reviewed kubeconfig and implement approval-gated pod log retrieval before returning log bodies.",
+		"mode":                      "read_only_preview",
+		"query_state":               queryState,
+		"execution_enabled":         false,
+		"operation_request_enabled": metadataReady,
+		"external_call_made":        false,
+		"kubernetes_api_call":       false,
+		"argocd_api_call":           false,
+		"log_body_included":         false,
+		"contains_secret":           false,
+		"contains_token":            false,
+		"deployment_target":         deploymentTarget,
+		"query":                     query,
+		"retrieval_plan":            retrievalPlan,
+		"required_controls":         []string{"deployment_target_review", "kubeconfig_binding", "namespace_confirmation", "pod_name_confirmation", "operator_confirmation"},
+		"disabled_backends":         []string{"kubectl_logs", "kubernetes_pod_log_api", "argocd_pod_logs"},
+		"suppressed_fields":         []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret"},
+		"blocked_reasons":           blockedReasons,
+		"next_step":                 "Request an approval-gated pod log audit job; kubeconfig binding and live log bodies remain disabled until a reviewed backend is added.",
 	}
 }
 
 func argoPodLogRetrievalPlan(query, target map[string]any, blockedReasons []string) map[string]any {
+	metadataReady := strings.TrimSpace(fmt.Sprint(target["cluster_name"])) != "" && strings.TrimSpace(fmt.Sprint(target["namespace"])) != "" && strings.TrimSpace(fmt.Sprint(query["pod_name"])) != ""
+	approvalStatus := "blocked"
+	if metadataReady {
+		approvalStatus = "planned"
+	}
 	steps := []map[string]any{
 		{
 			"kind":    "operation_approval",
-			"status":  "blocked",
-			"message": "pod log retrieval requires an approval-gated operation before any live backend can be enabled",
+			"status":  approvalStatus,
+			"message": "pod log retrieval requires an approval-gated audit operation before any live backend can be enabled",
 		},
 		{
 			"kind":    "kubeconfig_binding",
@@ -16555,10 +16695,15 @@ func argoPodLogRetrievalPlan(query, target map[string]any, blockedReasons []stri
 		}
 	}
 	executionPlan := argoPodLogExecutionPlan(query, target, steps, blockedReasons)
+	planState := "blocked"
+	if metadataReady {
+		planState = "ready_for_approval"
+	}
 	return map[string]any{
 		"mode":                         "pod_log_retrieval_plan_preview",
-		"plan_state":                   "blocked",
+		"plan_state":                   planState,
 		"execution_enabled":            false,
+		"operation_request_enabled":    metadataReady,
 		"external_call_made":           false,
 		"kubernetes_api_call":          false,
 		"argocd_api_call":              false,
@@ -16574,8 +16719,8 @@ func argoPodLogRetrievalPlan(query, target map[string]any, blockedReasons []stri
 		"required_live_controls":       []string{"operation_approval", "environment_review", "kubeconfig_binding", "namespace_confirmation", "pod_name_confirmation", "operator_confirmation"},
 		"disabled_backends":            []string{"kubectl_logs", "kubernetes_pod_log_api", "argocd_pod_logs"},
 		"suppressed_fields":            []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret"},
-		"required_operator_action":     "Review the target and pod identity, bind a namespace-scoped kubeconfig, then implement an approval-gated live log backend.",
-		"future_execution_result_type": "redacted_log_stream",
+		"required_operator_action":     "Review the target and pod identity, then request an approval-gated audit job; live log backend remains disabled.",
+		"future_execution_result_type": "sanitized_metadata_only",
 	}
 }
 
@@ -16595,12 +16740,19 @@ func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]an
 	if namespaceReady && clusterReady && podReady {
 		prerequisiteState = "metadata_available"
 	}
+	auditReady := prerequisiteState == "metadata_available"
+	executionState := "blocked"
+	if auditReady {
+		executionState = "ready_for_approval"
+	}
 	return map[string]any{
 		"mode":                          "pod_log_execution_plan_preview",
-		"execution_state":               "blocked",
+		"execution_state":               executionState,
 		"prerequisite_state":            prerequisiteState,
 		"approval_request_plan":         argoPodLogApprovalRequestPlan(query, target, prerequisiteState),
 		"execution_enabled":             false,
+		"operation_request_enabled":     auditReady,
+		"audit_worker_job_enabled":      auditReady,
 		"external_call_made":            false,
 		"operation_enqueued":            false,
 		"worker_job_created":            false,
@@ -16620,14 +16772,14 @@ func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]an
 		"blocked_step_count":            blocked,
 		"blocked_reasons":               blockedReasons,
 		"required_controls":             []string{"operation_approval", "environment_review", "kubeconfig_binding", "namespace_confirmation", "pod_name_confirmation", "container_scope_confirmation", "operator_confirmation", "result_redaction_review"},
-		"disabled_backends":             []string{"worker_claim", "kubeconfig_binding", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "log_stream_result_write"},
+		"disabled_backends":             []string{"kubeconfig_binding", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "raw_log_body_recording"},
 		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret"},
 		"execution_sequence":            []string{"request_operation_approval", "bind_namespace_scoped_kubeconfig", "verify_target_scope", "confirm_pod_identity", "open_pod_log_stream", "redact_log_body", "record_sanitized_result"},
 		"kubeconfig_binding_plan":       argoPodLogKubeconfigBindingPlan(prerequisiteState, namespaceReady, clusterReady),
 		"pod_scope_plan":                argoPodLogPodScopePlan(query, target, prerequisiteState),
 		"log_capture_plan":              argoPodLogCapturePlan(prerequisiteState),
-		"result_recording_plan":         argoPodLogResultRecordingPlan(),
-		"message":                       "Pod log execution is a redacted plan only; no kubeconfig, Kubernetes/Argo call, log stream, or log body is produced.",
+		"result_recording_plan":         argoPodLogResultRecordingPlan(auditReady),
+		"message":                       "Pod log live execution remains disabled; metadata-ready requests can create an approval-gated audit job with sanitized result only.",
 	}
 }
 
@@ -16745,6 +16897,10 @@ func argoPodLogApprovalRequestPlan(query, target map[string]any, prerequisiteSta
 	if metadataReady {
 		requestState = "planned"
 	}
+	requestReadyReason := "pod_log_metadata_incomplete"
+	if metadataReady {
+		requestReadyReason = "pod_log_audit_operation_ready"
+	}
 	metadataBlockedReasons := []string{}
 	if !clusterReady {
 		metadataBlockedReasons = append(metadataBlockedReasons, "cluster_name_missing")
@@ -16758,33 +16914,39 @@ func argoPodLogApprovalRequestPlan(query, target map[string]any, prerequisiteSta
 	return map[string]any{
 		"mode":                         "pod_log_approval_request_plan",
 		"request_state":                requestState,
-		"request_ready":                false,
-		"request_ready_reason":         "pod_log_live_execution_disabled",
+		"request_ready":                metadataReady,
+		"request_ready_reason":         requestReadyReason,
 		"metadata_ready":               metadataReady,
 		"operation_created":            false,
 		"approval_request_created":     false,
 		"worker_job_created":           false,
 		"kubeconfig_binding_requested": false,
 		"external_call_made":           false,
-		"required_action":              "Create a high-risk operation approval request before any pod log worker can bind kubeconfig or stream logs.",
+		"required_action":              "Create a high-risk operation approval request before any pod log audit worker can run.",
 		"required_approval_fields":     []string{"operation_run_id", "deployment_target_id", "cluster_name", "namespace", "pod_name", "container_name", "tail_lines", "since_seconds", "requested_by", "reason"},
 		"suppressed_fields":            []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret", "approval_reason_detail"},
 		"blocked_reasons":              metadataBlockedReasons,
-		"execution_blockers":           []string{"pod_log_operation_not_created", "approval_policy_not_applied", "kubeconfig_binding_not_approved"},
+		"execution_blockers":           []string{"pod_log_operation_not_created", "approval_policy_not_applied", "live_log_backend_disabled"},
 	}
 }
 
-func argoPodLogResultRecordingPlan() map[string]any {
+func argoPodLogResultRecordingPlan(auditReady bool) map[string]any {
+	recordingState := "blocked"
+	readyReason := "pod_log_metadata_incomplete"
+	if auditReady {
+		recordingState = "planned"
+		readyReason = "sanitized_audit_result_ready_after_worker"
+	}
 	return map[string]any{
 		"mode":                          "pod_log_result_recording_plan",
-		"recording_state":               "blocked",
-		"recording_ready":               false,
-		"recording_ready_reason":        "pod_log_execution_not_performed",
-		"recording_enabled":             false,
+		"recording_state":               recordingState,
+		"recording_ready":               auditReady,
+		"recording_ready_reason":        readyReason,
+		"recording_enabled":             auditReady,
 		"result_written":                false,
 		"operation_log_written":         false,
-		"canonical_asset_sync_queued":   false,
-		"status_snapshot_written":       false,
+		"canonical_asset_sync_queued":   auditReady,
+		"status_snapshot_written":       auditReady,
 		"kubeconfig_binding_recorded":   false,
 		"pod_scope_recorded":            false,
 		"log_capture_recorded":          false,
@@ -16795,8 +16957,8 @@ func argoPodLogResultRecordingPlan() map[string]any {
 		"authorization_header_included": false,
 		"required_result_fields":        []string{"operation_run_id", "approval_request_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at", "kubeconfig_binding_status", "pod_scope_status", "log_capture_status", "redaction_status"},
 		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret", "raw_kubernetes_response"},
-		"blocked_reasons":               []string{"pod_log_execution_not_performed", "sanitized_log_result_not_recorded", "canonical_asset_sync_not_performed"},
-		"message":                       "Pod log results are not recorded by this preview; future execution must store sanitized metadata and explicitly reviewed redacted log content only.",
+		"blocked_reasons":               []string{"live_log_backend_disabled", "sanitized_log_result_not_recorded"},
+		"message":                       "Preview does not write results; the audit worker records sanitized metadata only and never stores kubeconfig, raw response, or log bodies.",
 	}
 }
 

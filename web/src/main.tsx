@@ -4375,6 +4375,8 @@ function ConfigPage() {
   const [argoSyncOpID, setArgoSyncOpID] = useState<string>();
   const [podLogPreview, setPodLogPreview] = useState<AnyRow>();
   const [podLogLoading, setPodLogLoading] = useState(false);
+  const [podLogRunLoading, setPodLogRunLoading] = useState(false);
+  const [podLogRunResult, setPodLogRunResult] = useState<AnyRow>();
   const [sshOpen, setSSHOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const argoConnections = useLoad(() => project ? api(`/api/projects/${project.id}/argo/connections`) : Promise.resolve({ items: [] }), [project?.id]);
@@ -4504,11 +4506,37 @@ function ConfigPage() {
         })
       });
       setPodLogPreview(result);
+      setPodLogRunResult(undefined);
       message.success('Pod log query preview ready');
     } catch (error: any) {
       message.error(error.message || 'Request failed');
     } finally {
       setPodLogLoading(false);
+    }
+  }
+  async function requestPodLogAudit() {
+    if (!project || !podLogPreview) return;
+    const target = podLogPreview.deployment_target || {};
+    const query = podLogPreview.query || {};
+    setPodLogRunLoading(true);
+    try {
+      const result = await api(`/api/projects/${project.id}/argo/pod-logs`, {
+        method: 'POST',
+        body: JSON.stringify({
+          deployment_target_id: target.id,
+          pod_name: query.pod_name,
+          container_name: query.container_name,
+          tail_lines: Number(query.tail_lines || 200),
+          since_seconds: Number(query.since_seconds || 0)
+        })
+      });
+      setPodLogRunResult(result);
+      message.success(result.approval ? 'Pod log approval requested' : 'Pod log audit queued');
+    } catch (error: any) {
+      setPodLogRunResult(undefined);
+      message.error(error.message || 'Request failed');
+    } finally {
+      setPodLogRunLoading(false);
     }
   }
   async function runSSHCommand(values: AnyRow) {
@@ -4638,12 +4666,14 @@ function ConfigPage() {
                   <Space wrap>
                     <Tag color="gold">{podLogPreview.query_state || 'blocked'}</Tag>
                     <Tag>{podLogPreview.execution_enabled ? 'execution enabled' : 'execution disabled'}</Tag>
+                    <Tag>{podLogPreview.operation_request_enabled ? 'operation request ready' : 'operation request blocked'}</Tag>
                     <Tag>{podLogPreview.kubernetes_api_call ? 'k8s called' : 'no k8s call'}</Tag>
                     <Tag>{podLogPreview.log_body_included ? 'log body included' : 'no log body'}</Tag>
-                    {podLogPreview.retrieval_plan ? <Tag color="red">retrieval {podLogPreview.retrieval_plan.plan_state || 'blocked'}</Tag> : null}
+                    {podLogPreview.retrieval_plan ? <Tag color={podLogPreview.retrieval_plan.plan_state === 'ready_for_approval' ? 'gold' : 'red'}>retrieval {podLogPreview.retrieval_plan.plan_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan ? <Tag>{podLogPreview.retrieval_plan.step_count || 0} retrieval steps</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag color="red">execute {podLogPreview.retrieval_plan.execution_plan.execution_state || 'blocked'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.execution_state === 'ready_for_approval' ? 'gold' : 'red'}>execute {podLogPreview.retrieval_plan.execution_plan.execution_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.approval_request_plan ? <Tag color="gold">approval {podLogPreview.retrieval_plan.execution_plan.approval_request_plan.request_state || 'blocked'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.audit_worker_job_enabled ? 'audit worker ready' : 'no audit worker'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_binding_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.kubeconfig_binding_plan.binding_state === 'planned' ? 'gold' : 'red'}>kubeconfig {podLogPreview.retrieval_plan.execution_plan.kubeconfig_binding_plan.binding_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.pod_scope_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state === 'planned' ? 'gold' : 'red'}>scope {podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.log_capture_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state === 'planned' ? 'gold' : 'red'}>capture {podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state || 'blocked'}</Tag> : null}
@@ -4655,6 +4685,13 @@ function ConfigPage() {
                     {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.log_capture_recorded ? 'capture recorded' : 'no capture record'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.disabled_backends?.length || 0} disabled backends</Tag> : null}
                   </Space>
+                  <Space>
+                    <Button type="primary" onClick={requestPodLogAudit} loading={podLogRunLoading} disabled={!podLogPreview.operation_request_enabled || !podLogPreview.retrieval_plan?.execution_plan?.audit_worker_job_enabled}>Request audit</Button>
+                    {podLogRunResult ? <Tag color={podLogRunResult.approval ? 'gold' : 'blue'}>{podLogRunResult.approval ? 'approval requested' : 'operation queued'}</Tag> : null}
+                    {podLogRunResult?.worker_job_created ? <Tag>worker job created</Tag> : null}
+                    {podLogRunResult ? <Tag>{podLogRunResult.log_body_included ? 'log body included' : 'no log body'}</Tag> : null}
+                  </Space>
+                  {podLogRunResult ? <JSONBlock value={podLogRunResult} /> : null}
                   <JSONBlock value={podLogPreview} />
                 </Space>
               )}
