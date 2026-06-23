@@ -3090,8 +3090,16 @@ function GitRemotes() {
             { title: 'Health', render: (_, row) => <Space size={4} wrap><Tag color={signalSeverityColor(row.webhook_health)}>{row.webhook_health || 'unknown'}</Tag><Typography.Text>{shortText(row.webhook_summary, 48)}</Typography.Text></Space> },
             { title: 'Rehearsal', render: (_, row) => {
               const readiness = row.callback_rehearsal || {};
+              const providerPlan = readiness.provider_rehearsal_plan || {};
+              const resultPlan = providerPlan.result_recording_plan || {};
               const status = readiness.status || 'unknown';
-              return <Space size={4} wrap><Tag color={status === 'ready' ? 'green' : status === 'blocked' ? 'red' : 'default'}>{status}</Tag><Typography.Text>{shortText(readiness.message, 56)}</Typography.Text></Space>;
+              return <Space size={4} wrap>
+                <Tag color={status === 'ready' ? 'green' : status === 'blocked' ? 'red' : 'default'}>{status}</Tag>
+                <Tag color={providerPlan.plan_state === 'planned' ? 'gold' : 'red'}>{providerPlan.plan_state || 'blocked'}</Tag>
+                <Tag>{providerPlan.external_call_made ? 'provider call' : 'no provider call'}</Tag>
+                <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
+                <Typography.Text>{shortText(readiness.message, 56)}</Typography.Text>
+              </Space>;
             } },
             { title: 'Action', render: (_, row) => <Button size="small" onClick={() => rotateWebhookSecret(row.id)}>Rotate secret</Button> }
           ]} />

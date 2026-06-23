@@ -4562,14 +4562,138 @@ func webhookCallbackRehearsalReadiness(row map[string]any, baseURL string) map[s
 		message = strings.Join(reasons, "; ")
 	}
 	return map[string]any{
-		"status":             status,
-		"public_origin":      origin,
-		"provider":           strings.TrimSpace(fmt.Sprint(row["provider"])),
-		"webhook_url":        strings.TrimSpace(fmt.Sprint(row["webhook_url"])),
-		"required_provider":  "gitea_or_github_webhook_settings",
-		"external_call_made": false,
-		"reasons":            reasons,
-		"message":            message,
+		"status":                  status,
+		"public_origin":           origin,
+		"provider":                strings.TrimSpace(fmt.Sprint(row["provider"])),
+		"webhook_url":             strings.TrimSpace(fmt.Sprint(row["webhook_url"])),
+		"required_provider":       "gitea_or_github_webhook_settings",
+		"external_call_made":      false,
+		"reasons":                 reasons,
+		"provider_rehearsal_plan": webhookProviderCallbackRehearsalPlan(status, reasons),
+		"message":                 message,
+	}
+}
+
+func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReasons []string) map[string]any {
+	planState := "blocked"
+	if readinessStatus == "ready" {
+		planState = "planned"
+	}
+	blockedReasons := append([]string{}, readinessReasons...)
+	executionBlockers := []string{"provider_callback_rehearsal_not_performed"}
+	if planState == "planned" {
+		blockedReasons = []string{}
+	}
+	return map[string]any{
+		"mode":                           "provider_callback_rehearsal_plan",
+		"plan_state":                     planState,
+		"execution_enabled":              false,
+		"external_call_made":             false,
+		"provider_settings_written":      false,
+		"provider_test_delivery_sent":    false,
+		"provider_delivery_received":     false,
+		"webhook_event_created":          false,
+		"webhook_event_replayed":         false,
+		"repo_sync_enqueued":             false,
+		"github_actions_refresh_started": false,
+		"result_written":                 false,
+		"contains_token":                 false,
+		"contains_secret":                false,
+		"contains_payload":               false,
+		"contains_provider_url":          false,
+		"contains_delivery_body":         false,
+		"required_controls": []string{
+			"public_gateway_origin",
+			"provider_webhook_settings_review",
+			"webhook_secret_rotation_review",
+			"delivery_id_deduplication",
+			"provider_test_delivery",
+			"sanitized_result_recording",
+		},
+		"disabled_backends": []string{
+			"provider_webhook_settings_write",
+			"provider_test_delivery",
+			"external_callback_wait",
+			"webhook_event_insert",
+			"webhook_event_replay",
+			"repo_sync_enqueue",
+			"github_actions_api_sync",
+		},
+		"suppressed_fields": []string{
+			"secret_token",
+			"shared_secret",
+			"signature_header",
+			"provider_token",
+			"provider_url",
+			"request_headers",
+			"request_body",
+			"delivery_payload",
+			"delivery_response",
+		},
+		"blocked_reasons":       blockedReasons,
+		"execution_blockers":    executionBlockers,
+		"result_recording_plan": webhookProviderCallbackRehearsalResultRecordingPlan(),
+		"message":               "Provider callback rehearsal is audit-only; no provider settings, external delivery, webhook event, replay, repo sync, or GitHub Actions refresh is performed.",
+	}
+}
+
+func webhookProviderCallbackRehearsalResultRecordingPlan() map[string]any {
+	return map[string]any{
+		"mode":                           "provider_callback_rehearsal_result_recording_plan",
+		"result_recording_state":         "blocked",
+		"result_recording_ready":         false,
+		"result_recording_ready_reason":  "provider_callback_rehearsal_execution_not_performed",
+		"recording_enabled":              false,
+		"result_written":                 false,
+		"webhook_connection_updated":     false,
+		"webhook_event_recorded":         false,
+		"operation_log_written":          false,
+		"repo_sync_result_recorded":      false,
+		"github_actions_result_recorded": false,
+		"raw_request_headers_recorded":   false,
+		"raw_request_body_recorded":      false,
+		"raw_provider_response_recorded": false,
+		"contains_token":                 false,
+		"contains_secret":                false,
+		"contains_payload":               false,
+		"contains_provider_url":          false,
+		"result_recording_sequence": []string{
+			"classify_provider_delivery",
+			"record_sanitized_delivery_summary",
+			"record_webhook_event_status",
+			"record_repo_sync_rehearsal_summary",
+			"record_github_actions_refresh_summary",
+			"persist_redacted_rehearsal_result",
+		},
+		"result_diagnostic_fields": []string{
+			"provider",
+			"public_origin_valid",
+			"delivery_status",
+			"signature_valid",
+			"event_type",
+			"repo_sync_enqueued",
+			"github_actions_refresh_status",
+		},
+		"suppressed_fields": []string{
+			"secret_token",
+			"shared_secret",
+			"signature_header",
+			"provider_token",
+			"provider_url",
+			"request_headers",
+			"request_body",
+			"delivery_payload",
+			"delivery_response",
+			"provider_response_body",
+			"provider_response_headers",
+		},
+		"blocked_reasons": []string{
+			"provider_callback_rehearsal_execution_not_performed",
+			"webhook_event_result_update_not_wired",
+			"repo_sync_rehearsal_result_not_recorded",
+			"github_actions_refresh_not_performed",
+		},
+		"message": "Provider callback rehearsal result recording is planned only; raw request, provider response, secret, and payload material are never persisted.",
 	}
 }
 
