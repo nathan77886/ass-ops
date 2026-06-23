@@ -5212,6 +5212,22 @@ func TestProviderReviewAttemptAdapterResponsePlan(t *testing.T) {
 			t.Fatalf("mismatched response mode result plan should be empty: %#v", got)
 		}
 	})
+	t.Run("result recording plan rejects mismatched response identity", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResultRecordingPlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.create_branch_ref",
+			},
+			map[string]any{
+				"mode":           providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name": "commit_starter_files",
+				"endpoint_key":   "github.commit_files",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("mismatched response identity result plan should be empty: %#v", got)
+		}
+	})
 }
 
 func TestProviderReviewAttemptAdapterRequestMaterializationPlan(t *testing.T) {
@@ -5554,6 +5570,75 @@ func TestProviderReviewAttemptEndpointMatchesOperation(t *testing.T) {
 	}
 }
 
+func TestProviderReviewAttemptPlanMatchesOperation(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		plan      map[string]any
+		mode      string
+		operation string
+		endpoint  string
+		want      bool
+	}{
+		{
+			name: "matching plan",
+			plan: map[string]any{
+				"mode":           "redacted_attempt_adapter_response_plan",
+				"operation_name": "create_branch_ref",
+				"endpoint_key":   "github.create_branch_ref",
+			},
+			mode:      "redacted_attempt_adapter_response_plan",
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+			want:      true,
+		},
+		{
+			name: "mode mismatch",
+			plan: map[string]any{
+				"mode":           "raw_plan",
+				"operation_name": "create_branch_ref",
+				"endpoint_key":   "github.create_branch_ref",
+			},
+			mode:      "redacted_attempt_adapter_response_plan",
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name: "operation mismatch",
+			plan: map[string]any{
+				"mode":           "redacted_attempt_adapter_response_plan",
+				"operation_name": "commit_starter_files",
+				"endpoint_key":   "github.commit_files",
+			},
+			mode:      "redacted_attempt_adapter_response_plan",
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name: "endpoint mismatch",
+			plan: map[string]any{
+				"mode":           "redacted_attempt_adapter_response_plan",
+				"operation_name": "create_branch_ref",
+				"endpoint_key":   "gitea.create_branch_ref",
+			},
+			mode:      "redacted_attempt_adapter_response_plan",
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+		{
+			name:      "missing plan",
+			mode:      "redacted_attempt_adapter_response_plan",
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := providerReviewAttemptPlanMatchesOperation(tt.plan, tt.mode, tt.operation, tt.endpoint); got != tt.want {
+				t.Fatalf("providerReviewAttemptPlanMatchesOperation() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProviderReviewAttemptAdapterBuilderAndHandlerMatchOperation(t *testing.T) {
 	for _, tt := range []struct {
 		name            string
@@ -5647,7 +5732,16 @@ func TestProviderReviewAttemptBranchPolicyPlan(t *testing.T) {
 		{name: "invalid operation", operation: map[string]any{"name": "raw_operation", "endpoint_key": "github.create_branch_ref"}, wantEmpty: true},
 		{name: "invalid endpoint", operation: map[string]any{"name": "create_branch_ref", "endpoint_key": "github.secret"}, wantEmpty: true},
 		{name: "valid operation without request metadata", operation: validOperation, requestPlan: nil, wantMetadataReady: false},
-		{name: "valid operation with request metadata", operation: validOperation, requestPlan: map[string]any{"mode": providerReviewAttemptAdapterRequestMaterializationPlanMode}, wantMetadataReady: true},
+		{name: "valid operation with request metadata", operation: validOperation, requestPlan: map[string]any{
+			"mode":           providerReviewAttemptAdapterRequestMaterializationPlanMode,
+			"operation_name": "create_branch_ref",
+			"endpoint_key":   "github.create_branch_ref",
+		}, wantMetadataReady: true},
+		{name: "request metadata for different operation is not ready", operation: validOperation, requestPlan: map[string]any{
+			"mode":           providerReviewAttemptAdapterRequestMaterializationPlanMode,
+			"operation_name": "commit_starter_files",
+			"endpoint_key":   "github.commit_files",
+		}, wantMetadataReady: false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := providerReviewAttemptBranchPolicyPlan(tt.operation, tt.requestPlan)
@@ -5708,10 +5802,25 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 	requestPlan := map[string]any{"request_materialization_ready": false}
 	credentialPlan := map[string]any{"credential_binding_ready": false}
 	runtimePlan := map[string]any{"runtime_ready": false}
-	branchPolicyPlan := providerReviewAttemptBranchPolicyPlan(operation, map[string]any{"mode": providerReviewAttemptAdapterRequestMaterializationPlanMode})
-	transportPlan := map[string]any{"mode": "redacted_attempt_adapter_transport_plan", "transport_ready": true, "retryable_status_classes": []string{"5xx"}}
+	branchPolicyPlan := providerReviewAttemptBranchPolicyPlan(operation, map[string]any{
+		"mode":           providerReviewAttemptAdapterRequestMaterializationPlanMode,
+		"operation_name": "create_branch_ref",
+		"endpoint_key":   "github.create_branch_ref",
+	})
+	transportPlan := map[string]any{
+		"mode":                     "redacted_attempt_adapter_transport_plan",
+		"operation_name":           "create_branch_ref",
+		"endpoint_key":             "github.create_branch_ref",
+		"transport_ready":          true,
+		"retryable_status_classes": []string{"5xx"},
+	}
 	responsePlan := map[string]any{"response_recording_ready": false}
-	transactionPlan := map[string]any{"transaction_metadata_ready": true}
+	transactionPlan := map[string]any{
+		"mode":                       "redacted_attempt_adapter_transaction_plan",
+		"operation_name":             "create_branch_ref",
+		"endpoint_key":               "github.create_branch_ref",
+		"transaction_metadata_ready": true,
+	}
 	plan := providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, runtimePlan, branchPolicyPlan, transportPlan, responsePlan, transactionPlan)
 	if plan["mode"] != "redacted_attempt_adapter_invocation_plan" ||
 		plan["invocation_state"] != "blocked" ||
@@ -5803,7 +5912,11 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		subplans[10] != "transaction_plan" {
 		t.Fatalf("invocation subplans = %#v", subplans)
 	}
-	gotBranchPolicyPlan := providerReviewAttemptBranchPolicyPlan(operation, map[string]any{"mode": providerReviewAttemptAdapterRequestMaterializationPlanMode})
+	gotBranchPolicyPlan := providerReviewAttemptBranchPolicyPlan(operation, map[string]any{
+		"mode":           providerReviewAttemptAdapterRequestMaterializationPlanMode,
+		"operation_name": "create_branch_ref",
+		"endpoint_key":   "github.create_branch_ref",
+	})
 	if gotBranchPolicyPlan["mode"] != "redacted_attempt_branch_policy_plan" ||
 		gotBranchPolicyPlan["branch_policy_state"] != "blocked" ||
 		gotBranchPolicyPlan["branch_policy_ready"] != false ||
@@ -6329,6 +6442,22 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		notReadyTransactionLockPlan["transaction_metadata_ready"] != false {
 		t.Fatalf("not ready transaction execution lock plan = %#v", notReadyTransactionLockPlan)
 	}
+	mismatchedTransactionLockPlan := providerReviewAttemptAdapterExecutionLockPlan(
+		operation,
+		claimPlan,
+		map[string]any{
+			"mode":                       "redacted_attempt_adapter_transaction_plan",
+			"operation_name":             "commit_starter_files",
+			"endpoint_key":               "github.commit_files",
+			"transaction_metadata_ready": true,
+		},
+	)
+	if mismatchedTransactionLockPlan["execution_lock_metadata_ready"] != false ||
+		mismatchedTransactionLockPlan["execution_lock_metadata_ready_reason"] != "provider_review_execution_lock_transaction_metadata_not_ready" ||
+		mismatchedTransactionLockPlan["claim_metadata_ready"] != true ||
+		mismatchedTransactionLockPlan["transaction_metadata_ready"] != false {
+		t.Fatalf("mismatched transaction identity execution lock plan = %#v", mismatchedTransactionLockPlan)
+	}
 	got := providerReviewAttemptAdapterInvocationPlan(
 		map[string]any{"name": "raw_operation", "endpoint_key": "github.create_branch_ref"},
 		claimPlan,
@@ -6591,9 +6720,24 @@ func TestProviderReviewAttemptAdapterProviderSendPlan(t *testing.T) {
 	readyOperation := map[string]any{"name": "create_branch_ref", "endpoint_key": "github.create_branch_ref", "operation_order": 10}
 	readyPlan := providerReviewAttemptAdapterProviderSendPlan(
 		readyOperation,
-		map[string]any{"request_materialization_ready": true},
-		map[string]any{"credential_binding_ready": true},
-		map[string]any{"runtime_ready": true},
+		map[string]any{
+			"mode":                          providerReviewAttemptAdapterRequestMaterializationPlanMode,
+			"operation_name":                "create_branch_ref",
+			"endpoint_key":                  "github.create_branch_ref",
+			"request_materialization_ready": true,
+		},
+		map[string]any{
+			"mode":                     "redacted_attempt_adapter_credential_binding_plan",
+			"operation_name":           "create_branch_ref",
+			"endpoint_key":             "github.create_branch_ref",
+			"credential_binding_ready": true,
+		},
+		map[string]any{
+			"mode":           "redacted_attempt_adapter_runtime_plan",
+			"operation_name": "create_branch_ref",
+			"endpoint_key":   "github.create_branch_ref",
+			"runtime_ready":  true,
+		},
 		providerReviewAttemptAdapterTransportPlan("github", "create_branch_ref"),
 	)
 	if readyPlan["provider_send_metadata_ready"] != true ||
@@ -6606,6 +6750,35 @@ func TestProviderReviewAttemptAdapterProviderSendPlan(t *testing.T) {
 		readyPlan["provider_api_call_made"] != false ||
 		readyPlan["provider_api_mutation"] != "disabled" {
 		t.Fatalf("ready metadata provider send plan = %#v", readyPlan)
+	}
+	mismatchedSubplan := providerReviewAttemptAdapterProviderSendPlan(
+		readyOperation,
+		map[string]any{
+			"mode":                          providerReviewAttemptAdapterRequestMaterializationPlanMode,
+			"operation_name":                "commit_starter_files",
+			"endpoint_key":                  "github.commit_files",
+			"request_materialization_ready": true,
+		},
+		map[string]any{
+			"mode":                     "redacted_attempt_adapter_credential_binding_plan",
+			"operation_name":           "create_branch_ref",
+			"endpoint_key":             "github.create_branch_ref",
+			"credential_binding_ready": true,
+		},
+		map[string]any{
+			"mode":           "redacted_attempt_adapter_runtime_plan",
+			"operation_name": "create_branch_ref",
+			"endpoint_key":   "github.create_branch_ref",
+			"runtime_ready":  true,
+		},
+		providerReviewAttemptAdapterTransportPlan("github", "create_branch_ref"),
+	)
+	if mismatchedSubplan["provider_send_metadata_ready"] != false ||
+		mismatchedSubplan["request_materialization_ready"] != false ||
+		mismatchedSubplan["credential_binding_ready"] != true ||
+		mismatchedSubplan["adapter_runtime_ready"] != true ||
+		mismatchedSubplan["transport_metadata_ready"] != true {
+		t.Fatalf("mismatched subplan provider send plan = %#v", mismatchedSubplan)
 	}
 }
 
@@ -6643,6 +6816,8 @@ func TestProviderReviewAttemptAdapterRetryBackoffPlan(t *testing.T) {
 			}
 			transportPlan := map[string]any{
 				"mode":                     "redacted_attempt_adapter_transport_plan",
+				"operation_name":           tt.operation,
+				"endpoint_key":             tt.endpoint,
 				"retryable_status_classes": []string{"5xx"},
 			}
 			plan := providerReviewAttemptAdapterRetryBackoffPlan(operation, transportPlan)
@@ -6716,6 +6891,16 @@ func TestProviderReviewAttemptAdapterRetryBackoffPlan(t *testing.T) {
 		map[string]any{"mode": "raw_transport_plan"},
 	); len(got) != 0 {
 		t.Fatalf("raw transport retry backoff plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterRetryBackoffPlan(
+		map[string]any{"name": "create_branch_ref", "endpoint_key": "github.create_branch_ref"},
+		map[string]any{
+			"mode":           "redacted_attempt_adapter_transport_plan",
+			"operation_name": "commit_starter_files",
+			"endpoint_key":   "github.commit_files",
+		},
+	); len(got) != 0 {
+		t.Fatalf("mismatched transport identity retry backoff plan = %#v", got)
 	}
 	if got := providerReviewAttemptAdapterRetryBackoffPlan(
 		map[string]any{"name": "create_branch_ref", "endpoint_key": "github.commit_files"},
@@ -8097,6 +8282,8 @@ func TestProviderReviewAttemptAdapterTransactionPlan(t *testing.T) {
 	claimPlan := map[string]any{"claim_metadata_ready": true}
 	responsePlan := map[string]any{
 		"mode":                         "redacted_attempt_adapter_response_plan",
+		"operation_name":               "create_branch_ref",
+		"endpoint_key":                 "github.create_branch_ref",
 		"success_attempt_status":       "completed",
 		"retry_attempt_status":         "planned",
 		"failure_attempt_status":       "failed",
@@ -8281,8 +8468,28 @@ func TestProviderReviewAttemptAdapterTransactionPlan(t *testing.T) {
 	if mismatchedResponseModeBoundaryPlan["provider_call_boundary_metadata_ready"] != false {
 		t.Fatalf("mismatched response mode boundary plan = %#v", mismatchedResponseModeBoundaryPlan)
 	}
+	mismatchedResponseIdentityPlan := providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, map[string]any{
+		"mode":                         "redacted_attempt_adapter_response_plan",
+		"operation_name":               "commit_starter_files",
+		"endpoint_key":                 "github.commit_files",
+		"success_attempt_status":       "completed",
+		"retry_attempt_status":         "planned",
+		"failure_attempt_status":       "failed",
+		"dependency_unlocks_operation": "open_review_request",
+		"dependency_update_status":     "dependency_satisfied",
+		"requires_dependency_update":   true,
+	})
+	if mismatchedResponseIdentityPlan["transaction_metadata_ready"] != false {
+		t.Fatalf("mismatched response identity transaction plan should not be metadata-ready: %#v", mismatchedResponseIdentityPlan)
+	}
+	mismatchedResponseIdentityBoundaryPlan := mapFromAny(mismatchedResponseIdentityPlan["provider_call_boundary_plan"])
+	if mismatchedResponseIdentityBoundaryPlan["provider_call_boundary_metadata_ready"] != false {
+		t.Fatalf("mismatched response identity boundary plan = %#v", mismatchedResponseIdentityBoundaryPlan)
+	}
 	redactedPlan := providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, map[string]any{
 		"mode":                         "redacted_attempt_adapter_response_plan",
+		"operation_name":               "create_branch_ref",
+		"endpoint_key":                 "github.create_branch_ref",
 		"success_attempt_status":       "raw-success-secret",
 		"retry_attempt_status":         "raw-retry-secret",
 		"failure_attempt_status":       "raw-failure-secret",
