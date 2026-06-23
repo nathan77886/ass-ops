@@ -1596,6 +1596,117 @@ func assertDemoDataRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 			t.Fatalf("demo data rehearsal suppressed fields missing %q: %#v", field, plan["suppressed_fields"])
 		}
 	}
+	environmentPlan := mapFromAny(plan["environment_evidence_plan"])
+	if environmentPlan["mode"] != "first_version_demo_environment_evidence_plan" ||
+		environmentPlan["evidence_ready"] != false ||
+		environmentPlan["evidence_ready_reason"] != "demo_environment_execution_disabled" ||
+		environmentPlan["execution_enabled"] != false ||
+		environmentPlan["demo_seed_written"] != false ||
+		environmentPlan["project_created"] != false ||
+		environmentPlan["repository_created"] != false ||
+		environmentPlan["git_remote_created"] != false ||
+		environmentPlan["external_call_made"] != false ||
+		environmentPlan["contains_remote_url"] != false ||
+		environmentPlan["contains_credentials"] != false {
+		t.Fatalf("demo environment evidence plan should stay disabled and redacted: %#v", environmentPlan)
+	}
+	if plan["readiness_status"] == "ready" && environmentPlan["metadata_ready"] != true {
+		t.Fatalf("ready demo environment plan should mark metadata ready: %#v", environmentPlan)
+	}
+	if plan["readiness_status"] != "ready" && environmentPlan["metadata_ready"] != false {
+		t.Fatalf("non-ready demo environment plan should mark metadata not ready: %#v", environmentPlan)
+	}
+	for _, field := range []string{"project_asset", "project_graph_node", "repository_asset", "two_git_remote_assets", "project_repository_graph_link", "repository_to_two_remotes_graph_path"} {
+		if !containsString(stringSliceFromAny(environmentPlan["required_environment_fields"]), field) {
+			t.Fatalf("demo environment required fields missing %q: %#v", field, environmentPlan["required_environment_fields"])
+		}
+	}
+	for _, field := range []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"} {
+		if !containsString(stringSliceFromAny(environmentPlan["suppressed_fields"]), field) {
+			t.Fatalf("demo environment suppressed fields missing %q: %#v", field, environmentPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"demo_seed_execution_disabled", "live_environment_not_recorded"} {
+		if !containsString(stringSliceFromAny(environmentPlan["blocked_reasons"]), reason) {
+			t.Fatalf("demo environment blocked reasons missing %q: %#v", reason, environmentPlan["blocked_reasons"])
+		}
+	}
+	if plan["readiness_status"] == "ready" {
+		if containsString(stringSliceFromAny(environmentPlan["blocked_reasons"]), "required_graph_evidence_missing") {
+			t.Fatalf("ready demo environment should not report missing graph evidence: %#v", environmentPlan["blocked_reasons"])
+		}
+	} else if !containsString(stringSliceFromAny(environmentPlan["blocked_reasons"]), "required_graph_evidence_missing") {
+		t.Fatalf("non-ready demo environment should report missing graph evidence: %#v", environmentPlan["blocked_reasons"])
+	}
+
+	graphPlan := mapFromAny(plan["graph_proof_plan"])
+	if graphPlan["mode"] != "first_version_demo_graph_proof_plan" ||
+		graphPlan["proof_ready"] != false ||
+		graphPlan["proof_ready_reason"] != "demo_graph_proof_execution_disabled" ||
+		graphPlan["asset_graph_written"] != false ||
+		graphPlan["asset_sync_triggered"] != false ||
+		graphPlan["graph_query_performed"] != false ||
+		graphPlan["external_call_made"] != false {
+		t.Fatalf("demo graph proof plan should stay disabled and redacted: %#v", graphPlan)
+	}
+	if plan["readiness_status"] == "ready" && graphPlan["metadata_ready"] != true {
+		t.Fatalf("ready demo graph proof plan should mark metadata ready: %#v", graphPlan)
+	}
+	if plan["readiness_status"] != "ready" && graphPlan["metadata_ready"] != false {
+		t.Fatalf("non-ready demo graph proof plan should mark metadata not ready: %#v", graphPlan)
+	}
+	for _, path := range []string{"project:*", "project:* -> repository:*", "repository:* -> git_remote:*", "repository:* -> second git_remote:*"} {
+		if !containsString(stringSliceFromAny(graphPlan["required_graph_paths"]), path) {
+			t.Fatalf("demo graph required paths missing %q: %#v", path, graphPlan["required_graph_paths"])
+		}
+	}
+	for _, field := range []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"} {
+		if !containsString(stringSliceFromAny(graphPlan["suppressed_fields"]), field) {
+			t.Fatalf("demo graph suppressed fields missing %q: %#v", field, graphPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"asset_graph_write_disabled"} {
+		if !containsString(stringSliceFromAny(graphPlan["blocked_reasons"]), reason) {
+			t.Fatalf("demo graph blocked reasons missing %q: %#v", reason, graphPlan["blocked_reasons"])
+		}
+	}
+	if plan["readiness_status"] == "ready" {
+		if containsString(stringSliceFromAny(graphPlan["blocked_reasons"]), "graph_proof_incomplete") {
+			t.Fatalf("ready demo graph proof should not report incomplete graph proof: %#v", graphPlan["blocked_reasons"])
+		}
+	} else if !containsString(stringSliceFromAny(graphPlan["blocked_reasons"]), "graph_proof_incomplete") {
+		t.Fatalf("non-ready demo graph proof should report incomplete graph proof: %#v", graphPlan["blocked_reasons"])
+	}
+
+	resultPlan := mapFromAny(plan["result_recording_plan"])
+	if resultPlan["mode"] != "first_version_demo_data_result_recording_plan" ||
+		resultPlan["result_recording_state"] != "blocked" ||
+		resultPlan["result_recording_ready"] != false ||
+		resultPlan["result_recording_ready_reason"] != "demo_data_execution_not_performed" ||
+		resultPlan["recording_enabled"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["operation_log_written"] != false ||
+		resultPlan["readiness_snapshot_written"] != false ||
+		resultPlan["asset_graph_snapshot_written"] != false ||
+		resultPlan["raw_remote_url_recorded"] != false ||
+		resultPlan["raw_credentials_recorded"] != false {
+		t.Fatalf("demo result recording plan should stay disabled and redacted: %#v", resultPlan)
+	}
+	for _, field := range []string{"project_asset_id", "repository_asset_id", "source_remote_asset_id", "mirror_remote_asset_id", "graph_proof_status", "readiness_status"} {
+		if !containsString(stringSliceFromAny(resultPlan["required_result_fields"]), field) {
+			t.Fatalf("demo result required fields missing %q: %#v", field, resultPlan["required_result_fields"])
+		}
+	}
+	for _, field := range []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"} {
+		if !containsString(stringSliceFromAny(resultPlan["suppressed_fields"]), field) {
+			t.Fatalf("demo result suppressed fields missing %q: %#v", field, resultPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"demo_data_execution_not_performed", "readiness_snapshot_not_recorded", "asset_graph_snapshot_not_recorded"} {
+		if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), reason) {
+			t.Fatalf("demo result blocked reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
+		}
+	}
 }
 
 func containsString(items []string, target string) bool {

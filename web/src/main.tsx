@@ -847,8 +847,15 @@ function readinessState(done: boolean, evidence: React.ReactNode, hasPartialEvid
   return { status: 'missing', color: 'red', evidence };
 }
 
+function demoPlanStateColor(state: string) {
+  return state === 'observed' ? 'green' : state === 'blocked' ? 'red' : 'gold';
+}
+
 function demoDataRehearsalPlan(status: string, evidenceCounts: AnyRow, requiredEvidence: string[]) {
   const planState = status === 'ready' ? 'observed' : status === 'missing' ? 'blocked' : 'planned';
+  const environmentPlan = demoDataEnvironmentEvidencePlan(status, evidenceCounts, requiredEvidence);
+  const graphPlan = demoDataGraphProofPlan(status, evidenceCounts, requiredEvidence);
+  const resultPlan = demoDataResultRecordingPlan();
   return {
     mode: 'first_version_demo_data_rehearsal_plan',
     plan_state: planState,
@@ -864,10 +871,79 @@ function demoDataRehearsalPlan(status: string, evidenceCounts: AnyRow, requiredE
     contains_credentials: false,
     required_evidence: requiredEvidence,
     evidence_counts: evidenceCounts,
+    environment_evidence_plan: environmentPlan,
+    graph_proof_plan: graphPlan,
+    result_recording_plan: resultPlan,
     disabled_backends: ['project_create', 'repository_create', 'git_remote_create', 'demo_seed_write', 'asset_graph_write'],
     suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret'],
     blocked_reasons: status === 'ready' ? [] : ['live_demo_graph_evidence_incomplete'],
     message: 'Demo data rehearsal is audit-only; create project/repository/remote evidence in the live environment, then sync the canonical asset graph.'
+  };
+}
+
+function demoDataEnvironmentEvidencePlan(status: string, evidenceCounts: AnyRow, requiredEvidence: string[]) {
+  return {
+    mode: 'first_version_demo_environment_evidence_plan',
+    evidence_state: status === 'ready' ? 'observed' : status === 'missing' ? 'blocked' : 'planned',
+    evidence_ready: false,
+    evidence_ready_reason: 'demo_environment_execution_disabled',
+    metadata_ready: status === 'ready',
+    execution_enabled: false,
+    demo_seed_written: false,
+    project_created: false,
+    repository_created: false,
+    git_remote_created: false,
+    external_call_made: false,
+    contains_remote_url: false,
+    contains_credentials: false,
+    required_evidence: requiredEvidence,
+    evidence_counts: evidenceCounts,
+    required_environment_fields: ['project_asset', 'project_graph_node', 'repository_asset', 'two_git_remote_assets', 'project_repository_graph_link', 'repository_to_two_remotes_graph_path'],
+    suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret'],
+    blocked_reasons: status === 'ready' ? ['demo_seed_execution_disabled', 'live_environment_not_recorded'] : ['demo_seed_execution_disabled', 'live_environment_not_recorded', 'required_graph_evidence_missing'],
+    message: 'Demo environment evidence is observed only; this plan does not create demo project, repository, or remote rows.'
+  };
+}
+
+function demoDataGraphProofPlan(status: string, evidenceCounts: AnyRow, requiredEvidence: string[]) {
+  return {
+    mode: 'first_version_demo_graph_proof_plan',
+    proof_state: status === 'ready' ? 'observed' : status === 'missing' ? 'blocked' : 'planned',
+    proof_ready: false,
+    proof_ready_reason: 'demo_graph_proof_execution_disabled',
+    metadata_ready: status === 'ready',
+    asset_graph_written: false,
+    asset_sync_triggered: false,
+    graph_query_performed: false,
+    external_call_made: false,
+    required_evidence: requiredEvidence,
+    evidence_counts: evidenceCounts,
+    required_graph_paths: ['project:*', 'project:* -> repository:*', 'repository:* -> git_remote:*', 'repository:* -> second git_remote:*'],
+    suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret'],
+    blocked_reasons: status === 'ready' ? ['asset_graph_write_disabled'] : ['asset_graph_write_disabled', 'graph_proof_incomplete'],
+    message: 'Demo graph proof is read-only; future execution must sync canonical assets and prove one repository has at least two remotes.'
+  };
+}
+
+function demoDataResultRecordingPlan() {
+  // Result recording stays blocked even when graph evidence is observed; it only
+  // becomes meaningful after a future live demo-data execution writes a result.
+  return {
+    mode: 'first_version_demo_data_result_recording_plan',
+    result_recording_state: 'blocked',
+    result_recording_ready: false,
+    result_recording_ready_reason: 'demo_data_execution_not_performed',
+    recording_enabled: false,
+    result_written: false,
+    operation_log_written: false,
+    readiness_snapshot_written: false,
+    asset_graph_snapshot_written: false,
+    raw_remote_url_recorded: false,
+    raw_credentials_recorded: false,
+    required_result_fields: ['project_asset_id', 'repository_asset_id', 'source_remote_asset_id', 'mirror_remote_asset_id', 'graph_proof_status', 'readiness_status'],
+    suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret'],
+    blocked_reasons: ['demo_data_execution_not_performed', 'readiness_snapshot_not_recorded', 'asset_graph_snapshot_not_recorded'],
+    message: 'Demo data result recording is disabled until a live environment run creates and proves the graph-backed demo evidence.'
   };
 }
 
@@ -1212,9 +1288,12 @@ function Dashboard() {
               const plan = row.demo_data_rehearsal_plan;
               if (!plan) return null;
               return <Space size={4} wrap>
-                <Tag color={plan.plan_state === 'observed' ? 'green' : plan.plan_state === 'blocked' ? 'red' : 'gold'}>{plan.plan_state}</Tag>
+                <Tag color={demoPlanStateColor(plan.plan_state)}>{plan.plan_state}</Tag>
+                {plan.environment_evidence_plan ? <Tag color={demoPlanStateColor(plan.environment_evidence_plan.evidence_state)}>env {plan.environment_evidence_plan.evidence_state || 'blocked'}</Tag> : null}
+                {plan.graph_proof_plan ? <Tag color={demoPlanStateColor(plan.graph_proof_plan.proof_state)}>graph {plan.graph_proof_plan.proof_state || 'blocked'}</Tag> : null}
                 <Tag>{plan.demo_seed_written ? 'seed written' : 'no seed write'}</Tag>
                 <Tag>{plan.asset_graph_written ? 'graph written' : 'no graph write'}</Tag>
+                {plan.result_recording_plan ? <Tag color={demoPlanStateColor(plan.result_recording_plan.result_recording_state)}>{plan.result_recording_plan.result_recording_state || 'blocked'} result</Tag> : null}
               </Space>;
             } },
             { title: 'Next', dataIndex: 'next' }

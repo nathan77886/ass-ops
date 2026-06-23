@@ -1489,21 +1489,27 @@ func projectDemoDataRehearsalPlan(status string, evidence map[string]int, requir
 	if status != "ready" {
 		blockedReasons = append(blockedReasons, "live_demo_graph_evidence_incomplete")
 	}
+	environmentPlan := demoDataEnvironmentEvidencePlan(status, evidence, requiredEvidence)
+	graphPlan := demoDataGraphProofPlan(status, evidence, requiredEvidence)
+	resultPlan := demoDataResultRecordingPlan()
 	return map[string]any{
-		"mode":                 "first_version_demo_data_rehearsal_plan",
-		"plan_state":           planState,
-		"readiness_status":     status,
-		"execution_enabled":    false,
-		"external_call_made":   false,
-		"demo_seed_written":    false,
-		"project_created":      false,
-		"repository_created":   false,
-		"git_remote_created":   false,
-		"asset_graph_written":  false,
-		"contains_remote_url":  false,
-		"contains_credentials": false,
-		"required_evidence":    requiredEvidence,
-		"evidence_counts":      evidence,
+		"mode":                      "first_version_demo_data_rehearsal_plan",
+		"plan_state":                planState,
+		"readiness_status":          status,
+		"execution_enabled":         false,
+		"external_call_made":        false,
+		"demo_seed_written":         false,
+		"project_created":           false,
+		"repository_created":        false,
+		"git_remote_created":        false,
+		"asset_graph_written":       false,
+		"contains_remote_url":       false,
+		"contains_credentials":      false,
+		"required_evidence":         requiredEvidence,
+		"evidence_counts":           evidence,
+		"environment_evidence_plan": environmentPlan,
+		"graph_proof_plan":          graphPlan,
+		"result_recording_plan":     resultPlan,
 		"disabled_backends": []string{
 			"project_create",
 			"repository_create",
@@ -1521,6 +1527,92 @@ func projectDemoDataRehearsalPlan(status string, evidence map[string]int, requir
 		"blocked_reasons": blockedReasons,
 		"message":         "Demo data rehearsal is audit-only; create project/repository/remote evidence in the live environment, then sync the canonical asset graph.",
 	}
+}
+
+func demoDataEnvironmentEvidencePlan(status string, evidence map[string]int, requiredEvidence []string) map[string]any {
+	metadataReady := status == "ready"
+	blockedReasons := []string{"demo_seed_execution_disabled", "live_environment_not_recorded"}
+	if status != "ready" {
+		blockedReasons = append(blockedReasons, "required_graph_evidence_missing")
+	}
+	return map[string]any{
+		"mode":                        "first_version_demo_environment_evidence_plan",
+		"evidence_state":              mapStatusToPlanState(status),
+		"evidence_ready":              false,
+		"evidence_ready_reason":       "demo_environment_execution_disabled",
+		"metadata_ready":              metadataReady,
+		"execution_enabled":           false,
+		"demo_seed_written":           false,
+		"project_created":             false,
+		"repository_created":          false,
+		"git_remote_created":          false,
+		"external_call_made":          false,
+		"contains_remote_url":         false,
+		"contains_credentials":        false,
+		"required_evidence":           requiredEvidence,
+		"evidence_counts":             evidence,
+		"required_environment_fields": []string{"project_asset", "project_graph_node", "repository_asset", "two_git_remote_assets", "project_repository_graph_link", "repository_to_two_remotes_graph_path"},
+		"suppressed_fields":           []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"},
+		"blocked_reasons":             blockedReasons,
+		"message":                     "Demo environment evidence is observed only; this plan does not create demo project, repository, or remote rows.",
+	}
+}
+
+func demoDataGraphProofPlan(status string, evidence map[string]int, requiredEvidence []string) map[string]any {
+	metadataReady := status == "ready"
+	blockedReasons := []string{"asset_graph_write_disabled"}
+	if status != "ready" {
+		blockedReasons = append(blockedReasons, "graph_proof_incomplete")
+	}
+	return map[string]any{
+		"mode":                  "first_version_demo_graph_proof_plan",
+		"proof_state":           mapStatusToPlanState(status),
+		"proof_ready":           false,
+		"proof_ready_reason":    "demo_graph_proof_execution_disabled",
+		"metadata_ready":        metadataReady,
+		"asset_graph_written":   false,
+		"asset_sync_triggered":  false,
+		"graph_query_performed": false,
+		"external_call_made":    false,
+		"required_evidence":     requiredEvidence,
+		"evidence_counts":       evidence,
+		"required_graph_paths":  []string{"project:*", "project:* -> repository:*", "repository:* -> git_remote:*", "repository:* -> second git_remote:*"},
+		"suppressed_fields":     []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"},
+		"blocked_reasons":       blockedReasons,
+		"message":               "Demo graph proof is read-only; future execution must sync canonical assets and prove one repository has at least two remotes.",
+	}
+}
+
+func demoDataResultRecordingPlan() map[string]any {
+	// Result recording stays blocked even when graph evidence is observed; it only
+	// becomes meaningful after a future live demo-data execution writes a result.
+	return map[string]any{
+		"mode":                          "first_version_demo_data_result_recording_plan",
+		"result_recording_state":        "blocked",
+		"result_recording_ready":        false,
+		"result_recording_ready_reason": "demo_data_execution_not_performed",
+		"recording_enabled":             false,
+		"result_written":                false,
+		"operation_log_written":         false,
+		"readiness_snapshot_written":    false,
+		"asset_graph_snapshot_written":  false,
+		"raw_remote_url_recorded":       false,
+		"raw_credentials_recorded":      false,
+		"required_result_fields":        []string{"project_asset_id", "repository_asset_id", "source_remote_asset_id", "mirror_remote_asset_id", "graph_proof_status", "readiness_status"},
+		"suppressed_fields":             []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"},
+		"blocked_reasons":               []string{"demo_data_execution_not_performed", "readiness_snapshot_not_recorded", "asset_graph_snapshot_not_recorded"},
+		"message":                       "Demo data result recording is disabled until a live environment run creates and proves the graph-backed demo evidence.",
+	}
+}
+
+func mapStatusToPlanState(status string) string {
+	if status == "ready" {
+		return "observed"
+	}
+	if status == "missing" {
+		return "blocked"
+	}
+	return "planned"
 }
 
 func readinessItem(key, label, next string, done bool, evidence any, partial bool) readinessRow {
