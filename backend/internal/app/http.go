@@ -11199,6 +11199,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 	}
 	executionLockPlan := providerReviewAttemptAdapterExecutionLockPlan(operation, claimPlan, transactionPlan)
 	providerSendPlan := providerReviewAttemptAdapterProviderSendPlan(operation, requestPlan, credentialPlan, runtimePlan, transportPlan)
+	activationPlan := providerReviewAttemptAdapterActivationPlan(operation, claimPlan, executionLockPlan, credentialPlan, runtimePlan, requestPlan, transportPlan, providerSendPlan, responsePlan, transactionPlan)
 	return map[string]any{
 		"mode":                              "redacted_attempt_adapter_invocation_plan",
 		"invocation_state":                  "blocked",
@@ -11207,12 +11208,14 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"operation_name":                    operationName,
 		"endpoint_key":                      endpointKey,
 		"operation_order":                   intFromAny(operation["operation_order"], 0),
-		"invocation_sequence":               []string{"claim_attempt", "claim_idempotency", "claim_execution_lock", "bind_credential", "select_adapter_runtime", "materialize_request", "send_provider_request", "record_response", "record_transaction_boundary", "unlock_dependency"},
-		"required_subplans":                 []string{"claim_plan", "execution_lock_plan", "credential_binding_plan", "adapter_runtime_plan", "request_materialization_plan", "transport_plan", "provider_send_plan", "response_plan", "transaction_plan"},
+		"invocation_sequence":               []string{"claim_attempt", "claim_idempotency", "claim_execution_lock", "evaluate_adapter_activation", "bind_credential", "select_adapter_runtime", "materialize_request", "send_provider_request", "record_response", "record_transaction_boundary", "unlock_dependency"},
+		"required_subplans":                 []string{"claim_plan", "execution_lock_plan", "adapter_activation_plan", "credential_binding_plan", "adapter_runtime_plan", "request_materialization_plan", "transport_plan", "provider_send_plan", "response_plan", "transaction_plan"},
 		"execution_lock_plan":               executionLockPlan,
+		"adapter_activation_plan":           activationPlan,
 		"provider_send_plan":                providerSendPlan,
 		"claim_metadata_ready":              boolOnlyFromAny(claimPlan["claim_metadata_ready"]),
 		"execution_lock_metadata_ready":     boolOnlyFromAny(executionLockPlan["execution_lock_metadata_ready"]),
+		"adapter_activation_metadata_ready": boolOnlyFromAny(activationPlan["adapter_activation_metadata_ready"]),
 		"credential_binding_ready":          boolOnlyFromAny(credentialPlan["credential_binding_ready"]),
 		"adapter_runtime_ready":             boolOnlyFromAny(runtimePlan["runtime_ready"]),
 		"request_materialization_ready":     boolOnlyFromAny(requestPlan["request_materialization_ready"]),
@@ -11222,6 +11225,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"transaction_metadata_ready":        boolOnlyFromAny(transactionPlan["transaction_metadata_ready"]),
 		"claim_metadata_ready_reason":       providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(claimPlan["claim_metadata_ready"]), "provider_review_claim_metadata_not_ready"),
 		"execution_lock_ready_reason":       stringFromMap(executionLockPlan, "execution_lock_metadata_ready_reason"),
+		"adapter_activation_ready_reason":   stringFromMap(activationPlan, "adapter_activation_metadata_ready_reason"),
 		"adapter_runtime_ready_reason":      providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(runtimePlan["runtime_ready"]), "provider_review_adapter_runtime_not_ready"),
 		"transport_metadata_ready_reason":   providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(transportPlan["transport_ready"]), "provider_review_transport_metadata_not_ready"),
 		"provider_send_ready_reason":        providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(providerSendPlan["provider_send_metadata_ready"]), "provider_request_send_not_armed"),
@@ -11229,6 +11233,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"requires_attempt_claim":            true,
 		"requires_idempotency_claim":        true,
 		"requires_execution_lock":           true,
+		"requires_adapter_activation":       true,
 		"requires_credential_binding":       true,
 		"requires_adapter_runtime":          true,
 		"requires_request_materialization":  true,
@@ -11239,6 +11244,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"attempt_claim_recorded":            false,
 		"idempotency_claim_recorded":        false,
 		"execution_lock_acquired":           false,
+		"adapter_activation_approved":       false,
 		"duplicate_send_detected":           false,
 		"credential_bound":                  false,
 		"adapter_runtime_bound":             false,
@@ -11267,6 +11273,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"blocked_reasons": []string{
 			"provider_review_attempt_claim_not_recorded",
 			"provider_review_execution_lock_not_acquired",
+			"provider_review_adapter_activation_not_armed",
 			"provider_credential_runtime_binding_not_armed",
 			"provider_review_adapter_runtime_not_bound",
 			"provider_request_not_materialized",
@@ -11275,6 +11282,125 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 			"provider_review_adapter_not_implemented",
 			"provider_review_mutation_not_armed",
 		},
+	}
+}
+
+func providerReviewAttemptAdapterActivationPlan(operation, claimPlan, executionLockPlan, credentialPlan, runtimePlan, requestPlan, transportPlan, providerSendPlan, responsePlan, transactionPlan map[string]any) map[string]any {
+	if len(operation) == 0 {
+		return map[string]any{}
+	}
+	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+	if operationName == "" || endpointKey == "" {
+		return map[string]any{}
+	}
+	claimReady := boolOnlyFromAny(claimPlan["claim_metadata_ready"])
+	executionLockReady := boolOnlyFromAny(executionLockPlan["execution_lock_metadata_ready"])
+	credentialReady := boolOnlyFromAny(credentialPlan["credential_binding_ready"])
+	runtimeReady := boolOnlyFromAny(runtimePlan["runtime_ready"])
+	requestReady := boolOnlyFromAny(requestPlan["request_materialization_ready"])
+	transportReady := boolOnlyFromAny(transportPlan["transport_ready"])
+	providerSendReady := boolOnlyFromAny(providerSendPlan["provider_send_metadata_ready"])
+	responseReady := boolOnlyFromAny(responsePlan["response_recording_ready"])
+	transactionReady := boolOnlyFromAny(transactionPlan["transaction_metadata_ready"])
+	metadataReady := claimReady &&
+		executionLockReady &&
+		credentialReady &&
+		runtimeReady &&
+		requestReady &&
+		transportReady &&
+		providerSendReady &&
+		responseReady &&
+		transactionReady
+	return map[string]any{
+		"mode":                                      "redacted_attempt_adapter_activation_plan",
+		"adapter_activation_state":                  "blocked",
+		"adapter_activation_ready":                  false,
+		"adapter_activation_ready_reason":           "provider_review_adapter_activation_not_armed",
+		"adapter_activation_metadata_ready":         metadataReady,
+		"adapter_activation_metadata_ready_reason":  providerReviewAttemptAdapterActivationMetadataReadyReason(claimReady, executionLockReady, credentialReady, runtimeReady, requestReady, transportReady, providerSendReady, responseReady, transactionReady),
+		"operation_name":                            operationName,
+		"endpoint_key":                              endpointKey,
+		"operation_order":                           intFromAny(operation["operation_order"], 0),
+		"activation_scope":                          "provider_review_attempt_operation",
+		"activation_policy":                         "require_all_redacted_subplans_and_mutation_gate",
+		"requires_attempt_claim":                    true,
+		"requires_execution_lock":                   true,
+		"requires_credential_binding":               true,
+		"requires_adapter_runtime":                  true,
+		"requires_request_materialization":          true,
+		"requires_transport":                        true,
+		"requires_provider_send_plan":               true,
+		"requires_response_recording":               true,
+		"requires_transaction_boundary":             true,
+		"requires_mutation_arming":                  true,
+		"claim_metadata_ready":                      claimReady,
+		"execution_lock_metadata_ready":             executionLockReady,
+		"credential_binding_ready":                  credentialReady,
+		"adapter_runtime_ready":                     runtimeReady,
+		"request_materialization_ready":             requestReady,
+		"transport_metadata_ready":                  transportReady,
+		"provider_send_metadata_ready":              providerSendReady,
+		"response_recording_ready":                  responseReady,
+		"transaction_metadata_ready":                transactionReady,
+		"live_adapter_registered":                   false,
+		"adapter_implemented":                       false,
+		"adapter_activation_approved":               false,
+		"mutation_gate_armed":                       false,
+		"provider_request_sent":                     false,
+		"external_call_made":                        false,
+		"provider_api_call_made":                    false,
+		"provider_api_mutation":                     "disabled",
+		"request_body_included":                     false,
+		"response_body_included":                    false,
+		"headers_included":                          false,
+		"authorization_header_included":             false,
+		"provider_url_included":                     false,
+		"idempotency_key_included":                  false,
+		"provider_request_id_included":              false,
+		"contains_token":                            false,
+		"contains_provider_url":                     false,
+		"contains_repository_ref":                   false,
+		"contains_branch_name":                      false,
+		"contains_file_content":                     false,
+		"adapter_activation_boundary_redacted":      true,
+		"adapter_activation_sequence":               []string{"verify_claim_metadata", "verify_execution_lock_metadata", "verify_credential_binding", "verify_runtime_contract", "verify_request_materialization", "verify_transport_contract", "verify_provider_send_contract", "verify_response_recording", "verify_transaction_boundary", "verify_mutation_arming"},
+		"adapter_activation_suppressed_fields":      []string{"provider_url", "authorization_header", "token", "request_body", "response_body", "repository_ref", "branch_name", "file_content", "idempotency_key", "lock_key"},
+		"adapter_activation_required_config_gates":  []string{"ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION", "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION"},
+		"adapter_activation_required_interfaces":    []string{"providerReviewAttemptAdapterRuntime", "providerReviewAttemptRequestBuilder", "providerReviewAttemptProviderClientFactory", "providerReviewAttemptExecuteMethod", "providerReviewAttemptResponseHandler"},
+		"adapter_activation_required_capabilities":  providerReviewClientRequiredCapabilitiesForOperation(operationName),
+		"adapter_activation_required_status_inputs": []string{"claim_metadata_ready", "execution_lock_metadata_ready", "credential_binding_ready", "runtime_ready", "request_materialization_ready", "transport_ready", "provider_send_metadata_ready", "response_recording_ready", "transaction_metadata_ready"},
+		"blocked_reasons": []string{
+			"provider_review_adapter_activation_not_armed",
+			"provider_review_activation_metadata_not_ready",
+			"provider_review_live_adapter_not_implemented",
+			"provider_review_mutation_not_armed",
+		},
+	}
+}
+
+func providerReviewAttemptAdapterActivationMetadataReadyReason(claimReady, executionLockReady, credentialReady, runtimeReady, requestReady, transportReady, providerSendReady, responseReady, transactionReady bool) string {
+	switch {
+	case !claimReady:
+		return "provider_review_activation_claim_metadata_not_ready"
+	case !executionLockReady:
+		return "provider_review_activation_execution_lock_not_ready"
+	case !credentialReady:
+		return "provider_review_activation_credential_binding_not_ready"
+	case !runtimeReady:
+		return "provider_review_activation_adapter_runtime_not_ready"
+	case !requestReady:
+		return "provider_review_activation_request_materialization_not_ready"
+	case !transportReady:
+		return "provider_review_activation_transport_not_ready"
+	case !providerSendReady:
+		return "provider_review_activation_provider_send_not_ready"
+	case !responseReady:
+		return "provider_review_activation_response_recording_not_ready"
+	case !transactionReady:
+		return "provider_review_activation_transaction_not_ready"
+	default:
+		return "ready"
 	}
 }
 

@@ -3574,6 +3574,7 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateInvocationPlan["operation_order"] != 10 ||
 		candidateInvocationPlan["claim_metadata_ready"] != true ||
 		candidateInvocationPlan["execution_lock_metadata_ready"] != true ||
+		candidateInvocationPlan["adapter_activation_metadata_ready"] != false ||
 		candidateInvocationPlan["credential_binding_ready"] != false ||
 		candidateInvocationPlan["adapter_runtime_ready"] != false ||
 		candidateInvocationPlan["request_materialization_ready"] != false ||
@@ -3583,6 +3584,7 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateInvocationPlan["transaction_metadata_ready"] != true ||
 		candidateInvocationPlan["claim_metadata_ready_reason"] != "ready" ||
 		candidateInvocationPlan["execution_lock_ready_reason"] != "ready" ||
+		candidateInvocationPlan["adapter_activation_ready_reason"] != "provider_review_activation_credential_binding_not_ready" ||
 		candidateInvocationPlan["adapter_runtime_ready_reason"] != "provider_review_adapter_runtime_not_ready" ||
 		candidateInvocationPlan["transport_metadata_ready_reason"] != "ready" ||
 		candidateInvocationPlan["provider_send_ready_reason"] != "provider_request_send_not_armed" ||
@@ -3590,6 +3592,7 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateInvocationPlan["requires_attempt_claim"] != true ||
 		candidateInvocationPlan["requires_idempotency_claim"] != true ||
 		candidateInvocationPlan["requires_execution_lock"] != true ||
+		candidateInvocationPlan["requires_adapter_activation"] != true ||
 		candidateInvocationPlan["requires_credential_binding"] != true ||
 		candidateInvocationPlan["requires_adapter_runtime"] != true ||
 		candidateInvocationPlan["requires_request_materialization"] != true ||
@@ -3599,6 +3602,7 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateInvocationPlan["attempt_claim_recorded"] != false ||
 		candidateInvocationPlan["idempotency_claim_recorded"] != false ||
 		candidateInvocationPlan["execution_lock_acquired"] != false ||
+		candidateInvocationPlan["adapter_activation_approved"] != false ||
 		candidateInvocationPlan["duplicate_send_detected"] != false ||
 		candidateInvocationPlan["credential_bound"] != false ||
 		candidateInvocationPlan["adapter_runtime_bound"] != false ||
@@ -3627,30 +3631,32 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		t.Fatalf("attempt execution candidate invocation plan = %#v", candidateInvocationPlan)
 	}
 	candidateInvocationSequence := stringSliceFromAny(candidateInvocationPlan["invocation_sequence"])
-	if len(candidateInvocationSequence) != 10 ||
+	if len(candidateInvocationSequence) != 11 ||
 		candidateInvocationSequence[0] != "claim_attempt" ||
 		candidateInvocationSequence[1] != "claim_idempotency" ||
 		candidateInvocationSequence[2] != "claim_execution_lock" ||
-		candidateInvocationSequence[3] != "bind_credential" ||
-		candidateInvocationSequence[4] != "select_adapter_runtime" ||
-		candidateInvocationSequence[5] != "materialize_request" ||
-		candidateInvocationSequence[6] != "send_provider_request" ||
-		candidateInvocationSequence[7] != "record_response" ||
-		candidateInvocationSequence[8] != "record_transaction_boundary" ||
-		candidateInvocationSequence[9] != "unlock_dependency" {
+		candidateInvocationSequence[3] != "evaluate_adapter_activation" ||
+		candidateInvocationSequence[4] != "bind_credential" ||
+		candidateInvocationSequence[5] != "select_adapter_runtime" ||
+		candidateInvocationSequence[6] != "materialize_request" ||
+		candidateInvocationSequence[7] != "send_provider_request" ||
+		candidateInvocationSequence[8] != "record_response" ||
+		candidateInvocationSequence[9] != "record_transaction_boundary" ||
+		candidateInvocationSequence[10] != "unlock_dependency" {
 		t.Fatalf("attempt execution candidate invocation sequence = %#v", candidateInvocationSequence)
 	}
 	candidateInvocationSubplans := stringSliceFromAny(candidateInvocationPlan["required_subplans"])
-	if len(candidateInvocationSubplans) != 9 ||
+	if len(candidateInvocationSubplans) != 10 ||
 		candidateInvocationSubplans[0] != "claim_plan" ||
 		candidateInvocationSubplans[1] != "execution_lock_plan" ||
-		candidateInvocationSubplans[2] != "credential_binding_plan" ||
-		candidateInvocationSubplans[3] != "adapter_runtime_plan" ||
-		candidateInvocationSubplans[4] != "request_materialization_plan" ||
-		candidateInvocationSubplans[5] != "transport_plan" ||
-		candidateInvocationSubplans[6] != "provider_send_plan" ||
-		candidateInvocationSubplans[7] != "response_plan" ||
-		candidateInvocationSubplans[8] != "transaction_plan" {
+		candidateInvocationSubplans[2] != "adapter_activation_plan" ||
+		candidateInvocationSubplans[3] != "credential_binding_plan" ||
+		candidateInvocationSubplans[4] != "adapter_runtime_plan" ||
+		candidateInvocationSubplans[5] != "request_materialization_plan" ||
+		candidateInvocationSubplans[6] != "transport_plan" ||
+		candidateInvocationSubplans[7] != "provider_send_plan" ||
+		candidateInvocationSubplans[8] != "response_plan" ||
+		candidateInvocationSubplans[9] != "transaction_plan" {
 		t.Fatalf("attempt execution candidate invocation subplans = %#v", candidateInvocationSubplans)
 	}
 	candidateExecutionLockPlan := mapFromAny(candidateInvocationPlan["execution_lock_plan"])
@@ -3702,6 +3708,63 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateExecutionLockBlockedReasons[0] != "provider_review_execution_lock_not_armed" ||
 		candidateExecutionLockBlockedReasons[3] != "provider_review_mutation_not_armed" {
 		t.Fatalf("attempt execution candidate execution lock blocked reasons = %#v", candidateExecutionLockBlockedReasons)
+	}
+	candidateActivationPlan := mapFromAny(candidateInvocationPlan["adapter_activation_plan"])
+	if candidateActivationPlan["mode"] != "redacted_attempt_adapter_activation_plan" ||
+		candidateActivationPlan["adapter_activation_state"] != "blocked" ||
+		candidateActivationPlan["adapter_activation_ready"] != false ||
+		candidateActivationPlan["adapter_activation_ready_reason"] != "provider_review_adapter_activation_not_armed" ||
+		candidateActivationPlan["adapter_activation_metadata_ready"] != false ||
+		candidateActivationPlan["adapter_activation_metadata_ready_reason"] != "provider_review_activation_credential_binding_not_ready" ||
+		candidateActivationPlan["operation_name"] != "create_branch_ref" ||
+		candidateActivationPlan["endpoint_key"] != "github.create_branch_ref" ||
+		candidateActivationPlan["operation_order"] != 10 ||
+		candidateActivationPlan["activation_scope"] != "provider_review_attempt_operation" ||
+		candidateActivationPlan["activation_policy"] != "require_all_redacted_subplans_and_mutation_gate" ||
+		candidateActivationPlan["requires_execution_lock"] != true ||
+		candidateActivationPlan["requires_provider_send_plan"] != true ||
+		candidateActivationPlan["claim_metadata_ready"] != true ||
+		candidateActivationPlan["execution_lock_metadata_ready"] != true ||
+		candidateActivationPlan["credential_binding_ready"] != false ||
+		candidateActivationPlan["adapter_runtime_ready"] != false ||
+		candidateActivationPlan["request_materialization_ready"] != false ||
+		candidateActivationPlan["transport_metadata_ready"] != true ||
+		candidateActivationPlan["provider_send_metadata_ready"] != false ||
+		candidateActivationPlan["response_recording_ready"] != false ||
+		candidateActivationPlan["transaction_metadata_ready"] != true ||
+		candidateActivationPlan["live_adapter_registered"] != false ||
+		candidateActivationPlan["adapter_implemented"] != false ||
+		candidateActivationPlan["adapter_activation_approved"] != false ||
+		candidateActivationPlan["mutation_gate_armed"] != false ||
+		candidateActivationPlan["provider_api_call_made"] != false ||
+		candidateActivationPlan["provider_api_mutation"] != "disabled" ||
+		candidateActivationPlan["provider_url_included"] != false ||
+		candidateActivationPlan["idempotency_key_included"] != false ||
+		candidateActivationPlan["contains_token"] != false ||
+		candidateActivationPlan["contains_provider_url"] != false ||
+		candidateActivationPlan["contains_repository_ref"] != false ||
+		candidateActivationPlan["contains_branch_name"] != false ||
+		candidateActivationPlan["contains_file_content"] != false ||
+		candidateActivationPlan["adapter_activation_boundary_redacted"] != true {
+		t.Fatalf("attempt execution candidate activation plan = %#v", candidateActivationPlan)
+	}
+	candidateActivationSequence := stringSliceFromAny(candidateActivationPlan["adapter_activation_sequence"])
+	if len(candidateActivationSequence) != 10 ||
+		candidateActivationSequence[0] != "verify_claim_metadata" ||
+		candidateActivationSequence[9] != "verify_mutation_arming" {
+		t.Fatalf("attempt execution candidate activation sequence = %#v", candidateActivationSequence)
+	}
+	candidateActivationSuppressedFields := stringSliceFromAny(candidateActivationPlan["adapter_activation_suppressed_fields"])
+	if len(candidateActivationSuppressedFields) != 10 ||
+		candidateActivationSuppressedFields[0] != "provider_url" ||
+		candidateActivationSuppressedFields[9] != "lock_key" {
+		t.Fatalf("attempt execution candidate activation suppressed fields = %#v", candidateActivationSuppressedFields)
+	}
+	candidateActivationBlockedReasons := stringSliceFromAny(candidateActivationPlan["blocked_reasons"])
+	if len(candidateActivationBlockedReasons) != 4 ||
+		candidateActivationBlockedReasons[0] != "provider_review_adapter_activation_not_armed" ||
+		candidateActivationBlockedReasons[3] != "provider_review_mutation_not_armed" {
+		t.Fatalf("attempt execution candidate activation blocked reasons = %#v", candidateActivationBlockedReasons)
 	}
 	candidateProviderSendPlan := mapFromAny(candidateInvocationPlan["provider_send_plan"])
 	if candidateProviderSendPlan["mode"] != "redacted_attempt_adapter_provider_send_plan" ||
@@ -3848,16 +3911,17 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		t.Fatalf("attempt execution candidate provider send blocked reasons = %#v", candidateProviderSendBlockedReasons)
 	}
 	candidateInvocationBlockedReasons := stringSliceFromAny(candidateInvocationPlan["blocked_reasons"])
-	if len(candidateInvocationBlockedReasons) != 9 ||
+	if len(candidateInvocationBlockedReasons) != 10 ||
 		candidateInvocationBlockedReasons[0] != "provider_review_attempt_claim_not_recorded" ||
 		candidateInvocationBlockedReasons[1] != "provider_review_execution_lock_not_acquired" ||
-		candidateInvocationBlockedReasons[2] != "provider_credential_runtime_binding_not_armed" ||
-		candidateInvocationBlockedReasons[3] != "provider_review_adapter_runtime_not_bound" ||
-		candidateInvocationBlockedReasons[4] != "provider_request_not_materialized" ||
-		candidateInvocationBlockedReasons[5] != "provider_api_call_not_made" ||
-		candidateInvocationBlockedReasons[6] != "provider_review_transaction_not_recorded" ||
-		candidateInvocationBlockedReasons[7] != "provider_review_adapter_not_implemented" ||
-		candidateInvocationBlockedReasons[8] != "provider_review_mutation_not_armed" {
+		candidateInvocationBlockedReasons[2] != "provider_review_adapter_activation_not_armed" ||
+		candidateInvocationBlockedReasons[3] != "provider_credential_runtime_binding_not_armed" ||
+		candidateInvocationBlockedReasons[4] != "provider_review_adapter_runtime_not_bound" ||
+		candidateInvocationBlockedReasons[5] != "provider_request_not_materialized" ||
+		candidateInvocationBlockedReasons[6] != "provider_api_call_not_made" ||
+		candidateInvocationBlockedReasons[7] != "provider_review_transaction_not_recorded" ||
+		candidateInvocationBlockedReasons[8] != "provider_review_adapter_not_implemented" ||
+		candidateInvocationBlockedReasons[9] != "provider_review_mutation_not_armed" {
 		t.Fatalf("attempt execution candidate invocation blocked reasons = %#v", candidateInvocationBlockedReasons)
 	}
 	candidateGates := sliceOfMapsFromAny(candidate["gates"])
@@ -4820,6 +4884,7 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		plan["operation_order"] != 10 ||
 		plan["claim_metadata_ready"] != true ||
 		plan["execution_lock_metadata_ready"] != true ||
+		plan["adapter_activation_metadata_ready"] != false ||
 		plan["credential_binding_ready"] != false ||
 		plan["adapter_runtime_ready"] != false ||
 		plan["request_materialization_ready"] != false ||
@@ -4829,6 +4894,7 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		plan["transaction_metadata_ready"] != true ||
 		plan["claim_metadata_ready_reason"] != "ready" ||
 		plan["execution_lock_ready_reason"] != "ready" ||
+		plan["adapter_activation_ready_reason"] != "provider_review_activation_credential_binding_not_ready" ||
 		plan["adapter_runtime_ready_reason"] != "provider_review_adapter_runtime_not_ready" ||
 		plan["transport_metadata_ready_reason"] != "ready" ||
 		plan["provider_send_ready_reason"] != "provider_request_send_not_armed" ||
@@ -4836,6 +4902,7 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		plan["requires_attempt_claim"] != true ||
 		plan["requires_idempotency_claim"] != true ||
 		plan["requires_execution_lock"] != true ||
+		plan["requires_adapter_activation"] != true ||
 		plan["requires_credential_binding"] != true ||
 		plan["requires_adapter_runtime"] != true ||
 		plan["requires_request_materialization"] != true ||
@@ -4845,6 +4912,7 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		plan["attempt_claim_recorded"] != false ||
 		plan["idempotency_claim_recorded"] != false ||
 		plan["execution_lock_acquired"] != false ||
+		plan["adapter_activation_approved"] != false ||
 		plan["duplicate_send_detected"] != false ||
 		plan["credential_bound"] != false ||
 		plan["adapter_runtime_bound"] != false ||
@@ -4873,20 +4941,22 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		t.Fatalf("providerReviewAttemptAdapterInvocationPlan() = %#v", plan)
 	}
 	sequence := stringSliceFromAny(plan["invocation_sequence"])
-	if len(sequence) != 10 ||
+	if len(sequence) != 11 ||
 		sequence[0] != "claim_attempt" ||
 		sequence[2] != "claim_execution_lock" ||
-		sequence[4] != "select_adapter_runtime" ||
-		sequence[8] != "record_transaction_boundary" ||
-		sequence[9] != "unlock_dependency" {
+		sequence[3] != "evaluate_adapter_activation" ||
+		sequence[5] != "select_adapter_runtime" ||
+		sequence[9] != "record_transaction_boundary" ||
+		sequence[10] != "unlock_dependency" {
 		t.Fatalf("invocation sequence = %#v", sequence)
 	}
 	subplans := stringSliceFromAny(plan["required_subplans"])
-	if len(subplans) != 9 ||
+	if len(subplans) != 10 ||
 		subplans[0] != "claim_plan" ||
 		subplans[1] != "execution_lock_plan" ||
-		subplans[6] != "provider_send_plan" ||
-		subplans[8] != "transaction_plan" {
+		subplans[2] != "adapter_activation_plan" ||
+		subplans[7] != "provider_send_plan" ||
+		subplans[9] != "transaction_plan" {
 		t.Fatalf("invocation subplans = %#v", subplans)
 	}
 	executionLockPlan := mapFromAny(plan["execution_lock_plan"])
@@ -4969,6 +5039,103 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		lockBlockedReasons[2] != "provider_idempotency_ledger_not_claimed" ||
 		lockBlockedReasons[3] != "provider_review_mutation_not_armed" {
 		t.Fatalf("execution lock blocked reasons = %#v", lockBlockedReasons)
+	}
+	activationPlan := mapFromAny(plan["adapter_activation_plan"])
+	if activationPlan["mode"] != "redacted_attempt_adapter_activation_plan" ||
+		activationPlan["adapter_activation_state"] != "blocked" ||
+		activationPlan["adapter_activation_ready"] != false ||
+		activationPlan["adapter_activation_ready_reason"] != "provider_review_adapter_activation_not_armed" ||
+		activationPlan["adapter_activation_metadata_ready"] != false ||
+		activationPlan["adapter_activation_metadata_ready_reason"] != "provider_review_activation_credential_binding_not_ready" ||
+		activationPlan["operation_name"] != "create_branch_ref" ||
+		activationPlan["endpoint_key"] != "github.create_branch_ref" ||
+		activationPlan["operation_order"] != 10 ||
+		activationPlan["activation_scope"] != "provider_review_attempt_operation" ||
+		activationPlan["activation_policy"] != "require_all_redacted_subplans_and_mutation_gate" ||
+		activationPlan["requires_attempt_claim"] != true ||
+		activationPlan["requires_execution_lock"] != true ||
+		activationPlan["requires_credential_binding"] != true ||
+		activationPlan["requires_adapter_runtime"] != true ||
+		activationPlan["requires_request_materialization"] != true ||
+		activationPlan["requires_transport"] != true ||
+		activationPlan["requires_provider_send_plan"] != true ||
+		activationPlan["requires_response_recording"] != true ||
+		activationPlan["requires_transaction_boundary"] != true ||
+		activationPlan["requires_mutation_arming"] != true ||
+		activationPlan["claim_metadata_ready"] != true ||
+		activationPlan["execution_lock_metadata_ready"] != true ||
+		activationPlan["credential_binding_ready"] != false ||
+		activationPlan["adapter_runtime_ready"] != false ||
+		activationPlan["request_materialization_ready"] != false ||
+		activationPlan["transport_metadata_ready"] != true ||
+		activationPlan["provider_send_metadata_ready"] != false ||
+		activationPlan["response_recording_ready"] != false ||
+		activationPlan["transaction_metadata_ready"] != true ||
+		activationPlan["live_adapter_registered"] != false ||
+		activationPlan["adapter_implemented"] != false ||
+		activationPlan["adapter_activation_approved"] != false ||
+		activationPlan["mutation_gate_armed"] != false ||
+		activationPlan["provider_request_sent"] != false ||
+		activationPlan["external_call_made"] != false ||
+		activationPlan["provider_api_call_made"] != false ||
+		activationPlan["provider_api_mutation"] != "disabled" ||
+		activationPlan["request_body_included"] != false ||
+		activationPlan["response_body_included"] != false ||
+		activationPlan["headers_included"] != false ||
+		activationPlan["authorization_header_included"] != false ||
+		activationPlan["provider_url_included"] != false ||
+		activationPlan["idempotency_key_included"] != false ||
+		activationPlan["provider_request_id_included"] != false ||
+		activationPlan["contains_token"] != false ||
+		activationPlan["contains_provider_url"] != false ||
+		activationPlan["contains_repository_ref"] != false ||
+		activationPlan["contains_branch_name"] != false ||
+		activationPlan["contains_file_content"] != false ||
+		activationPlan["adapter_activation_boundary_redacted"] != true {
+		t.Fatalf("activation plan = %#v", activationPlan)
+	}
+	activationSequence := stringSliceFromAny(activationPlan["adapter_activation_sequence"])
+	if len(activationSequence) != 10 ||
+		activationSequence[0] != "verify_claim_metadata" ||
+		activationSequence[1] != "verify_execution_lock_metadata" ||
+		activationSequence[9] != "verify_mutation_arming" {
+		t.Fatalf("activation sequence = %#v", activationSequence)
+	}
+	activationSuppressedFields := stringSliceFromAny(activationPlan["adapter_activation_suppressed_fields"])
+	if len(activationSuppressedFields) != 10 ||
+		activationSuppressedFields[0] != "provider_url" ||
+		activationSuppressedFields[9] != "lock_key" {
+		t.Fatalf("activation suppressed fields = %#v", activationSuppressedFields)
+	}
+	activationConfigGates := stringSliceFromAny(activationPlan["adapter_activation_required_config_gates"])
+	if len(activationConfigGates) != 2 ||
+		activationConfigGates[0] != "ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION" ||
+		activationConfigGates[1] != "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION" {
+		t.Fatalf("activation config gates = %#v", activationConfigGates)
+	}
+	activationInterfaces := stringSliceFromAny(activationPlan["adapter_activation_required_interfaces"])
+	if len(activationInterfaces) != 5 ||
+		activationInterfaces[0] != "providerReviewAttemptAdapterRuntime" ||
+		activationInterfaces[4] != "providerReviewAttemptResponseHandler" {
+		t.Fatalf("activation interfaces = %#v", activationInterfaces)
+	}
+	activationStatusInputs := stringSliceFromAny(activationPlan["adapter_activation_required_status_inputs"])
+	if len(activationStatusInputs) != 9 ||
+		activationStatusInputs[0] != "claim_metadata_ready" ||
+		activationStatusInputs[8] != "transaction_metadata_ready" {
+		t.Fatalf("activation status inputs = %#v", activationStatusInputs)
+	}
+	activationCapabilities := stringSliceFromAny(activationPlan["adapter_activation_required_capabilities"])
+	if len(activationCapabilities) != 1 || activationCapabilities[0] != "repository_ref_write" {
+		t.Fatalf("activation capabilities = %#v", activationCapabilities)
+	}
+	activationBlockedReasons := stringSliceFromAny(activationPlan["blocked_reasons"])
+	if len(activationBlockedReasons) != 4 ||
+		activationBlockedReasons[0] != "provider_review_adapter_activation_not_armed" ||
+		activationBlockedReasons[1] != "provider_review_activation_metadata_not_ready" ||
+		activationBlockedReasons[2] != "provider_review_live_adapter_not_implemented" ||
+		activationBlockedReasons[3] != "provider_review_mutation_not_armed" {
+		t.Fatalf("activation blocked reasons = %#v", activationBlockedReasons)
 	}
 	providerSendPlan := mapFromAny(plan["provider_send_plan"])
 	if providerSendPlan["mode"] != "redacted_attempt_adapter_provider_send_plan" ||
@@ -5122,12 +5289,17 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		t.Fatalf("provider send blocked reasons = %#v", sendBlockedReasons)
 	}
 	blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
-	if len(blockedReasons) != 9 ||
+	if len(blockedReasons) != 10 ||
 		blockedReasons[0] != "provider_review_attempt_claim_not_recorded" ||
 		blockedReasons[1] != "provider_review_execution_lock_not_acquired" ||
-		blockedReasons[3] != "provider_review_adapter_runtime_not_bound" ||
-		blockedReasons[6] != "provider_review_transaction_not_recorded" ||
-		blockedReasons[8] != "provider_review_mutation_not_armed" {
+		blockedReasons[2] != "provider_review_adapter_activation_not_armed" ||
+		blockedReasons[3] != "provider_credential_runtime_binding_not_armed" ||
+		blockedReasons[4] != "provider_review_adapter_runtime_not_bound" ||
+		blockedReasons[5] != "provider_request_not_materialized" ||
+		blockedReasons[6] != "provider_api_call_not_made" ||
+		blockedReasons[7] != "provider_review_transaction_not_recorded" ||
+		blockedReasons[8] != "provider_review_adapter_not_implemented" ||
+		blockedReasons[9] != "provider_review_mutation_not_armed" {
 		t.Fatalf("invocation blocked reasons = %#v", blockedReasons)
 	}
 	encoded, _ := json.Marshal(plan)
@@ -5140,6 +5312,12 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
 		if strings.Contains(string(encodedLockPlan), leak) {
 			t.Fatalf("execution lock plan leaked %q: %s", leak, encodedLockPlan)
+		}
+	}
+	encodedActivationPlan, _ := json.Marshal(activationPlan)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+		if strings.Contains(string(encodedActivationPlan), leak) {
+			t.Fatalf("activation plan leaked %q: %s", leak, encodedActivationPlan)
 		}
 	}
 	if got := providerReviewAttemptAdapterInvocationPlan(nil, nil, nil, nil, nil, nil, nil, nil); len(got) != 0 {
@@ -5230,7 +5408,9 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 	if notReadyClaimPlan["claim_metadata_ready"] != false ||
 		notReadyClaimPlan["claim_metadata_ready_reason"] != "provider_review_claim_metadata_not_ready" ||
 		notReadyClaimPlan["execution_lock_metadata_ready"] != false ||
-		notReadyClaimPlan["execution_lock_ready_reason"] != "provider_review_execution_lock_claim_metadata_not_ready" {
+		notReadyClaimPlan["execution_lock_ready_reason"] != "provider_review_execution_lock_claim_metadata_not_ready" ||
+		notReadyClaimPlan["adapter_activation_metadata_ready"] != false ||
+		notReadyClaimPlan["adapter_activation_ready_reason"] != "provider_review_activation_claim_metadata_not_ready" {
 		t.Fatalf("not ready claim invocation plan = %#v", notReadyClaimPlan)
 	}
 	notReadyTransactionPlan := providerReviewAttemptAdapterInvocationPlan(
@@ -5246,8 +5426,129 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 	if notReadyTransactionPlan["transaction_metadata_ready"] != false ||
 		notReadyTransactionPlan["transaction_metadata_ready_reason"] != "provider_review_transaction_metadata_not_ready" ||
 		notReadyTransactionPlan["execution_lock_metadata_ready"] != false ||
-		notReadyTransactionPlan["execution_lock_ready_reason"] != "provider_review_execution_lock_transaction_metadata_not_ready" {
+		notReadyTransactionPlan["execution_lock_ready_reason"] != "provider_review_execution_lock_transaction_metadata_not_ready" ||
+		notReadyTransactionPlan["adapter_activation_metadata_ready"] != false ||
+		notReadyTransactionPlan["adapter_activation_ready_reason"] != "provider_review_activation_execution_lock_not_ready" {
 		t.Fatalf("not ready transaction invocation plan = %#v", notReadyTransactionPlan)
+	}
+}
+
+func TestProviderReviewAttemptAdapterActivationMetadataReadyReason(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		claimReady         bool
+		executionLockReady bool
+		credentialReady    bool
+		runtimeReady       bool
+		requestReady       bool
+		transportReady     bool
+		providerSendReady  bool
+		responseReady      bool
+		transactionReady   bool
+		want               string
+	}{
+		{
+			name: "claim not ready",
+			want: "provider_review_activation_claim_metadata_not_ready",
+		},
+		{
+			name:       "execution lock not ready",
+			claimReady: true,
+			want:       "provider_review_activation_execution_lock_not_ready",
+		},
+		{
+			name:               "credential not ready",
+			claimReady:         true,
+			executionLockReady: true,
+			want:               "provider_review_activation_credential_binding_not_ready",
+		},
+		{
+			name:               "runtime not ready",
+			claimReady:         true,
+			executionLockReady: true,
+			credentialReady:    true,
+			want:               "provider_review_activation_adapter_runtime_not_ready",
+		},
+		{
+			name:               "request not ready",
+			claimReady:         true,
+			executionLockReady: true,
+			credentialReady:    true,
+			runtimeReady:       true,
+			want:               "provider_review_activation_request_materialization_not_ready",
+		},
+		{
+			name:               "transport not ready",
+			claimReady:         true,
+			executionLockReady: true,
+			credentialReady:    true,
+			runtimeReady:       true,
+			requestReady:       true,
+			want:               "provider_review_activation_transport_not_ready",
+		},
+		{
+			name:               "provider send not ready",
+			claimReady:         true,
+			executionLockReady: true,
+			credentialReady:    true,
+			runtimeReady:       true,
+			requestReady:       true,
+			transportReady:     true,
+			want:               "provider_review_activation_provider_send_not_ready",
+		},
+		{
+			name:               "response not ready",
+			claimReady:         true,
+			executionLockReady: true,
+			credentialReady:    true,
+			runtimeReady:       true,
+			requestReady:       true,
+			transportReady:     true,
+			providerSendReady:  true,
+			want:               "provider_review_activation_response_recording_not_ready",
+		},
+		{
+			name:               "transaction not ready",
+			claimReady:         true,
+			executionLockReady: true,
+			credentialReady:    true,
+			runtimeReady:       true,
+			requestReady:       true,
+			transportReady:     true,
+			providerSendReady:  true,
+			responseReady:      true,
+			want:               "provider_review_activation_transaction_not_ready",
+		},
+		{
+			name:               "ready",
+			claimReady:         true,
+			executionLockReady: true,
+			credentialReady:    true,
+			runtimeReady:       true,
+			requestReady:       true,
+			transportReady:     true,
+			providerSendReady:  true,
+			responseReady:      true,
+			transactionReady:   true,
+			want:               "ready",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := providerReviewAttemptAdapterActivationMetadataReadyReason(
+				tt.claimReady,
+				tt.executionLockReady,
+				tt.credentialReady,
+				tt.runtimeReady,
+				tt.requestReady,
+				tt.transportReady,
+				tt.providerSendReady,
+				tt.responseReady,
+				tt.transactionReady,
+			)
+			if got != tt.want {
+				t.Fatalf("providerReviewAttemptAdapterActivationMetadataReadyReason() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
