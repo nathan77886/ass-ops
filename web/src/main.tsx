@@ -956,7 +956,7 @@ function projectVersionRepositoryItems(values: AnyRow, repos: AnyRow[] = [], rem
       remote_role: remote.remote_role || 'mirror',
       provider_type: remote.provider_type || remote.kind || 'git'
     };
-    for (const key of ['tag', 'commit_sha', 'github_action_run_id', 'argo_revision']) {
+    for (const key of ['tag', 'commit_sha', 'config_commit_sha', 'github_action_run_id', 'argo_revision']) {
       const value = String(row[key] || '').trim();
       if (value) item[key] = value;
     }
@@ -2520,6 +2520,31 @@ function ProjectDetail() {
   const versions = useLoad(() => project ? api(`/api/projects/${project.id}/versions`) : Promise.resolve({ items: [] }), [project?.id]);
   const [repoOpen, setRepoOpen] = useState(false);
   const [versionOpen, setVersionOpen] = useState(false);
+  const [configInitializing, setConfigInitializing] = useState(false);
+  const configRepo = repoRows.find((row: AnyRow) => row.repo_role === 'config');
+  async function initializeConfigRepo() {
+    if (!project || configRepo || repos.loading || configInitializing) return;
+    setConfigInitializing(true);
+    try {
+      await api(`/api/projects/${project.id}/git-repositories`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Config Repository',
+          repo_key: 'config',
+          display_name: 'Config',
+          repo_role: 'config',
+          description: 'Environment configuration repository for envs/dev, envs/test, and envs/prod.',
+          default_branch: 'main'
+        })
+      });
+      message.success('Config repository initialized');
+      repos.reload();
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setConfigInitializing(false);
+    }
+  }
   async function createVersion(values: AnyRow) {
     if (!project) return;
     const metadata = projectVersionMetadata(values, repoRows, projectRemotes.data?.items || []);
@@ -2546,11 +2571,17 @@ function ProjectDetail() {
           <Card title={project.name} extra={<Button onClick={() => api(`/api/projects/${project.id}/context/generate`, { method: 'POST' }).then(() => message.success('Context generated'))}>Generate context</Button>}>
             <Typography.Paragraph>{project.description || 'No description'}</Typography.Paragraph>
           </Card>
-          <Toolbar title="Git repositories" onCreate={() => setRepoOpen(true)} />
+          <div className="toolbar">
+            <Typography.Title level={2}>Git repositories</Typography.Title>
+            <Space>
+              <Button onClick={initializeConfigRepo} disabled={Boolean(configRepo) || repos.loading} loading={configInitializing} icon={<SettingOutlined />}>{configRepo ? 'Config ready' : 'Init config'}</Button>
+              <Button type="primary" onClick={() => setRepoOpen(true)}>Create</Button>
+            </Space>
+          </div>
           <Table<AnyRow> rowKey="id" dataSource={repos.data?.items || []} pagination={false} columns={[
             { title: 'Name', dataIndex: 'name' },
             { title: 'Key', dataIndex: 'repo_key' },
-            { title: 'Role', dataIndex: 'repo_role' },
+            { title: 'Role', render: (_, row) => <Tag color={row.repo_role === 'config' ? 'geekblue' : 'default'}>{row.repo_role || 'code'}</Tag> },
             { title: 'Status', render: (_, row) => <Tag>{row.status || 'active'}</Tag> },
             { title: 'Default branch', dataIndex: 'default_branch' }
           ]} />
@@ -2611,7 +2642,10 @@ function VersionManifestModal({ open, setOpen, repos, remotes, onSubmit }: { ope
                     <Form.Item {...field} name={[field.name, 'repository_id']} label="repository" rules={[{ required: true, message: 'repository is required' }]}>
                       <Select
                         options={repos.map((repo) => ({ value: repo.id, label: `${repo.repo_key || repo.name} (${repo.repo_role || 'code'})` }))}
-                        onChange={() => form.setFieldValue(['repositories', field.name, 'remote_id'], undefined)}
+                        onChange={() => {
+                          form.setFieldValue(['repositories', field.name, 'remote_id'], undefined);
+                          form.setFieldValue(['repositories', field.name, 'config_commit_sha'], undefined);
+                        }}
                       />
                     </Form.Item>
                     <Form.Item noStyle shouldUpdate>
@@ -2630,6 +2664,18 @@ function VersionManifestModal({ open, setOpen, repos, remotes, onSubmit }: { ope
                     </Form.Item>
                     <Form.Item {...field} name={[field.name, 'commit_sha']} label="commit sha">
                       <Input placeholder="abc123" />
+                    </Form.Item>
+                    <Form.Item noStyle shouldUpdate>
+                      {({ getFieldValue }) => {
+                        const repositoryID = getFieldValue(['repositories', field.name, 'repository_id']);
+                        const repo = repos.find((item) => item.id === repositoryID);
+                        if ((repo?.repo_role || '') !== 'config') return null;
+                        return (
+                          <Form.Item {...field} name={[field.name, 'config_commit_sha']} label="config commit sha">
+                            <Input placeholder="config repository commit" />
+                          </Form.Item>
+                        );
+                      }}
                     </Form.Item>
                     <Form.Item {...field} name={[field.name, 'github_action_run_id']} label="actions run">
                       <Input placeholder="123456" />
