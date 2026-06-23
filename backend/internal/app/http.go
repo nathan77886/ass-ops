@@ -11137,6 +11137,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 	credentialPlan := providerReviewAttemptAdapterCredentialBindingPlan(providerType, operationName)
 	runtimePlan := providerReviewAttemptAdapterRuntimePlan(providerType, operationName, endpointKey)
 	transactionPlan := providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, responsePlan)
+	branchPolicyPlan := providerReviewAttemptBranchPolicyPlan(operation, requestPlan)
 	return map[string]any{
 		"mode":                         "redacted_attempt_adapter_dispatch_plan",
 		"dispatch_state":               "blocked",
@@ -11157,8 +11158,9 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 		"response_plan":                responsePlan,
 		"credential_binding_plan":      credentialPlan,
 		"adapter_runtime_plan":         runtimePlan,
+		"branch_policy_plan":           branchPolicyPlan,
 		"transaction_plan":             transactionPlan,
-		"invocation_plan":              providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, runtimePlan, transportPlan, responsePlan, transactionPlan),
+		"invocation_plan":              providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, runtimePlan, branchPolicyPlan, transportPlan, responsePlan, transactionPlan),
 		"idempotency_key_kind":         "operation_scope_hash",
 		"requires_attempt_claim":       true,
 		"requires_idempotency_claim":   true,
@@ -11188,7 +11190,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 	}
 }
 
-func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, runtimePlan, transportPlan, responsePlan, transactionPlan map[string]any) map[string]any {
+func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, runtimePlan, branchPolicyPlan, transportPlan, responsePlan, transactionPlan map[string]any) map[string]any {
 	if len(operation) == 0 {
 		return map[string]any{}
 	}
@@ -11208,8 +11210,8 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"operation_name":                    operationName,
 		"endpoint_key":                      endpointKey,
 		"operation_order":                   intFromAny(operation["operation_order"], 0),
-		"invocation_sequence":               []string{"claim_attempt", "claim_idempotency", "claim_execution_lock", "evaluate_adapter_activation", "bind_credential", "select_adapter_runtime", "materialize_request", "send_provider_request", "record_response", "record_transaction_boundary", "unlock_dependency"},
-		"required_subplans":                 []string{"claim_plan", "execution_lock_plan", "adapter_activation_plan", "credential_binding_plan", "adapter_runtime_plan", "request_materialization_plan", "transport_plan", "provider_send_plan", "response_plan", "transaction_plan"},
+		"invocation_sequence":               []string{"claim_attempt", "claim_idempotency", "claim_execution_lock", "evaluate_adapter_activation", "bind_credential", "select_adapter_runtime", "verify_branch_policy", "materialize_request", "send_provider_request", "record_response", "record_transaction_boundary", "unlock_dependency"},
+		"required_subplans":                 []string{"claim_plan", "execution_lock_plan", "adapter_activation_plan", "credential_binding_plan", "adapter_runtime_plan", "branch_policy_plan", "request_materialization_plan", "transport_plan", "provider_send_plan", "response_plan", "transaction_plan"},
 		"execution_lock_plan":               executionLockPlan,
 		"adapter_activation_plan":           activationPlan,
 		"provider_send_plan":                providerSendPlan,
@@ -11218,6 +11220,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"adapter_activation_metadata_ready": boolOnlyFromAny(activationPlan["adapter_activation_metadata_ready"]),
 		"credential_binding_ready":          boolOnlyFromAny(credentialPlan["credential_binding_ready"]),
 		"adapter_runtime_ready":             boolOnlyFromAny(runtimePlan["runtime_ready"]),
+		"branch_policy_metadata_ready":      boolOnlyFromAny(branchPolicyPlan["branch_policy_metadata_ready"]),
 		"request_materialization_ready":     boolOnlyFromAny(requestPlan["request_materialization_ready"]),
 		"transport_metadata_ready":          boolOnlyFromAny(transportPlan["transport_ready"]),
 		"provider_send_metadata_ready":      boolOnlyFromAny(providerSendPlan["provider_send_metadata_ready"]),
@@ -11227,6 +11230,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"execution_lock_ready_reason":       stringFromMap(executionLockPlan, "execution_lock_metadata_ready_reason"),
 		"adapter_activation_ready_reason":   stringFromMap(activationPlan, "adapter_activation_metadata_ready_reason"),
 		"adapter_runtime_ready_reason":      providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(runtimePlan["runtime_ready"]), "provider_review_adapter_runtime_not_ready"),
+		"branch_policy_ready_reason":        stringFromMap(branchPolicyPlan, "branch_policy_ready_reason"),
 		"transport_metadata_ready_reason":   providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(transportPlan["transport_ready"]), "provider_review_transport_metadata_not_ready"),
 		"provider_send_ready_reason":        providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(providerSendPlan["provider_send_metadata_ready"]), "provider_request_send_not_armed"),
 		"transaction_metadata_ready_reason": providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(transactionPlan["transaction_metadata_ready"]), "provider_review_transaction_metadata_not_ready"),
@@ -11236,6 +11240,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"requires_adapter_activation":       true,
 		"requires_credential_binding":       true,
 		"requires_adapter_runtime":          true,
+		"requires_branch_policy":            true,
 		"requires_request_materialization":  true,
 		"requires_transport":                true,
 		"requires_response_recording":       true,
@@ -11248,6 +11253,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"duplicate_send_detected":           false,
 		"credential_bound":                  false,
 		"adapter_runtime_bound":             false,
+		"branch_policy_verified":            false,
 		"request_materialized":              false,
 		"provider_request_sent":             false,
 		"response_recorded":                 false,
@@ -11276,12 +11282,67 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 			"provider_review_adapter_activation_not_armed",
 			"provider_credential_runtime_binding_not_armed",
 			"provider_review_adapter_runtime_not_bound",
+			"provider_branch_policy_not_armed",
 			"provider_request_not_materialized",
 			"provider_api_call_not_made",
 			"provider_review_transaction_not_recorded",
 			"provider_review_adapter_not_implemented",
 			"provider_review_mutation_not_armed",
 		},
+	}
+}
+
+func providerReviewAttemptBranchPolicyPlan(operation, requestPlan map[string]any) map[string]any {
+	if len(operation) == 0 {
+		return map[string]any{}
+	}
+	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+	if operationName == "" || endpointKey == "" {
+		return map[string]any{}
+	}
+	metadataReady := stringFromMap(requestPlan, "mode") == providerReviewAttemptAdapterRequestMaterializationPlanMode
+	return map[string]any{
+		"mode":                                  "redacted_attempt_branch_policy_plan",
+		"branch_policy_state":                   "blocked",
+		"branch_policy_ready":                   false,
+		"branch_policy_ready_reason":            "provider_branch_policy_not_armed",
+		"branch_policy_metadata_ready":          metadataReady,
+		"operation_name":                        operationName,
+		"endpoint_key":                          endpointKey,
+		"operation_order":                       intFromAny(operation["operation_order"], 0),
+		"policy_scope":                          "provider_review_attempt_operation",
+		"target_branch_policy":                  "protected_default_branch_no_direct_write",
+		"review_branch_policy":                  "required_before_starter_file_commit",
+		"requires_review_branch":                true,
+		"requires_default_branch_protection":    true,
+		"requires_review_request":               true,
+		"requires_operator_policy_review":       true,
+		"requires_mutation_arming":              true,
+		"default_branch_direct_write_allowed":   false,
+		"protected_branch_direct_write_allowed": false,
+		"starter_file_commit_to_default":        false,
+		"review_branch_materialized":            false,
+		"default_branch_materialized":           false,
+		"protected_branch_rules_materialized":   false,
+		"branch_policy_verified":                false,
+		"branch_ref_created":                    false,
+		"review_request_created":                false,
+		"external_call_made":                    false,
+		"provider_api_call_made":                false,
+		"provider_api_mutation":                 "disabled",
+		"repository_ref_included":               false,
+		"branch_name_included":                  false,
+		"protected_branch_rules_included":       false,
+		"contains_token":                        false,
+		"contains_provider_url":                 false,
+		"contains_repository_ref":               false,
+		"contains_branch_name":                  false,
+		"contains_file_content":                 false,
+		"branch_policy_boundary_redacted":       true,
+		"branch_policy_sequence":                []string{"verify_target_branch_policy", "require_review_branch_strategy", "block_default_branch_direct_write", "require_review_request", "handoff_to_provider_adapter"},
+		"branch_policy_suppressed_fields":       []string{"default_branch", "target_branch", "review_branch", "branch_ref", "repository_ref", "protected_branch_rules", "provider_url", "authorization_header", "token", "file_content"},
+		"blocked_reasons":                       []string{"provider_branch_policy_not_armed", "protected_default_branch_direct_write_disabled", "provider_review_adapter_not_implemented", "provider_review_mutation_not_armed"},
 	}
 }
 
@@ -11794,6 +11855,8 @@ func providerReviewAttemptAdapterProviderCallBoundaryPlan(operation, claimPlan, 
 	}
 }
 
+const providerReviewAttemptAdapterRequestMaterializationPlanMode = "redacted_attempt_adapter_request_materialization_plan"
+
 func providerReviewAttemptAdapterRequestMaterializationPlan(operation, requestSummary map[string]any, providerType string) map[string]any {
 	if len(operation) == 0 {
 		return map[string]any{}
@@ -11806,7 +11869,7 @@ func providerReviewAttemptAdapterRequestMaterializationPlan(operation, requestSu
 		return map[string]any{}
 	}
 	return map[string]any{
-		"mode":                                      "redacted_attempt_adapter_request_materialization_plan",
+		"mode":                                      providerReviewAttemptAdapterRequestMaterializationPlanMode,
 		"request_materialization_state":             "blocked",
 		"request_materialization_ready":             false,
 		"request_materialization_ready_reason":      "provider_request_materialization_not_armed",

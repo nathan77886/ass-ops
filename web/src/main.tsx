@@ -1101,6 +1101,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptDispatchPlanMode = typeof attemptDispatchPlan.mode === 'string' ? attemptDispatchPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter dispatch plan';
   const attemptRequestPlan = attemptDispatchPlan.request_materialization_plan || {};
   const attemptRequestPlanMode = typeof attemptRequestPlan.mode === 'string' ? attemptRequestPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter request materialization plan';
+  const attemptBranchPolicyPlan = attemptDispatchPlan.branch_policy_plan || {};
+  const attemptBranchPolicyPlanMode = typeof attemptBranchPolicyPlan.mode === 'string' ? attemptBranchPolicyPlan.mode.replaceAll('_', ' ') : 'redacted attempt branch policy plan';
   const attemptTransportPlan = attemptDispatchPlan.transport_plan || {};
   const attemptTransportPlanMode = typeof attemptTransportPlan.mode === 'string' ? attemptTransportPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter transport plan';
   const attemptResponsePlan = attemptDispatchPlan.response_plan || {};
@@ -1465,6 +1467,19 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>{String(attemptRequestPlan.payload_shape || 'redacted payload')}</Tag>
           <Tag>{attemptRequestPlan.request_url_materialized === true ? 'url materialized' : 'url redacted'}</Tag>
           <Tag>{attemptRequestPlan.request_body_materialized === true ? 'body materialized' : 'body redacted'}</Tag>
+        </Space>
+      ) : null}
+      {attemptBranchPolicyPlan.mode ? (
+        <Space size={4} wrap>
+          <Tag>{attemptBranchPolicyPlanMode}</Tag>
+          <Tag color={attemptBranchPolicyPlan.branch_policy_state === 'blocked' ? 'red' : 'gold'}>
+            branch policy {String(attemptBranchPolicyPlan.branch_policy_state || 'blocked')}
+          </Tag>
+          <Tag>{String(attemptBranchPolicyPlan.branch_policy_ready_reason || 'provider_branch_policy_not_armed')}</Tag>
+          <Tag>{attemptBranchPolicyPlan.default_branch_direct_write_allowed === true ? 'default policy open' : 'default direct write blocked'}</Tag>
+          <Tag>{attemptBranchPolicyPlan.protected_branch_direct_write_allowed === true ? 'protected policy open' : 'protected direct write blocked'}</Tag>
+          <Tag>{attemptBranchPolicyPlan.branch_name_included === true ? 'branch included' : 'branch redacted'}</Tag>
+          <Tag>{String(attemptBranchPolicyPlan.provider_api_mutation || 'disabled')}</Tag>
         </Space>
       ) : null}
       {attemptTransportPlan.mode ? (
