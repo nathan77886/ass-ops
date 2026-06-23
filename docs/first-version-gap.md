@@ -1,6 +1,6 @@
 # ASSOPS First-Version Gap Notes
 
-Last checked: 2026-06-23
+Last checked: 2026-06-24
 
 Sources:
 
@@ -22,6 +22,23 @@ The codebase now has a working control-plane skeleton:
 - Derived asset inventory APIs that expose current projects, project templates, repositories, remotes, operation runs, pipeline runs, hosts, Argo apps, deployment targets, runtimes, agent tasks, and node agents through a common asset shape.
 
 This is stronger than a mock-only skeleton, but it is not yet the asset-centered product described in Notion.
+
+## Readiness Gate Status
+
+The Dashboard and `assops-tool project readiness` now use the same first-version readiness contract, and all ten demo gates require canonical asset or graph evidence instead of loose aggregate rows:
+
+- Project asset: canonical `project` asset plus `project:*` graph node.
+- Repository attachment: same repository linked from project to at least two Git remotes.
+- RepoSyncAsset: repository-to-sync, sync-to-source-remote, and sync-to-target-remote graph links.
+- Manual and webhook sync: Gitea webhook connection and event linked through the same RepoSyncAsset and operation run.
+- GitHub Actions: project-to-repository-to-remote-to-action-run graph chain.
+- SSH audit: operation-to-command-run-to-machine graph chain plus command-run asset evidence.
+- Argo deployment view: connection-to-app-to-target graph chain plus sync-operation evidence.
+- Operation history: canonical operation-run asset plus operation log evidence.
+- Approval policy: approval request asset, active approval-rule asset, and rule-to-approval `governs` relation.
+- AI context: graph evidence plus agent-task-to-runtime and agent-task-to-`context.generate` tool-call links.
+
+This makes the current gap measurable: a first-version demo is ready only when the live environment can satisfy those ten graph-backed gates, not merely when individual tables contain sample rows.
 
 ## Notion Target
 
