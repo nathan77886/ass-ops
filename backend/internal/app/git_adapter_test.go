@@ -772,6 +772,44 @@ func TestProviderReviewAdapterRehearsalReadinessVariants(t *testing.T) {
 	})
 }
 
+func TestProviderReviewAdapterBuilderAndHandlerNamesUseSharedContract(t *testing.T) {
+	for _, tt := range []struct {
+		operation string
+		builder   string
+		handler   string
+	}{
+		{
+			operation: "create_branch_ref",
+			builder:   "build_redacted_branch_ref_request",
+			handler:   "handle_branch_ref_response",
+		},
+		{
+			operation: "commit_starter_files",
+			builder:   "build_redacted_file_batch_request",
+			handler:   "handle_commit_files_response",
+		},
+		{
+			operation: "open_review_request",
+			builder:   "build_redacted_review_request",
+			handler:   "handle_review_request_response",
+		},
+		{
+			operation: "raw_operation",
+			builder:   "build_redacted_provider_request",
+			handler:   "handle_provider_response",
+		},
+	} {
+		t.Run(tt.operation, func(t *testing.T) {
+			if got := providerReviewPayloadBuilderName(tt.operation); got != tt.builder {
+				t.Fatalf("providerReviewPayloadBuilderName(%q) = %q, want %q", tt.operation, got, tt.builder)
+			}
+			if got := providerReviewResponseHandlerName(tt.operation); got != tt.handler {
+				t.Fatalf("providerReviewResponseHandlerName(%q) = %q, want %q", tt.operation, got, tt.handler)
+			}
+		})
+	}
+}
+
 func TestTemplateProtectedBranchStrategyRejectsUnsafeProposedBranch(t *testing.T) {
 	strategy := templateProtectedBranchStrategy(
 		map[string]any{"repo_key": "Billing API", "default_branch": "main"},

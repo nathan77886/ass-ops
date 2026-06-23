@@ -1086,29 +1086,17 @@ func providerReviewAdapterExecutionBlueprintOperation(envelope map[string]any, r
 }
 
 func providerReviewPayloadBuilderName(operation string) string {
-	switch cleanOptionalText(operation) {
-	case "create_branch_ref":
-		return "build_redacted_branch_ref_request"
-	case "commit_starter_files":
-		return "build_redacted_file_batch_request"
-	case "open_review_request":
-		return "build_redacted_review_request"
-	default:
-		return "build_redacted_provider_request"
+	if expected := providerReviewExpectedPayloadBuilderName(operation); expected != "" {
+		return expected
 	}
+	return "build_redacted_provider_request"
 }
 
 func providerReviewResponseHandlerName(operation string) string {
-	switch cleanOptionalText(operation) {
-	case "create_branch_ref":
-		return "handle_branch_ref_response"
-	case "commit_starter_files":
-		return "handle_commit_files_response"
-	case "open_review_request":
-		return "handle_review_request_response"
-	default:
-		return "handle_provider_response"
+	if expected := providerReviewExpectedResponseHandlerName(operation); expected != "" {
+		return expected
 	}
+	return "handle_provider_response"
 }
 
 func providerReviewAdapterRehearsal(provider, reviewKind, adapterStatus string, credentialStrategy map[string]any, requestEnvelopes []map[string]any) map[string]any {
