@@ -4146,6 +4146,22 @@ function ConfigPage() {
   const ssh = useLoad(() => project ? api(`/api/projects/${project.id}/ssh-machines`) : Promise.resolve({ items: [] }), [project?.id]);
   const sshRows = ssh.data?.items || [];
   const sshPick = useSelectedRow(sshRows);
+  const sshRehearsal = useLoad(() => sshPick.selectedID ? api(`/api/ssh-machines/${sshPick.selectedID}/rehearsal`) : Promise.resolve(null), [sshPick.selectedID]);
+  const sshRehearsalView = sshRehearsal.data ? {
+    mode: sshRehearsal.data.mode,
+    rehearsal_state: sshRehearsal.data.rehearsal_state,
+    execution_enabled: sshRehearsal.data.execution_enabled,
+    external_call_made: sshRehearsal.data.external_call_made,
+    ssh_process_started: sshRehearsal.data.ssh_process_started,
+    command_executed: sshRehearsal.data.command_executed,
+    private_key_included: sshRehearsal.data.private_key_included,
+    stdout_included: sshRehearsal.data.stdout_included,
+    stderr_included: sshRehearsal.data.stderr_included,
+    required_live_rehearsal: sshRehearsal.data.required_live_rehearsal,
+    required_controls: sshRehearsal.data.required_controls,
+    steps: sshRehearsal.data.steps,
+    recent_evidence: sshRehearsal.data.recent_evidence
+  } : null;
   const sshRuns = useLoad(() => project ? api(`/api/ssh-command-runs?project_id=${project.id}`) : Promise.resolve({ items: [] }), [project?.id]);
   const deploymentPosture = buildDeploymentPosture(
     deploymentTargets.data?.items || [],
@@ -4261,6 +4277,7 @@ function ConfigPage() {
       });
       message.success(result.approval ? 'Approval requested' : 'SSH command queued');
       sshRuns.reload();
+      sshRehearsal.reload();
     } catch (error: any) {
       message.error(error.message);
     }
@@ -4274,6 +4291,7 @@ function ConfigPage() {
       await api(`/api/ssh-machines/${sshPick.selectedID}/verify`, { method: 'POST', body: '{}' });
       message.success('SSH verify queued');
       sshRuns.reload();
+      sshRehearsal.reload();
     } catch (error: any) {
       message.error(error.message);
     }
@@ -4289,8 +4307,26 @@ function ConfigPage() {
           <Space>
             <Button onClick={verifySSHMachine} disabled={!sshPick.selectedID}>Verify</Button>
             <Button type="primary" onClick={() => setCommandOpen(true)} disabled={!sshPick.selectedID}>Run command</Button>
-            <Button onClick={sshRuns.reload} disabled={!project}>Refresh runs</Button>
+            <Button onClick={() => { sshRuns.reload(); sshRehearsal.reload(); }} loading={sshRehearsal.loading} disabled={!project}>Refresh runs</Button>
           </Space>
+          {sshRehearsal.error && <Alert showIcon type="warning" message="SSH rehearsal preview unavailable" description={sshRehearsal.error} />}
+          {sshRehearsalView && (
+            <Card title="SSH rehearsal">
+              <Space direction="vertical" size={8} className="full">
+                <Space wrap>
+                  <Tag color={sshRehearsalView.rehearsal_state === 'ready' ? 'green' : sshRehearsalView.rehearsal_state === 'blocked' ? 'red' : 'gold'}>{sshRehearsalView.rehearsal_state}</Tag>
+                  <Tag>{sshRehearsalView.execution_enabled ? 'execution enabled' : 'execution disabled'}</Tag>
+                  <Tag>{sshRehearsalView.ssh_process_started ? 'ssh started' : 'no ssh process'}</Tag>
+                  <Tag>{sshRehearsalView.private_key_included ? 'key included' : 'no key material'}</Tag>
+                  <Tag>{sshRehearsalView.stdout_included || sshRehearsalView.stderr_included ? 'output included' : 'no command output'}</Tag>
+                  <Tag>{sshRehearsalView.recent_evidence?.verify_runs || 0} verify runs</Tag>
+                  <Tag>{sshRehearsalView.recent_evidence?.exec_runs || 0} exec runs</Tag>
+                  <Tag>{sshRehearsalView.recent_evidence?.unknown_runs || 0} unknown runs</Tag>
+                </Space>
+                <JSONBlock value={sshRehearsalView} />
+              </Space>
+            </Card>
+          )}
           <Table rowKey="id" dataSource={sshRows} pagination={false} columns={[
             { title: 'Name', dataIndex: 'name' },
             { title: 'Host', dataIndex: 'host' },

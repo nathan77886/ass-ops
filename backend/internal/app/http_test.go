@@ -1447,6 +1447,249 @@ func TestListSSHCommandRunsIncludesOperationType(t *testing.T) {
 	}
 }
 
+func TestSSHMachineRehearsalPreviewSanitizesEvidence(t *testing.T) {
+	preview := buildSSHMachineRehearsalPreview(
+		map[string]any{
+			"id":         "machine-1",
+			"project_id": "project-1",
+			"name":       "prod-api",
+			"host":       "10.0.0.12",
+			"port":       22,
+			"username":   "deploy",
+			"auth_type":  "key",
+			"metadata": map[string]any{
+				"key_path":                    "/etc/assops/ssh/prod-api",
+				"known_hosts_path":            "/etc/assops/ssh/known_hosts",
+				"strict_host_key_checking":    "yes",
+				"private_key_should_not_leak": "SECRET",
+			},
+		},
+		[]map[string]any{
+			{
+				"id":             "run-2",
+				"status":         "completed",
+				"exit_code":      0,
+				"operation_type": "ssh.exec",
+				"command":        "cat /etc/passwd",
+				"stdout":         "secret output",
+				"stderr":         "secret error",
+			},
+			{
+				"id":             "run-1",
+				"status":         "completed",
+				"exit_code":      0,
+				"operation_type": "ssh.verify",
+				"command":        "true",
+			},
+		},
+	)
+
+	if preview["mode"] != "ssh_rehearsal_plan_preview" || preview["rehearsal_state"] != "ready" {
+		t.Fatalf("preview state = %#v", preview)
+	}
+	for _, key := range []string{"execution_enabled", "external_call_made", "ssh_process_started", "command_executed", "stdout_included", "stderr_included", "private_key_included", "known_hosts_included", "secret_included"} {
+		if preview[key] != false {
+			t.Fatalf("%s = %#v, want false", key, preview[key])
+		}
+	}
+	evidence := mapFromAny(preview["recent_evidence"])
+	if evidence["completed_verify"] != true || evidence["completed_exec"] != true || intFromAny(evidence["verify_runs"], 0) != 1 || intFromAny(evidence["exec_runs"], 0) != 1 {
+		t.Fatalf("unexpected evidence summary: %#v", evidence)
+	}
+	latestExec := mapFromAny(evidence["latest_exec"])
+	if latestExec["command"] != nil || latestExec["stdout"] != nil || latestExec["stderr"] != nil {
+		t.Fatalf("latest exec leaked sensitive fields: %#v", latestExec)
+	}
+	encoded, _ := json.Marshal(preview)
+	for _, forbidden := range []string{"/etc/assops/ssh/prod-api", "secret output", "secret error", "SECRET"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("preview leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if statusByKind(sliceOfMapsFromAny(preview["steps"]), "verify_rehearsal") != "completed" || statusByKind(sliceOfMapsFromAny(preview["steps"]), "exec_rehearsal") != "completed" {
+		t.Fatalf("expected completed rehearsal steps: %#v", preview["steps"])
+	}
+}
+
+func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
+	tests := []struct {
+		name               string
+		machine            map[string]any
+		runs               []map[string]any
+		wantState          string
+		wantVerifyStatus   string
+		wantExecStatus     string
+		wantUnknownRuns    int
+		wantRequiredChecks int
+	}{
+		{
+			name: "blocked metadata",
+			machine: map[string]any{
+				"id":         "machine-1",
+				"project_id": "project-1",
+				"name":       "missing-host",
+				"port":       22,
+				"metadata":   map[string]any{},
+			},
+			wantState:          "blocked",
+			wantVerifyStatus:   "blocked",
+			wantExecStatus:     "blocked",
+			wantRequiredChecks: 2,
+		},
+		{
+			name: "planned with no runs",
+			machine: map[string]any{
+				"id":         "machine-1",
+				"project_id": "project-1",
+				"name":       "prod-api",
+				"host":       "10.0.0.12",
+				"port":       22,
+				"username":   "deploy",
+				"auth_type":  "key",
+				"metadata":   map[string]any{},
+			},
+			wantState:          "planned",
+			wantVerifyStatus:   "planned",
+			wantExecStatus:     "blocked",
+			wantRequiredChecks: 2,
+		},
+		{
+			name: "partial with unfinished verify",
+			machine: map[string]any{
+				"id":         "machine-1",
+				"project_id": "project-1",
+				"name":       "prod-api",
+				"host":       "10.0.0.12",
+				"port":       22,
+				"username":   "deploy",
+				"auth_type":  "key",
+				"metadata":   map[string]any{},
+			},
+			runs: []map[string]any{
+				{"id": "run-1", "status": "queued", "operation_type": "ssh.verify"},
+			},
+			wantState:          "partial",
+			wantVerifyStatus:   "planned",
+			wantExecStatus:     "blocked",
+			wantRequiredChecks: 2,
+		},
+		{
+			name: "ready with completed verify and exec",
+			machine: map[string]any{
+				"id":         "machine-1",
+				"project_id": "project-1",
+				"name":       "prod-api",
+				"host":       "10.0.0.12",
+				"port":       22,
+				"username":   "deploy",
+				"auth_type":  "key",
+				"metadata":   map[string]any{},
+			},
+			runs: []map[string]any{
+				{"id": "run-2", "status": "completed", "operation_type": "ssh.exec"},
+				{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
+			},
+			wantState:          "ready",
+			wantVerifyStatus:   "completed",
+			wantExecStatus:     "completed",
+			wantRequiredChecks: 0,
+		},
+		{
+			name: "unknown operation does not count as exec",
+			machine: map[string]any{
+				"id":         "machine-1",
+				"project_id": "project-1",
+				"name":       "prod-api",
+				"host":       "10.0.0.12",
+				"port":       22,
+				"username":   "deploy",
+				"auth_type":  "key",
+				"metadata":   map[string]any{},
+			},
+			runs: []map[string]any{
+				{"id": "run-unknown", "status": "completed"},
+			},
+			wantState:          "partial",
+			wantVerifyStatus:   "planned",
+			wantExecStatus:     "blocked",
+			wantUnknownRuns:    1,
+			wantRequiredChecks: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			preview := buildSSHMachineRehearsalPreview(tt.machine, tt.runs)
+			if preview["rehearsal_state"] != tt.wantState {
+				t.Fatalf("rehearsal_state = %#v, want %s; preview=%#v", preview["rehearsal_state"], tt.wantState, preview)
+			}
+			steps := sliceOfMapsFromAny(preview["steps"])
+			if statusByKind(steps, "verify_rehearsal") != tt.wantVerifyStatus {
+				t.Fatalf("verify status = %s, want %s; steps=%#v", statusByKind(steps, "verify_rehearsal"), tt.wantVerifyStatus, steps)
+			}
+			if statusByKind(steps, "exec_rehearsal") != tt.wantExecStatus {
+				t.Fatalf("exec status = %s, want %s; steps=%#v", statusByKind(steps, "exec_rehearsal"), tt.wantExecStatus, steps)
+			}
+			evidence := mapFromAny(preview["recent_evidence"])
+			if intFromAny(evidence["unknown_runs"], 0) != tt.wantUnknownRuns {
+				t.Fatalf("unknown_runs = %#v, want %d; evidence=%#v", evidence["unknown_runs"], tt.wantUnknownRuns, evidence)
+			}
+			required := stringSliceFromAny(preview["required_live_rehearsal"])
+			if len(required) != tt.wantRequiredChecks {
+				t.Fatalf("required_live_rehearsal = %#v, want len %d", required, tt.wantRequiredChecks)
+			}
+			if tt.name == "unknown operation does not count as exec" && evidence["completed_exec"] != false {
+				t.Fatalf("unknown operation should not complete exec: %#v", evidence)
+			}
+		})
+	}
+}
+
+func TestGetSSHMachineRehearsalHandlerReturnsReadOnlyPlan(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	now := time.Now()
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, host, port, username, auth_type, metadata, created_at, updated_at\s+FROM ssh_machines\s+WHERE id=\$1`).
+		WithArgs("machine-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "host", "port", "username", "auth_type", "metadata", "created_at", "updated_at"}).
+			AddRow("machine-1", "project-1", "prod-api", "10.0.0.12", 22, "deploy", "key", []byte(`{"key_path":"/etc/assops/ssh/prod-api"}`), now, now))
+	mock.ExpectQuery(`(?s)SELECT scr\.id, scr\.status, scr\.exit_code, scr\.created_at, scr\.finished_at, op\.operation_type\s+FROM ssh_command_runs scr\s+LEFT JOIN operation_runs op ON op\.id=scr\.operation_run_id\s+WHERE scr\.ssh_machine_id=\$1`).
+		WithArgs("machine-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "exit_code", "created_at", "finished_at", "operation_type"}).
+			AddRow("run-1", "completed", 0, now, now, "ssh.verify"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ssh-machines/machine-1/rehearsal", nil)
+	req = withRouteParam(req, "id", "machine-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.getSSHMachineRehearsal(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["mode"] != "ssh_rehearsal_plan_preview" || payload["execution_enabled"] != false || payload["ssh_process_started"] != false {
+		t.Fatalf("unexpected rehearsal payload: %#v", payload)
+	}
+	evidence := mapFromAny(payload["recent_evidence"])
+	if evidence["completed_verify"] != true || evidence["completed_exec"] != false {
+		t.Fatalf("unexpected evidence: %#v", evidence)
+	}
+	if strings.Contains(rr.Body.String(), `"command":`) || strings.Contains(rr.Body.String(), `"stdout":`) || strings.Contains(rr.Body.String(), `"stderr":`) || strings.Contains(rr.Body.String(), "/etc/assops/ssh/prod-api") {
+		t.Fatalf("response leaked suppressed fields: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestProviderAccountsMigrationIncludesTableAndRemoteFK(t *testing.T) {
 	content, err := os.ReadFile("../../migrations/003_provider_accounts.sql")
 	if err != nil {

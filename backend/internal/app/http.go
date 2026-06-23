@@ -183,6 +183,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/webhook-events/{id}/replay", s.replayWebhookEvent)
 		r.Post("/api/projects/{id}/ssh-machines", s.createSSHMachine)
 		r.Get("/api/projects/{id}/ssh-machines", s.listSSHMachines)
+		r.Get("/api/ssh-machines/{id}/rehearsal", s.getSSHMachineRehearsal)
 		r.Post("/api/ssh-machines/{id}/verify", s.verifySSHMachine)
 		r.Post("/api/ssh-machines/{id}/commands", s.createSSHCommand)
 		r.Get("/api/ssh-command-runs", s.listSSHCommandRuns)
@@ -15341,6 +15342,240 @@ func (s *Server) listSSHMachines(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := queryMaps(r.Context(), s.store.DB, "SELECT * FROM ssh_machines WHERE project_id=$1 ORDER BY created_at DESC", projectID)
 	writeQueryResult(w, items, err)
+}
+
+func (s *Server) getSSHMachineRehearsal(w http.ResponseWriter, r *http.Request) {
+	machineID := chi.URLParam(r, "id")
+	machine, err := queryOne(r.Context(), s.store.DB, `
+		SELECT id, project_id, name, host, port, username, auth_type, metadata, created_at, updated_at
+		FROM ssh_machines
+		WHERE id=$1`, machineID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	projectID := cleanPreviewString(machine["project_id"])
+	if projectID == "" {
+		writeError(w, http.StatusInternalServerError, "SSH machine has no project")
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "ssh_machine", ID: machineID, ProjectID: projectID}, "read") {
+		return
+	}
+	runs, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT scr.id, scr.status, scr.exit_code, scr.created_at, scr.finished_at, op.operation_type
+		FROM ssh_command_runs scr
+		LEFT JOIN operation_runs op ON op.id=scr.operation_run_id
+		WHERE scr.ssh_machine_id=$1
+		ORDER BY scr.created_at DESC
+		LIMIT 50`, machineID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load SSH rehearsal evidence")
+		return
+	}
+	writeJSON(w, http.StatusOK, buildSSHMachineRehearsalPreview(machine, runs))
+}
+
+func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]any) map[string]any {
+	host := cleanPreviewString(machine["host"])
+	username := cleanPreviewString(machine["username"])
+	authType := cleanPreviewString(machine["auth_type"])
+	portValue := intFromAny(machine["port"], 22)
+	metadata := mapFromAny(machine["metadata"])
+	hasKeyReference := cleanPreviewString(metadata["key_path"]) != ""
+	hasKnownHostsReference := cleanPreviewString(metadata["known_hosts_path"]) != ""
+	strictHostKeyChecking := cleanPreviewString(metadata["strict_host_key_checking"])
+	if strictHostKeyChecking == "" {
+		strictHostKeyChecking = "accept-new"
+	}
+	metadataReady := host != "" && username != "" && authType != "" && portValue > 0 && portValue <= 65535
+
+	evidence := summarizeSSHRehearsalEvidence(runs)
+	hasVerified := boolOnlyFromAny(evidence["completed_verify"])
+	hasExecuted := boolOnlyFromAny(evidence["completed_exec"])
+	state := "planned"
+	if !metadataReady {
+		state = "blocked"
+	} else if hasVerified && hasExecuted {
+		state = "ready"
+	} else if intFromAny(evidence["total_runs"], 0) > 0 {
+		state = "partial"
+	}
+
+	verifyStatus := "planned"
+	if !metadataReady {
+		verifyStatus = "blocked"
+	} else if hasVerified {
+		verifyStatus = "completed"
+	}
+	execStatus := "blocked"
+	if hasExecuted {
+		execStatus = "completed"
+	} else if hasVerified {
+		execStatus = "planned"
+	}
+
+	requiredLiveRehearsal := []string{}
+	if !hasVerified {
+		requiredLiveRehearsal = append(requiredLiveRehearsal, "ssh.verify")
+	}
+	if !hasExecuted {
+		requiredLiveRehearsal = append(requiredLiveRehearsal, "ssh.exec")
+	}
+
+	steps := []map[string]any{
+		{
+			"kind":   "machine_metadata",
+			"status": statusWhen(metadataReady),
+			"checks": []string{"host", "port", "username", "auth_type"},
+			"reason": reasonWhen(metadataReady, "machine metadata is complete", "host, username, auth_type, and valid port are required"),
+		},
+		{
+			"kind":   "auth_material_reference",
+			"status": statusWhen(authType != ""),
+			"checks": []string{"auth_type", "runtime_secret_binding"},
+			"reason": reasonWhen(authType != "", "auth material must be resolved by the runtime worker", "auth_type is required before a live SSH rehearsal"),
+		},
+		{
+			"kind":   "known_hosts_policy",
+			"status": "planned",
+			"checks": []string{"known_hosts_reference", "strict_host_key_checking"},
+			"reason": map[string]any{
+				"known_hosts_reference_present": hasKnownHostsReference,
+				"strict_host_key_checking":      strictHostKeyChecking,
+			},
+		},
+		{
+			"kind":   "verify_rehearsal",
+			"status": verifyStatus,
+			"checks": []string{"POST /api/ssh-machines/{id}/verify", "ssh.verify operation evidence"},
+			"reason": reasonWhen(metadataReady, "verify can be queued after operator approval and runtime auth binding", "machine metadata is incomplete"),
+		},
+		{
+			"kind":   "exec_rehearsal",
+			"status": execStatus,
+			"checks": []string{"POST /api/ssh-machines/{id}/commands", "ssh.exec operation evidence", "operator command review"},
+			"reason": reasonWhen(hasVerified || hasExecuted, "exec rehearsal can follow a successful verify rehearsal", "complete ssh.verify evidence first"),
+		},
+	}
+
+	return map[string]any{
+		"mode":                    "ssh_rehearsal_plan_preview",
+		"rehearsal_state":         state,
+		"execution_enabled":       false,
+		"external_call_made":      false,
+		"ssh_process_started":     false,
+		"command_executed":        false,
+		"stdout_included":         false,
+		"stderr_included":         false,
+		"private_key_included":    false,
+		"known_hosts_included":    false,
+		"secret_included":         false,
+		"auth_reference_present":  hasKeyReference || authType != "",
+		"known_hosts_configured":  hasKnownHostsReference,
+		"required_live_rehearsal": requiredLiveRehearsal,
+		"required_controls": []string{
+			"machine_metadata_review",
+			"ssh_auth_material_binding",
+			"known_hosts_review",
+			"operation_approval",
+			"operator_command_review",
+		},
+		"suppressed_fields": []string{
+			"private_key",
+			"passphrase",
+			"known_hosts_body",
+			"stdout",
+			"stderr",
+			"raw_error",
+			"command_output",
+		},
+		"machine": map[string]any{
+			"id":         machine["id"],
+			"project_id": machine["project_id"],
+			"name":       machine["name"],
+			"host":       host,
+			"port":       portValue,
+			"username":   username,
+			"auth_type":  authType,
+		},
+		"steps":           steps,
+		"recent_evidence": evidence,
+	}
+}
+
+func summarizeSSHRehearsalEvidence(runs []map[string]any) map[string]any {
+	evidence := map[string]any{
+		"total_runs":       len(runs),
+		"verify_runs":      0,
+		"exec_runs":        0,
+		"unknown_runs":     0,
+		"completed_verify": false,
+		"completed_exec":   false,
+		"latest_verify":    nil,
+		"latest_exec":      nil,
+		"latest_unknown":   nil,
+	}
+	for _, run := range runs {
+		operationType := cleanPreviewString(run["operation_type"])
+		if operationType == "" {
+			operationType = "unknown"
+		}
+		item := map[string]any{
+			"id":             run["id"],
+			"status":         run["status"],
+			"exit_code":      run["exit_code"],
+			"created_at":     run["created_at"],
+			"finished_at":    run["finished_at"],
+			"operation_type": operationType,
+		}
+		switch operationType {
+		case "ssh.verify":
+			evidence["verify_runs"] = intFromAny(evidence["verify_runs"], 0) + 1
+			if evidence["latest_verify"] == nil {
+				evidence["latest_verify"] = item
+			}
+			if cleanPreviewString(run["status"]) == "completed" {
+				evidence["completed_verify"] = true
+			}
+		case "ssh.exec":
+			evidence["exec_runs"] = intFromAny(evidence["exec_runs"], 0) + 1
+			if evidence["latest_exec"] == nil {
+				evidence["latest_exec"] = item
+			}
+			if cleanPreviewString(run["status"]) == "completed" {
+				evidence["completed_exec"] = true
+			}
+		default:
+			evidence["unknown_runs"] = intFromAny(evidence["unknown_runs"], 0) + 1
+			if evidence["latest_unknown"] == nil {
+				evidence["latest_unknown"] = item
+			}
+		}
+	}
+	return evidence
+}
+
+func cleanPreviewString(value any) string {
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "<nil>" {
+		return ""
+	}
+	return text
+}
+
+func statusWhen(ok bool) string {
+	if ok {
+		return "planned"
+	}
+	return "blocked"
+}
+
+func reasonWhen(ok bool, ready, blocked string) string {
+	if ok {
+		return ready
+	}
+	return blocked
 }
 
 func (s *Server) createSSHCommand(w http.ResponseWriter, r *http.Request) {
