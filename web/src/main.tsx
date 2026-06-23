@@ -3478,6 +3478,10 @@ function buildDeploymentExecutionGuardrail(targets: AnyRow[]) {
 
 function deploymentExecutionReadinessView(row: AnyRow) {
   const readiness = row.deployment_execution_readiness || {};
+  const executionPlan = readiness.execution_plan || {};
+  const requiredControls = Array.isArray(executionPlan.required_controls) ? executionPlan.required_controls : [];
+  const disabledBackends = Array.isArray(executionPlan.disabled_backends) ? executionPlan.disabled_backends : [];
+  const suppressedFields = Array.isArray(executionPlan.suppressed_fields) ? executionPlan.suppressed_fields : [];
   const status = String(readiness.status || 'unknown');
   const reasons = Array.isArray(readiness.blocked_reasons) ? readiness.blocked_reasons : [];
   return (
@@ -3487,6 +3491,19 @@ function deploymentExecutionReadinessView(row: AnyRow) {
         <Tag>{readiness.mode || 'dry_run'}</Tag>
         <Tag>execution: {readiness.execution_enabled === true ? 'enabled' : 'disabled'}</Tag>
       </Space>
+      {executionPlan.mode ? (
+        <Space size={4} wrap>
+          <Tag>{String(executionPlan.mode).replaceAll('_', ' ')}</Tag>
+          <Tag color={executionPlan.plan_state === 'blocked' ? 'red' : 'blue'}>plan {String(executionPlan.plan_state || 'blocked')}</Tag>
+          <Tag color={executionPlan.prerequisite_state === 'planned' ? 'blue' : 'gold'}>prereq {String(executionPlan.prerequisite_state || 'blocked')}</Tag>
+          <Tag>controls {requiredControls.length}</Tag>
+          <Tag>disabled backends {disabledBackends.length}</Tag>
+          <Tag>suppressed {suppressedFields.length}</Tag>
+          <Tag>{executionPlan.kubernetes_api_call_made === true ? 'k8s called' : 'no k8s call'}</Tag>
+          <Tag>{executionPlan.helm_command_invoked === true ? 'helm invoked' : 'helm disabled'}</Tag>
+          <Tag>{String(executionPlan.deployment_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
       {reasons.length ? <Typography.Text type="secondary">{shortText(String(reasons[0]), 72)}</Typography.Text> : <Typography.Text type="secondary">{shortText(String(readiness.message || ''), 72)}</Typography.Text>}
     </Space>
   );

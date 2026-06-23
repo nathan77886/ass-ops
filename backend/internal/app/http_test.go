@@ -185,6 +185,73 @@ func TestDeploymentExecutionReadinessDryRun(t *testing.T) {
 	if ready["requires_approval"] != true || ready["execution_backend"] != "disabled" {
 		t.Fatalf("ready deployment execution guardrails = %#v", ready)
 	}
+	plan := mapFromAny(ready["execution_plan"])
+	if plan["mode"] != "redacted_deployment_execution_plan" ||
+		plan["plan_state"] != "blocked" ||
+		plan["prerequisite_state"] != "planned" ||
+		plan["plan_ready"] != false ||
+		plan["plan_ready_reason"] != "deployment_execution_backend_disabled" ||
+		plan["execution_enabled"] != false ||
+		plan["execution_backend"] != "disabled" ||
+		plan["requires_approval"] != true ||
+		plan["approval_action"] != "deployment.execute" ||
+		plan["requires_environment_review"] != true ||
+		plan["requires_kubeconfig_binding"] != true ||
+		plan["requires_manifest_render"] != true ||
+		plan["requires_dry_run_preflight"] != true ||
+		plan["requires_rollback_plan"] != true ||
+		plan["requires_operator_confirmation"] != true ||
+		plan["target_metadata_ready"] != true ||
+		plan["deployment_request_materialized"] != false ||
+		plan["manifest_rendered"] != false ||
+		plan["dry_run_performed"] != false ||
+		plan["helm_release_bound"] != false ||
+		plan["kubernetes_client_constructed"] != false ||
+		plan["rollout_started"] != false ||
+		plan["rollback_point_selected"] != false ||
+		plan["external_call_made"] != false ||
+		plan["kubernetes_api_call_made"] != false ||
+		plan["helm_command_invoked"] != false ||
+		plan["deployment_mutation"] != "disabled" ||
+		plan["kubeconfig_included"] != false ||
+		plan["secret_included"] != false ||
+		plan["manifest_body_included"] != false ||
+		plan["helm_values_included"] != false ||
+		plan["cluster_credential_included"] != false ||
+		plan["contains_token"] != false ||
+		plan["contains_kubeconfig"] != false ||
+		plan["contains_secret"] != false ||
+		plan["contains_manifest_body"] != false ||
+		plan["execution_boundary_redacted"] != true {
+		t.Fatalf("ready deployment execution plan = %#v", plan)
+	}
+	controls := stringSliceFromAny(plan["required_controls"])
+	if len(controls) != 7 || controls[0] != "operation_approval" || controls[6] != "operator_confirmation" {
+		t.Fatalf("deployment execution controls = %#v", controls)
+	}
+	disabledBackends := stringSliceFromAny(plan["disabled_backends"])
+	if len(disabledBackends) != 5 || disabledBackends[0] != "helm_upgrade" || disabledBackends[4] != "rollback_execute" {
+		t.Fatalf("deployment execution disabled backends = %#v", disabledBackends)
+	}
+	suppressedFields := stringSliceFromAny(plan["suppressed_fields"])
+	for _, field := range []string{"kubeconfig", "cluster_token", "authorization_header", "secret_manifest", "rendered_manifest", "helm_values", "image_pull_secret", "environment_secret"} {
+		if !slices.Contains(suppressedFields, field) {
+			t.Fatalf("deployment execution suppressed fields missing %q: %#v", field, suppressedFields)
+		}
+	}
+	executionSequence := stringSliceFromAny(plan["execution_sequence"])
+	if len(executionSequence) != 7 || executionSequence[0] != "request_approval" || executionSequence[6] != "start_rollout" {
+		t.Fatalf("deployment execution sequence = %#v", executionSequence)
+	}
+	planEncoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("marshal deployment execution plan: %v", err)
+	}
+	for _, leak := range []string{"apiVersion:", "kind: Secret", "Bearer ", "kubeconfig-data", "helm-values-secret"} {
+		if strings.Contains(string(planEncoded), leak) {
+			t.Fatalf("deployment execution plan leaked %q: %s", leak, planEncoded)
+		}
+	}
 	steps := sliceOfMapsFromAny(ready["steps"])
 	if len(steps) != 4 {
 		t.Fatalf("ready deployment execution steps = %#v", steps)
@@ -204,6 +271,19 @@ func TestDeploymentExecutionReadinessDryRun(t *testing.T) {
 	})
 	if blocked["status"] != "blocked" || blocked["execution_enabled"] != false {
 		t.Fatalf("blocked deployment execution readiness = %#v", blocked)
+	}
+	blockedPlan := mapFromAny(blocked["execution_plan"])
+	if blockedPlan["plan_state"] != "blocked" ||
+		blockedPlan["prerequisite_state"] != "blocked" ||
+		blockedPlan["target_metadata_ready"] != false ||
+		blockedPlan["deployment_mutation"] != "disabled" ||
+		blockedPlan["kubernetes_api_call_made"] != false ||
+		blockedPlan["helm_command_invoked"] != false {
+		t.Fatalf("blocked deployment execution plan = %#v", blockedPlan)
+	}
+	blockedPlanReasons := stringSliceFromAny(blockedPlan["blocked_reasons"])
+	if len(blockedPlanReasons) < 4 || blockedPlanReasons[0] != "deployment_execution_backend_disabled" {
+		t.Fatalf("blocked deployment execution plan reasons = %#v", blockedPlanReasons)
 	}
 	reasons := stringSliceFromAny(blocked["blocked_reasons"])
 	for _, want := range []string{"status needs review", "cluster name is missing", "namespace is missing", "no Argo apps"} {

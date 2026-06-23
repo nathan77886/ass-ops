@@ -167,7 +167,7 @@ Implemented as real local code:
 - Gateway, control-worker, and node-worker `/healthz` endpoints for Compose healthchecks
 - AI runtime CRUD and verify marker
 - Agent task, generated plan, approve plan, approval-gated execute-plan operation enqueue, and simulation-only tool-call audit with patch workflow guardrails and execution readiness gates
-- Argo connection CRUD, Argo app sync/list, deployment posture summary, dry-run deployment execution readiness, and rollback point visibility
+- Argo connection CRUD, Argo app sync/list, deployment posture summary, redacted dry-run deployment execution plans, and rollback point visibility
 - SSH machine CRUD and controlled SSH command runs
 - Asset Center inventory search, relation-degree ranked cross-project graph search, saved graph views, selected-asset relation graph, status history, manual graph relation edits, operation-run, worker-job, and project-template-run asset visibility with target/output links, and upstream/downstream dependency path queries
 - Canonical asset ledger backfill/sync from current domain tables, deduplicated asset status snapshots, graph repair reporting, plus best-effort refresh after key asset-producing writes and worker operation completion

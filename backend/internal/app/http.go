@@ -13700,6 +13700,7 @@ func deploymentExecutionReadiness(row map[string]any) map[string]any {
 		readiness = "blocked"
 		message = "Deployment execution cannot be planned until target metadata and health are reviewed."
 	}
+	executionPlan := deploymentExecutionPlan(readiness, blockedReasons)
 	return map[string]any{
 		"status":             readiness,
 		"mode":               "dry_run",
@@ -13709,6 +13710,7 @@ func deploymentExecutionReadiness(row map[string]any) map[string]any {
 		"approval_action":    "deployment.execute",
 		"execution_backend":  "disabled",
 		"blocked_reasons":    blockedReasons,
+		"execution_plan":     executionPlan,
 		"steps": []map[string]any{
 			{"name": "validate_target", "status": "planned", "execution": false},
 			{"name": "render_manifest", "status": "planned", "execution": false},
@@ -13716,6 +13718,57 @@ func deploymentExecutionReadiness(row map[string]any) map[string]any {
 			{"name": "rollout", "status": "planned", "execution": false},
 		},
 		"message": message,
+	}
+}
+
+func deploymentExecutionPlan(readiness string, blockedReasons []string) map[string]any {
+	prerequisiteState := strings.ToLower(strings.TrimSpace(readiness))
+	if prerequisiteState != "planned" {
+		prerequisiteState = "blocked"
+	}
+	return map[string]any{
+		"mode":                            "redacted_deployment_execution_plan",
+		"plan_state":                      "blocked",
+		"prerequisite_state":              prerequisiteState,
+		"plan_ready":                      false,
+		"plan_ready_reason":               "deployment_execution_backend_disabled",
+		"execution_enabled":               false,
+		"execution_backend":               "disabled",
+		"requires_approval":               true,
+		"approval_action":                 "deployment.execute",
+		"requires_environment_review":     true,
+		"requires_kubeconfig_binding":     true,
+		"requires_manifest_render":        true,
+		"requires_dry_run_preflight":      true,
+		"requires_rollback_plan":          true,
+		"requires_operator_confirmation":  true,
+		"target_metadata_ready":           prerequisiteState == "planned",
+		"deployment_request_materialized": false,
+		"manifest_rendered":               false,
+		"dry_run_performed":               false,
+		"helm_release_bound":              false,
+		"kubernetes_client_constructed":   false,
+		"rollout_started":                 false,
+		"rollback_point_selected":         false,
+		"external_call_made":              false,
+		"kubernetes_api_call_made":        false,
+		"helm_command_invoked":            false,
+		"deployment_mutation":             "disabled",
+		"kubeconfig_included":             false,
+		"secret_included":                 false,
+		"manifest_body_included":          false,
+		"helm_values_included":            false,
+		"cluster_credential_included":     false,
+		"contains_token":                  false,
+		"contains_kubeconfig":             false,
+		"contains_secret":                 false,
+		"contains_manifest_body":          false,
+		"execution_boundary_redacted":     true,
+		"blocked_reasons":                 append([]string{"deployment_execution_backend_disabled"}, blockedReasons...),
+		"required_controls":               []string{"operation_approval", "environment_review", "kubeconfig_binding", "manifest_render", "server_side_dry_run", "rollback_plan", "operator_confirmation"},
+		"disabled_backends":               []string{"helm_upgrade", "kubectl_apply", "kubectl_rollout", "argocd_sync", "rollback_execute"},
+		"suppressed_fields":               []string{"kubeconfig", "cluster_token", "authorization_header", "secret_manifest", "rendered_manifest", "helm_values", "image_pull_secret", "environment_secret"},
+		"execution_sequence":              []string{"request_approval", "bind_environment", "bind_kubeconfig", "render_manifest", "run_server_side_dry_run", "record_deployment_audit", "start_rollout"},
 	}
 }
 
