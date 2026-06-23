@@ -4890,6 +4890,42 @@ func TestProviderReviewAttemptAdapterResponsePlan(t *testing.T) {
 			requiresDependency:   false,
 			expectedResponseMode: "redacted_attempt_adapter_response_plan",
 		},
+		{
+			name:                 "gitea branch ref response",
+			operationName:        "create_branch_ref",
+			endpointKey:          "gitea.create_branch_ref",
+			order:                10,
+			handler:              "handle_branch_ref_response",
+			status:               "pending",
+			unlockOperation:      "commit_starter_files",
+			dependencyStatus:     "dependency_satisfied",
+			requiresDependency:   true,
+			expectedResponseMode: "redacted_attempt_adapter_response_plan",
+		},
+		{
+			name:                 "gitea commit response",
+			operationName:        "commit_starter_files",
+			endpointKey:          "gitea.commit_files",
+			order:                20,
+			handler:              "handle_commit_files_response",
+			status:               "retryable",
+			unlockOperation:      "open_review_request",
+			dependencyStatus:     "dependency_satisfied",
+			requiresDependency:   true,
+			expectedResponseMode: "redacted_attempt_adapter_response_plan",
+		},
+		{
+			name:                 "gitea review response",
+			operationName:        "open_review_request",
+			endpointKey:          "gitea.open_review",
+			order:                30,
+			handler:              "handle_review_request_response",
+			status:               "success",
+			unlockOperation:      "",
+			dependencyStatus:     "",
+			requiresDependency:   false,
+			expectedResponseMode: "redacted_attempt_adapter_response_plan",
+		},
 	} {
 		t.Run(item.name, func(t *testing.T) {
 			responsePlan := providerReviewAttemptAdapterResponsePlan(
@@ -5055,6 +5091,113 @@ func TestProviderReviewAttemptAdapterResponsePlan(t *testing.T) {
 			t.Fatalf("invalid operation response plan should be empty: %#v", got)
 		}
 	})
+	t.Run("rejects mismatched response handler", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResponsePlan(
+			map[string]any{
+				"name":         "commit_starter_files",
+				"endpoint_key": "github.commit_files",
+			},
+			map[string]any{
+				"response_handler": "handle_branch_ref_response",
+			},
+			map[string]any{
+				"status": "pending",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("mismatched response handler plan should be empty: %#v", got)
+		}
+	})
+	t.Run("rejects gitea mismatched response handler", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResponsePlan(
+			map[string]any{
+				"name":         "commit_starter_files",
+				"endpoint_key": "gitea.commit_files",
+			},
+			map[string]any{
+				"response_handler": "handle_branch_ref_response",
+			},
+			map[string]any{
+				"status": "pending",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("gitea mismatched response handler plan should be empty: %#v", got)
+		}
+	})
+	t.Run("rejects mismatched endpoint", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResponsePlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.commit_files",
+			},
+			map[string]any{
+				"response_handler": "handle_branch_ref_response",
+			},
+			map[string]any{
+				"status": "pending",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("mismatched endpoint response plan should be empty: %#v", got)
+		}
+	})
+	t.Run("rejects generic response handler default", func(t *testing.T) {
+		for _, item := range []struct {
+			operation string
+			endpoint  string
+		}{
+			{operation: "create_branch_ref", endpoint: "github.create_branch_ref"},
+			{operation: "commit_starter_files", endpoint: "github.commit_files"},
+			{operation: "open_review_request", endpoint: "github.open_review"},
+		} {
+			got := providerReviewAttemptAdapterResponsePlan(
+				map[string]any{
+					"name":         item.operation,
+					"endpoint_key": item.endpoint,
+				},
+				map[string]any{
+					"response_handler": "raw_handler",
+				},
+				map[string]any{
+					"status": "pending",
+				},
+			)
+			if len(got) != 0 {
+				t.Fatalf("generic response handler plan should be empty for %s: %#v", item.operation, got)
+			}
+		}
+	})
+	t.Run("nil request summary returns empty response plan", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResponsePlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.create_branch_ref",
+			},
+			nil,
+			map[string]any{
+				"status": "pending",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("nil request summary response plan should be empty: %#v", got)
+		}
+	})
+	t.Run("empty request summary returns empty response plan", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResponsePlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.create_branch_ref",
+			},
+			map[string]any{},
+			map[string]any{
+				"status": "pending",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("empty request summary response plan should be empty: %#v", got)
+		}
+	})
 	t.Run("result recording plan rejects mismatched response mode", func(t *testing.T) {
 		got := providerReviewAttemptAdapterResultRecordingPlan(
 			map[string]any{
@@ -5125,6 +5268,45 @@ func TestProviderReviewAttemptAdapterRequestMaterializationPlan(t *testing.T) {
 			wantNonEmpty:        true,
 		},
 		{
+			name:                "gitea branch ref request stays redacted",
+			provider:            "gitea",
+			operationName:       "create_branch_ref",
+			endpointKey:         "gitea.create_branch_ref",
+			order:               10,
+			method:              "POST",
+			endpointTemplateKey: "gitea_git_refs_path_template",
+			payloadShape:        "ref_from_target_branch",
+			payloadBuilder:      "build_redacted_branch_ref_request",
+			requiresManifest:    false,
+			wantNonEmpty:        true,
+		},
+		{
+			name:                "gitea commit request requires file manifest without content",
+			provider:            "gitea",
+			operationName:       "commit_starter_files",
+			endpointKey:         "gitea.commit_files",
+			order:               20,
+			method:              "PUT",
+			endpointTemplateKey: "gitea_repository_contents_path_template",
+			payloadShape:        "content_redacted_file_batch",
+			payloadBuilder:      "build_redacted_file_batch_request",
+			requiresManifest:    true,
+			wantNonEmpty:        true,
+		},
+		{
+			name:                "gitea review request stays redacted",
+			provider:            "gitea",
+			operationName:       "open_review_request",
+			endpointKey:         "gitea.open_review",
+			order:               30,
+			method:              "POST",
+			endpointTemplateKey: "gitea_merge_request_path_template",
+			payloadShape:        "review_request",
+			payloadBuilder:      "build_redacted_review_request",
+			requiresManifest:    false,
+			wantNonEmpty:        true,
+		},
+		{
 			name:          "unknown provider returns empty plan",
 			provider:      "raw_provider",
 			operationName: "create_branch_ref",
@@ -5159,6 +5341,41 @@ func TestProviderReviewAttemptAdapterRequestMaterializationPlan(t *testing.T) {
 			provider:      "github",
 			operationName: "create_branch_ref",
 			endpointKey:   "unknown.create_branch_ref",
+		},
+		{
+			name:           "payload builder mismatch returns empty plan",
+			provider:       "github",
+			operationName:  "commit_starter_files",
+			endpointKey:    "github.commit_files",
+			payloadBuilder: "build_redacted_branch_ref_request",
+		},
+		{
+			name:           "generic payload builder returns empty plan",
+			provider:       "github",
+			operationName:  "create_branch_ref",
+			endpointKey:    "github.create_branch_ref",
+			payloadBuilder: "build_redacted_provider_request",
+		},
+		{
+			name:           "generic commit payload builder returns empty plan",
+			provider:       "github",
+			operationName:  "commit_starter_files",
+			endpointKey:    "github.commit_files",
+			payloadBuilder: "build_redacted_provider_request",
+		},
+		{
+			name:           "generic review payload builder returns empty plan",
+			provider:       "github",
+			operationName:  "open_review_request",
+			endpointKey:    "github.open_review",
+			payloadBuilder: "build_redacted_provider_request",
+		},
+		{
+			name:           "gitea payload builder mismatch returns empty plan",
+			provider:       "gitea",
+			operationName:  "commit_starter_files",
+			endpointKey:    "gitea.commit_files",
+			payloadBuilder: "build_redacted_branch_ref_request",
 		},
 	} {
 		t.Run(item.name, func(t *testing.T) {
@@ -5236,6 +5453,32 @@ func TestProviderReviewAttemptAdapterRequestMaterializationPlan(t *testing.T) {
 			}
 		})
 	}
+	t.Run("nil request summary returns empty plan", func(t *testing.T) {
+		got := providerReviewAttemptAdapterRequestMaterializationPlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.create_branch_ref",
+			},
+			nil,
+			"github",
+		)
+		if len(got) != 0 {
+			t.Fatalf("nil request summary materialization plan should be empty: %#v", got)
+		}
+	})
+	t.Run("empty request summary returns empty plan", func(t *testing.T) {
+		got := providerReviewAttemptAdapterRequestMaterializationPlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.create_branch_ref",
+			},
+			map[string]any{},
+			"github",
+		)
+		if len(got) != 0 {
+			t.Fatalf("empty request summary materialization plan should be empty: %#v", got)
+		}
+	})
 }
 
 func TestProviderReviewAttemptEndpointMatchesOperation(t *testing.T) {
@@ -5306,6 +5549,81 @@ func TestProviderReviewAttemptEndpointMatchesOperation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := providerReviewAttemptEndpointMatchesOperation(tt.provider, tt.operation, tt.endpoint); got != tt.want {
 				t.Fatalf("providerReviewAttemptEndpointMatchesOperation(%q, %q, %q) = %v, want %v", tt.provider, tt.operation, tt.endpoint, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProviderReviewAttemptAdapterBuilderAndHandlerMatchOperation(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		operation       string
+		payloadBuilder  string
+		responseHandler string
+		builderMatches  bool
+		handlerMatches  bool
+	}{
+		{
+			name:            "branch ref",
+			operation:       "create_branch_ref",
+			payloadBuilder:  "build_redacted_branch_ref_request",
+			responseHandler: "handle_branch_ref_response",
+			builderMatches:  true,
+			handlerMatches:  true,
+		},
+		{
+			name:            "starter files",
+			operation:       "commit_starter_files",
+			payloadBuilder:  "build_redacted_file_batch_request",
+			responseHandler: "handle_commit_files_response",
+			builderMatches:  true,
+			handlerMatches:  true,
+		},
+		{
+			name:            "review request",
+			operation:       "open_review_request",
+			payloadBuilder:  "build_redacted_review_request",
+			responseHandler: "handle_review_request_response",
+			builderMatches:  true,
+			handlerMatches:  true,
+		},
+		{
+			name:            "builder and handler mismatch",
+			operation:       "commit_starter_files",
+			payloadBuilder:  "build_redacted_branch_ref_request",
+			responseHandler: "handle_branch_ref_response",
+		},
+		{
+			name:            "generic sanitized defaults do not match concrete operation",
+			operation:       "create_branch_ref",
+			payloadBuilder:  "raw_builder",
+			responseHandler: "raw_handler",
+		},
+		{
+			name:            "generic sanitized defaults do not match commit operation",
+			operation:       "commit_starter_files",
+			payloadBuilder:  "raw_builder",
+			responseHandler: "raw_handler",
+		},
+		{
+			name:            "generic sanitized defaults do not match review operation",
+			operation:       "open_review_request",
+			payloadBuilder:  "raw_builder",
+			responseHandler: "raw_handler",
+		},
+		{
+			name:            "unknown operation never matches",
+			operation:       "raw_operation",
+			payloadBuilder:  "build_redacted_branch_ref_request",
+			responseHandler: "handle_branch_ref_response",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := providerReviewAttemptPayloadBuilderMatchesOperation(tt.operation, tt.payloadBuilder); got != tt.builderMatches {
+				t.Fatalf("providerReviewAttemptPayloadBuilderMatchesOperation(%q, %q) = %v, want %v", tt.operation, tt.payloadBuilder, got, tt.builderMatches)
+			}
+			if got := providerReviewAttemptResponseHandlerMatchesOperation(tt.operation, tt.responseHandler); got != tt.handlerMatches {
+				t.Fatalf("providerReviewAttemptResponseHandlerMatchesOperation(%q, %q) = %v, want %v", tt.operation, tt.responseHandler, got, tt.handlerMatches)
 			}
 		})
 	}

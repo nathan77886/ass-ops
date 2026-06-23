@@ -11920,7 +11920,8 @@ func providerReviewAttemptAdapterRequestMaterializationPlan(operation, requestSu
 	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
 	endpointTemplateKey := providerReviewEndpointPathTemplateKeyForOperation(providerType, operationName)
-	if providerType == "" || operationName == "" || endpointKey == "" || endpointTemplateKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) {
+	payloadBuilder := safeProviderReviewPayloadBuilderName(stringFromMap(requestSummary, "payload_builder"))
+	if providerType == "" || operationName == "" || endpointKey == "" || endpointTemplateKey == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) || !providerReviewAttemptPayloadBuilderMatchesOperation(operationName, payloadBuilder) {
 		return map[string]any{}
 	}
 	return map[string]any{
@@ -11935,7 +11936,7 @@ func providerReviewAttemptAdapterRequestMaterializationPlan(operation, requestSu
 		"method":                                    providerReviewMethodForOperation(operationName),
 		"endpoint_path_template_key":                endpointTemplateKey,
 		"payload_shape":                             providerReviewPayloadShapeForOperation(operationName),
-		"payload_builder":                           safeProviderReviewPayloadBuilderName(stringFromMap(requestSummary, "payload_builder")),
+		"payload_builder":                           payloadBuilder,
 		"requires_request_builder":                  true,
 		"requires_provider_repository_context":      true,
 		"requires_redacted_payload_summary":         true,
@@ -12023,7 +12024,9 @@ func providerReviewAttemptAdapterResponsePlan(operation, requestSummary, respons
 	}
 	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
-	if operationName == "" || endpointKey == "" {
+	providerType := providerReviewProviderFromEndpointKey(endpointKey)
+	responseHandler := safeProviderReviewResponseHandlerName(stringFromMap(requestSummary, "response_handler"))
+	if operationName == "" || endpointKey == "" || providerType == "" || !providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey) || !providerReviewAttemptResponseHandlerMatchesOperation(operationName, responseHandler) {
 		return map[string]any{}
 	}
 	unlockOperation := providerReviewAttemptDependencyUnlockOperation(operationName)
@@ -12035,7 +12038,7 @@ func providerReviewAttemptAdapterResponsePlan(operation, requestSummary, respons
 		"operation_name":                  operationName,
 		"endpoint_key":                    endpointKey,
 		"operation_order":                 intFromAny(operation["operation_order"], 0),
-		"response_handler":                safeProviderReviewResponseHandlerName(stringFromMap(requestSummary, "response_handler")),
+		"response_handler":                responseHandler,
 		"response_status":                 safeProviderReviewAttemptResponseStatus(stringFromMap(responseDiagnostics, "status")),
 		"expected_success_classes":        providerReviewExpectedSuccessClassesForOperation(operationName),
 		"retryable_status_classes":        providerReviewExpectedRetryClassesForOperation(operationName),
@@ -12339,6 +12342,46 @@ func providerReviewAttemptEndpointMatchesOperation(providerType, operationName, 
 		endpointKey != "" &&
 		endpointOperation != "" &&
 		endpointKey == providerReviewEndpointKey(providerType, endpointOperation)
+}
+
+func providerReviewAttemptPayloadBuilderMatchesOperation(operationName, payloadBuilder string) bool {
+	operationName = safeProviderReviewAttemptOperationName(operationName)
+	payloadBuilder = safeProviderReviewPayloadBuilderName(payloadBuilder)
+	expectedBuilder := providerReviewExpectedPayloadBuilderName(operationName)
+	return operationName != "" && expectedBuilder != "" && payloadBuilder == expectedBuilder
+}
+
+func providerReviewAttemptResponseHandlerMatchesOperation(operationName, responseHandler string) bool {
+	operationName = safeProviderReviewAttemptOperationName(operationName)
+	responseHandler = safeProviderReviewResponseHandlerName(responseHandler)
+	expectedHandler := providerReviewExpectedResponseHandlerName(operationName)
+	return operationName != "" && expectedHandler != "" && responseHandler == expectedHandler
+}
+
+func providerReviewExpectedPayloadBuilderName(operationName string) string {
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref":
+		return "build_redacted_branch_ref_request"
+	case "commit_starter_files":
+		return "build_redacted_file_batch_request"
+	case "open_review_request":
+		return "build_redacted_review_request"
+	default:
+		return ""
+	}
+}
+
+func providerReviewExpectedResponseHandlerName(operationName string) string {
+	switch safeProviderReviewAttemptOperationName(operationName) {
+	case "create_branch_ref":
+		return "handle_branch_ref_response"
+	case "commit_starter_files":
+		return "handle_commit_files_response"
+	case "open_review_request":
+		return "handle_review_request_response"
+	default:
+		return ""
+	}
 }
 
 func providerReviewEndpointPathTemplateKeyForOperation(providerType, operationName string) string {

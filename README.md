@@ -158,6 +158,7 @@ Security defaults:
 - The live adapter contract now records allowlisted request builder, provider client, execute method, response handler, and required capability names for the future adapter boundary while keeping provider API mutation disabled and sensitive request material suppressed.
 - Provider review adapter tests now lock the GitHub/Gitea disabled adapter surface across runtime selection, request builder, provider client, execute method, response handler, live-adapter contract metadata, provider-send metadata, and retry/backoff metadata without materializing provider URLs, credentials, refs, branch names, request/response bodies, headers, or file content.
 - Provider review request materialization, provider-send, and retry/backoff plans reject mismatched operation/endpoint pairs before any future provider request can be staged; attempt operations map to endpoint operations as `create_branch_ref -> create_branch_ref`, `commit_starter_files -> commit_files`, and `open_review_request -> open_review`.
+- Provider review request materialization and response plans also reject mismatched payload-builder or response-handler names, so generic sanitized defaults cannot be staged for concrete provider operations.
 
 ## MVP Boundaries
 
