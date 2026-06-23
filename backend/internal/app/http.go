@@ -42,6 +42,7 @@ var ErrNotFound = errors.New("not found")
 var approvalWebhookHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
 var errAgentPlanNotApproved = errors.New("agent task requires an approved plan before execution")
+var errProjectVersionRefreshAlreadyQueued = errors.New("project version refresh is already queued or running")
 
 const (
 	contextDirMode  os.FileMode = 0o750
@@ -96,6 +97,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/projects/{id}/versions", s.createProjectVersion)
 		r.Get("/api/project-versions/{id}", s.getProjectVersion)
 		r.Get("/api/project-versions/{id}/validation", s.getProjectVersionValidation)
+		r.Post("/api/project-versions/{id}/refresh", s.refreshProjectVersionProviders)
 		r.Get("/api/asset-graph-views", s.listAssetGraphViews)
 		r.Post("/api/asset-graph-views", s.createAssetGraphView)
 		r.Patch("/api/asset-graph-views/{id}", s.updateAssetGraphView)
@@ -2264,7 +2266,7 @@ func (s *Server) getProjectVersionValidation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	remotes, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, r.repo_key, r.repo_role, r.name AS repository_name
+		SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, gr.default_branch, r.repo_key, r.repo_role, r.name AS repository_name
 		FROM git_remotes gr
 		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
 		WHERE r.project_id=$1`, projectID)
@@ -2318,6 +2320,208 @@ func (s *Server) getProjectVersionValidation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, projectVersionValidationPreview(version, remotes, tagRuns, actionRuns, argoApps, argoConnections))
+}
+
+func (s *Server) refreshProjectVersionProviders(w http.ResponseWriter, r *http.Request) {
+	versionID := chi.URLParam(r, "id")
+	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: projectID}, "project_version.refresh") {
+		return
+	}
+	version, remotes, argoConnections, err := s.projectVersionRefreshInputs(r.Context(), versionID, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load project version refresh inputs")
+		return
+	}
+	metadata := mapFromAny(version["metadata"])
+	repositories := mapSliceFromAny(metadata["repositories"])
+	refreshPlan := projectVersionProviderRefreshPlan(repositories, remotes, argoConnections)
+	steps := mapSliceFromAny(refreshPlan["steps"])
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start project version refresh transaction")
+		return
+	}
+	defer tx.Rollback()
+	result, err := s.enqueueProjectVersionRefreshOperationsTx(r.Context(), tx, version, steps, argoConnections, currentUser(r).ID)
+	if errors.Is(err, errProjectVersionRefreshAlreadyQueued) {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project_version.refresh") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit project version refresh")
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+func (s *Server) projectVersionRefreshInputs(ctx context.Context, versionID, projectID string) (map[string]any, []map[string]any, []map[string]any, error) {
+	version, err := queryOne(ctx, s.store.DB, `
+		SELECT id, project_id, version, source, metadata, created_at
+		FROM project_versions
+		WHERE id=$1`, versionID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	remotes, err := queryMaps(ctx, s.store.DB, `
+		SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, gr.default_branch, r.repo_key, r.repo_role, r.name AS repository_name
+		FROM git_remotes gr
+		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
+		WHERE r.project_id=$1`, projectID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	argoConnections, err := queryMaps(ctx, s.store.DB, `
+		SELECT id, name, last_sync_status
+		FROM argo_connections
+		WHERE project_id=$1
+		ORDER BY updated_at DESC
+		LIMIT 100`, projectID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return version, remotes, argoConnections, nil
+}
+
+func (s *Server) enqueueProjectVersionRefreshOperationsTx(ctx context.Context, tx *sqlx.Tx, version map[string]any, steps, argoConnections []map[string]any, actorID string) (map[string]any, error) {
+	projectID := strings.TrimSpace(fmt.Sprint(version["project_id"]))
+	versionID := strings.TrimSpace(fmt.Sprint(version["id"]))
+	if projectID == "" || projectID == "<nil>" || versionID == "" || versionID == "<nil>" {
+		return nil, fmt.Errorf("project version metadata is incomplete")
+	}
+	existing, err := queryMaps(ctx, tx, `
+		SELECT id
+		FROM operation_runs
+		WHERE status IN ('queued', 'running')
+			AND operation_type IN ('git.refs.refresh', 'github.actions.sync', 'argo.apps.sync')
+			AND input->>'project_version_id'=$1
+		LIMIT 1`, versionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) > 0 {
+		return nil, errProjectVersionRefreshAlreadyQueued
+	}
+	operations := []map[string]any{}
+	blockedSteps := []map[string]any{}
+	enqueuedKeys := map[string]bool{}
+	enqueueSummary := func(kind string, op map[string]any, remoteID, connectionID string) {
+		operations = append(operations, map[string]any{
+			"operation_run_id":   op["id"],
+			"operation_type":     op["operation_type"],
+			"kind":               kind,
+			"refresh_kind":       kind,
+			"remote_id":          remoteID,
+			"argo_connection_id": connectionID,
+			"status":             op["status"],
+		})
+	}
+	for _, step := range steps {
+		kind := strings.TrimSpace(fmt.Sprint(step["kind"]))
+		status := strings.TrimSpace(fmt.Sprint(step["status"]))
+		if status != "planned" {
+			blockedSteps = append(blockedSteps, sanitizedProjectVersionRefreshStep(step))
+			continue
+		}
+		remoteID := strings.TrimSpace(fmt.Sprint(step["remote_id"]))
+		switch kind {
+		case "git_ref_fetch":
+			key := kind + ":" + remoteID
+			if remoteID == "" || remoteID == "<nil>" || enqueuedKeys[key] {
+				continue
+			}
+			input := map[string]any{
+				"project_version_id": versionID,
+				"refresh_kind":       kind,
+				"remote_id":          remoteID,
+				"repo_key":           step["repo_key"],
+				"tag":                step["tag_name"],
+			}
+			op, err := enqueueOperationTx(ctx, tx, projectID, remoteID, "git.refs.refresh", "refresh Git refs for project version "+fmt.Sprint(version["version"]), input, []string{"git"}, "")
+			if err != nil {
+				return nil, err
+			}
+			enqueuedKeys[key] = true
+			enqueueSummary(kind, op, remoteID, "")
+		case "github_actions_api_refresh":
+			key := kind + ":" + remoteID
+			if remoteID == "" || remoteID == "<nil>" || enqueuedKeys[key] {
+				continue
+			}
+			op, err := s.enqueueRemoteOperationRun(ctx, tx, remoteID, "github.actions.sync", map[string]any{
+				"project_version_id": versionID,
+				"refresh_kind":       kind,
+			}, actorID)
+			if err != nil {
+				return nil, err
+			}
+			enqueuedKeys[key] = true
+			enqueueSummary(kind, op, remoteID, "")
+		case "argocd_app_refresh":
+			for _, connection := range argoConnections {
+				connectionID := strings.TrimSpace(fmt.Sprint(connection["id"]))
+				key := kind + ":" + connectionID
+				if connectionID == "" || connectionID == "<nil>" || enqueuedKeys[key] {
+					continue
+				}
+				op, err := enqueueOperationTx(ctx, tx, projectID, "", "argo.apps.sync", "refresh Argo apps for project version "+fmt.Sprint(version["version"]), map[string]any{
+					"project_version_id": versionID,
+					"refresh_kind":       kind,
+					"argo_connection_id": connectionID,
+				}, []string{"argo"}, "control-worker")
+				if err != nil {
+					return nil, err
+				}
+				enqueuedKeys[key] = true
+				enqueueSummary(kind, op, "", connectionID)
+			}
+		default:
+			blockedSteps = append(blockedSteps, sanitizedProjectVersionRefreshStep(step))
+		}
+	}
+	if len(operations) == 0 {
+		return nil, fmt.Errorf("no planned provider refresh operations are available")
+	}
+	return map[string]any{
+		"mode":                      "project_version_provider_refresh_execution",
+		"project_version_id":        versionID,
+		"version":                   version["version"],
+		"operation_enqueued":        true,
+		"worker_job_created":        true,
+		"external_call_made":        false,
+		"secret_included":           false,
+		"raw_provider_response":     false,
+		"operation_count":           len(operations),
+		"blocked_step_count":        len(blockedSteps),
+		"operations":                operations,
+		"blocked_steps":             blockedSteps,
+		"validation_rerun_required": true,
+		"result_recording_scope":    "operation_ids_and_sanitized_refresh_kinds",
+		"required_operator_action":  "Wait for queued refresh operations to complete, then re-open ProjectVersion validation.",
+	}, nil
+}
+
+func sanitizedProjectVersionRefreshStep(step map[string]any) map[string]any {
+	return map[string]any{
+		"kind":       step["kind"],
+		"status":     step["status"],
+		"repo_key":   step["repo_key"],
+		"repo_role":  step["repo_role"],
+		"remote_id":  step["remote_id"],
+		"remote_key": step["remote_key"],
+		"reason":     step["reason"],
+	}
 }
 
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -6881,7 +7085,9 @@ func projectVersionProviderRefreshPlan(repositories, remotes, argoConnections []
 			step["kind"] = "git_ref_fetch"
 			step["status"] = "planned"
 			step["reason"] = "refresh remote refs before comparing manifest commit or tag"
-			step["refresh_endpoint"] = "/api/git-remotes/" + remoteID + "/sync"
+			step["refresh_endpoint"] = "/api/project-versions/{id}/refresh"
+			step["commit_sha"] = commitSHA
+			step["tag_name"] = tagName
 			step["commit_sha_configured"] = commitSHA != ""
 			step["tag_configured"] = tagName != ""
 			addStep(step)
@@ -6986,7 +7192,7 @@ func projectVersionProviderRefreshExecutionPlan(steps []map[string]any, refreshP
 		"mode":                          "provider_refresh_execution_plan_preview",
 		"execution_state":               executionState,
 		"refresh_plan_state":            refreshPlanState,
-		"execution_enabled":             false,
+		"execution_enabled":             plannedTotal > 0,
 		"external_call_made":            false,
 		"operation_enqueued":            false,
 		"worker_job_created":            false,
@@ -7003,16 +7209,16 @@ func projectVersionProviderRefreshExecutionPlan(steps []map[string]any, refreshP
 		"planned_refresh_kinds":         plannedKinds,
 		"blocked_refresh_kinds":         blockedKinds,
 		"required_controls":             []string{"operation_approval", "provider_account_binding", "git_remote_credential_review", "github_actions_scope_review", "argo_connection_review", "result_recording_audit", "validation_rerun"},
-		"disabled_backends":             []string{"git_fetch", "git_remote_sync", "github_actions_api_sync", "argocd_app_sync", "synced_state_write", "validation_rerun"},
+		"disabled_backends":             []string{"provider_mutation", "raw_provider_response_recording", "automatic_validation_rerun"},
 		"suppressed_fields":             []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "github_actions_response", "argo_response", "commit_body", "workflow_logs"},
-		"blocked_reasons":               []string{"provider_refresh_execution_backend_disabled", "provider_mutation_not_armed", "result_recording_not_wired"},
-		"execution_sequence":            []string{"request_operation_approval", "bind_provider_credentials", "claim_refresh_operation", "run_git_ref_fetch", "run_github_actions_refresh", "run_argocd_app_refresh", "record_synced_state", "rerun_validation_preview"},
+		"blocked_reasons":               []string{"refresh_operations_not_enqueued", "validation_rerun_not_performed"},
+		"execution_sequence":            []string{"request_project_version_refresh", "enqueue_git_ref_refresh", "enqueue_github_actions_refresh", "enqueue_argocd_app_refresh", "worker_records_synced_state", "rerun_validation_preview"},
 		"git_ref_fetch_plan":            providerRefreshKindExecutionPlan("git_ref_fetch", plannedKinds, blockedKinds),
 		"github_actions_refresh_plan":   providerRefreshKindExecutionPlan("github_actions_api_refresh", plannedKinds, blockedKinds),
 		"argo_revision_refresh_plan":    providerRefreshKindExecutionPlan("argocd_app_refresh", plannedKinds, blockedKinds),
 		"result_recording_plan":         projectVersionProviderRefreshResultRecordingPlan(plannedKinds),
-		"message":                       "Provider refresh execution is a redacted plan only; no Git fetch, provider API call, Argo call, synced-state write, or validation rerun is performed.",
-		"required_operator_action":      "Approve and run the planned refresh operation in a future execution path, then re-open ProjectVersion validation.",
+		"message":                       "Provider refresh execution can enqueue fetch-only Git ref refresh, GitHub Actions sync, and Argo app sync worker jobs; this preview performs no external call and validation must be reopened after workers finish.",
+		"required_operator_action":      "Run ProjectVersion provider refresh, wait for queued operations to complete, then re-open ProjectVersion validation.",
 		"requires_project_visibility":   true,
 		"requires_manifest_consistency": true,
 	}
@@ -7031,6 +7237,9 @@ func providerRefreshKindExecutionPlan(kind string, plannedKinds, blockedKinds []
 			"mode":                       "provider_refresh_git_ref_fetch_plan",
 			"kind":                       kind,
 			"refresh_state":              state,
+			"operation_enqueued":         false,
+			"worker_job_created":         false,
+			"fetch_only_backend_enabled": state == "planned",
 			"git_fetch_performed":        false,
 			"git_remote_sync_performed":  false,
 			"remote_ref_verified":        false,
@@ -7041,17 +7250,20 @@ func providerRefreshKindExecutionPlan(kind string, plannedKinds, blockedKinds []
 			"contains_git_credentials":   false,
 			"contains_commit_body":       false,
 			"required_controls":          []string{"git_remote_credential_review", "ref_validation_policy", "synced_state_write_audit"},
-			"disabled_backends":          []string{"git_fetch", "git_remote_sync", "synced_state_write"},
+			"disabled_backends":          []string{"git_push", "remote_mutation", "raw_git_output_recording", "automatic_validation_rerun"},
 			"suppressed_fields":          []string{"remote_url", "git_credentials", "authorization_header", "commit_body", "raw_git_output"},
-			"blocked_reasons":            providerRefreshKindBlockedReasons(state, "git_ref_fetch_not_performed"),
-			"execution_blockers":         []string{"provider_refresh_execution_backend_disabled", "git_fetch_not_performed"},
-			"message":                    "Git ref refresh is planned only; no Git fetch, remote sync, ref verification, or synced-state write is performed.",
+			"blocked_reasons":            providerRefreshKindBlockedReasons(state, "git_ref_fetch_not_enqueued"),
+			"execution_blockers":         []string{"git_ref_fetch_not_enqueued", "validation_rerun_not_performed"},
+			"message":                    "Git ref refresh can enqueue a fetch-only worker job; this preview does not fetch, expose remote URL, push refs, or rerun validation.",
 		}
 	case "github_actions_api_refresh":
 		return map[string]any{
 			"mode":                          "provider_refresh_github_actions_plan",
 			"kind":                          kind,
 			"refresh_state":                 state,
+			"operation_enqueued":            false,
+			"worker_job_created":            false,
+			"github_actions_sync_enabled":   state == "planned",
 			"github_actions_api_called":     false,
 			"github_actions_runs_synced":    false,
 			"github_actions_scope_verified": false,
@@ -7062,17 +7274,20 @@ func providerRefreshKindExecutionPlan(kind string, plannedKinds, blockedKinds []
 			"contains_remote_url":           false,
 			"contains_provider_response":    false,
 			"required_controls":             []string{"github_actions_scope_review", "provider_account_binding", "synced_state_write_audit"},
-			"disabled_backends":             []string{"github_actions_api_sync", "synced_state_write", "provider_response_recording"},
+			"disabled_backends":             []string{"provider_mutation", "raw_provider_response_recording", "automatic_validation_rerun"},
 			"suppressed_fields":             []string{"provider_token", "authorization_header", "remote_url", "github_actions_response", "workflow_logs", "provider_response_body", "provider_response_headers"},
-			"blocked_reasons":               providerRefreshKindBlockedReasons(state, "github_actions_api_refresh_not_performed"),
-			"execution_blockers":            []string{"provider_refresh_execution_backend_disabled", "github_actions_api_sync_not_performed"},
-			"message":                       "GitHub Actions refresh is planned only; no provider API call, workflow run sync, response capture, or synced-state write is performed.",
+			"blocked_reasons":               providerRefreshKindBlockedReasons(state, "github_actions_api_refresh_not_enqueued"),
+			"execution_blockers":            []string{"github_actions_api_refresh_not_enqueued", "validation_rerun_not_performed"},
+			"message":                       "GitHub Actions refresh can enqueue the existing sync worker job; this preview does not call the provider, record raw responses, or rerun validation.",
 		}
 	case "argocd_app_refresh":
 		return map[string]any{
 			"mode":                         "provider_refresh_argo_revision_plan",
 			"kind":                         kind,
 			"refresh_state":                state,
+			"operation_enqueued":           false,
+			"worker_job_created":           false,
+			"argocd_app_sync_enabled":      state == "planned",
 			"argocd_api_called":            false,
 			"argocd_app_refresh_performed": false,
 			"argo_revision_bound":          false,
@@ -7082,11 +7297,11 @@ func providerRefreshKindExecutionPlan(kind string, plannedKinds, blockedKinds []
 			"contains_provider_token":      false,
 			"contains_argo_response":       false,
 			"required_controls":            []string{"argo_connection_review", "argo_revision_binding", "synced_state_write_audit"},
-			"disabled_backends":            []string{"argocd_app_sync", "synced_state_write", "argo_response_recording"},
+			"disabled_backends":            []string{"provider_mutation", "raw_argo_response_recording", "automatic_validation_rerun"},
 			"suppressed_fields":            []string{"provider_token", "authorization_header", "argo_response", "raw_argo_response", "provider_response_body", "provider_response_headers"},
-			"blocked_reasons":              providerRefreshKindBlockedReasons(state, "argocd_app_refresh_not_performed"),
-			"execution_blockers":           []string{"provider_refresh_execution_backend_disabled", "argocd_app_sync_not_performed"},
-			"message":                      "Argo revision refresh is planned only; no Argo API call, app refresh, revision binding, or synced-state write is performed.",
+			"blocked_reasons":              providerRefreshKindBlockedReasons(state, "argocd_app_refresh_not_enqueued"),
+			"execution_blockers":           []string{"argocd_app_refresh_not_enqueued", "validation_rerun_not_performed"},
+			"message":                      "Argo revision refresh can enqueue the existing Argo app sync worker job; this preview does not call Argo, record raw responses, or rerun validation.",
 		}
 	default:
 		return map[string]any{

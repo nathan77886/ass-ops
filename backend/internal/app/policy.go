@@ -66,7 +66,7 @@ func (p PolicyChecker) Check(user *User, resource PolicyResource, action string)
 
 func developerPolicy(action string) PolicyDecision {
 	switch action {
-	case "read", "create", "update", "context.generate", "repo.sync", "github.actions.sync", "argo.apps.sync", "ssh.verify", "node.echo", "agent.generate_plan", "agent.approve_plan":
+	case "read", "create", "update", "context.generate", "repo.sync", "git.refs.refresh", "github.actions.sync", "argo.apps.sync", "project_version.refresh", "ssh.verify", "node.echo", "agent.generate_plan", "agent.approve_plan":
 		return PolicyDecision{Effect: PolicyAllow, Reason: "developer can perform standard first-version operation"}
 	case "repo.tag", "ssh.exec", "operation.cancel", "agent.execute":
 		return PolicyDecision{Effect: PolicyRequireConfirm, Reason: "operation requires explicit confirmation"}

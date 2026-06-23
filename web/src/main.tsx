@@ -2652,7 +2652,9 @@ function ProjectDetail() {
   const [repoOpen, setRepoOpen] = useState(false);
   const [versionOpen, setVersionOpen] = useState(false);
   const [versionValidation, setVersionValidation] = useState<AnyRow>();
+  const [versionRefreshResult, setVersionRefreshResult] = useState<AnyRow>();
   const [validatingVersionID, setValidatingVersionID] = useState<string>();
+  const [refreshingVersionID, setRefreshingVersionID] = useState<string>();
   const [configInitializing, setConfigInitializing] = useState(false);
   const configRepo = repoRows.find((row: AnyRow) => row.repo_role === 'config');
   const configScaffold = useLoad(() => configRepo ? api(`/api/git-repositories/${configRepo.id}/config-scaffold`) : Promise.resolve(undefined), [configRepo?.id]);
@@ -2700,11 +2702,24 @@ function ProjectDetail() {
     try {
       const result = await api(`/api/project-versions/${row.id}/validation`);
       setVersionValidation(result);
+      setVersionRefreshResult(undefined);
       message.success('Version validation preview ready');
     } catch (error: any) {
       message.error(error.message || 'Request failed');
     } finally {
       setValidatingVersionID(undefined);
+    }
+  }
+  async function refreshVersion(row: AnyRow) {
+    setRefreshingVersionID(row.id);
+    try {
+      const result = await api(`/api/project-versions/${row.id}/refresh`, { method: 'POST', body: '{}' });
+      setVersionRefreshResult(result);
+      message.success('Version refresh operations queued');
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setRefreshingVersionID(undefined);
     }
   }
   return (
@@ -2789,6 +2804,7 @@ function ProjectDetail() {
                   {versionValidation.provider_refresh_plan ? <Tag color={versionValidation.provider_refresh_plan.plan_state === 'planned' ? 'blue' : versionValidation.provider_refresh_plan.plan_state === 'partial' ? 'gold' : 'red'}>refresh {versionValidation.provider_refresh_plan.plan_state}</Tag> : null}
                   {versionValidation.provider_refresh_plan ? <Tag>{versionValidation.provider_refresh_plan.step_count || 0} refresh steps</Tag> : null}
                   {versionValidation.provider_refresh_plan?.execution_plan ? <Tag color={versionValidation.provider_refresh_plan.execution_plan.execution_state === 'ready_for_approval' ? 'blue' : versionValidation.provider_refresh_plan.execution_plan.execution_state === 'partial' ? 'gold' : 'red'}>execute {versionValidation.provider_refresh_plan.execution_plan.execution_state}</Tag> : null}
+                  {versionValidation.provider_refresh_plan?.execution_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.execution_enabled ? 'refresh executable' : 'refresh blocked'}</Tag> : null}
                   {versionValidation.provider_refresh_plan?.execution_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.operation_enqueued ? 'operation enqueued' : 'no operation'}</Tag> : null}
                   {versionValidation.provider_refresh_plan?.execution_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.synced_state_written ? 'state written' : 'no state write'}</Tag> : null}
                   {versionValidation.provider_refresh_plan?.execution_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.secret_included ? 'secrets included' : 'no secrets'}</Tag> : null}
@@ -2800,7 +2816,30 @@ function ProjectDetail() {
                   {versionValidation.provider_refresh_plan?.execution_plan?.result_recording_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.result_recording_plan.result_written ? 'result recorded' : 'no result record'}</Tag> : null}
                   {versionValidation.provider_refresh_plan?.execution_plan?.result_recording_plan ? <Tag>{versionValidation.provider_refresh_plan.execution_plan.result_recording_plan.validation_rerun_recorded ? 'validation rerun recorded' : 'no validation rerun'}</Tag> : null}
                 </Space>
+                {versionValidation.provider_refresh_plan?.execution_plan?.execution_enabled && (
+                  <Space wrap>
+                    <Button
+                      size="small"
+                      type="primary"
+                      loading={refreshingVersionID === versionValidation.version_id}
+                      onClick={() => refreshVersion({ id: versionValidation.version_id })}
+                    >
+                      Run refresh
+                    </Button>
+                    <Typography.Text type="secondary">{versionValidation.provider_refresh_plan.execution_plan.required_operator_action}</Typography.Text>
+                  </Space>
+                )}
+                {versionRefreshResult && (
+                  <Space wrap>
+                    <Tag color="blue">{versionRefreshResult.operation_count || 0} operations queued</Tag>
+                    <Tag>{versionRefreshResult.worker_job_created ? 'worker jobs created' : 'no worker jobs'}</Tag>
+                    <Tag>{versionRefreshResult.external_call_made ? 'external call' : 'queued only'}</Tag>
+                    <Tag>{versionRefreshResult.secret_included ? 'secrets included' : 'no secrets'}</Tag>
+                    <Tag>{versionRefreshResult.result_recording_scope || 'sanitized result'}</Tag>
+                  </Space>
+                )}
                 <JSONBlock value={versionValidation} />
+                {versionRefreshResult ? <JSONBlock value={versionRefreshResult} /> : null}
               </Space>
             </Card>
           )}

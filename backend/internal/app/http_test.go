@@ -2017,6 +2017,7 @@ func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
 	executionPlan := mapFromAny(refreshPlan["execution_plan"])
 	if executionPlan["mode"] != "provider_refresh_execution_plan_preview" ||
 		executionPlan["execution_state"] != "ready_for_approval" ||
+		executionPlan["execution_enabled"] != true ||
 		executionPlan["planned_step_count"] != 3 ||
 		executionPlan["blocked_step_count"] != 0 ||
 		executionPlan["unique_planned_kind_count"] != 3 ||
@@ -2029,7 +2030,7 @@ func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
 			t.Fatalf("execution plan required_controls missing %q: %#v", required, executionPlan)
 		}
 	}
-	for _, backend := range []string{"git_fetch", "github_actions_api_sync", "argocd_app_sync", "synced_state_write"} {
+	for _, backend := range []string{"provider_mutation", "raw_provider_response_recording", "automatic_validation_rerun"} {
 		if !containsString(stringSliceFromAny(executionPlan["disabled_backends"]), backend) {
 			t.Fatalf("execution plan disabled_backends missing %q: %#v", backend, executionPlan)
 		}
@@ -2116,10 +2117,104 @@ func TestProjectVersionProviderRefreshExecutionPlanBlocked(t *testing.T) {
 	assertProviderRefreshExecutionPlanSafe(t, executionPlan)
 }
 
+func TestRefreshProjectVersionProvidersQueuesPlannedOperations(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	metadata := []byte(`{"repositories":[{"repo_key":"service","repo_role":"service","remote_id":"remote-1","remote_key":"github","commit_sha":"abc123","tag":"v0.1.0","github_action_run_id":"run-1","argo_revision":"abc123"}]}`)
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, version, source, metadata, created_at\s+FROM project_versions\s+WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
+			AddRow("version-1", "project-1", "v0.1.0", "manual", metadata, time.Now()))
+	mock.ExpectQuery(`(?s)SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, gr.default_branch`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "remote_key", "provider_type", "latest_sha", "default_branch", "repo_key", "repo_role", "repository_name"}).
+			AddRow("remote-1", "github", "github", "", "main", "service", "service", "Service"))
+	mock.ExpectQuery(`(?s)SELECT id, name, last_sync_status\s+FROM argo_connections`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "last_sync_status"}).
+			AddRow("argo-1", "staging", "completed"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM operation_runs\s+WHERE status IN \('queued', 'running'\)\s+AND operation_type IN \('git.refs.refresh', 'github.actions.sync', 'argo.apps.sync'\)\s+AND input->>'project_version_id'=\$1\s+LIMIT 1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery(`(?s)INSERT INTO operation_runs\(project_id, git_remote_id, operation_type, title, input\)`).
+		WithArgs("project-1", "remote-1", "git.refs.refresh", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "git_remote_id", "operation_type", "title", "input", "status"}).
+			AddRow("op-git", "project-1", "remote-1", "git.refs.refresh", "refresh Git refs", []byte(`{}`), "queued"))
+	mock.ExpectExec(`(?s)INSERT INTO worker_jobs\(operation_run_id, tool_name, payload, required_capabilities, preferred_node_kind\)`).
+		WithArgs("op-git", "git.refs.refresh", sqlmock.AnyArg(), sqlmock.AnyArg(), "").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)SELECT gr\.\*, pgr.project_id FROM git_remotes gr JOIN project_git_repositories pgr ON pgr.id=gr.project_git_repository_id WHERE gr.id=\$1 FOR SHARE`).
+		WithArgs("remote-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "project_git_repository_id", "name"}).
+			AddRow("remote-1", "project-1", "repo-1", "GitHub"))
+	mock.ExpectQuery(`(?s)INSERT INTO operation_runs\(project_id, git_remote_id, operation_type, title, input\)`).
+		WithArgs("project-1", "remote-1", "github.actions.sync", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "git_remote_id", "operation_type", "title", "input", "status"}).
+			AddRow("op-actions", "project-1", "remote-1", "github.actions.sync", "github actions", []byte(`{}`), "queued"))
+	mock.ExpectExec(`(?s)INSERT INTO worker_jobs\(operation_run_id, tool_name, payload, required_capabilities, preferred_node_kind\)`).
+		WithArgs("op-actions", "github.actions.sync", sqlmock.AnyArg(), sqlmock.AnyArg(), "").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)INSERT INTO operation_runs\(project_id, git_remote_id, operation_type, title, input\)`).
+		WithArgs("project-1", "", "argo.apps.sync", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "git_remote_id", "operation_type", "title", "input", "status"}).
+			AddRow("op-argo", "project-1", "", "argo.apps.sync", "argo sync", []byte(`{}`), "queued"))
+	mock.ExpectExec(`(?s)INSERT INTO worker_jobs\(operation_run_id, tool_name, payload, required_capabilities, preferred_node_kind\)`).
+		WithArgs("op-argo", "argo.apps.sync", sqlmock.AnyArg(), sqlmock.AnyArg(), "control-worker").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
+	mock.ExpectCommit()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/project-versions/version-1/refresh", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "version-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.refreshProjectVersionProviders(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["mode"] != "project_version_provider_refresh_execution" ||
+		got["operation_enqueued"] != true ||
+		got["worker_job_created"] != true ||
+		got["external_call_made"] != false ||
+		got["secret_included"] != false ||
+		got["raw_provider_response"] != false ||
+		intFromAny(got["operation_count"], 0) != 3 {
+		t.Fatalf("unexpected refresh response: %#v", got)
+	}
+	operations := sliceOfMapsFromAny(got["operations"])
+	for _, kind := range []string{"git_ref_fetch", "github_actions_api_refresh", "argocd_app_refresh"} {
+		if statusByKind(operations, kind) == "" {
+			t.Fatalf("refresh operation for %s missing: %#v", kind, operations)
+		}
+	}
+	encoded := strings.ToLower(rr.Body.String())
+	for _, forbidden := range []string{"provider_token", "authorization", "remote_url", "raw_provider_response\":true"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("refresh response leaked %q: %s", forbidden, rr.Body.String())
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 	t.Helper()
-	if executionPlan["execution_enabled"] != false ||
-		executionPlan["operation_enqueued"] != false ||
+	if executionPlan["operation_enqueued"] != false ||
 		executionPlan["worker_job_created"] != false ||
 		executionPlan["git_fetch_performed"] != false ||
 		executionPlan["provider_api_called"] != false ||
@@ -2127,7 +2222,7 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 		executionPlan["synced_state_written"] != false ||
 		executionPlan["validation_reopened"] != false ||
 		executionPlan["secret_included"] != false {
-		t.Fatalf("refresh execution plan should keep all execution flags false: %#v", executionPlan)
+		t.Fatalf("refresh execution preview should keep external execution flags false: %#v", executionPlan)
 	}
 	for _, field := range []string{"remote_url", "provider_token", "authorization_header", "git_credentials"} {
 		if !containsString(stringSliceFromAny(executionPlan["suppressed_fields"]), field) {
@@ -2140,7 +2235,7 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 			kindPlan["external_call_made"] != false {
 			t.Fatalf("refresh kind plan should have state and keep external calls disabled: %s %#v", planKey, kindPlan)
 		}
-		for _, reason := range []string{"provider_refresh_execution_backend_disabled"} {
+		for _, reason := range []string{"validation_rerun_not_performed"} {
 			if kindPlan["refresh_state"] != "not_required" && !containsString(stringSliceFromAny(kindPlan["execution_blockers"]), reason) {
 				t.Fatalf("refresh kind plan execution blockers missing %q: %s %#v", reason, planKey, kindPlan)
 			}
@@ -2155,9 +2250,12 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 		gitFetchPlan["contains_remote_url"] != false ||
 		gitFetchPlan["contains_git_credentials"] != false ||
 		gitFetchPlan["contains_commit_body"] != false {
-		t.Fatalf("git fetch subplan should stay disabled and redacted: %#v", gitFetchPlan)
+		t.Fatalf("git fetch subplan preview should stay redacted and not executed: %#v", gitFetchPlan)
 	}
-	for _, backend := range []string{"git_fetch", "git_remote_sync", "synced_state_write"} {
+	if gitFetchPlan["refresh_state"] == "planned" && gitFetchPlan["fetch_only_backend_enabled"] != true {
+		t.Fatalf("planned git fetch subplan should expose fetch-only backend readiness: %#v", gitFetchPlan)
+	}
+	for _, backend := range []string{"git_push", "remote_mutation", "raw_git_output_recording", "automatic_validation_rerun"} {
 		if !containsString(stringSliceFromAny(gitFetchPlan["disabled_backends"]), backend) {
 			t.Fatalf("git fetch subplan disabled backend missing %q: %#v", backend, gitFetchPlan["disabled_backends"])
 		}
@@ -2176,9 +2274,12 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 		actionsPlan["contains_provider_token"] != false ||
 		actionsPlan["contains_remote_url"] != false ||
 		actionsPlan["contains_provider_response"] != false {
-		t.Fatalf("GitHub Actions subplan should stay disabled and redacted: %#v", actionsPlan)
+		t.Fatalf("GitHub Actions subplan preview should stay redacted and not executed: %#v", actionsPlan)
 	}
-	for _, backend := range []string{"github_actions_api_sync", "synced_state_write", "provider_response_recording"} {
+	if actionsPlan["refresh_state"] == "planned" && actionsPlan["github_actions_sync_enabled"] != true {
+		t.Fatalf("planned GitHub Actions subplan should expose sync backend readiness: %#v", actionsPlan)
+	}
+	for _, backend := range []string{"provider_mutation", "raw_provider_response_recording", "automatic_validation_rerun"} {
 		if !containsString(stringSliceFromAny(actionsPlan["disabled_backends"]), backend) {
 			t.Fatalf("GitHub Actions subplan disabled backend missing %q: %#v", backend, actionsPlan["disabled_backends"])
 		}
@@ -2191,9 +2292,12 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 		argoPlan["synced_state_written"] != false ||
 		argoPlan["contains_provider_token"] != false ||
 		argoPlan["contains_argo_response"] != false {
-		t.Fatalf("Argo refresh subplan should stay disabled and redacted: %#v", argoPlan)
+		t.Fatalf("Argo refresh subplan preview should stay redacted and not executed: %#v", argoPlan)
 	}
-	for _, backend := range []string{"argocd_app_sync", "synced_state_write", "argo_response_recording"} {
+	if argoPlan["refresh_state"] == "planned" && argoPlan["argocd_app_sync_enabled"] != true {
+		t.Fatalf("planned Argo subplan should expose sync backend readiness: %#v", argoPlan)
+	}
+	for _, backend := range []string{"provider_mutation", "raw_argo_response_recording", "automatic_validation_rerun"} {
 		if !containsString(stringSliceFromAny(argoPlan["disabled_backends"]), backend) {
 			t.Fatalf("Argo subplan disabled backend missing %q: %#v", backend, argoPlan["disabled_backends"])
 		}
@@ -2293,9 +2397,9 @@ func TestGetProjectVersionValidationHandlerScopesQueries(t *testing.T) {
 		WithArgs("version-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
 			AddRow("version-1", "project-1", "v0.1.0", "manual", []byte(`{"repositories":[{"repo_key":"service","remote_id":"remote-1","commit_sha":"abc123"}]}`), time.Now()))
-	mock.ExpectQuery(`(?s)SELECT gr\.id, gr\.remote_key, gr\.provider_type, gr\.latest_sha, r\.repo_key, r\.repo_role, r\.name AS repository_name\s+FROM git_remotes gr\s+JOIN project_git_repositories r ON r\.id=gr\.project_git_repository_id\s+WHERE r\.project_id=\$1`).
+	mock.ExpectQuery(`(?s)SELECT gr\.id, gr\.remote_key, gr\.provider_type, gr\.latest_sha, gr\.default_branch, r\.repo_key, r\.repo_role, r\.name AS repository_name\s+FROM git_remotes gr\s+JOIN project_git_repositories r ON r\.id=gr\.project_git_repository_id\s+WHERE r\.project_id=\$1`).
 		WithArgs("project-1").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "remote_key", "provider_type", "latest_sha", "repo_key", "repo_role", "repository_name"}).AddRow("remote-1", "github", "github", "abc123", "service", "service", "Service"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "remote_key", "provider_type", "latest_sha", "default_branch", "repo_key", "repo_role", "repository_name"}).AddRow("remote-1", "github", "github", "abc123", "main", "service", "service", "Service"))
 	mock.ExpectQuery(`(?s)SELECT id, project_git_repository_id, target_remote_id, git_remote_id, tag_name, target_sha, status, created_at, finished_at\s+FROM repo_tag_runs\s+WHERE project_id=\$1`).
 		WithArgs("project-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "created_at", "finished_at"}))
@@ -13211,12 +13315,15 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`refreshCanonicalAssetsAfterOperation(ctx, job, opID, "completed")`,
 		`refreshCanonicalAssetsAfterOperation(ctx, job, opID, "failed")`,
 		`canonicalAssetsSyncedInAdapterTransaction(job)`,
-		`"repo.sync", "repo.sync_remote", "repo.tag", "repo.create_tag"`,
+		`"repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag"`,
 		`"project.template_provision_retry", "agent.execute"`,
 		`SyncCanonicalAssetsWith(ctx, tx)`,
 		`syncing canonical assets for running repo sync`,
 		`syncing canonical assets for completed repo sync`,
 		`syncing canonical assets for failed repo sync`,
+		`syncing canonical assets for running Git ref refresh`,
+		`syncing canonical assets for completed Git ref refresh`,
+		`syncing canonical assets for failed Git ref refresh`,
 		`syncing canonical assets for completed repo tag`,
 		`syncing canonical assets for stale worker recovery`,
 		`repo_sync_run_failures AS`,

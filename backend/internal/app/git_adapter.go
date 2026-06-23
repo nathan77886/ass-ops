@@ -166,6 +166,80 @@ func (e *GitExecutor) Sync(ctx context.Context, db sqlx.ExtContext, opID string)
 	return result, nil
 }
 
+func (e *GitExecutor) RefreshRemoteRefs(ctx context.Context, db sqlx.ExtContext, opID string) (*gitExecutionResult, error) {
+	op, err := queryOne(ctx, db, "SELECT git_remote_id, input FROM operation_runs WHERE id=$1", opID)
+	if err != nil {
+		return nil, err
+	}
+	remoteID := strings.TrimSpace(fmt.Sprint(op["git_remote_id"]))
+	if remoteID == "" || remoteID == "<nil>" {
+		input := mapFromAny(op["input"])
+		remoteID = strings.TrimSpace(fmt.Sprint(input["remote_id"]))
+	}
+	if remoteID == "" || remoteID == "<nil>" {
+		return nil, fmt.Errorf("git remote id is required")
+	}
+	remote, err := queryOne(ctx, db, "SELECT * FROM git_remotes WHERE id=$1", remoteID)
+	if err != nil {
+		return nil, fmt.Errorf("loading remote: %w", err)
+	}
+	remoteURL := remoteURLFromRow(remote)
+	if remoteURL == "" {
+		return nil, fmt.Errorf("remote must have remote_url or urls")
+	}
+	input := mapFromAny(op["input"])
+	defaultBranch := strings.TrimSpace(firstNonEmptyString(stringFromMap(input, "branch"), defaultBranchFromRow(remote)))
+	if defaultBranch == "" {
+		defaultBranch = "main"
+	}
+	if !isSafeGitRefPart(defaultBranch) {
+		return nil, fmt.Errorf("unsafe branch ref %q", defaultBranch)
+	}
+	tagName := strings.TrimSpace(stringFromMap(input, "tag"))
+	if tagName != "" && !isSafeGitRefPart(tagName) {
+		return nil, fmt.Errorf("unsafe tag ref %q", tagName)
+	}
+
+	repoDir, cleanup, err := e.newWorkDir("assops-ref-refresh-*")
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	result := &gitExecutionResult{Details: map[string]any{"remote_id": remoteID, "branch": defaultBranch, "tag": tagName}}
+	if err := e.run(ctx, result, repoDir, "git", "init", "--bare", "repo.git"); err != nil {
+		return result, err
+	}
+	gitDir := filepath.Join(repoDir, "repo.git")
+	if err := e.run(ctx, result, gitDir, "git", "remote", "add", "origin", remoteURL); err != nil {
+		return result, err
+	}
+	refspec := "refs/heads/" + defaultBranch + ":refs/heads/" + defaultBranch
+	if tagName != "" {
+		refspec = "refs/tags/" + tagName + ":refs/tags/" + tagName
+	}
+	if err := e.run(ctx, result, gitDir, "git", "fetch", "--depth=1", "origin", refspec); err != nil {
+		return result, err
+	}
+	sha, revParseErr := e.revParse(ctx, gitDir, "FETCH_HEAD")
+	if revParseErr != nil {
+		result.Details["rev_parse_error"] = truncateProviderError(revParseErr.Error(), providerRunErrorLimit)
+	}
+	if sha == "" {
+		targetRef := "refs/heads/" + defaultBranch
+		if tagName != "" {
+			targetRef = "refs/tags/" + tagName
+		}
+		sha, revParseErr = e.revParse(ctx, gitDir, targetRef)
+		if revParseErr != nil {
+			result.Details["target_rev_parse_error"] = truncateProviderError(revParseErr.Error(), providerRunErrorLimit)
+		}
+	}
+	result.AfterSHA = sha
+	result.Details["after_sha"] = sha
+	return result, nil
+}
+
 func (e *GitExecutor) Tag(ctx context.Context, db sqlx.ExtContext, opID string) (*gitExecutionResult, error) {
 	run, err := queryOne(ctx, db, `
 		SELECT rtr.*, opr.input, gr.default_branch

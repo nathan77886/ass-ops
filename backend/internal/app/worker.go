@@ -198,7 +198,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "repo.sync", "repo.sync_remote", "repo.tag", "repo.create_tag", "ssh.exec", "ssh.verify", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute":
+	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "ssh.exec", "ssh.verify", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute":
 		return true
 	default:
 		return false
@@ -500,6 +500,19 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 			return fmt.Errorf("syncing canonical assets for running repo sync: %w", err)
 		}
 		return nil
+	case "git.refs.refresh":
+		_, err := db.ExecContext(ctx, `
+			UPDATE git_remotes
+			SET last_sync_status='running',
+				updated_at=now()
+			WHERE id=(SELECT git_remote_id FROM operation_runs WHERE id=$1 LIMIT 1)`, opID)
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+			return fmt.Errorf("syncing canonical assets for running Git ref refresh: %w", err)
+		}
+		return nil
 	case "repo.tag", "repo.create_tag":
 		_, err := db.ExecContext(ctx, "UPDATE repo_tag_runs SET status='running', started_at=COALESCE(started_at, now()) WHERE operation_run_id=$1", opID)
 		return err
@@ -586,6 +599,10 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 		execution, err := NewGitExecutor("").Sync(ctx, w.store.DB, opID)
 		mergeGitExecutionResult(result, execution)
 		return result, err
+	case "git.refs.refresh":
+		execution, err := NewGitExecutor("").RefreshRemoteRefs(ctx, w.store.DB, opID)
+		mergeGitExecutionResult(result, execution)
+		return result, err
 	case "repo.tag", "repo.create_tag":
 		execution, err := NewGitExecutor("").Tag(ctx, w.store.DB, opID)
 		mergeGitExecutionResult(result, execution)
@@ -651,6 +668,18 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed repo sync: %w", err)
+		}
+		return nil
+	case "git.refs.refresh":
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE git_remotes
+			SET last_sync_status='failed',
+				updated_at=now()
+			WHERE id=(SELECT git_remote_id FROM operation_runs WHERE id=$1 LIMIT 1)`, opID); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed Git ref refresh: %w", err)
 		}
 		return nil
 	case "repo.tag", "repo.create_tag":
@@ -858,6 +887,20 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed repo sync: %w", err)
+		}
+		return nil
+	case "git.refs.refresh":
+		_, err := tx.ExecContext(ctx, `
+			UPDATE git_remotes
+			SET latest_sha=COALESCE(NULLIF($2, ''), latest_sha),
+				last_sync_status='completed',
+				updated_at=now()
+			WHERE id=(SELECT git_remote_id FROM operation_runs WHERE id=$1 LIMIT 1)`, opID, afterSHA)
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed Git ref refresh: %w", err)
 		}
 		return nil
 	case "repo.tag", "repo.create_tag":
