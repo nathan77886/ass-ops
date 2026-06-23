@@ -8692,6 +8692,7 @@ func TestAgentPlanContentUsesContextSnapshot(t *testing.T) {
 		"Deployment execution readiness is dry-run only",
 		"Rollback execution is disabled in this first version",
 		"Agent patch workflow is audit-only",
+		"Codex CLI execution is still a redacted audit plan",
 		"High-risk follow-up actions must use operation approvals",
 	} {
 		if !strings.Contains(content, token) {
@@ -9048,10 +9049,10 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 			"status":       "verified",
 		},
 	)
-	if len(steps) != 4 {
-		t.Fatalf("len(steps) = %d, want 4", len(steps))
+	if len(steps) != 5 {
+		t.Fatalf("len(steps) = %d, want 5", len(steps))
 	}
-	wantTools := []string{"context.generate", "plan.review", "runtime.check", "patch.prepare"}
+	wantTools := []string{"context.generate", "plan.review", "runtime.check", "codex.execution.plan", "patch.prepare"}
 	for i, tool := range wantTools {
 		if steps[i]["tool_name"] != tool {
 			t.Fatalf("step %d tool = %v, want %s", i, steps[i]["tool_name"], tool)
@@ -9079,11 +9080,39 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 	if _, ok := runtimeInput["config"]; ok {
 		t.Fatalf("runtime.check input should not expose runtime config: %#v", runtimeInput)
 	}
-	patchInput := mapFromAny(steps[3]["input"])
+	codexPlanInput := mapFromAny(steps[3]["input"])
+	if codexPlanInput["mode"] != "redacted_execution_plan" {
+		t.Fatalf("codex.execution.plan mode = %v, want redacted_execution_plan", codexPlanInput["mode"])
+	}
+	codexPlanOutput := mapFromAny(steps[3]["output"])
+	codexPlan := mapFromAny(codexPlanOutput["codex_execution_plan"])
+	if codexPlan["mode"] != "redacted_codex_execution_plan" ||
+		codexPlan["plan_state"] != "blocked" ||
+		codexPlan["prerequisite_state"] != "metadata_available" {
+		t.Fatalf("codex.execution.plan should expose blocked metadata-available plan: %#v", codexPlan)
+	}
+	if codexPlan["execution_enabled"] != false ||
+		codexPlan["process_spawn_enabled"] != false ||
+		codexPlan["repository_mutation_allowed"] != false ||
+		codexPlan["pull_request_creation"] != false ||
+		codexPlan["external_call_made"] != false ||
+		codexPlan["command_invoked"] != false ||
+		codexPlan["file_patch_applied"] != false ||
+		codexPlan["git_write_performed"] != false {
+		t.Fatalf("codex.execution.plan should keep every mutation backend disabled: %#v", codexPlan)
+	}
+	if !containsString(stringSliceFromAny(codexPlan["disabled_backends"]), "codex_cli_process") ||
+		!containsString(stringSliceFromAny(codexPlan["disabled_backends"]), "git_push") ||
+		!containsString(stringSliceFromAny(codexPlan["required_controls"]), "commit_push_agent") ||
+		!containsString(stringSliceFromAny(codexPlan["suppressed_fields"]), "runtime_config") ||
+		!containsString(stringSliceFromAny(codexPlan["blocked_reasons"]), "repository_mutation_not_armed") {
+		t.Fatalf("codex.execution.plan missing redacted controls/backends/suppression: %#v", codexPlan)
+	}
+	patchInput := mapFromAny(steps[4]["input"])
 	if patchInput["mode"] != "simulation_only" {
 		t.Fatalf("patch.prepare mode = %v, want simulation_only", patchInput["mode"])
 	}
-	patchOutput := mapFromAny(steps[3]["output"])
+	patchOutput := mapFromAny(steps[4]["output"])
 	if !strings.Contains(fmt.Sprint(patchOutput["message"]), "code mutation remains disabled") {
 		t.Fatalf("patch.prepare output should document disabled mutation: %#v", patchOutput)
 	}
@@ -9114,6 +9143,70 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 	planInput := mapFromAny(steps[1]["input"])
 	if planInput["plan_bytes"] != len("approved plan") {
 		t.Fatalf("plan_bytes = %v, want %d", planInput["plan_bytes"], len("approved plan"))
+	}
+}
+
+func TestAgentCodexExecutionPlan(t *testing.T) {
+	tests := []struct {
+		name             string
+		runtime          map[string]any
+		wantPrerequisite string
+	}{
+		{
+			name:             "missing runtime keeps metadata blocked",
+			runtime:          map[string]any{},
+			wantPrerequisite: "metadata_blocked",
+		},
+		{
+			name: "verified runtime only makes metadata available",
+			runtime: map[string]any{
+				"name":         "Demo Codex",
+				"runtime_type": "codex-cli",
+				"codex_binary": "codex",
+				"status":       "verified",
+				"config":       map[string]any{"token": "do-not-serialize"},
+			},
+			wantPrerequisite: "metadata_available",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := agentCodexExecutionPlan(tt.runtime)
+			if got["mode"] != "redacted_codex_execution_plan" ||
+				got["plan_state"] != "blocked" ||
+				got["prerequisite_state"] != tt.wantPrerequisite ||
+				got["plan_ready"] != false ||
+				got["execution_enabled"] != false ||
+				got["process_spawn_enabled"] != false ||
+				got["repository_mutation_allowed"] != false ||
+				got["pull_request_creation"] != false ||
+				got["codex_cli_process_started"] != false ||
+				got["file_patch_applied"] != false ||
+				got["git_write_performed"] != false {
+				t.Fatalf("unexpected Codex execution plan: %#v", got)
+			}
+			for _, required := range []string{"agent_execute_approval", "runtime_verification", "structured_patch_review", "commit_push_agent"} {
+				if !containsString(stringSliceFromAny(got["required_controls"]), required) {
+					t.Fatalf("required_controls missing %q: %#v", required, got["required_controls"])
+				}
+			}
+			for _, backend := range []string{"codex_cli_process", "file_patch_apply", "git_commit", "git_push", "pull_request_create"} {
+				if !containsString(stringSliceFromAny(got["disabled_backends"]), backend) {
+					t.Fatalf("disabled_backends missing %q: %#v", backend, got["disabled_backends"])
+				}
+			}
+			for _, field := range []string{"runtime_config", "environment_variables", "patch_content", "diff_content", "token"} {
+				if !containsString(stringSliceFromAny(got["suppressed_fields"]), field) {
+					t.Fatalf("suppressed_fields missing %q: %#v", field, got["suppressed_fields"])
+				}
+			}
+			encoded, _ := json.Marshal(got)
+			for _, forbidden := range []string{"do-not-serialize", "ASSOPS_", "OPENAI_", "GITHUB_TOKEN", "PRIVATE KEY"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("Codex execution plan should not expose sensitive config hints: %s", encoded)
+				}
+			}
+		})
 	}
 }
 

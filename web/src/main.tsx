@@ -3347,6 +3347,20 @@ function AgentTasks() {
         {guardrail.next_step ? <Typography.Text type="secondary">{shortText(guardrail.next_step, 96)}</Typography.Text> : null}
       </Space>;
     }
+    if (row.tool_name === 'codex.execution.plan') {
+      const plan = output.codex_execution_plan || {};
+      const backends = Array.isArray(plan.disabled_backends) ? plan.disabled_backends : [];
+      const controls = Array.isArray(plan.required_controls) ? plan.required_controls : [];
+      return <Space size={4} wrap>
+        <Tag color="gold">{plan.plan_state || 'blocked'}</Tag>
+        <Tag color={plan.prerequisite_state === 'metadata_available' ? 'blue' : 'red'}>{plan.prerequisite_state || 'metadata_blocked'}</Tag>
+        <Tag color={plan.process_spawn_enabled === true ? 'red' : 'green'}>{plan.process_spawn_enabled === true ? 'Process enabled' : 'No process'}</Tag>
+        <Tag color={plan.repository_mutation_allowed === true ? 'red' : 'green'}>{plan.repository_mutation_allowed === true ? 'Repo mutation allowed' : 'Repo mutation blocked'}</Tag>
+        <Typography.Text>{backends.length} disabled backend{backends.length === 1 ? '' : 's'}</Typography.Text>
+        <Typography.Text type="secondary">{controls.length} required control{controls.length === 1 ? '' : 's'}</Typography.Text>
+        {plan.message ? <Typography.Text type="secondary">{shortText(plan.message, 96)}</Typography.Text> : null}
+      </Space>;
+    }
     return <Typography.Text>{output.message || '-'}</Typography.Text>;
   }
   return (

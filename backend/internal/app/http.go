@@ -12986,6 +12986,10 @@ func agentPlanContent(task, snapshot map[string]any) string {
 	if msg := strings.TrimSpace(fmt.Sprint(patchGuardrail["message"])); msg != "" && msg != "<nil>" {
 		fmt.Fprintf(&b, "- %s\n", msg)
 	}
+	codexExecutionPlan := agentCodexExecutionPlan(nil)
+	if msg := strings.TrimSpace(fmt.Sprint(codexExecutionPlan["message"])); msg != "" && msg != "<nil>" {
+		fmt.Fprintf(&b, "- %s\n", msg)
+	}
 	fmt.Fprintf(&b, "- High-risk follow-up actions must use operation approvals.\n")
 	return b.String()
 }
@@ -13331,6 +13335,19 @@ func agentExecutionAuditSteps(task, plan, op, runtime map[string]any) []map[stri
 		},
 		agentRuntimeCheckStep(taskID, opID, runtime),
 		{
+			"tool_name": "codex.execution.plan",
+			"input": map[string]any{
+				"agent_task_id":    taskID,
+				"agent_plan_id":    planID,
+				"operation_run_id": opID,
+				"mode":             "redacted_execution_plan",
+			},
+			"output": map[string]any{
+				"message":              "Codex CLI execution plan is recorded for audit only; process spawning and repository mutation remain disabled",
+				"codex_execution_plan": agentCodexExecutionPlan(runtime),
+			},
+		},
+		{
 			"tool_name": "patch.prepare",
 			"input": map[string]any{
 				"agent_task_id": taskID,
@@ -13364,6 +13381,97 @@ func agentPatchWorkflowGuardrail() map[string]any {
 		"execution_readiness": agentExecutionReadinessGates(),
 		"next_step":           "Keep execution audit-only until Codex CLI runs, patch application, and PR creation are individually approval-gated.",
 		"message":             "Agent patch workflow is audit-only: Codex CLI, repository mutation, and pull request creation are disabled.",
+	}
+}
+
+func agentCodexExecutionPlan(runtime map[string]any) map[string]any {
+	cliReadiness := agentCodexCLIReadiness(runtime)
+	prerequisiteState := "metadata_blocked"
+	if strings.TrimSpace(fmt.Sprint(cliReadiness["readiness"])) == "metadata_ready" {
+		prerequisiteState = "metadata_available"
+	}
+	return map[string]any{
+		"mode":                          "redacted_codex_execution_plan",
+		"plan_state":                    "blocked",
+		"prerequisite_state":            prerequisiteState,
+		"plan_ready":                    false,
+		"plan_ready_reason":             "codex_cli_execution_backend_disabled",
+		"execution_enabled":             false,
+		"process_spawn_enabled":         false,
+		"repository_mutation_allowed":   false,
+		"pull_request_creation":         false,
+		"external_call_made":            false,
+		"codex_cli_process_started":     false,
+		"command_invoked":               false,
+		"workspace_bound":               false,
+		"context_snapshot_materialized": true,
+		"patch_content_materialized":    false,
+		"diff_materialized":             false,
+		"file_patch_applied":            false,
+		"git_write_performed":           false,
+		"approval_action":               "agent.execute",
+		"requires_approval":             true,
+		"requires_runtime_verification": true,
+		"requires_workspace_binding":    true,
+		"requires_patch_review":         true,
+		"requires_human_approval":       true,
+		"contains_token":                false,
+		"contains_runtime_config":       false,
+		"contains_prompt_body":          false,
+		"contains_tool_input":           false,
+		"contains_tool_output":          false,
+		"contains_patch_content":        false,
+		"contains_diff_content":         false,
+		"execution_boundary_redacted":   true,
+		"blocked_reasons": []string{
+			"codex_cli_execution_backend_disabled",
+			"process_spawn_disabled",
+			"repository_mutation_not_armed",
+			"pull_request_workflow_not_wired",
+		},
+		"required_controls": []string{
+			"agent_execute_approval",
+			"runtime_verification",
+			"workspace_binding",
+			"context_snapshot",
+			"structured_patch_review",
+			"human_patch_approval",
+			"commit_push_agent",
+			"provider_review_reconciliation",
+		},
+		"disabled_backends": []string{
+			"codex_cli_process",
+			"file_patch_apply",
+			"git_commit",
+			"git_push",
+			"pull_request_create",
+		},
+		"suppressed_fields": []string{
+			"runtime_config",
+			"environment_variables",
+			"authorization_header",
+			"workspace_path",
+			"repository_url",
+			"prompt_body",
+			"tool_input",
+			"tool_output",
+			"patch_content",
+			"diff_content",
+			"token",
+		},
+		"execution_sequence": []string{
+			"record_context_snapshot",
+			"verify_runtime_metadata",
+			"bind_workspace",
+			"request_process_launch_approval",
+			"start_codex_cli",
+			"capture_structured_patch",
+			"review_patch",
+			"request_patch_apply_approval",
+			"apply_patch",
+			"delegate_commit_push",
+		},
+		"message": "Codex CLI execution is still a redacted audit plan; no process, patch, git, or pull request mutation is enabled.",
 	}
 }
 
