@@ -2628,6 +2628,9 @@ function ProjectDetail() {
                   {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.plan_state === 'planned' ? 'blue' : 'red'}>commit {configScaffold.data.git_commit_plan.plan_state}</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.git_commit_created ? 'commit created' : 'no commit'}</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.live_commit_validation_performed ? 'live validation' : 'no live validation'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag color="gold">result {configScaffold.data.git_commit_plan.result_recording_plan.result_recording_state || 'blocked'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.result_written ? 'result recorded' : 'no result record'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.project_version_pin_written ? 'pin recorded' : 'no pin record'}</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.steps?.length || 0} commit steps</Tag> : null}
                 </Space>
                 {Array.isArray(configScaffold.data.blocked_reasons) && configScaffold.data.blocked_reasons.length > 0 && (

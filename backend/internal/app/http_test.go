@@ -1200,6 +1200,41 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 		statusByKind(sliceOfMapsFromAny(commitPlan["steps"]), "remote_binding") != "planned" {
 		t.Fatalf("git commit plan controls/backends/steps = %#v", commitPlan)
 	}
+	resultPlan := mapFromAny(commitPlan["result_recording_plan"])
+	if resultPlan["mode"] != "config_repository_git_commit_result_recording_plan" ||
+		resultPlan["result_recording_state"] != "blocked" ||
+		resultPlan["result_recording_ready"] != false ||
+		resultPlan["result_recording_ready_reason"] != "config_git_commit_execution_not_performed" ||
+		resultPlan["recording_enabled"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["operation_log_written"] != false ||
+		resultPlan["scaffold_artifact_recorded"] != false ||
+		resultPlan["commit_record_written"] != false ||
+		resultPlan["push_record_written"] != false ||
+		resultPlan["review_request_recorded"] != false ||
+		resultPlan["project_version_pin_written"] != false ||
+		resultPlan["config_commit_sha_recorded"] != false ||
+		resultPlan["live_validation_recorded"] != false ||
+		resultPlan["raw_file_content_recorded"] != false ||
+		resultPlan["raw_secret_value_recorded"] != false ||
+		resultPlan["raw_git_output_recorded"] != false ||
+		resultPlan["raw_provider_response_recorded"] != false ||
+		resultPlan["contains_token"] != false ||
+		resultPlan["contains_remote_url"] != false ||
+		resultPlan["contains_branch_name"] != false ||
+		resultPlan["contains_commit_message"] != false {
+		t.Fatalf("git commit result recording plan should stay disabled and redacted: %#v", resultPlan)
+	}
+	for _, required := range []string{"scaffold_file_count", "secret_scan_status", "commit_created", "push_performed", "review_request_created", "config_commit_sha_present", "live_validation_status"} {
+		if !containsString(stringSliceFromAny(resultPlan["result_diagnostic_fields"]), required) {
+			t.Fatalf("result diagnostic fields missing %q: %#v", required, resultPlan["result_diagnostic_fields"])
+		}
+	}
+	for _, field := range []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "commit_sha", "provider_response_body", "provider_response_headers"} {
+		if !containsString(stringSliceFromAny(resultPlan["suppressed_fields"]), field) {
+			t.Fatalf("result suppressed fields missing %q: %#v", field, resultPlan["suppressed_fields"])
+		}
+	}
 	encodedCommitPlan, _ := json.Marshal(commitPlan)
 	for _, forbidden := range []string{"secret_values_here", "git@github.com", "https://token@", "Bearer", "password"} {
 		if strings.Contains(string(encodedCommitPlan), forbidden) {
@@ -1225,6 +1260,13 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 		statusByKind(sliceOfMapsFromAny(blockedCommitPlan["steps"]), "scaffold_review") != "blocked" ||
 		statusByKind(sliceOfMapsFromAny(blockedCommitPlan["steps"]), "remote_binding") != "blocked" {
 		t.Fatalf("blocked git commit plan = %#v", blockedCommitPlan)
+	}
+	blockedResultPlan := mapFromAny(blockedCommitPlan["result_recording_plan"])
+	if blockedResultPlan["result_recording_state"] != "blocked" ||
+		blockedResultPlan["recording_enabled"] != false ||
+		blockedResultPlan["result_written"] != false ||
+		blockedResultPlan["project_version_pin_written"] != false {
+		t.Fatalf("blocked result recording plan should remain disabled: %#v", blockedResultPlan)
 	}
 
 	nilRole := configRepositoryScaffoldPreview(map[string]any{
