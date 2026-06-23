@@ -326,29 +326,61 @@ func TestFirstVersionReadinessReportRequiresSSHCommandGraphLinks(t *testing.T) {
 }
 
 func TestFirstVersionReadinessReportRequiresWebhookEventForSyncTrigger(t *testing.T) {
-	withoutEvent := firstVersionReadinessReport([]map[string]any{
+	withoutEvent := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "webhook_connection", "metadata": map[string]any{"provider": "gitea"}},
 	}, []map[string]any{
 		{"operation_type": "repo.sync"},
-	}, nil)
-	if got := readinessByKey(t, withoutEvent, "sync_trigger"); got.Status != "partial" || got.Evidence != "1 sync ops / 1 Gitea webhooks / 0 Gitea events" {
+	}, nil, map[string]any{"edges": []any{}})
+	if got := readinessByKey(t, withoutEvent, "sync_trigger"); got.Status != "partial" || got.Evidence != "1 sync ops / 1 Gitea webhooks / 0 Gitea events / 0 complete webhook chains" {
 		t.Fatalf("sync trigger without webhook event = %#v, want partial with event evidence", got)
 	}
 
-	withEvent := firstVersionReadinessReport([]map[string]any{
+	withoutGraphChain := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "webhook_connection", "metadata": map[string]any{"provider": "gitea"}},
 		{"asset_type": "webhook_event", "metadata": map[string]any{"provider": "gitea"}},
 	}, []map[string]any{
 		{"operation_type": "repo.sync_remote"},
-	}, nil)
-	if got := readinessByKey(t, withEvent, "sync_trigger"); got.Status != "ready" || got.Evidence != "1 sync ops / 1 Gitea webhooks / 1 Gitea events" {
-		t.Fatalf("sync trigger with webhook event = %#v, want ready with event evidence", got)
+	}, nil, map[string]any{"edges": []any{}})
+	if got := readinessByKey(t, withoutGraphChain, "sync_trigger"); got.Status != "partial" || got.Evidence != "1 sync ops / 1 Gitea webhooks / 1 Gitea events / 0 complete webhook chains" {
+		t.Fatalf("sync trigger without complete graph chain = %#v, want partial", got)
+	}
+
+	withGraphChain := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "webhook_connection", "metadata": map[string]any{"provider": "gitea"}},
+		{"asset_type": "webhook_event", "metadata": map[string]any{"provider": "gitea"}},
+	}, []map[string]any{
+		{"operation_type": "repo.sync_remote"},
+	}, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "webhook_connection:1", "to_asset_id": "webhook_event:20", "relation_type": "received_webhook_event"},
+			map[string]any{"from_asset_id": "webhook_event:20", "to_asset_id": "repo_sync:30", "relation_type": "matched_repo_sync"},
+			map[string]any{"from_asset_id": "webhook_event:20", "to_asset_id": "operation_run:40", "relation_type": "triggered_operation"},
+		},
+	})
+	if got := readinessByKey(t, withGraphChain, "sync_trigger"); got.Status != "ready" || got.Evidence != "1 sync ops / 1 Gitea webhooks / 1 Gitea events / 1 complete webhook chains" {
+		t.Fatalf("sync trigger with webhook graph chain = %#v, want ready with complete graph evidence", got)
+	}
+
+	crossEventAggregation := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "webhook_connection", "metadata": map[string]any{"provider": "gitea"}},
+		{"asset_type": "webhook_event", "metadata": map[string]any{"provider": "gitea"}},
+	}, []map[string]any{
+		{"operation_type": "repo.sync_remote"},
+	}, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "webhook_connection:1", "to_asset_id": "webhook_event:20", "relation_type": "received_webhook_event"},
+			map[string]any{"from_asset_id": "webhook_event:21", "to_asset_id": "repo_sync:30", "relation_type": "matched_repo_sync"},
+			map[string]any{"from_asset_id": "webhook_event:21", "to_asset_id": "operation_run:40", "relation_type": "triggered_operation"},
+		},
+	})
+	if got := readinessByKey(t, crossEventAggregation, "sync_trigger"); got.Status != "partial" || got.Evidence != "1 sync ops / 1 Gitea webhooks / 1 Gitea events / 0 complete webhook chains" {
+		t.Fatalf("sync trigger with cross-event aggregate links = %#v, want partial without a complete event chain", got)
 	}
 
 	eventOnly := firstVersionReadinessReport([]map[string]any{
 		{"asset_type": "webhook_event", "metadata": map[string]any{"provider": "gitea"}},
 	}, nil, nil)
-	if got := readinessByKey(t, eventOnly, "sync_trigger"); got.Status != "partial" || got.Evidence != "0 sync ops / 0 Gitea webhooks / 1 Gitea events" {
+	if got := readinessByKey(t, eventOnly, "sync_trigger"); got.Status != "partial" || got.Evidence != "0 sync ops / 0 Gitea webhooks / 1 Gitea events / 0 complete webhook chains" {
 		t.Fatalf("sync trigger event only = %#v, want partial", got)
 	}
 
@@ -358,7 +390,7 @@ func TestFirstVersionReadinessReportRequiresWebhookEventForSyncTrigger(t *testin
 	}, []map[string]any{
 		{"operation_type": "repo.sync"},
 	}, nil)
-	if got := readinessByKey(t, githubOnly, "sync_trigger"); got.Status != "partial" || got.Evidence != "1 sync ops / 0 Gitea webhooks / 0 Gitea events" {
+	if got := readinessByKey(t, githubOnly, "sync_trigger"); got.Status != "partial" || got.Evidence != "1 sync ops / 0 Gitea webhooks / 0 Gitea events / 0 complete webhook chains" {
 		t.Fatalf("sync trigger with GitHub webhook evidence = %#v, want partial without Gitea evidence", got)
 	}
 }
@@ -497,6 +529,23 @@ func TestCountAPITypeMetadata(t *testing.T) {
 	}
 	if got := countAPITypeMetadata(rows, "webhook_event", "provider", "gitea"); got != 1 {
 		t.Fatalf("countAPITypeMetadata = %d, want 1", got)
+	}
+}
+
+func TestCountWebhookSyncGraphLinks(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "webhook_connection:1", "to_asset_id": "webhook_event:20", "relation_type": "received_webhook_event"},
+			map[string]any{"from_asset_id": "webhook_event:20", "to_asset_id": "repo_sync:30", "relation_type": "matched_repo_sync"},
+			map[string]any{"from_asset_id": "webhook_event:20", "to_asset_id": "operation_run:40", "relation_type": "triggered_operation"},
+			map[string]any{"from_asset_id": "webhook_connection:1", "to_asset_id": "operation_run:40", "relation_type": "triggered_operation"},
+			map[string]any{"from_asset_id": "webhook_connection:2", "to_asset_id": "webhook_event:21", "relation_type": "received_webhook_event"},
+			map[string]any{"from_asset_id": "webhook_event:22", "to_asset_id": "repo_sync:31", "relation_type": "matched_repo_sync"},
+		},
+	}
+	got := countWebhookSyncGraphLinks(graph)
+	if got.ConnectionEvents != 2 || got.EventRepoSyncs != 2 || got.EventOperations != 1 || got.CompleteChains != 1 {
+		t.Fatalf("countWebhookSyncGraphLinks = %#v, want connection/event/repo/operation counts and one complete chain", got)
 	}
 }
 

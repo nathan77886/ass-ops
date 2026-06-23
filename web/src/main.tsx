@@ -642,6 +642,35 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}) {
   ).length;
 }
 
+function countWebhookSyncGraphLinks(graph: AnyRow = {}) {
+  const byEvent: Record<string, { connection?: boolean; repoSync?: boolean; operation?: boolean }> = {};
+  const eventEntry = (assetID: string) => {
+    byEvent[assetID] ??= {};
+    return byEvent[assetID];
+  };
+  const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
+    const relation = String(edge.relation_type || '');
+    const from = String(edge.from_asset_id || '');
+    const to = String(edge.to_asset_id || '');
+    if (relation === 'received_webhook_event' && from.startsWith('webhook_connection:') && to.startsWith('webhook_event:')) {
+      nextCounts.connectionEvents += 1;
+      eventEntry(to).connection = true;
+    }
+    if (relation === 'matched_repo_sync' && from.startsWith('webhook_event:') && to.startsWith('repo_sync:')) {
+      nextCounts.eventRepoSyncs += 1;
+      eventEntry(from).repoSync = true;
+    }
+    // Ignore legacy webhook_connection -> operation_run compatibility edges.
+    if (relation === 'triggered_operation' && from.startsWith('webhook_event:') && to.startsWith('operation_run:')) {
+      nextCounts.eventOperations += 1;
+      eventEntry(from).operation = true;
+    }
+    return nextCounts;
+  }, { connectionEvents: 0, eventRepoSyncs: 0, eventOperations: 0, completeChains: 0 });
+  counts.completeChains = Object.values(byEvent).filter((entry) => entry.connection && entry.repoSync && entry.operation).length;
+  return counts;
+}
+
 function countSSHGraphLinks(graph: AnyRow = {}) {
   const byCommand: Record<string, { operation?: boolean; machine?: boolean }> = {};
   const commandEntry = (assetID: string) => {
@@ -717,6 +746,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const contextGenerations = countContextGenerationEvidence(assets);
   const repositoryGraphLinks = countRepositoryGraphLinks(graph);
   const repoSyncGraphLinks = countRepoSyncGraphLinks(graph);
+  const webhookSyncGraphLinks = countWebhookSyncGraphLinks(graph);
   const githubActionLinks = countGitHubActionGraphLinks(graph);
   const sshGraphLinks = countSSHGraphLinks(graph);
   const argoGraphLinks = countArgoGraphLinks(graph);
@@ -747,7 +777,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'sync_trigger',
       label: 'Trigger sync manually and from webhook',
       next: 'Run a manual sync and receive or replay a Gitea webhook event.',
-      ...readinessState(syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0, `${syncTriggered} sync ops / ${giteaWebhooks} Gitea webhooks / ${giteaWebhookEvents} Gitea events`, syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0)
+      ...readinessState(syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0 && webhookSyncGraphLinks.completeChains > 0, `${syncTriggered} sync ops / ${giteaWebhooks} Gitea webhooks / ${giteaWebhookEvents} Gitea events / ${webhookSyncGraphLinks.completeChains} complete webhook chains`, syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0 || webhookSyncGraphLinks.connectionEvents > 0 || webhookSyncGraphLinks.eventRepoSyncs > 0 || webhookSyncGraphLinks.eventOperations > 0)
     },
     {
       key: 'github_actions',
