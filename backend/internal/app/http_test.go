@@ -4100,6 +4100,24 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateLiveAdapterSuppressedFields[9] != "lock_key" {
 		t.Fatalf("attempt execution candidate live adapter suppressed fields = %#v", candidateLiveAdapterSuppressedFields)
 	}
+	candidateLiveAdapterContractPlan := mapFromAny(candidateLiveAdapterPlan["contract_plan"])
+	if candidateLiveAdapterContractPlan["mode"] != "redacted_attempt_live_adapter_contract_plan" ||
+		candidateLiveAdapterContractPlan["provider_type"] != "github" ||
+		candidateLiveAdapterContractPlan["operation_name"] != "create_branch_ref" ||
+		candidateLiveAdapterContractPlan["endpoint_key"] != "github.create_branch_ref" ||
+		candidateLiveAdapterContractPlan["adapter_name"] != "github_live_provider_review_adapter" ||
+		candidateLiveAdapterContractPlan["builder_name"] != "build_redacted_branch_ref_request" ||
+		candidateLiveAdapterContractPlan["client_kind"] != "github_provider_review_api_client" ||
+		candidateLiveAdapterContractPlan["execute_method_name"] != "execute_branch_ref_creation" ||
+		candidateLiveAdapterContractPlan["response_handler_name"] != "handle_branch_ref_response" ||
+		candidateLiveAdapterContractPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("attempt execution candidate live adapter contract plan = %#v", candidateLiveAdapterContractPlan)
+	}
+	candidateLiveAdapterContractCapabilities := stringSliceFromAny(candidateLiveAdapterContractPlan["required_capabilities"])
+	if len(candidateLiveAdapterContractCapabilities) != 1 ||
+		candidateLiveAdapterContractCapabilities[0] != "repository_ref_write" {
+		t.Fatalf("attempt execution candidate live adapter contract capabilities = %#v", candidateLiveAdapterContractCapabilities)
+	}
 	candidateProviderSendPlan := mapFromAny(candidateInvocationPlan["provider_send_plan"])
 	if candidateProviderSendPlan["mode"] != "redacted_attempt_adapter_provider_send_plan" ||
 		candidateProviderSendPlan["provider_send_state"] != "blocked" ||
@@ -6100,29 +6118,53 @@ func TestProviderReviewAttemptAdapterActivationMetadataReadyReason(t *testing.T)
 
 func TestProviderReviewAttemptLiveAdapterPlan(t *testing.T) {
 	for _, tt := range []struct {
-		name        string
-		provider    string
-		operation   string
-		endpoint    string
-		adapterName string
-		capability  string
-		expectEmpty bool
+		name            string
+		provider        string
+		operation       string
+		endpoint        string
+		adapterName     string
+		builderName     string
+		clientKind      string
+		executeMethod   string
+		responseHandler string
+		capability      string
+		expectEmpty     bool
 	}{
 		{
-			name:        "github branch ref",
-			provider:    "github",
-			operation:   "create_branch_ref",
-			endpoint:    "github.create_branch_ref",
-			adapterName: "github_live_provider_review_adapter",
-			capability:  "repository_ref_write",
+			name:            "github branch ref",
+			provider:        "github",
+			operation:       "create_branch_ref",
+			endpoint:        "github.create_branch_ref",
+			adapterName:     "github_live_provider_review_adapter",
+			builderName:     "build_redacted_branch_ref_request",
+			clientKind:      "github_provider_review_api_client",
+			executeMethod:   "execute_branch_ref_creation",
+			responseHandler: "handle_branch_ref_response",
+			capability:      "repository_ref_write",
 		},
 		{
-			name:        "gitea review request",
-			provider:    "gitea",
-			operation:   "open_review_request",
-			endpoint:    "gitea.open_review",
-			adapterName: "gitea_live_provider_review_adapter",
-			capability:  "review_request_write",
+			name:            "github starter files",
+			provider:        "github",
+			operation:       "commit_starter_files",
+			endpoint:        "github.commit_files",
+			adapterName:     "github_live_provider_review_adapter",
+			builderName:     "build_redacted_commit_files_request",
+			clientKind:      "github_provider_review_api_client",
+			executeMethod:   "execute_starter_file_commit",
+			responseHandler: "handle_commit_files_response",
+			capability:      "repository_contents_write",
+		},
+		{
+			name:            "gitea review request",
+			provider:        "gitea",
+			operation:       "open_review_request",
+			endpoint:        "gitea.open_review",
+			adapterName:     "gitea_live_provider_review_adapter",
+			builderName:     "build_redacted_review_request",
+			clientKind:      "gitea_provider_review_api_client",
+			executeMethod:   "execute_review_request_open",
+			responseHandler: "handle_review_request_response",
+			capability:      "review_request_write",
 		},
 		{
 			name:        "unknown provider",
@@ -6234,6 +6276,10 @@ func TestProviderReviewAttemptLiveAdapterPlan(t *testing.T) {
 				contractPlan["endpoint_path_template_key"] != providerReviewEndpointPathTemplateKeyForOperation(tt.provider, tt.operation) ||
 				contractPlan["payload_shape"] != providerReviewPayloadShapeForOperation(tt.operation) ||
 				contractPlan["auth_scheme"] != providerReviewAuthSchemeForProvider(tt.provider) ||
+				contractPlan["builder_name"] != tt.builderName ||
+				contractPlan["client_kind"] != tt.clientKind ||
+				contractPlan["execute_method_name"] != tt.executeMethod ||
+				contractPlan["response_handler_name"] != tt.responseHandler ||
 				contractPlan["success_attempt_status"] != "completed" ||
 				contractPlan["retry_attempt_status"] != "planned" ||
 				contractPlan["failure_attempt_status"] != "failed" ||
@@ -6271,6 +6317,10 @@ func TestProviderReviewAttemptLiveAdapterPlan(t *testing.T) {
 				contractPlan["contains_file_content"] != false ||
 				contractPlan["live_adapter_contract_boundary_redacted"] != true {
 				t.Fatalf("live adapter contract plan = %#v", contractPlan)
+			}
+			contractCapabilities := stringSliceFromAny(contractPlan["required_capabilities"])
+			if len(contractCapabilities) != 1 || contractCapabilities[0] != tt.capability {
+				t.Fatalf("live adapter contract capabilities = %#v", contractCapabilities)
 			}
 			contractInputs := stringSliceFromAny(contractPlan["contract_input_fields"])
 			if len(contractInputs) != 8 ||
