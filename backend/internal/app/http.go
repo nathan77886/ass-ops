@@ -3136,6 +3136,7 @@ func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]a
 	if len(blockedReasons) > 0 {
 		scaffoldState = "blocked"
 	}
+	commitPlan := configRepositoryGitCommitPlan(repo, files, remoteSummaries, blockedReasons)
 	return map[string]any{
 		"mode":                   "config_repository_scaffold_preview",
 		"scaffold_state":         scaffoldState,
@@ -3156,9 +3157,111 @@ func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]a
 		"file_content_included":  false,
 		"secret_included":        false,
 		"live_commit_validation": "not_performed",
+		"git_commit_plan":        commitPlan,
 		"next_step":              "Create or sync the config remote, commit the scaffold files through a reviewed Git workflow, then pin config_commit_sha in ProjectVersion.",
 		"suppressed_fields":      []string{"file_content", "secret_values", "git_credentials", "provider_token", "author_email"},
 	}
+}
+
+func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[string]any, scaffoldBlockedReasons []string) map[string]any {
+	planState := "planned"
+	blockedReasons := append([]string{}, scaffoldBlockedReasons...)
+	defaultBranch := strings.TrimSpace(stringFromMap(repo, "default_branch"))
+	if defaultBranch == "" {
+		blockedReasons = append(blockedReasons, "default_branch_missing")
+	}
+	if len(files) == 0 {
+		blockedReasons = append(blockedReasons, "scaffold_files_missing")
+	}
+	if len(blockedReasons) > 0 {
+		planState = "blocked"
+	}
+	steps := []map[string]any{
+		{
+			"kind":   "scaffold_review",
+			"status": statusWhen(len(files) > 0 && !stringListContains(blockedReasons, "repository_role_is_not_config")),
+			"checks": []string{"repository_role", "scaffold_paths", "human_file_review"},
+			"reason": reasonWhen(len(files) > 0 && !stringListContains(blockedReasons, "repository_role_is_not_config"), "config scaffold paths are ready for human review", "config repository scaffold is not ready"),
+		},
+		{
+			"kind":   "remote_binding",
+			"status": statusWhen(len(remotes) > 0),
+			"checks": []string{"git_remote", "provider_type", "branch_policy"},
+			"reason": reasonWhen(len(remotes) > 0, "at least one config remote is available for future Git workflow", "config remote is required before commit rehearsal"),
+		},
+		{
+			"kind":   "workspace_checkout",
+			"status": "blocked",
+			"checks": []string{"clone_or_fetch", "clean_worktree", "credential_binding"},
+			"reason": "Git checkout/fetch is not performed by this preview",
+		},
+		{
+			"kind":   "review_branch",
+			"status": statusWhen(defaultBranch != ""),
+			"checks": []string{"default_branch", "review_branch_policy", "protected_branch_avoidance"},
+			"reason": reasonWhen(defaultBranch != "", "review branch can be derived after branch policy review", "default branch metadata is required"),
+		},
+		{
+			"kind":   "scaffold_commit",
+			"status": "blocked",
+			"checks": []string{"file_materialization", "secret_scan", "commit_author_policy"},
+			"reason": "File content materialization and git commit are disabled in this preview",
+		},
+		{
+			"kind":   "remote_push",
+			"status": "blocked",
+			"checks": []string{"git_push", "provider_protection", "review_request"},
+			"reason": "Git push and PR/MR creation require a future approval-gated provider workflow",
+		},
+		{
+			"kind":   "project_version_pin",
+			"status": "blocked",
+			"checks": []string{"config_commit_sha", "ProjectVersion.metadata.repositories[].config_commit_sha"},
+			"reason": "ProjectVersion config commit pin is not written by this preview",
+		},
+		{
+			"kind":   "live_commit_validation",
+			"status": "blocked",
+			"checks": []string{"git_fetch", "remote_commit_lookup", "synced_state_validation"},
+			"reason": "Live commit validation is not performed by this preview",
+		},
+	}
+	return map[string]any{
+		"mode":                              "config_repository_git_commit_plan_preview",
+		"plan_state":                        planState,
+		"execution_enabled":                 false,
+		"external_call_made":                false,
+		"git_clone_performed":               false,
+		"git_fetch_performed":               false,
+		"git_commit_created":                false,
+		"git_push_performed":                false,
+		"pull_request_created":              false,
+		"project_version_pin_written":       false,
+		"live_commit_validation_performed":  false,
+		"file_content_materialized":         false,
+		"secret_scan_performed":             false,
+		"credential_bound":                  false,
+		"scaffold_file_count":               len(files),
+		"remote_count":                      len(remotes),
+		"default_branch_configured":         defaultBranch != "",
+		"required_controls":                 []string{"config_remote_review", "branch_policy_review", "human_file_review", "secret_scan", "commit_author_policy", "provider_review_workflow", "project_version_config_commit_pin", "live_remote_commit_validation"},
+		"disabled_backends":                 []string{"git_clone", "git_fetch", "file_write", "git_commit", "git_push", "pull_request_create", "project_version_update", "live_commit_validation"},
+		"blocked_reasons":                   blockedReasons,
+		"suppressed_fields":                 []string{"file_content", "secret_values", "git_credentials", "provider_token", "author_email", "remote_url", "branch_name", "commit_message"},
+		"steps":                             steps,
+		"execution_sequence":                []string{"review_scaffold", "bind_config_remote", "checkout_clean_workspace", "create_review_branch", "materialize_files", "run_secret_scan", "commit_scaffold", "push_review_branch", "open_review_request", "pin_config_commit_sha", "validate_remote_commit"},
+		"required_project_version_metadata": []string{"repositories[].repo_key", "repositories[].remote_id", "repositories[].config_commit_sha"},
+		"message":                           "Config repository Git commit and live validation are planned only; no files, Git refs, provider requests, or ProjectVersion pins are written.",
+	}
+}
+
+func stringListContains(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) createRepositorySync(w http.ResponseWriter, r *http.Request) {

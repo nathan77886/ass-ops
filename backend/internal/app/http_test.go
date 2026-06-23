@@ -1113,6 +1113,34 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 	if !containsString(suppressed, "secret_values") || !containsString(suppressed, "git_credentials") {
 		t.Fatalf("suppressed fields = %#v", suppressed)
 	}
+	commitPlan := mapFromAny(preview["git_commit_plan"])
+	if commitPlan["mode"] != "config_repository_git_commit_plan_preview" ||
+		commitPlan["plan_state"] != "planned" ||
+		commitPlan["execution_enabled"] != false ||
+		commitPlan["git_clone_performed"] != false ||
+		commitPlan["git_commit_created"] != false ||
+		commitPlan["git_push_performed"] != false ||
+		commitPlan["project_version_pin_written"] != false ||
+		commitPlan["live_commit_validation_performed"] != false ||
+		commitPlan["file_content_materialized"] != false ||
+		commitPlan["scaffold_file_count"] != 10 ||
+		commitPlan["remote_count"] != 1 {
+		t.Fatalf("git commit plan = %#v", commitPlan)
+	}
+	if !containsString(stringSliceFromAny(commitPlan["required_controls"]), "project_version_config_commit_pin") ||
+		!containsString(stringSliceFromAny(commitPlan["disabled_backends"]), "git_commit") ||
+		!containsString(stringSliceFromAny(commitPlan["disabled_backends"]), "live_commit_validation") ||
+		!containsString(stringSliceFromAny(commitPlan["suppressed_fields"]), "remote_url") ||
+		statusByKind(sliceOfMapsFromAny(commitPlan["steps"]), "workspace_checkout") != "blocked" ||
+		statusByKind(sliceOfMapsFromAny(commitPlan["steps"]), "remote_binding") != "planned" {
+		t.Fatalf("git commit plan controls/backends/steps = %#v", commitPlan)
+	}
+	encodedCommitPlan, _ := json.Marshal(commitPlan)
+	for _, forbidden := range []string{"secret_values_here", "git@github.com", "https://token@", "Bearer", "password"} {
+		if strings.Contains(string(encodedCommitPlan), forbidden) {
+			t.Fatalf("git commit plan leaked %q: %s", forbidden, encodedCommitPlan)
+		}
+	}
 
 	blocked := configRepositoryScaffoldPreview(map[string]any{
 		"id":        "repo-2",
@@ -1127,6 +1155,12 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 	if !containsString(reasons, "repository_role_is_not_config") || !containsString(reasons, "config_remote_missing") {
 		t.Fatalf("blocked reasons = %#v", reasons)
 	}
+	blockedCommitPlan := mapFromAny(blocked["git_commit_plan"])
+	if blockedCommitPlan["plan_state"] != "blocked" ||
+		statusByKind(sliceOfMapsFromAny(blockedCommitPlan["steps"]), "scaffold_review") != "blocked" ||
+		statusByKind(sliceOfMapsFromAny(blockedCommitPlan["steps"]), "remote_binding") != "blocked" {
+		t.Fatalf("blocked git commit plan = %#v", blockedCommitPlan)
+	}
 
 	nilRole := configRepositoryScaffoldPreview(map[string]any{
 		"id":        "repo-3",
@@ -1136,6 +1170,11 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 	}, nil)
 	if nilRole["repo_role"] != "" {
 		t.Fatalf("nil repo role should not leak as string: %#v", nilRole["repo_role"])
+	}
+	nilRoleCommitPlan := mapFromAny(nilRole["git_commit_plan"])
+	if nilRoleCommitPlan["plan_state"] != "blocked" ||
+		statusByKind(sliceOfMapsFromAny(nilRoleCommitPlan["steps"]), "scaffold_review") != "blocked" {
+		t.Fatalf("nil-role git commit plan = %#v", nilRoleCommitPlan)
 	}
 }
 
@@ -1180,6 +1219,14 @@ func TestGetConfigRepositoryScaffoldHandler(t *testing.T) {
 		payload["file_content_included"] != false ||
 		payload["remote_count"] != float64(1) {
 		t.Fatalf("payload = %#v", payload)
+	}
+	commitPlan := mapFromAny(payload["git_commit_plan"])
+	if commitPlan["mode"] != "config_repository_git_commit_plan_preview" ||
+		commitPlan["plan_state"] != "planned" ||
+		commitPlan["git_commit_created"] != false ||
+		commitPlan["git_push_performed"] != false ||
+		commitPlan["live_commit_validation_performed"] != false {
+		t.Fatalf("payload git_commit_plan = %#v", commitPlan)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

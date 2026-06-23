@@ -2625,9 +2625,16 @@ function ProjectDetail() {
                   <Tag>{configScaffold.data.git_write_performed ? 'git write' : 'no git write'}</Tag>
                   <Tag>{configScaffold.data.external_call_made ? 'external call' : 'no external call'}</Tag>
                   <Tag>{configScaffold.data.file_content_included ? 'content included' : 'paths only'}</Tag>
+                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.plan_state === 'planned' ? 'blue' : 'red'}>commit {configScaffold.data.git_commit_plan.plan_state}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.git_commit_created ? 'commit created' : 'no commit'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.live_commit_validation_performed ? 'live validation' : 'no live validation'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.steps?.length || 0} commit steps</Tag> : null}
                 </Space>
                 {Array.isArray(configScaffold.data.blocked_reasons) && configScaffold.data.blocked_reasons.length > 0 && (
                   <Alert showIcon type="warning" message={configScaffold.data.blocked_reasons.join(', ')} />
+                )}
+                {Array.isArray(configScaffold.data.git_commit_plan?.blocked_reasons) && configScaffold.data.git_commit_plan.blocked_reasons.length > 0 && (
+                  <Alert showIcon type="warning" message={configScaffold.data.git_commit_plan.blocked_reasons.join(', ')} />
                 )}
                 <Table<AnyRow>
                   size="small"
