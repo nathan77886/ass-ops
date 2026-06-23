@@ -248,6 +248,56 @@ func TestFirstVersionReadinessReportRequiresArgoSync(t *testing.T) {
 	}
 }
 
+func TestFirstVersionReadinessReportRequiresWebhookEventForSyncTrigger(t *testing.T) {
+	withoutEvent := firstVersionReadinessReport([]map[string]any{
+		{"asset_type": "webhook_connection", "metadata": map[string]any{"provider": "gitea"}},
+	}, []map[string]any{
+		{"operation_type": "repo.sync"},
+	}, nil)
+	if got := readinessByKey(t, withoutEvent, "sync_trigger"); got.Status != "partial" || got.Evidence != "1 sync ops / 1 Gitea webhooks / 0 Gitea events" {
+		t.Fatalf("sync trigger without webhook event = %#v, want partial with event evidence", got)
+	}
+
+	withEvent := firstVersionReadinessReport([]map[string]any{
+		{"asset_type": "webhook_connection", "metadata": map[string]any{"provider": "gitea"}},
+		{"asset_type": "webhook_event", "metadata": map[string]any{"provider": "gitea"}},
+	}, []map[string]any{
+		{"operation_type": "repo.sync_remote"},
+	}, nil)
+	if got := readinessByKey(t, withEvent, "sync_trigger"); got.Status != "ready" || got.Evidence != "1 sync ops / 1 Gitea webhooks / 1 Gitea events" {
+		t.Fatalf("sync trigger with webhook event = %#v, want ready with event evidence", got)
+	}
+
+	eventOnly := firstVersionReadinessReport([]map[string]any{
+		{"asset_type": "webhook_event", "metadata": map[string]any{"provider": "gitea"}},
+	}, nil, nil)
+	if got := readinessByKey(t, eventOnly, "sync_trigger"); got.Status != "partial" || got.Evidence != "0 sync ops / 0 Gitea webhooks / 1 Gitea events" {
+		t.Fatalf("sync trigger event only = %#v, want partial", got)
+	}
+
+	githubOnly := firstVersionReadinessReport([]map[string]any{
+		{"asset_type": "webhook_connection", "metadata": map[string]any{"provider": "github"}},
+		{"asset_type": "webhook_event", "metadata": map[string]any{"provider": "github"}},
+	}, []map[string]any{
+		{"operation_type": "repo.sync"},
+	}, nil)
+	if got := readinessByKey(t, githubOnly, "sync_trigger"); got.Status != "partial" || got.Evidence != "1 sync ops / 0 Gitea webhooks / 0 Gitea events" {
+		t.Fatalf("sync trigger with GitHub webhook evidence = %#v, want partial without Gitea evidence", got)
+	}
+}
+
+func TestCountAPITypeMetadata(t *testing.T) {
+	rows := []map[string]any{
+		{"asset_type": "webhook_event", "metadata": map[string]any{"provider": "gitea"}},
+		{"asset_type": "webhook_event", "metadata": map[string]any{"provider": "github"}},
+		{"asset_type": "webhook_connection", "metadata": map[string]any{"provider": "gitea"}},
+		{"asset_type": "webhook_event"},
+	}
+	if got := countAPITypeMetadata(rows, "webhook_event", "provider", "gitea"); got != 1 {
+		t.Fatalf("countAPITypeMetadata = %d, want 1", got)
+	}
+}
+
 func TestFirstVersionReadinessReportApprovalReadinessMatrix(t *testing.T) {
 	withoutSummary := firstVersionReadinessReport(nil, []map[string]any{
 		{"operation_type": "approval.notify", "status": "completed"},

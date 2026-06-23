@@ -575,6 +575,10 @@ function countRowsByTypeStatus(rows: AnyRow[] = [], type: string, status: string
   return rows.filter((row) => String(row.asset_type || '') === type && String(row.status || '') === status).length;
 }
 
+function countRowsByTypeMetadata(rows: AnyRow[] = [], type: string, key: string, value: string) {
+  return rows.filter((row) => String(row.asset_type || '') === type && String(row.metadata?.[key] || '') === value).length;
+}
+
 function graphItems(graph: AnyRow = {}, key: string) {
   return Array.isArray(graph[key]) ? graph[key] : [];
 }
@@ -594,7 +598,8 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const assetCounts = countByField(assets, 'asset_type');
   const operationCounts = countByField(operations, 'operation_type');
   const syncTriggered = (operationCounts['repo.sync'] || 0) + (operationCounts['repo.sync_remote'] || 0);
-  const webhookReady = (assetCounts.webhook_connection || 0) > 0;
+  const giteaWebhooks = countRowsByTypeMetadata(assets, 'webhook_connection', 'provider', 'gitea');
+  const giteaWebhookEvents = countRowsByTypeMetadata(assets, 'webhook_event', 'provider', 'gitea');
   const sshRuns = (operationCounts['ssh.exec'] || 0) + (operationCounts['ssh.command'] || 0);
   const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0);
   const approvalEvidence = Number(approvalSummary.total || 0);
@@ -628,8 +633,8 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
     {
       key: 'sync_trigger',
       label: 'Trigger sync manually and from webhook',
-      next: 'Run a manual sync and configure a Gitea webhook connection.',
-      ...readinessState(syncTriggered > 0 && webhookReady, `${syncTriggered} sync ops / ${assetCounts.webhook_connection || 0} webhooks`, syncTriggered > 0 || webhookReady)
+      next: 'Run a manual sync and receive or replay a Gitea webhook event.',
+      ...readinessState(syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0, `${syncTriggered} sync ops / ${giteaWebhooks} Gitea webhooks / ${giteaWebhookEvents} Gitea events`, syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0)
     },
     {
       key: 'github_actions',
