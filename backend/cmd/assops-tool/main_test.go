@@ -298,6 +298,58 @@ func TestCountAPITypeMetadata(t *testing.T) {
 	}
 }
 
+func TestFirstVersionReadinessReportRequiresGitHubActionGraphLink(t *testing.T) {
+	withoutLink := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "pipeline_run"},
+	}, nil, nil, map[string]any{
+		"edges": []any{},
+	})
+	if got := readinessByKey(t, withoutLink, "github_actions"); got.Status != "partial" || got.Evidence != "1 pipeline runs / 0 graph links" {
+		t.Fatalf("github actions without graph link = %#v, want partial with link evidence", got)
+	}
+
+	withLink := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "pipeline_run"},
+	}, nil, nil, map[string]any{
+		"edges": []any{
+			map[string]any{
+				"from_asset_id": "git_remote:42",
+				"to_asset_id":   "github_action_run:101",
+				"relation_type": "triggered_by",
+			},
+		},
+	})
+	if got := readinessByKey(t, withLink, "github_actions"); got.Status != "ready" || got.Evidence != "1 pipeline runs / 1 graph links" {
+		t.Fatalf("github actions with graph link = %#v, want ready", got)
+	}
+
+	wrongLink := firstVersionReadinessReportWithGraph(nil, nil, nil, map[string]any{
+		"edges": []any{
+			map[string]any{
+				"from_asset_id": "repository:repo-1",
+				"to_asset_id":   "github_action_run:run-1",
+				"relation_type": "owns",
+			},
+		},
+	})
+	if got := readinessByKey(t, wrongLink, "github_actions"); got.Status != "missing" || got.Evidence != "0 pipeline runs / 0 graph links" {
+		t.Fatalf("github actions with unrelated graph edge = %#v, want missing", got)
+	}
+}
+
+func TestCountGitHubActionGraphLinks(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "git_remote:1", "to_asset_id": "github_action_run:1", "relation_type": "triggered_by"},
+			map[string]any{"from_asset_id": "git_remote:2", "to_asset_id": "github_action_run:2", "relation_type": "owns"},
+			map[string]any{"from_asset_id": "repository:1", "to_asset_id": "github_action_run:3", "relation_type": "triggered_by"},
+		},
+	}
+	if got := countGitHubActionGraphLinks(graph); got != 1 {
+		t.Fatalf("countGitHubActionGraphLinks = %d, want 1", got)
+	}
+}
+
 func TestFirstVersionReadinessReportApprovalReadinessMatrix(t *testing.T) {
 	withoutSummary := firstVersionReadinessReport(nil, []map[string]any{
 		{"operation_type": "approval.notify", "status": "completed"},

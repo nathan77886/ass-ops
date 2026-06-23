@@ -1308,13 +1308,14 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	graphNodes := len(apiItemsByKey(graph, "nodes"))
 	graphEdges := len(apiItemsByKey(graph, "edges"))
 	graphEvidence := graphNodes + graphEdges
+	githubActionLinks := countGitHubActionGraphLinks(graph)
 
 	rows := []readinessRow{
 		readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0, assetCounts["project"], false),
 		readinessItem("repositories", "Attach source and mirror repositories", "Add repository metadata and at least two Git remotes.", assetCounts["repository"] > 0 && assetCounts["git_remote"] >= 2, fmt.Sprintf("%d repos / %d remotes", assetCounts["repository"], assetCounts["git_remote"]), assetCounts["repository"] > 0 || assetCounts["git_remote"] > 0),
 		readinessItem("repo_sync", "Define RepoSyncAsset", "Create a RepoSyncAsset between source and mirror remotes.", assetCounts["repo_sync"] > 0, assetCounts["repo_sync"], false),
 		readinessItem("sync_trigger", "Trigger sync manually and from webhook", "Run a manual sync and receive or replay a Gitea webhook event.", syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0, fmt.Sprintf("%d sync ops / %d Gitea webhooks / %d Gitea events", syncTriggered, giteaWebhooks, giteaWebhookEvents), syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0),
-		readinessItem("github_actions", "See GitHub Actions state", "Sync GitHub Actions for the mirror remote or receive workflow_run webhooks.", assetCounts["pipeline_run"] > 0, assetCounts["pipeline_run"], false),
+		readinessItem("github_actions", "See GitHub Actions state", "Sync GitHub Actions for the mirror remote or receive workflow_run webhooks.", assetCounts["pipeline_run"] > 0 && githubActionLinks > 0, fmt.Sprintf("%d pipeline runs / %d graph links", assetCounts["pipeline_run"], githubActionLinks), assetCounts["pipeline_run"] > 0 || githubActionLinks > 0),
 		readinessItem("ssh", "Register SSH machines and audited commands", "Register an SSH machine and run an approval-gated command.", assetCounts["host"] > 0 && sshRuns > 0, fmt.Sprintf("%d hosts / %d commands", assetCounts["host"], sshRuns), assetCounts["host"] > 0 || sshRuns > 0),
 		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0, fmt.Sprintf("%d targets / %d Argo connections / %d sync ops", assetCounts["deployment_target"], assetCounts["argo_connection"], operationCounts["argo.apps.sync"]), argoEvidence > 0),
 		readinessItem("operations", "View operation history and logs", "Run any controlled operation and inspect its logs.", operationRuns > 0 && operationLogs > 0, fmt.Sprintf("%d runs / %d with logs", operationRuns, operationLogs), operationRuns > 0),
@@ -1427,6 +1428,20 @@ func countAPITypeMetadata(rows []map[string]any, typ, key, value string) int {
 	for _, row := range rows {
 		metadata := mapFromAPI(row["metadata"])
 		if fmt.Sprint(row["asset_type"]) == typ && fmt.Sprint(metadata[key]) == value {
+			count++
+		}
+	}
+	return count
+}
+
+func countGitHubActionGraphLinks(graph map[string]any) int {
+	count := 0
+	for _, edge := range apiItemsByKey(graph, "edges") {
+		from := fmt.Sprint(edge["from_asset_id"])
+		to := fmt.Sprint(edge["to_asset_id"])
+		if fmt.Sprint(edge["relation_type"]) == "triggered_by" &&
+			strings.HasPrefix(from, "git_remote:") &&
+			strings.HasPrefix(to, "github_action_run:") {
 			count++
 		}
 	}

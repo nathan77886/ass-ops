@@ -583,6 +583,14 @@ function graphItems(graph: AnyRow = {}, key: string) {
   return Array.isArray(graph[key]) ? graph[key] : [];
 }
 
+function countGitHubActionGraphLinks(graph: AnyRow = {}) {
+  return graphItems(graph, 'edges').filter((edge: AnyRow) =>
+    String(edge.relation_type || '') === 'triggered_by' &&
+    String(edge.from_asset_id || '').startsWith('git_remote:') &&
+    String(edge.to_asset_id || '').startsWith('github_action_run:')
+  ).length;
+}
+
 function graphPayloadAvailable(graph: AnyRow | null) {
   if (!graph) return false;
   return Object.prototype.hasOwnProperty.call(graph, 'nodes') || Object.prototype.hasOwnProperty.call(graph, 'edges');
@@ -608,6 +616,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const operationRuns = Math.max(assetCounts.operation_run || 0, operations.length);
   const operationLogs = countOperationRowsWithLogs(operations);
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
+  const githubActionLinks = countGitHubActionGraphLinks(graph);
   const graphNodes = graphItems(graph, 'nodes').length;
   const graphEdges = graphItems(graph, 'edges').length;
   const graphEvidence = graphNodes + graphEdges;
@@ -640,7 +649,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'github_actions',
       label: 'See GitHub Actions state',
       next: 'Sync GitHub Actions for the mirror remote or receive workflow_run webhooks.',
-      ...readinessState((assetCounts.pipeline_run || 0) > 0, assetCounts.pipeline_run || 0)
+      ...readinessState((assetCounts.pipeline_run || 0) > 0 && githubActionLinks > 0, `${assetCounts.pipeline_run || 0} pipeline runs / ${githubActionLinks} graph links`, (assetCounts.pipeline_run || 0) > 0 || githubActionLinks > 0)
     },
     {
       key: 'ssh',
