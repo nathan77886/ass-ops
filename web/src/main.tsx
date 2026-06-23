@@ -137,7 +137,7 @@ function useLoad<T>(loader: () => Promise<T>, deps: React.DependencyList) {
       setData(next);
     }).catch((err) => {
       if (!alive) return;
-      setError(err.message);
+      setError(err instanceof Error ? err.message : String(err || 'Request failed'));
     }).finally(() => alive && setLoading(false));
     return () => { alive = false; };
   }, [...deps, tick]);
@@ -567,13 +567,26 @@ function countByField(rows: AnyRow[] = [], field: string) {
   }, {});
 }
 
+function countOperationRowsWithLogs(rows: AnyRow[] = []) {
+  return rows.filter((row) => Number(row.log_count || 0) > 0).length;
+}
+
+function graphItems(graph: AnyRow = {}, key: string) {
+  return Array.isArray(graph[key]) ? graph[key] : [];
+}
+
+function graphPayloadAvailable(graph: AnyRow | null) {
+  if (!graph) return false;
+  return Object.prototype.hasOwnProperty.call(graph, 'nodes') || Object.prototype.hasOwnProperty.call(graph, 'edges');
+}
+
 function readinessState(done: boolean, evidence: React.ReactNode, hasPartialEvidence?: boolean) {
   if (done) return { status: 'ready', color: 'green', evidence };
   if (hasPartialEvidence ?? Boolean(evidence)) return { status: 'partial', color: 'gold', evidence };
   return { status: 'missing', color: 'red', evidence };
 }
 
-function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] = [], approvalSummary: AnyRow = {}) {
+function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] = [], approvalSummary: AnyRow = {}, graph: AnyRow = {}) {
   const assetCounts = countByField(assets, 'asset_type');
   const operationCounts = countByField(operations, 'operation_type');
   const syncTriggered = (operationCounts['repo.sync'] || 0) + (operationCounts['repo.sync_remote'] || 0);
@@ -582,7 +595,12 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0);
   const approvalEvidence = Number(approvalSummary.total || 0);
   const pendingApprovalOps = operations.filter((row) => String(row.status || '') === 'pending_approval').length;
+  const operationRuns = Math.max(assetCounts.operation_run || 0, operations.length);
+  const operationLogs = countOperationRowsWithLogs(operations);
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
+  const graphNodes = graphItems(graph, 'nodes').length;
+  const graphEdges = graphItems(graph, 'edges').length;
+  const graphEvidence = graphNodes + graphEdges;
   return [
     {
       key: 'project',
@@ -630,7 +648,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'operations',
       label: 'View operation history and logs',
       next: 'Run any controlled operation and inspect its logs.',
-      ...readinessState((assetCounts.operation_run || operations.length || 0) > 0, assetCounts.operation_run || operations.length || 0)
+      ...readinessState(operationRuns > 0 && operationLogs > 0, `${operationRuns} runs / ${operationLogs} with logs`, operationRuns > 0)
     },
     {
       key: 'approval',
@@ -642,7 +660,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'context',
       label: 'Generate AI-readable context from graph',
       next: 'Create an agent task or AI runtime after syncing the canonical asset ledger.',
-      ...readinessState(contextEvidence > 0, contextEvidence)
+      ...readinessState(contextEvidence > 0 && graphEvidence > 0, `${contextEvidence} context assets / ${graphNodes} graph nodes / ${graphEdges} graph edges`, contextEvidence > 0 || graphEvidence > 0)
     }
   ];
 }
@@ -823,9 +841,11 @@ function graphNodeColor(type: string) {
 function Dashboard() {
   const ops = useLoad(() => api('/api/operations'), []);
   const assets = useLoad(() => api('/api/assets'), []);
+  const graph = useLoad(() => api('/api/assets/graph'), []);
   const approvalSummary = useLoad(() => api('/api/operation-approvals/summary'), []);
-  const readinessRows = firstVersionReadinessRows(assets.data?.items || [], ops.data?.items || [], approvalSummary.data || {});
+  const readinessRows = firstVersionReadinessRows(assets.data?.items || [], ops.data?.items || [], approvalSummary.data || {}, graph.data || {});
   const readinessCounts = countByField(readinessRows, 'status');
+  const graphWarning = graph.error ? `Asset graph unavailable: ${graph.error}` : graph.data && !graphPayloadAvailable(graph.data) ? 'Asset graph response missing nodes or edges' : '';
   return (
     <Space direction="vertical" size={16} className="full">
       <Typography.Title level={2}>Dashboard</Typography.Title>
@@ -835,6 +855,7 @@ function Dashboard() {
         <Card><Typography.Text type="secondary">Ready checks</Typography.Text><Typography.Title level={3}>{readinessCounts.ready || 0}/{readinessRows.length}</Typography.Title></Card>
         <Card><Typography.Text type="secondary">Needs evidence</Typography.Text><Typography.Title level={3}>{(readinessCounts.partial || 0) + (readinessCounts.missing || 0)}</Typography.Title></Card>
       </div>
+      {graphWarning ? <Alert showIcon closable type="warning" message={graphWarning} action={<Button size="small" onClick={graph.reload}>Retry</Button>} /> : null}
       <Card title="First-Version Readiness">
         <Table<AnyRow>
           rowKey="key"
