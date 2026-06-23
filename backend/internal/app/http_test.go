@@ -495,6 +495,56 @@ func TestDeploymentExecutionReadinessDryRun(t *testing.T) {
 	}
 }
 
+func TestArgoPodLogQueryPreviewIsReadOnlyAndRedacted(t *testing.T) {
+	preview := argoPodLogQueryPreview("api-7d9f", "web", 5000, 999999999, map[string]any{
+		"id":           "target-1",
+		"name":         "prod",
+		"environment":  "prod",
+		"cluster_name": "prod-cluster",
+		"namespace":    "billing",
+		"status":       "Healthy",
+	})
+	if preview["mode"] != "read_only_preview" ||
+		preview["query_state"] != "blocked" ||
+		preview["execution_enabled"] != false ||
+		preview["external_call_made"] != false ||
+		preview["kubernetes_api_call"] != false ||
+		preview["argocd_api_call"] != false ||
+		preview["log_body_included"] != false ||
+		preview["contains_secret"] != false ||
+		preview["contains_token"] != false {
+		t.Fatalf("pod log preview guardrails = %#v", preview)
+	}
+	query := mapFromAny(preview["query"])
+	if query["pod_name"] != "api-7d9f" || query["container_name"] != "web" || query["namespace"] != "billing" || query["tail_lines"] != 1000 || query["since_seconds"] != 86400 {
+		t.Fatalf("pod log query = %#v", query)
+	}
+	target := mapFromAny(preview["deployment_target"])
+	if target["name"] != "prod" || target["cluster_name"] != "prod-cluster" || target["namespace"] != "billing" {
+		t.Fatalf("pod log target = %#v", target)
+	}
+	disabledBackends := stringSliceFromAny(preview["disabled_backends"])
+	if len(disabledBackends) != 3 || disabledBackends[0] != "kubectl_logs" || disabledBackends[2] != "argocd_pod_logs" {
+		t.Fatalf("pod log disabled backends = %#v", disabledBackends)
+	}
+	suppressed := stringSliceFromAny(preview["suppressed_fields"])
+	if len(suppressed) != 7 || suppressed[0] != "kubeconfig" || suppressed[3] != "log_body" {
+		t.Fatalf("pod log suppressed fields = %#v", suppressed)
+	}
+}
+
+func TestArgoPodLogQueryPreviewReportsMissingTargetMetadata(t *testing.T) {
+	preview := argoPodLogQueryPreview("api", "", 0, 60, map[string]any{"id": "target-1", "name": "prod"})
+	query := mapFromAny(preview["query"])
+	if query["tail_lines"] != 200 || query["since_seconds"] != 60 {
+		t.Fatalf("pod log default query = %#v", query)
+	}
+	blockedReasons := stringSliceFromAny(preview["blocked_reasons"])
+	if !containsString(blockedReasons, "namespace_missing") || !containsString(blockedReasons, "cluster_name_missing") {
+		t.Fatalf("pod log blocked reasons = %#v", blockedReasons)
+	}
+}
+
 func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 	sql := assetInventorySQL()
 	for _, token := range []string{

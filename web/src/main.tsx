@@ -4058,6 +4058,8 @@ function ConfigPage() {
   const project = projectPick.selected;
   const [argoOpen, setArgoOpen] = useState(false);
   const [argoSyncOpID, setArgoSyncOpID] = useState<string>();
+  const [podLogPreview, setPodLogPreview] = useState<AnyRow>();
+  const [podLogLoading, setPodLogLoading] = useState(false);
   const [sshOpen, setSSHOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const argoConnections = useLoad(() => project ? api(`/api/projects/${project.id}/argo/connections`) : Promise.resolve({ items: [] }), [project?.id]);
@@ -4151,6 +4153,28 @@ function ConfigPage() {
       message.error(error.message);
     }
   }
+  async function previewPodLogs(values: AnyRow) {
+    if (!project) return;
+    setPodLogLoading(true);
+    try {
+      const result = await api(`/api/projects/${project.id}/argo/pod-log-query-preview`, {
+        method: 'POST',
+        body: JSON.stringify({
+          deployment_target_id: values.deployment_target_id,
+          pod_name: values.pod_name,
+          container_name: values.container_name,
+          tail_lines: Number(values.tail_lines || 200),
+          since_seconds: Number(values.since_seconds || 0)
+        })
+      });
+      setPodLogPreview(result);
+      message.success('Pod log query preview ready');
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setPodLogLoading(false);
+    }
+  }
   async function runSSHCommand(values: AnyRow) {
     if (!sshPick.selectedID) {
       message.error('Select an SSH machine first');
@@ -4225,6 +4249,39 @@ function ConfigPage() {
           {deploymentPosture.summary !== 'No deployment targets yet' && <Alert showIcon type={deploymentPosture.unhealthy > 0 ? 'warning' : 'success'} message={deploymentPosture.summary} />}
           {deploymentExecutionGuardrail && <Alert showIcon type={deploymentExecutionGuardrail.type} message={deploymentExecutionGuardrail.message} description={deploymentExecutionGuardrail.description} />}
           {rollbackGuardrail && <Alert showIcon type={rollbackGuardrail.type} message={rollbackGuardrail.message} description={rollbackGuardrail.description} />}
+          <Card title="Pod log query">
+            <Space direction="vertical" size={12} className="full">
+              <Form layout="inline" onFinish={previewPodLogs} initialValues={{ tail_lines: 200, since_seconds: 0 }}>
+                <Form.Item name="deployment_target_id" rules={[{ required: true, message: 'target is required' }]}>
+                  <Select placeholder="Target" style={{ width: 220 }} options={(deploymentTargets.data?.items || []).map((target: AnyRow) => ({ value: target.id, label: `${target.name || target.namespace} (${target.environment || 'env'})` }))} />
+                </Form.Item>
+                <Form.Item name="pod_name" rules={[{ required: true, message: 'pod is required' }]}>
+                  <Input placeholder="pod name" style={{ width: 180 }} />
+                </Form.Item>
+                <Form.Item name="container_name">
+                  <Input placeholder="container" style={{ width: 150 }} />
+                </Form.Item>
+                <Form.Item name="tail_lines">
+                  <Input type="number" min={1} max={1000} placeholder="tail" style={{ width: 90 }} />
+                </Form.Item>
+                <Form.Item name="since_seconds">
+                  <Input type="number" min={0} max={86400} placeholder="since sec" style={{ width: 110 }} />
+                </Form.Item>
+                <Button htmlType="submit" loading={podLogLoading} disabled={!project || !(deploymentTargets.data?.items || []).length}>Preview</Button>
+              </Form>
+              {podLogPreview && (
+                <Space direction="vertical" size={8} className="full">
+                  <Space wrap>
+                    <Tag color="gold">{podLogPreview.query_state || 'blocked'}</Tag>
+                    <Tag>{podLogPreview.execution_enabled ? 'execution enabled' : 'execution disabled'}</Tag>
+                    <Tag>{podLogPreview.kubernetes_api_call ? 'k8s called' : 'no k8s call'}</Tag>
+                    <Tag>{podLogPreview.log_body_included ? 'log body included' : 'no log body'}</Tag>
+                  </Space>
+                  <JSONBlock value={podLogPreview} />
+                </Space>
+              )}
+            </Space>
+          </Card>
           <Table<AnyRow> rowKey="id" dataSource={argoRows} pagination={false} columns={[
             { title: 'Name', dataIndex: 'name' },
             { title: 'Server', dataIndex: 'server_url' },

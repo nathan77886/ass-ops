@@ -173,6 +173,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/projects/{id}/deployment-targets", s.listDeploymentTargets)
 		r.Get("/api/projects/{id}/deployment-records", s.listDeploymentRecords)
 		r.Get("/api/projects/{id}/rollback-points", s.listRollbackPoints)
+		r.Post("/api/projects/{id}/argo/pod-log-query-preview", s.previewArgoPodLogQuery)
 		r.Post("/api/projects/{id}/webhook-connections", s.createWebhookConnection)
 		r.Get("/api/projects/{id}/webhook-connections", s.listWebhookConnections)
 		r.Get("/api/projects/{id}/webhook-events", s.listWebhookEvents)
@@ -14354,6 +14355,99 @@ func (s *Server) listRollbackPoints(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := queryMaps(r.Context(), s.store.DB, rollbackPointReadinessSQL(500), projectID)
 	writeQueryResult(w, items, err)
+}
+
+func (s *Server) previewArgoPodLogQuery(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "deployment_target", ProjectID: projectID}, "read") {
+		return
+	}
+	var req struct {
+		DeploymentTargetID string `json:"deployment_target_id"`
+		PodName            string `json:"pod_name"`
+		ContainerName      string `json:"container_name"`
+		TailLines          int    `json:"tail_lines"`
+		SinceSeconds       int    `json:"since_seconds"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.DeploymentTargetID = strings.TrimSpace(req.DeploymentTargetID)
+	req.PodName = strings.TrimSpace(req.PodName)
+	req.ContainerName = strings.TrimSpace(req.ContainerName)
+	if req.DeploymentTargetID == "" {
+		writeError(w, http.StatusBadRequest, "deployment_target_id is required")
+		return
+	}
+	if req.PodName == "" {
+		writeError(w, http.StatusBadRequest, "pod_name is required")
+		return
+	}
+	target, err := queryOne(r.Context(), s.store.DB, `
+		SELECT id, project_id, name, environment, cluster_name, namespace, status
+		FROM deployment_targets
+		WHERE id=$1 AND project_id=$2`, req.DeploymentTargetID, projectID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, argoPodLogQueryPreview(req.PodName, req.ContainerName, req.TailLines, req.SinceSeconds, target))
+}
+
+func argoPodLogQueryPreview(podName, containerName string, tailLines, sinceSeconds int, target map[string]any) map[string]any {
+	if tailLines <= 0 {
+		tailLines = 200
+	}
+	if tailLines > 1000 {
+		tailLines = 1000
+	}
+	if sinceSeconds < 0 {
+		sinceSeconds = 0
+	}
+	if sinceSeconds > 86400 {
+		sinceSeconds = 86400
+	}
+	namespace := strings.TrimSpace(fmt.Sprint(target["namespace"]))
+	clusterName := strings.TrimSpace(fmt.Sprint(target["cluster_name"]))
+	status := strings.TrimSpace(fmt.Sprint(target["status"]))
+	blockedReasons := []string{"pod_log_backend_disabled", "kubernetes_client_not_bound"}
+	if namespace == "" || namespace == "<nil>" {
+		blockedReasons = append(blockedReasons, "namespace_missing")
+	}
+	if clusterName == "" || clusterName == "<nil>" {
+		blockedReasons = append(blockedReasons, "cluster_name_missing")
+	}
+	return map[string]any{
+		"mode":                "read_only_preview",
+		"query_state":         "blocked",
+		"execution_enabled":   false,
+		"external_call_made":  false,
+		"kubernetes_api_call": false,
+		"argocd_api_call":     false,
+		"log_body_included":   false,
+		"contains_secret":     false,
+		"contains_token":      false,
+		"deployment_target": map[string]any{
+			"id":           target["id"],
+			"name":         target["name"],
+			"environment":  target["environment"],
+			"cluster_name": clusterName,
+			"namespace":    namespace,
+			"status":       status,
+		},
+		"query": map[string]any{
+			"pod_name":       podName,
+			"container_name": containerName,
+			"namespace":      namespace,
+			"tail_lines":     tailLines,
+			"since_seconds":  sinceSeconds,
+		},
+		"required_controls": []string{"deployment_target_review", "kubeconfig_binding", "namespace_confirmation", "pod_name_confirmation", "operator_confirmation"},
+		"disabled_backends": []string{"kubectl_logs", "kubernetes_pod_log_api", "argocd_pod_logs"},
+		"suppressed_fields": []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret"},
+		"blocked_reasons":   blockedReasons,
+		"next_step":         "Bind a reviewed kubeconfig and implement approval-gated pod log retrieval before returning log bodies.",
+	}
 }
 
 func rollbackPointReadinessSQL(limit int) string {
