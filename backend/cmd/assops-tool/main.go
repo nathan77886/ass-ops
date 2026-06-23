@@ -1273,7 +1273,14 @@ func getProjectReadiness(base, token string) error {
 		warnings = append(warnings, "approval summary unavailable: "+err.Error())
 		approvals = map[string]any{}
 	}
-	report := firstVersionReadinessReport(apiItems(assets), apiItems(operations), approvals)
+	graph, err := getAPIJSON(base, token, "/api/assets/graph")
+	if err != nil {
+		warnings = append(warnings, "asset graph unavailable: "+err.Error())
+		graph = map[string]any{}
+	} else if !assetGraphPayloadAvailable(graph) {
+		warnings = append(warnings, "asset graph response missing nodes or edges")
+	}
+	report := firstVersionReadinessReportWithGraph(apiItems(assets), apiItems(operations), approvals, graph)
 	if len(warnings) > 0 {
 		report["warnings"] = warnings
 	}
@@ -1281,6 +1288,10 @@ func getProjectReadiness(base, token string) error {
 }
 
 func firstVersionReadinessReport(assets, operations []map[string]any, approvals map[string]any) map[string]any {
+	return firstVersionReadinessReportWithGraph(assets, operations, approvals, nil)
+}
+
+func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, approvals, graph map[string]any) map[string]any {
 	assetCounts := countAPIField(assets, "asset_type")
 	operationCounts := countAPIField(operations, "operation_type")
 	syncTriggered := operationCounts["repo.sync"] + operationCounts["repo.sync_remote"]
@@ -1292,6 +1303,9 @@ func firstVersionReadinessReport(assets, operations []map[string]any, approvals 
 	operationRuns := max(assetCounts["operation_run"], len(operations))
 	operationLogs := countOperationRowsWithLogs(operations)
 	contextEvidence := assetCounts["agent_task"] + assetCounts["ai_runtime"]
+	graphNodes := len(apiItemsByKey(graph, "nodes"))
+	graphEdges := len(apiItemsByKey(graph, "edges"))
+	graphEvidence := graphNodes + graphEdges
 
 	rows := []readinessRow{
 		readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0, assetCounts["project"], false),
@@ -1303,7 +1317,7 @@ func firstVersionReadinessReport(assets, operations []map[string]any, approvals 
 		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0, fmt.Sprintf("%d targets / %d Argo connections / %d sync ops", assetCounts["deployment_target"], assetCounts["argo_connection"], operationCounts["argo.apps.sync"]), argoEvidence > 0),
 		readinessItem("operations", "View operation history and logs", "Run any controlled operation and inspect its logs.", operationRuns > 0 && operationLogs > 0, fmt.Sprintf("%d runs / %d with logs", operationRuns, operationLogs), operationRuns > 0),
 		readinessItem("approval", "Enforce approval for high-risk operations", "Queue a high-risk action that creates an approval request.", approvalEvidence > 0 || pendingApprovalOps > 0, fmt.Sprintf("%d approvals / %d pending ops", approvalEvidence, pendingApprovalOps), approvalEvidence > 0 || pendingApprovalOps > 0),
-		readinessItem("context", "Generate AI-readable context from graph", "Create an agent task or AI runtime after syncing the canonical asset ledger.", contextEvidence > 0, contextEvidence, false),
+		readinessItem("context", "Generate AI-readable context from graph", "Create an agent task or AI runtime after syncing the canonical asset ledger.", contextEvidence > 0 && graphEvidence > 0, fmt.Sprintf("%d context assets / %d graph nodes / %d graph edges", contextEvidence, graphNodes, graphEdges), contextEvidence > 0 || graphEvidence > 0),
 	}
 
 	counts := map[string]int{"ready": 0, "partial": 0, "missing": 0}
@@ -1340,7 +1354,11 @@ func readinessItem(key, label, next string, done bool, evidence any, partial boo
 }
 
 func apiItems(payload map[string]any) []map[string]any {
-	rawItems, ok := payload["items"].([]any)
+	return apiItemsByKey(payload, "items")
+}
+
+func apiItemsByKey(payload map[string]any, key string) []map[string]any {
+	rawItems, ok := payload[key].([]any)
 	if !ok {
 		return nil
 	}
@@ -1352,6 +1370,15 @@ func apiItems(payload map[string]any) []map[string]any {
 		}
 	}
 	return items
+}
+
+func assetGraphPayloadAvailable(graph map[string]any) bool {
+	if graph == nil {
+		return false
+	}
+	_, hasNodes := graph["nodes"]
+	_, hasEdges := graph["edges"]
+	return hasNodes || hasEdges
 }
 
 func mapFromAPI(value any) map[string]any {

@@ -280,6 +280,58 @@ func TestFirstVersionReadinessReportRequiresOperationLogs(t *testing.T) {
 	}
 }
 
+func TestFirstVersionReadinessReportRequiresContextGraphEvidence(t *testing.T) {
+	missing := firstVersionReadinessReportWithGraph(nil, nil, nil, nil)
+	if got := readinessByKey(t, missing, "context"); got.Status != "missing" || got.Evidence != "0 context assets / 0 graph nodes / 0 graph edges" {
+		t.Fatalf("context readiness without context or graph evidence = %#v, want missing", got)
+	}
+
+	withoutGraph := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "ai_runtime"},
+		{"asset_type": "agent_task"},
+	}, nil, nil, nil)
+	if got := readinessByKey(t, withoutGraph, "context"); got.Status != "partial" || got.Evidence != "2 context assets / 0 graph nodes / 0 graph edges" {
+		t.Fatalf("context readiness without graph evidence = %#v, want partial with graph evidence", got)
+	}
+
+	graphOnly := firstVersionReadinessReportWithGraph(nil, nil, nil, map[string]any{
+		"nodes": []any{map[string]any{"id": "project:1"}},
+	})
+	if got := readinessByKey(t, graphOnly, "context"); got.Status != "partial" || got.Evidence != "0 context assets / 1 graph nodes / 0 graph edges" {
+		t.Fatalf("context readiness without context assets = %#v, want partial with graph evidence", got)
+	}
+
+	withGraph := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "ai_runtime"},
+	}, nil, nil, map[string]any{
+		"nodes": []any{map[string]any{"id": "project:1"}},
+		"edges": []any{map[string]any{"from_asset_id": "project:1", "to_asset_id": "repo:1"}},
+	})
+	if got := readinessByKey(t, withGraph, "context"); got.Status != "ready" || got.Evidence != "1 context assets / 1 graph nodes / 1 graph edges" {
+		t.Fatalf("context readiness with graph evidence = %#v, want ready with graph evidence", got)
+	}
+}
+
+func TestAssetGraphPayloadAvailableRequiresNodesOrEdgesKey(t *testing.T) {
+	cases := []struct {
+		name  string
+		graph map[string]any
+		want  bool
+	}{
+		{name: "nil", graph: nil, want: false},
+		{name: "empty", graph: map[string]any{}, want: false},
+		{name: "nodes", graph: map[string]any{"nodes": []any{}}, want: true},
+		{name: "edges", graph: map[string]any{"edges": []any{}}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := assetGraphPayloadAvailable(tc.graph); got != tc.want {
+				t.Fatalf("assetGraphPayloadAvailable() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCountOperationRowsWithLogsHandlesMissingLogCount(t *testing.T) {
 	rows := []map[string]any{
 		{"operation_type": "repo.sync"},
