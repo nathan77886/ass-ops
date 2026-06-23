@@ -940,6 +940,43 @@ function parseJSONField(value?: string) {
   return JSON.parse(text);
 }
 
+function projectVersionRepositoryItems(values: AnyRow, repos: AnyRow[] = [], remotes: AnyRow[] = []) {
+  const rows = Array.isArray(values.repositories) ? values.repositories : [];
+  return rows.map((row: AnyRow) => {
+    const repo = repos.find((item) => item.id === row.repository_id);
+    const remote = remotes.find((item) => item.id === row.remote_id);
+    if (!repo || !remote || remote.repository_id !== repo.id) return null;
+    const item: AnyRow = {
+      repo_id: repo.id,
+      repo_key: repo.repo_key || repo.name,
+      repo_role: repo.repo_role || 'code',
+      remote_id: remote.id,
+      remote_key: remote.remote_key || remote.name,
+      remote_role: remote.remote_role || 'mirror',
+      provider_type: remote.provider_type || remote.kind || 'git'
+    };
+    for (const key of ['tag', 'commit_sha', 'github_action_run_id', 'argo_revision']) {
+      const value = String(row[key] || '').trim();
+      if (value) item[key] = value;
+    }
+    return item;
+  }).filter(Boolean);
+}
+
+function projectVersionMetadata(values: AnyRow, repos: AnyRow[] = [], remotes: AnyRow[] = []) {
+  let metadata: AnyRow;
+  try {
+    metadata = parseJSONField(values.metadata_json);
+  } catch {
+    throw new Error('Extra metadata JSON must be valid JSON');
+  }
+  const repositories = projectVersionRepositoryItems(values, repos, remotes);
+  if (repositories.length > 0) {
+    metadata.repositories = repositories;
+  }
+  return metadata;
+}
+
 function templateParametersWithProviderAccounts(values: AnyRow, providerAccounts: AnyRow[] = []) {
   const parameters = values.parameters || parseJSONField(values.parameters_json);
   const remotes: AnyRow[] = Array.isArray(parameters.remotes) ? [...parameters.remotes] : [];
@@ -2473,17 +2510,27 @@ function ProjectDetail() {
   const projectPick = useSelectedRow(projectRows);
   const project = projectPick.selected;
   const repos = useLoad(() => project ? api(`/api/projects/${project.id}/git-repositories`) : Promise.resolve({ items: [] }), [project?.id]);
+  const repoRows = repos.data?.items || [];
+  const repoIDs = repoRows.map((row: AnyRow) => row.id).join(',');
+  const projectRemotes = useLoad(() => {
+    if (!repoRows.length) return Promise.resolve({ items: [] });
+    return Promise.all(repoRows.map((repo: AnyRow) => api(`/api/git-repositories/${repo.id}/remotes`).then((result) => (result.items || []).map((remote: AnyRow) => ({ ...remote, repository_id: repo.id, repository_key: repo.repo_key || repo.name }))))).then((groups) => ({ items: groups.flat() }));
+  }, [project?.id, repoIDs]);
   const versions = useLoad(() => project ? api(`/api/projects/${project.id}/versions`) : Promise.resolve({ items: [] }), [project?.id]);
   const [repoOpen, setRepoOpen] = useState(false);
   const [versionOpen, setVersionOpen] = useState(false);
   async function createVersion(values: AnyRow) {
     if (!project) return;
+    const metadata = projectVersionMetadata(values, repoRows, projectRemotes.data?.items || []);
+    if (!Array.isArray(metadata.repositories) || metadata.repositories.length === 0) {
+      throw new Error('Add at least one repository manifest item');
+    }
     await api(`/api/projects/${project.id}/versions`, {
       method: 'POST',
       body: JSON.stringify({
         version: values.version,
         source: values.source || 'manual',
-        metadata: parseJSONField(values.metadata_json)
+        metadata
       })
     });
     versions.reload();
@@ -2520,10 +2567,87 @@ function ProjectDetail() {
               { title: 'Created', render: (_, row) => shortText(row.created_at, 24) }
             ]}
           />
-          <CreateModal title="Create version manifest" open={versionOpen} setOpen={setVersionOpen} fields={['version', 'source', 'metadata_json']} onSubmit={createVersion} />
+          <VersionManifestModal open={versionOpen} setOpen={setVersionOpen} repos={repoRows} remotes={projectRemotes.data?.items || []} onSubmit={createVersion} />
         </>
       )}
     </Space>
+  );
+}
+
+function VersionManifestModal({ open, setOpen, repos, remotes, onSubmit }: { open: boolean; setOpen: (value: boolean) => void; repos: AnyRow[]; remotes: AnyRow[]; onSubmit: (values: AnyRow) => Promise<any> }) {
+  const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+  async function submit(values: AnyRow) {
+    setSubmitting(true);
+    try {
+      await onSubmit(values);
+      form.resetFields();
+      setOpen(false);
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+  return (
+    <Modal title="Create version manifest" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={submitting} okButtonProps={{ disabled: submitting || !repos.length || !remotes.length }} width={820} destroyOnHidden>
+      <Form form={form} layout="vertical" onFinish={submit} initialValues={{ source: 'manual', repositories: [{}] }}>
+        <Space className="full" size={12}>
+          <Form.Item name="version" label="version" rules={[{ required: true, message: 'version is required' }]} className="selector">
+            <Input placeholder="v0.1.0" />
+          </Form.Item>
+          <Form.Item name="source" label="source" className="selector">
+            <Input placeholder="manual" />
+          </Form.Item>
+        </Space>
+        {(!repos.length || !remotes.length) && <Alert type="warning" showIcon message="Add at least one Git repository and Git remote before creating a version manifest." />}
+        <Form.List name="repositories">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" size={8} className="full">
+              {fields.map((field) => (
+                <Card key={field.key} size="small" title={`Repository item ${field.name + 1}`} extra={fields.length > 1 ? <Button size="small" danger onClick={() => remove(field.name)}>Remove</Button> : null}>
+                  <div className="manifestGrid">
+                    <Form.Item {...field} name={[field.name, 'repository_id']} label="repository" rules={[{ required: true, message: 'repository is required' }]}>
+                      <Select
+                        options={repos.map((repo) => ({ value: repo.id, label: `${repo.repo_key || repo.name} (${repo.repo_role || 'code'})` }))}
+                        onChange={() => form.setFieldValue(['repositories', field.name, 'remote_id'], undefined)}
+                      />
+                    </Form.Item>
+                    <Form.Item noStyle shouldUpdate>
+                      {({ getFieldValue }) => {
+                        const repositoryID = getFieldValue(['repositories', field.name, 'repository_id']);
+                        const remoteOptions = remotes.filter((remote) => !repositoryID || remote.repository_id === repositoryID);
+                        return (
+                          <Form.Item {...field} name={[field.name, 'remote_id']} label="remote" rules={[{ required: true, message: 'remote is required' }]}>
+                            <Select options={remoteOptions.map((remote) => ({ value: remote.id, label: `${remote.repository_key || 'repo'} / ${remote.remote_key || remote.name}` }))} />
+                          </Form.Item>
+                        );
+                      }}
+                    </Form.Item>
+                    <Form.Item {...field} name={[field.name, 'tag']} label="tag">
+                      <Input placeholder="v0.1.0" />
+                    </Form.Item>
+                    <Form.Item {...field} name={[field.name, 'commit_sha']} label="commit sha">
+                      <Input placeholder="abc123" />
+                    </Form.Item>
+                    <Form.Item {...field} name={[field.name, 'github_action_run_id']} label="actions run">
+                      <Input placeholder="123456" />
+                    </Form.Item>
+                    <Form.Item {...field} name={[field.name, 'argo_revision']} label="argo revision">
+                      <Input placeholder="optional" />
+                    </Form.Item>
+                  </div>
+                </Card>
+              ))}
+              <Button onClick={() => add({})} disabled={!repos.length || !remotes.length}>Add repository item</Button>
+            </Space>
+          )}
+        </Form.List>
+        <Form.Item name="metadata_json" label="extra metadata JSON">
+          <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder='{"notes":"release candidate"}' />
+        </Form.Item>
+      </Form>
+    </Modal>
   );
 }
 

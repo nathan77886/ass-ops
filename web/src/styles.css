@@ -12,6 +12,7 @@ body { margin: 0; background: #f5f7fb; color: #172033; }
 .selector .ant-select { width: 100%; }
 .refsRow { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto; gap: 12px; align-items: end; }
 .refsRow .ant-checkbox-wrapper { min-height: 32px; align-items: center; }
+.manifestGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; align-items: start; }
 .templateAccountField { min-width: 260px; flex: 1 1 260px; }
 .templateAccountField .ant-select { width: 100%; }
 .metricGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
