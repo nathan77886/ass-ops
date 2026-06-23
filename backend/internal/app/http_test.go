@@ -12452,6 +12452,8 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 	if patchGuardrail["codex_cli_invocation"] != "disabled" || patchGuardrail["pull_request_creation"] != "disabled" {
 		t.Fatalf("patch guardrail should disable Codex CLI and PR creation: %#v", patchGuardrail)
 	}
+	codeModificationPlan := mapFromAny(patchGuardrail["code_modification_plan"])
+	assertAgentCodeModificationPlanSafe(t, codeModificationPlan)
 	blockedReasons := stringSliceFromAny(patchGuardrail["blocked_reasons"])
 	if len(blockedReasons) < 3 {
 		t.Fatalf("patch guardrail should expose blocked reasons: %#v", patchGuardrail)
@@ -12539,6 +12541,60 @@ func TestAgentCodexExecutionPlan(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAgentCodeModificationPlan(t *testing.T) {
+	got := agentCodeModificationPlan()
+	assertAgentCodeModificationPlanSafe(t, got)
+	if got["plan_ready_reason"] != "agent_code_modification_backend_disabled" {
+		t.Fatalf("unexpected plan_ready_reason: %#v", got)
+	}
+	for _, required := range []string{"source_remote_review", "branch_policy_review", "structured_patch_review", "test_plan_review", "commit_push_agent"} {
+		if !containsString(stringSliceFromAny(got["required_controls"]), required) {
+			t.Fatalf("required_controls missing %q: %#v", required, got["required_controls"])
+		}
+	}
+	for _, backend := range []string{"source_checkout", "branch_create", "file_patch_apply", "test_command_execute", "git_commit", "git_push", "pull_request_create", "commit_push_agent"} {
+		if !containsString(stringSliceFromAny(got["disabled_backends"]), backend) {
+			t.Fatalf("disabled_backends missing %q: %#v", backend, got["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"source_remote_url", "workspace_path", "branch_name", "patch_content", "diff_content", "file_content", "test_output", "token"} {
+		if !containsString(stringSliceFromAny(got["suppressed_fields"]), field) {
+			t.Fatalf("suppressed_fields missing %q: %#v", field, got["suppressed_fields"])
+		}
+	}
+	recording := mapFromAny(got["result_recording_plan"])
+	if recording["mode"] != "redacted_agent_code_modification_result_recording_plan" ||
+		recording["recording_enabled"] != false ||
+		recording["result_written"] != false ||
+		recording["operation_log_written"] != false ||
+		recording["patch_artifact_written"] != false ||
+		recording["diff_artifact_written"] != false ||
+		recording["test_result_written"] != false ||
+		recording["commit_record_written"] != false ||
+		recording["push_record_written"] != false ||
+		recording["pr_record_written"] != false ||
+		recording["raw_patch_recorded"] != false ||
+		recording["raw_diff_recorded"] != false ||
+		recording["raw_file_content_recorded"] != false ||
+		recording["raw_command_output_recorded"] != false ||
+		recording["raw_test_output_recorded"] != false {
+		t.Fatalf("result recording plan should stay disabled and redacted: %#v", recording)
+	}
+	for _, field := range []string{"source_remote_url", "branch_name", "patch_content", "diff_content", "file_content", "test_output", "token"} {
+		if !containsString(stringSliceFromAny(recording["suppressed_fields"]), field) {
+			t.Fatalf("recording suppressed_fields missing %q: %#v", field, recording["suppressed_fields"])
+		}
+	}
+	encoded, _ := json.Marshal(got)
+	encodedText := string(encoded)
+	lowerEncodedText := strings.ToLower(encodedText)
+	for _, forbidden := range []string{"do-not-serialize", "assops_", "openai_", "github_token", "private key", "bearer", "password"} {
+		if strings.Contains(lowerEncodedText, forbidden) {
+			t.Fatalf("code modification plan should not expose sensitive config hints: %s", encoded)
+		}
 	}
 }
 
@@ -12745,6 +12801,41 @@ func TestAgentPatchWorkflowGuardrail(t *testing.T) {
 	}
 	if statusByGate(sliceOfMapsFromAny(got["execution_readiness"]), "repository_mutation") != "blocked" {
 		t.Fatalf("execution_readiness should keep repository mutation blocked: %#v", got["execution_readiness"])
+	}
+	assertAgentCodeModificationPlanSafe(t, mapFromAny(got["code_modification_plan"]))
+}
+
+func assertAgentCodeModificationPlanSafe(t *testing.T, got map[string]any) {
+	t.Helper()
+	if got["mode"] != "redacted_agent_code_modification_plan" ||
+		got["plan_state"] != "blocked" ||
+		got["plan_ready"] != false ||
+		got["execution_enabled"] != false ||
+		got["mutation_enabled"] != false ||
+		got["external_call_made"] != false ||
+		got["repository_mutation_allowed"] != false ||
+		got["source_checkout_performed"] != false ||
+		got["workspace_bound"] != false ||
+		got["branch_created"] != false ||
+		got["patch_content_materialized"] != false ||
+		got["diff_materialized"] != false ||
+		got["file_patch_applied"] != false ||
+		got["tests_executed"] != false ||
+		got["git_commit_created"] != false ||
+		got["git_push_performed"] != false ||
+		got["pull_request_created"] != false ||
+		got["commit_push_agent_invoked"] != false ||
+		got["contains_token"] != false ||
+		got["contains_remote_url"] != false ||
+		got["contains_branch_name"] != false ||
+		got["contains_workspace_path"] != false ||
+		got["contains_patch_content"] != false ||
+		got["contains_diff_content"] != false ||
+		got["contains_file_content"] != false {
+		t.Fatalf("agent code modification plan should stay disabled and redacted: %#v", got)
+	}
+	if !containsString(stringSliceFromAny(got["blocked_reasons"]), "commit_push_agent_not_invoked") {
+		t.Fatalf("blocked_reasons should include commit_push_agent_not_invoked: %#v", got["blocked_reasons"])
 	}
 }
 

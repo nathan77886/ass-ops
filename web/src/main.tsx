@@ -3919,13 +3919,19 @@ function AgentTasks() {
     }
     if (row.tool_name === 'patch.prepare') {
       const guardrail = output.patch_workflow_guardrail || {};
+      const codePlan = guardrail.code_modification_plan || {};
       const reasons = Array.isArray(guardrail.blocked_reasons) ? guardrail.blocked_reasons : [];
       const readiness = agentReadinessGateTags(guardrail.execution_readiness);
       return <Space size={4} wrap>
-        <Tag color="gold">{guardrail.execution_mode || input.mode || 'simulation_only'}</Tag>
+        <Tag color="gold">{codePlan.plan_state || guardrail.execution_mode || input.mode || 'simulation_only'}</Tag>
         <Tag color={guardrail.repository_mutation_allowed === true ? 'red' : 'green'}>{guardrail.repository_mutation_allowed === true ? 'Repo mutation allowed' : 'Repo mutation blocked'}</Tag>
+        <Tag color={codePlan.source_checkout_performed === true ? 'red' : 'green'}>{codePlan.source_checkout_performed === true ? 'Checkout done' : 'No checkout'}</Tag>
+        <Tag color={codePlan.branch_created === true ? 'red' : 'green'}>{codePlan.branch_created === true ? 'Branch created' : 'No branch'}</Tag>
+        <Tag color={codePlan.diff_materialized === true ? 'red' : 'green'}>{codePlan.diff_materialized === true ? 'Diff ready' : 'No diff'}</Tag>
+        <Tag color={codePlan.commit_push_agent_invoked === true ? 'blue' : 'gold'}>{codePlan.commit_push_agent_invoked === true ? 'Commit agent invoked' : 'No commit agent'}</Tag>
         {readiness}
         {reasons.length ? <Typography.Text>{reasons.length} blocked reason{reasons.length === 1 ? '' : 's'}</Typography.Text> : <Typography.Text>{output.message || 'Mutation disabled'}</Typography.Text>}
+        {codePlan.message ? <Typography.Text type="secondary">{shortText(codePlan.message, 96)}</Typography.Text> : null}
         {guardrail.next_step ? <Typography.Text type="secondary">{shortText(guardrail.next_step, 96)}</Typography.Text> : null}
       </Space>;
     }
