@@ -3509,6 +3509,33 @@ function deploymentExecutionReadinessView(row: AnyRow) {
   );
 }
 
+function rollbackExecutionPlanView(row: AnyRow) {
+  const plan = row.rollback_execution_plan || {};
+  const requiredControls = Array.isArray(plan.required_controls) ? plan.required_controls : [];
+  const disabledBackends = Array.isArray(plan.disabled_backends) ? plan.disabled_backends : [];
+  const suppressedFields = Array.isArray(plan.suppressed_fields) ? plan.suppressed_fields : [];
+  if (!plan.mode) {
+    return <Tag>{row.rollback_execution_mode || 'read_only_preview'}</Tag>;
+  }
+  return (
+    <Space direction="vertical" size={2}>
+      <Space size={4} wrap>
+        <Tag>{String(plan.mode).replaceAll('_', ' ')}</Tag>
+        <Tag color={plan.plan_state === 'blocked' ? 'red' : 'blue'}>plan {String(plan.plan_state || 'blocked')}</Tag>
+        <Tag color={plan.prerequisite_state === 'metadata_available' ? 'blue' : 'gold'}>metadata {String(plan.prerequisite_state || 'metadata_blocked')}</Tag>
+        <Tag>controls {requiredControls.length}</Tag>
+        <Tag>disabled backends {disabledBackends.length}</Tag>
+        <Tag>suppressed {suppressedFields.length}</Tag>
+      </Space>
+      <Space size={4} wrap>
+        <Tag>{plan.kubernetes_api_call_made === true ? 'k8s called' : 'no k8s call'}</Tag>
+        <Tag>{plan.helm_command_invoked === true ? 'helm invoked' : 'helm disabled'}</Tag>
+        <Tag>{plan.rollback_mutation || 'disabled'}</Tag>
+      </Space>
+    </Space>
+  );
+}
+
 function deploymentStatusUnhealthy(status: any) {
   const value = String(status || '').toLowerCase();
   return ['failed', 'error', 'degraded', 'outofsync', 'missing', 'unknown'].includes(value);
@@ -3704,7 +3731,7 @@ function ConfigPage() {
             { title: 'Revision', dataIndex: 'revision' },
             { title: 'Readiness', render: (_, row) => <Tag color={rollbackReadinessColor(row.rollback_readiness)}>{row.rollback_readiness || 'unknown'}</Tag> },
             { title: 'Reason', dataIndex: 'rollback_readiness_reason', render: (value) => value || '-' },
-            { title: 'Mode', dataIndex: 'rollback_execution_mode', render: (value) => <Tag>{value || 'read_only_preview'}</Tag> },
+            { title: 'Execution', render: (_, row) => rollbackExecutionPlanView(row) },
             { title: 'Status', render: (_, row) => <Tag color={argoStatusColor(row.status)}>{row.status}</Tag> },
             { title: 'Captured', dataIndex: 'captured_at' }
           ]} />

@@ -13027,6 +13027,64 @@ func rollbackGuardrailSummary(rollbackPoints []map[string]any) map[string]any {
 	}
 }
 
+// rollbackExecutionPlan mirrors rollbackPointReadinessSQL's redacted JSON contract for unit tests and fallback callers.
+func rollbackExecutionPlan(readiness, mode string) map[string]any {
+	prerequisiteState := "metadata_blocked"
+	if strings.EqualFold(strings.TrimSpace(readiness), "previewable") {
+		prerequisiteState = "metadata_available"
+	}
+	mode = strings.TrimSpace(mode)
+	if mode == "" || mode == "<nil>" {
+		mode = "read_only_preview"
+	}
+	return map[string]any{
+		"mode":                           "redacted_rollback_execution_plan",
+		"plan_state":                     "blocked",
+		"prerequisite_state":             prerequisiteState,
+		"plan_ready":                     false,
+		"plan_ready_reason":              "rollback_execution_backend_disabled",
+		"execution_enabled":              false,
+		"execution_mode":                 mode,
+		"requires_approval":              true,
+		"approval_action":                "deployment.rollback",
+		"requires_environment_review":    true,
+		"requires_kubeconfig_binding":    true,
+		"requires_revision_verification": true,
+		"requires_manifest_diff":         true,
+		"requires_dry_run_preflight":     true,
+		"requires_operator_confirmation": true,
+		"rollback_request_materialized":  false,
+		"revision_verified":              false,
+		"manifest_diff_rendered":         false,
+		"dry_run_performed":              false,
+		"kubernetes_client_constructed":  false,
+		"helm_rollback_invoked":          false,
+		"kubectl_rollout_invoked":        false,
+		"argocd_rollback_invoked":        false,
+		"rollback_started":               false,
+		"external_call_made":             false,
+		"kubernetes_api_call_made":       false,
+		"helm_command_invoked":           false,
+		"rollback_mutation":              "disabled",
+		"kubeconfig_included":            false,
+		"secret_included":                false,
+		"manifest_body_included":         false,
+		"helm_values_included":           false,
+		"cluster_credential_included":    false,
+		"revision_value_included":        false,
+		"contains_token":                 false,
+		"contains_kubeconfig":            false,
+		"contains_secret":                false,
+		"contains_manifest_body":         false,
+		"rollback_boundary_redacted":     true,
+		"blocked_reasons":                []string{"rollback_execution_backend_disabled", "rollback_mutation_not_armed"},
+		"required_controls":              []string{"operation_approval", "environment_review", "kubeconfig_binding", "revision_verification", "manifest_diff", "server_side_dry_run", "operator_confirmation"},
+		"disabled_backends":              []string{"helm_rollback", "kubectl_rollout_undo", "argocd_rollback", "rollback_execute"},
+		"suppressed_fields":              []string{"kubeconfig", "cluster_token", "authorization_header", "secret_manifest", "rendered_manifest", "helm_values", "image_pull_secret", "environment_secret", "revision_value"},
+		"execution_sequence":             []string{"request_approval", "bind_environment", "bind_kubeconfig", "verify_revision", "render_manifest_diff", "run_server_side_dry_run", "record_rollback_audit", "start_rollback"},
+	}
+}
+
 func countByStringField(rows []map[string]any, field string) map[string]int {
 	counts := make(map[string]int)
 	for _, row := range rows {
@@ -13661,7 +13719,53 @@ func rollbackPointReadinessSQL(limit int) string {
 				WHEN COALESCE(rp.revision, '')='' THEN 'rollback point has no captured revision'
 				WHEN COALESCE(rp.status, '')='available' THEN 'rollback point has revision metadata; execution remains disabled in this first version'
 				ELSE 'rollback point is not available'
-			END AS rollback_readiness_reason
+			END AS rollback_readiness_reason,
+			jsonb_build_object(
+				'mode', 'redacted_rollback_execution_plan',
+				'plan_state', 'blocked',
+				'prerequisite_state', CASE WHEN COALESCE(rp.status, '')='available' AND COALESCE(rp.revision, '')<>'' THEN 'metadata_available' ELSE 'metadata_blocked' END,
+				'plan_ready', false,
+				'plan_ready_reason', 'rollback_execution_backend_disabled',
+				'execution_enabled', false,
+				'execution_mode', 'read_only_preview',
+				'requires_approval', true,
+				'approval_action', 'deployment.rollback',
+				'requires_environment_review', true,
+				'requires_kubeconfig_binding', true,
+				'requires_revision_verification', true,
+				'requires_manifest_diff', true,
+				'requires_dry_run_preflight', true,
+				'requires_operator_confirmation', true,
+				'rollback_request_materialized', false,
+				'revision_verified', false,
+				'manifest_diff_rendered', false,
+				'dry_run_performed', false,
+				'kubernetes_client_constructed', false,
+				'helm_rollback_invoked', false,
+				'kubectl_rollout_invoked', false,
+				'argocd_rollback_invoked', false,
+				'rollback_started', false,
+				'external_call_made', false,
+				'kubernetes_api_call_made', false,
+				'helm_command_invoked', false,
+				'rollback_mutation', 'disabled',
+				'kubeconfig_included', false,
+				'secret_included', false,
+				'manifest_body_included', false,
+				'helm_values_included', false,
+				'cluster_credential_included', false,
+				'revision_value_included', false,
+				'contains_token', false,
+				'contains_kubeconfig', false,
+				'contains_secret', false,
+				'contains_manifest_body', false,
+				'rollback_boundary_redacted', true,
+				'blocked_reasons', jsonb_build_array('rollback_execution_backend_disabled', 'rollback_mutation_not_armed'),
+				'required_controls', jsonb_build_array('operation_approval', 'environment_review', 'kubeconfig_binding', 'revision_verification', 'manifest_diff', 'server_side_dry_run', 'operator_confirmation'),
+				'disabled_backends', jsonb_build_array('helm_rollback', 'kubectl_rollout_undo', 'argocd_rollback', 'rollback_execute'),
+				'suppressed_fields', jsonb_build_array('kubeconfig', 'cluster_token', 'authorization_header', 'secret_manifest', 'rendered_manifest', 'helm_values', 'image_pull_secret', 'environment_secret', 'revision_value'),
+				'execution_sequence', jsonb_build_array('request_approval', 'bind_environment', 'bind_kubeconfig', 'verify_revision', 'render_manifest_diff', 'run_server_side_dry_run', 'record_rollback_audit', 'start_rollback')
+			) AS rollback_execution_plan
 		FROM rollback_points rp
 		LEFT JOIN deployment_targets dt ON dt.id=rp.deployment_target_id
 		LEFT JOIN deployment_records dr ON dr.id=rp.deployment_record_id

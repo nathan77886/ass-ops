@@ -106,6 +106,15 @@ func TestRollbackPointReadinessSQLIncludesPreviewOnlyFields(t *testing.T) {
 		"'read_only_preview' AS rollback_execution_mode",
 		"AS rollback_readiness",
 		"AS rollback_readiness_reason",
+		"AS rollback_execution_plan",
+		"redacted_rollback_execution_plan",
+		"metadata_available",
+		"metadata_blocked",
+		"rollback_execution_backend_disabled",
+		"deployment.rollback",
+		"helm_rollback",
+		"kubectl_rollout_undo",
+		"revision_value",
 		"rp.status, '')='expired'",
 		"rp.revision, '')=''",
 		"THEN 'previewable'",
@@ -117,6 +126,90 @@ func TestRollbackPointReadinessSQLIncludesPreviewOnlyFields(t *testing.T) {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("rollbackPointReadinessSQL missing %s", token)
 		}
+	}
+}
+
+func TestRollbackExecutionPlanReadOnly(t *testing.T) {
+	plan := rollbackExecutionPlan("previewable", "read_only_preview")
+	if plan["mode"] != "redacted_rollback_execution_plan" ||
+		plan["plan_state"] != "blocked" ||
+		plan["prerequisite_state"] != "metadata_available" ||
+		plan["plan_ready"] != false ||
+		plan["plan_ready_reason"] != "rollback_execution_backend_disabled" ||
+		plan["execution_enabled"] != false ||
+		plan["execution_mode"] != "read_only_preview" ||
+		plan["requires_approval"] != true ||
+		plan["approval_action"] != "deployment.rollback" ||
+		plan["requires_environment_review"] != true ||
+		plan["requires_kubeconfig_binding"] != true ||
+		plan["requires_revision_verification"] != true ||
+		plan["requires_manifest_diff"] != true ||
+		plan["requires_dry_run_preflight"] != true ||
+		plan["requires_operator_confirmation"] != true ||
+		plan["rollback_request_materialized"] != false ||
+		plan["revision_verified"] != false ||
+		plan["manifest_diff_rendered"] != false ||
+		plan["dry_run_performed"] != false ||
+		plan["kubernetes_client_constructed"] != false ||
+		plan["helm_rollback_invoked"] != false ||
+		plan["kubectl_rollout_invoked"] != false ||
+		plan["argocd_rollback_invoked"] != false ||
+		plan["rollback_started"] != false ||
+		plan["external_call_made"] != false ||
+		plan["kubernetes_api_call_made"] != false ||
+		plan["helm_command_invoked"] != false ||
+		plan["rollback_mutation"] != "disabled" ||
+		plan["kubeconfig_included"] != false ||
+		plan["secret_included"] != false ||
+		plan["manifest_body_included"] != false ||
+		plan["helm_values_included"] != false ||
+		plan["cluster_credential_included"] != false ||
+		plan["revision_value_included"] != false ||
+		plan["contains_token"] != false ||
+		plan["contains_kubeconfig"] != false ||
+		plan["contains_secret"] != false ||
+		plan["contains_manifest_body"] != false ||
+		plan["rollback_boundary_redacted"] != true {
+		t.Fatalf("rollback execution plan = %#v", plan)
+	}
+	controls := stringSliceFromAny(plan["required_controls"])
+	if len(controls) != 7 || controls[0] != "operation_approval" || controls[6] != "operator_confirmation" {
+		t.Fatalf("rollback execution controls = %#v", controls)
+	}
+	disabledBackends := stringSliceFromAny(plan["disabled_backends"])
+	if len(disabledBackends) != 4 || disabledBackends[0] != "helm_rollback" || disabledBackends[3] != "rollback_execute" {
+		t.Fatalf("rollback execution disabled backends = %#v", disabledBackends)
+	}
+	suppressedFields := stringSliceFromAny(plan["suppressed_fields"])
+	for _, field := range []string{"kubeconfig", "cluster_token", "authorization_header", "secret_manifest", "rendered_manifest", "helm_values", "image_pull_secret", "environment_secret", "revision_value"} {
+		if !slices.Contains(suppressedFields, field) {
+			t.Fatalf("rollback execution suppressed fields missing %q: %#v", field, suppressedFields)
+		}
+	}
+	blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
+	if len(blockedReasons) != 2 || blockedReasons[0] != "rollback_execution_backend_disabled" || blockedReasons[1] != "rollback_mutation_not_armed" {
+		t.Fatalf("rollback execution blocked reasons = %#v", blockedReasons)
+	}
+	executionSequence := stringSliceFromAny(plan["execution_sequence"])
+	if len(executionSequence) != 8 || executionSequence[0] != "request_approval" || executionSequence[7] != "start_rollback" {
+		t.Fatalf("rollback execution sequence = %#v", executionSequence)
+	}
+	planEncoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("marshal rollback execution plan: %v", err)
+	}
+	for _, leak := range []string{"apiVersion:", "kind: Secret", "Bearer ", "kubeconfig-data", "helm-values-secret", "revision-sha-secret"} {
+		if strings.Contains(string(planEncoded), leak) {
+			t.Fatalf("rollback execution plan leaked %q: %s", leak, planEncoded)
+		}
+	}
+
+	blocked := rollbackExecutionPlan("blocked", "")
+	if blocked["prerequisite_state"] != "metadata_blocked" ||
+		blocked["execution_mode"] != "read_only_preview" ||
+		blocked["plan_state"] != "blocked" ||
+		blocked["rollback_mutation"] != "disabled" {
+		t.Fatalf("blocked rollback execution plan = %#v", blocked)
 	}
 }
 
