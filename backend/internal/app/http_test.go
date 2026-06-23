@@ -543,6 +543,15 @@ func TestArgoPodLogQueryPreviewIsReadOnlyAndRedacted(t *testing.T) {
 		plan["contains_secret"] != false {
 		t.Fatalf("pod log retrieval plan guardrails = %#v", plan)
 	}
+	executionPlan := mapFromAny(plan["execution_plan"])
+	if executionPlan["mode"] != "pod_log_execution_plan_preview" ||
+		executionPlan["execution_state"] != "blocked" ||
+		executionPlan["prerequisite_state"] != "metadata_available" ||
+		executionPlan["planned_step_count"] != 3 ||
+		executionPlan["blocked_step_count"] != 3 {
+		t.Fatalf("pod log execution plan = %#v", executionPlan)
+	}
+	assertPodLogExecutionPlanSafe(t, executionPlan)
 	steps := sliceOfMapsFromAny(plan["steps"])
 	if len(steps) != 6 ||
 		statusByKind(steps, "operation_approval") != "blocked" ||
@@ -568,6 +577,62 @@ func TestArgoPodLogQueryPreviewReportsMissingTargetMetadata(t *testing.T) {
 	steps := sliceOfMapsFromAny(plan["steps"])
 	if statusByKind(steps, "target_scope_check") != "blocked" || plan["blocked_count"] != 4 {
 		t.Fatalf("pod log retrieval plan should block missing target metadata: %#v", plan)
+	}
+	executionPlan := mapFromAny(plan["execution_plan"])
+	if executionPlan["prerequisite_state"] != "metadata_blocked" ||
+		executionPlan["planned_step_count"] != 2 ||
+		executionPlan["blocked_step_count"] != 4 {
+		t.Fatalf("metadata-blocked pod log execution plan = %#v", executionPlan)
+	}
+	assertPodLogExecutionPlanSafe(t, executionPlan)
+}
+
+func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
+	t.Helper()
+	if executionPlan["execution_enabled"] != false ||
+		executionPlan["external_call_made"] != false ||
+		executionPlan["operation_enqueued"] != false ||
+		executionPlan["worker_job_created"] != false ||
+		executionPlan["kubeconfig_bound"] != false ||
+		executionPlan["kubernetes_client_created"] != false ||
+		executionPlan["kubernetes_api_call"] != false ||
+		executionPlan["argocd_api_call"] != false ||
+		executionPlan["kubectl_command_invoked"] != false ||
+		executionPlan["log_stream_opened"] != false ||
+		executionPlan["log_body_included"] != false ||
+		executionPlan["redacted_log_body_included"] != false ||
+		executionPlan["result_written"] != false ||
+		executionPlan["secret_included"] != false ||
+		executionPlan["kubeconfig_included"] != false ||
+		executionPlan["authorization_header_included"] != false {
+		t.Fatalf("pod log execution plan should keep all execution flags false: %#v", executionPlan)
+	}
+	for _, field := range []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret"} {
+		if !containsString(stringSliceFromAny(executionPlan["suppressed_fields"]), field) {
+			t.Fatalf("pod log execution suppressed_fields missing %q: %#v", field, executionPlan["suppressed_fields"])
+		}
+	}
+	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
+	if resultPlan["recording_enabled"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["operation_log_written"] != false ||
+		resultPlan["log_body_included"] != false ||
+		resultPlan["redacted_log_body_included"] != false ||
+		resultPlan["raw_response_included"] != false ||
+		resultPlan["kubeconfig_included"] != false ||
+		resultPlan["authorization_header_included"] != false {
+		t.Fatalf("pod log result recording plan should keep all result flags false: %#v", resultPlan)
+	}
+	for _, field := range []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret", "raw_kubernetes_response"} {
+		if !containsString(stringSliceFromAny(resultPlan["suppressed_fields"]), field) {
+			t.Fatalf("pod log result suppressed_fields missing %q: %#v", field, resultPlan["suppressed_fields"])
+		}
+	}
+	encodedExecutionPlan, _ := json.Marshal(executionPlan)
+	for _, forbidden := range []string{"apiVersion:", "kind: Secret", "Bearer secret", "kubeconfig-data", "actual log line"} {
+		if strings.Contains(string(encodedExecutionPlan), forbidden) {
+			t.Fatalf("pod log execution plan leaked %q: %s", forbidden, encodedExecutionPlan)
+		}
 	}
 }
 

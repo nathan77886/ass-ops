@@ -4416,6 +4416,10 @@ function ConfigPage() {
                     <Tag>{podLogPreview.log_body_included ? 'log body included' : 'no log body'}</Tag>
                     {podLogPreview.retrieval_plan ? <Tag color="red">retrieval {podLogPreview.retrieval_plan.plan_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan ? <Tag>{podLogPreview.retrieval_plan.step_count || 0} retrieval steps</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag color="red">execute {podLogPreview.retrieval_plan.execution_plan.execution_state || 'blocked'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.secret_included ? 'secrets included' : 'no secrets'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_written ? 'result written' : 'no result write'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.disabled_backends?.length || 0} disabled backends</Tag> : null}
                   </Space>
                   <JSONBlock value={podLogPreview} />
                 </Space>

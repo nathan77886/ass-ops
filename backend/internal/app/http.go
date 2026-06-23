@@ -15290,6 +15290,7 @@ func argoPodLogRetrievalPlan(query, target map[string]any, blockedReasons []stri
 			blocked++
 		}
 	}
+	executionPlan := argoPodLogExecutionPlan(query, target, steps, blockedReasons)
 	return map[string]any{
 		"mode":                         "pod_log_retrieval_plan_preview",
 		"plan_state":                   "blocked",
@@ -15305,11 +15306,79 @@ func argoPodLogRetrievalPlan(query, target map[string]any, blockedReasons []stri
 		"step_count":                   len(steps),
 		"steps":                        steps,
 		"blocked_reasons":              blockedReasons,
+		"execution_plan":               executionPlan,
 		"required_live_controls":       []string{"operation_approval", "environment_review", "kubeconfig_binding", "namespace_confirmation", "pod_name_confirmation", "operator_confirmation"},
 		"disabled_backends":            []string{"kubectl_logs", "kubernetes_pod_log_api", "argocd_pod_logs"},
 		"suppressed_fields":            []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret"},
 		"required_operator_action":     "Review the target and pod identity, bind a namespace-scoped kubeconfig, then implement an approval-gated live log backend.",
 		"future_execution_result_type": "redacted_log_stream",
+	}
+}
+
+func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]any, blockedReasons []string) map[string]any {
+	planned, blocked := 0, 0
+	for _, step := range steps {
+		if step["status"] == "planned" {
+			planned++
+		} else {
+			blocked++
+		}
+	}
+	namespaceReady := strings.TrimSpace(fmt.Sprint(target["namespace"])) != ""
+	clusterReady := strings.TrimSpace(fmt.Sprint(target["cluster_name"])) != ""
+	podReady := strings.TrimSpace(fmt.Sprint(query["pod_name"])) != ""
+	prerequisiteState := "metadata_blocked"
+	if namespaceReady && clusterReady && podReady {
+		prerequisiteState = "metadata_available"
+	}
+	return map[string]any{
+		"mode":                          "pod_log_execution_plan_preview",
+		"execution_state":               "blocked",
+		"prerequisite_state":            prerequisiteState,
+		"execution_enabled":             false,
+		"external_call_made":            false,
+		"operation_enqueued":            false,
+		"worker_job_created":            false,
+		"kubeconfig_bound":              false,
+		"kubernetes_client_created":     false,
+		"kubernetes_api_call":           false,
+		"argocd_api_call":               false,
+		"kubectl_command_invoked":       false,
+		"log_stream_opened":             false,
+		"log_body_included":             false,
+		"redacted_log_body_included":    false,
+		"result_written":                false,
+		"secret_included":               false,
+		"kubeconfig_included":           false,
+		"authorization_header_included": false,
+		"planned_step_count":            planned,
+		"blocked_step_count":            blocked,
+		"blocked_reasons":               blockedReasons,
+		"required_controls":             []string{"operation_approval", "environment_review", "kubeconfig_binding", "namespace_confirmation", "pod_name_confirmation", "container_scope_confirmation", "operator_confirmation", "result_redaction_review"},
+		"disabled_backends":             []string{"worker_claim", "kubeconfig_binding", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "log_stream_result_write"},
+		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret"},
+		"execution_sequence":            []string{"request_operation_approval", "bind_namespace_scoped_kubeconfig", "verify_target_scope", "confirm_pod_identity", "open_pod_log_stream", "redact_log_body", "record_sanitized_result"},
+		"result_recording_plan":         argoPodLogResultRecordingPlan(),
+		"message":                       "Pod log execution is a redacted plan only; no kubeconfig, Kubernetes/Argo call, log stream, or log body is produced.",
+	}
+}
+
+func argoPodLogResultRecordingPlan() map[string]any {
+	return map[string]any{
+		"mode":                          "pod_log_result_recording_plan",
+		"recording_enabled":             false,
+		"result_written":                false,
+		"operation_log_written":         false,
+		"canonical_asset_sync_queued":   false,
+		"status_snapshot_written":       false,
+		"log_body_included":             false,
+		"redacted_log_body_included":    false,
+		"raw_response_included":         false,
+		"kubeconfig_included":           false,
+		"authorization_header_included": false,
+		"required_result_fields":        []string{"operation_run_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at"},
+		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret", "raw_kubernetes_response"},
+		"message":                       "Pod log results are not recorded by this preview; future execution must store sanitized metadata and explicitly reviewed redacted log content only.",
 	}
 }
 
