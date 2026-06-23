@@ -344,6 +344,73 @@ func TestCountRepositoryGraphLinks(t *testing.T) {
 	}
 }
 
+func TestFirstVersionReadinessReportRequiresRepoSyncGraphLinks(t *testing.T) {
+	withoutGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "repo_sync"},
+	}, nil, nil, map[string]any{
+		"edges": []any{},
+	})
+	if got := readinessByKey(t, withoutGraphLinks, "repo_sync"); got.Status != "partial" || got.Evidence != "1 repo syncs / 0 complete syncs / 0 repository links / 0 source links / 0 target links" {
+		t.Fatalf("repo sync readiness without graph links = %#v, want partial with graph evidence", got)
+	}
+
+	withGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "repo_sync"},
+	}, nil, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "repo_sync:20", "relation_type": "has_sync"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:100", "relation_type": "synced_from"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:101", "relation_type": "mirrors_to"},
+		},
+	})
+	if got := readinessByKey(t, withGraphLinks, "repo_sync"); got.Status != "ready" || got.Evidence != "1 repo syncs / 1 complete syncs / 1 repository links / 1 source links / 1 target links" {
+		t.Fatalf("repo sync readiness with graph links = %#v, want ready", got)
+	}
+
+	missingTargetLink := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "repo_sync"},
+	}, nil, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "repo_sync:20", "relation_type": "has_sync"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:100", "relation_type": "synced_from"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "webhook_connection:1", "relation_type": "mirrors_to"},
+		},
+	})
+	if got := readinessByKey(t, missingTargetLink, "repo_sync"); got.Status != "partial" || got.Evidence != "1 repo syncs / 0 complete syncs / 1 repository links / 1 source links / 0 target links" {
+		t.Fatalf("repo sync readiness with unrelated target link = %#v, want partial without target evidence", got)
+	}
+
+	crossSyncAggregation := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "repo_sync"},
+		{"asset_type": "repo_sync"},
+	}, nil, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "repo_sync:20", "relation_type": "has_sync"},
+			map[string]any{"from_asset_id": "repo_sync:21", "to_asset_id": "git_remote:100", "relation_type": "synced_from"},
+			map[string]any{"from_asset_id": "repo_sync:21", "to_asset_id": "git_remote:101", "relation_type": "mirrors_to"},
+		},
+	})
+	if got := readinessByKey(t, crossSyncAggregation, "repo_sync"); got.Status != "partial" || got.Evidence != "2 repo syncs / 0 complete syncs / 1 repository links / 1 source links / 1 target links" {
+		t.Fatalf("repo sync readiness with cross-sync aggregate links = %#v, want partial without a complete sync", got)
+	}
+}
+
+func TestCountRepoSyncGraphLinks(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "repo_sync:20", "relation_type": "has_sync"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:100", "relation_type": "synced_from"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:101", "relation_type": "mirrors_to"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "webhook_connection:1", "relation_type": "mirrors_to"},
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "git_remote:100", "relation_type": "has_sync"},
+		},
+	}
+	got := countRepoSyncGraphLinks(graph)
+	if got.RepositorySync != 1 || got.SourceRemotes != 1 || got.TargetRemotes != 1 || got.CompleteSyncs != 1 {
+		t.Fatalf("countRepoSyncGraphLinks = %#v, want repository/source/target/complete counts of 1", got)
+	}
+}
+
 func TestCountAPITypeMetadata(t *testing.T) {
 	rows := []map[string]any{
 		{"asset_type": "webhook_event", "metadata": map[string]any{"provider": "gitea"}},

@@ -598,6 +598,34 @@ function countRepositoryGraphLinks(graph: AnyRow = {}) {
   }, { projectRepository: 0, repositoryRemotes: 0 });
 }
 
+function countRepoSyncGraphLinks(graph: AnyRow = {}) {
+  const bySync: Record<string, { repository?: boolean; source?: boolean; target?: boolean }> = {};
+  const syncEntry = (assetID: string) => {
+    bySync[assetID] ||= {};
+    return bySync[assetID];
+  };
+  const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
+    const relation = String(edge.relation_type || '');
+    const from = String(edge.from_asset_id || '');
+    const to = String(edge.to_asset_id || '');
+    if (relation === 'has_sync' && from.startsWith('repository:') && to.startsWith('repo_sync:')) {
+      nextCounts.repositorySync += 1;
+      syncEntry(to).repository = true;
+    }
+    if (relation === 'synced_from' && from.startsWith('repo_sync:') && to.startsWith('git_remote:')) {
+      nextCounts.sourceRemotes += 1;
+      syncEntry(from).source = true;
+    }
+    if (relation === 'mirrors_to' && from.startsWith('repo_sync:') && to.startsWith('git_remote:')) {
+      nextCounts.targetRemotes += 1;
+      syncEntry(from).target = true;
+    }
+    return nextCounts;
+  }, { repositorySync: 0, sourceRemotes: 0, targetRemotes: 0, completeSyncs: 0 });
+  counts.completeSyncs = Object.values(bySync).filter((entry) => entry.repository && entry.source && entry.target).length;
+  return counts;
+}
+
 function countGitHubActionGraphLinks(graph: AnyRow = {}) {
   return graphItems(graph, 'edges').filter((edge: AnyRow) =>
     String(edge.relation_type || '') === 'triggered_by' &&
@@ -632,6 +660,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const operationLogs = countOperationRowsWithLogs(operations);
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
   const repositoryGraphLinks = countRepositoryGraphLinks(graph);
+  const repoSyncGraphLinks = countRepoSyncGraphLinks(graph);
   const githubActionLinks = countGitHubActionGraphLinks(graph);
   const graphNodes = graphItems(graph, 'nodes').length;
   const graphEdges = graphItems(graph, 'edges').length;
@@ -653,7 +682,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'repo_sync',
       label: 'Define RepoSyncAsset',
       next: 'Create a RepoSyncAsset between source and mirror remotes.',
-      ...readinessState((assetCounts.repo_sync || 0) > 0, assetCounts.repo_sync || 0)
+      ...readinessState((assetCounts.repo_sync || 0) > 0 && repoSyncGraphLinks.completeSyncs > 0, `${assetCounts.repo_sync || 0} repo syncs / ${repoSyncGraphLinks.completeSyncs} complete syncs / ${repoSyncGraphLinks.repositorySync} repository links / ${repoSyncGraphLinks.sourceRemotes} source links / ${repoSyncGraphLinks.targetRemotes} target links`, (assetCounts.repo_sync || 0) > 0 || repoSyncGraphLinks.repositorySync > 0 || repoSyncGraphLinks.sourceRemotes > 0 || repoSyncGraphLinks.targetRemotes > 0)
     },
     {
       key: 'sync_trigger',
