@@ -11466,6 +11466,9 @@ func TestAgentCodexExecutionPlan(t *testing.T) {
 					t.Fatalf("disabled_backends missing %q: %#v", backend, got["disabled_backends"])
 				}
 			}
+			if !slices.Equal(stringSliceFromAny(got["disabled_backends"]), agentDisabledMutationBackends()) {
+				t.Fatalf("disabled_backends drifted from shared mutation backend contract: %#v", got["disabled_backends"])
+			}
 			for _, field := range []string{"runtime_config", "environment_variables", "patch_content", "diff_content", "token"} {
 				if !containsString(stringSliceFromAny(got["suppressed_fields"]), field) {
 					t.Fatalf("suppressed_fields missing %q: %#v", field, got["suppressed_fields"])

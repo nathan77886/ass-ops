@@ -13746,13 +13746,7 @@ func agentCodexExecutionPlan(runtime map[string]any) map[string]any {
 			"commit_push_agent",
 			"provider_review_reconciliation",
 		},
-		"disabled_backends": []string{
-			"codex_cli_process",
-			"file_patch_apply",
-			"git_commit",
-			"git_push",
-			"pull_request_create",
-		},
+		"disabled_backends": agentDisabledMutationBackends(),
 		"suppressed_fields": []string{
 			"runtime_config",
 			"environment_variables",
@@ -13779,6 +13773,16 @@ func agentCodexExecutionPlan(runtime map[string]any) map[string]any {
 			"delegate_commit_push",
 		},
 		"message": "Codex CLI execution is still a redacted audit plan; no process, patch, git, or pull request mutation is enabled.",
+	}
+}
+
+func agentDisabledMutationBackends() []string {
+	return []string{
+		"codex_cli_process",
+		"file_patch_apply",
+		"git_commit",
+		"git_push",
+		"pull_request_create",
 	}
 }
 
