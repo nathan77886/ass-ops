@@ -3333,6 +3333,8 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateDispatchPlan["dispatch_ready"] != false ||
 		candidateDispatchPlan["dispatch_ready_reason"] != "provider_api_adapter_dispatch_not_armed" ||
 		candidateDispatchPlan["dispatch_metadata_ready"] != true ||
+		candidateDispatchPlan["attempt_claim_metadata_ready"] != true ||
+		candidateDispatchPlan["adapter_contract_ready"] != true ||
 		candidateDispatchPlan["provider_type"] != "github" ||
 		candidateDispatchPlan["adapter_kind"] != "github_provider_review_adapter" ||
 		candidateDispatchPlan["operation_name"] != "create_branch_ref" ||
@@ -8635,6 +8637,8 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 			dispatchPlan["dispatch_ready"] != false ||
 			dispatchPlan["dispatch_ready_reason"] != "provider_api_adapter_dispatch_not_armed" ||
 			dispatchPlan["dispatch_metadata_ready"] != false ||
+			dispatchPlan["attempt_claim_metadata_ready"] != false ||
+			dispatchPlan["adapter_contract_ready"] != false ||
 			dispatchPlan["provider_type"] != "" ||
 			dispatchPlan["adapter_kind"] != "" ||
 			dispatchPlan["operation_name"] != "" ||
@@ -8693,6 +8697,134 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 			if strings.Contains(string(encoded), leak) {
 				t.Fatalf("unknown operation dispatch plan leaked %q: %s", leak, encoded)
 			}
+		}
+	})
+	t.Run("keeps dispatch metadata blocked when claim identity mismatches", func(t *testing.T) {
+		operation := map[string]any{
+			"name":            "create_branch_ref",
+			"endpoint_key":    "github.create_branch_ref",
+			"operation_order": 10,
+		}
+		requestSummary := map[string]any{
+			"payload_builder":                 "build_redacted_branch_ref_request",
+			"response_handler":                "handle_branch_ref_response",
+			"requires_idempotency_ledger":     true,
+			"requires_response_diagnostics":   true,
+			"request_envelope_ready":          true,
+			"credential_preflight_ready":      true,
+			"provider_review_preflight_ready": true,
+		}
+		responseDiagnostics := map[string]any{
+			"mode":                     "redacted_attempt_response_diagnostics",
+			"status":                   "pending",
+			"success_status_class":     "2xx",
+			"retryable_status_classes": []string{"5xx"},
+		}
+		adapterContract := providerReviewAttemptCandidateAdapterContract(operation, requestSummary, responseDiagnostics)
+		claimPlan := map[string]any{
+			"mode":                 "redacted_attempt_execution_claim_plan",
+			"operation_name":       "commit_starter_files",
+			"endpoint_key":         "github.commit_files",
+			"claim_metadata_ready": true,
+		}
+		dispatchPlan := providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, responseDiagnostics, adapterContract, claimPlan)
+		if dispatchPlan["dispatch_metadata_ready"] != false ||
+			dispatchPlan["attempt_claim_metadata_ready"] != false ||
+			dispatchPlan["adapter_contract_ready"] != true {
+			t.Fatalf("mismatched claim identity dispatch plan = %#v", dispatchPlan)
+		}
+		preflight := mapFromAny(dispatchPlan["request_validation_preflight"])
+		if preflight["dispatch_metadata_ready"] != false ||
+			preflight["attempt_claim_metadata_ready"] != false {
+			t.Fatalf("mismatched claim identity preflight = %#v", preflight)
+		}
+	})
+	t.Run("keeps dispatch metadata blocked when adapter contract identity mismatches", func(t *testing.T) {
+		operation := map[string]any{
+			"name":              "create_branch_ref",
+			"endpoint_key":      "github.create_branch_ref",
+			"operation_order":   10,
+			"status":            "planned",
+			"dependency_status": "independent",
+			"replay_check":      "not_seen",
+			"conflict_policy":   "block_on_conflict",
+			"retry_policy":      "retry_on_retryable_status",
+		}
+		requestSummary := map[string]any{
+			"payload_builder":                 "build_redacted_branch_ref_request",
+			"response_handler":                "handle_branch_ref_response",
+			"requires_idempotency_ledger":     true,
+			"requires_response_diagnostics":   true,
+			"request_envelope_ready":          true,
+			"credential_preflight_ready":      true,
+			"provider_review_preflight_ready": true,
+		}
+		responseDiagnostics := map[string]any{
+			"mode":                     "redacted_attempt_response_diagnostics",
+			"status":                   "pending",
+			"success_status_class":     "2xx",
+			"retryable_status_classes": []string{"5xx"},
+		}
+		claimPlan := providerReviewAttemptExecutionClaimPlan(operation, true, true)
+		adapterContract := map[string]any{
+			"mode":           "redacted_attempt_adapter_contract",
+			"operation_name": "commit_starter_files",
+			"endpoint_key":   "github.commit_files",
+		}
+		dispatchPlan := providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, responseDiagnostics, adapterContract, claimPlan)
+		if dispatchPlan["dispatch_metadata_ready"] != false ||
+			dispatchPlan["attempt_claim_metadata_ready"] != true ||
+			dispatchPlan["adapter_contract_ready"] != false {
+			t.Fatalf("mismatched adapter contract identity dispatch plan = %#v", dispatchPlan)
+		}
+		preflight := mapFromAny(dispatchPlan["request_validation_preflight"])
+		if preflight["dispatch_metadata_ready"] != false ||
+			preflight["attempt_claim_metadata_ready"] != true {
+			t.Fatalf("mismatched adapter contract identity preflight = %#v", preflight)
+		}
+	})
+	t.Run("keeps dispatch metadata blocked when claim and adapter contract identities mismatch", func(t *testing.T) {
+		operation := map[string]any{
+			"name":            "create_branch_ref",
+			"endpoint_key":    "github.create_branch_ref",
+			"operation_order": 10,
+		}
+		requestSummary := map[string]any{
+			"payload_builder":                 "build_redacted_branch_ref_request",
+			"response_handler":                "handle_branch_ref_response",
+			"requires_idempotency_ledger":     true,
+			"requires_response_diagnostics":   true,
+			"request_envelope_ready":          true,
+			"credential_preflight_ready":      true,
+			"provider_review_preflight_ready": true,
+		}
+		responseDiagnostics := map[string]any{
+			"mode":                     "redacted_attempt_response_diagnostics",
+			"status":                   "pending",
+			"success_status_class":     "2xx",
+			"retryable_status_classes": []string{"5xx"},
+		}
+		claimPlan := map[string]any{
+			"mode":                 "redacted_attempt_execution_claim_plan",
+			"operation_name":       "commit_starter_files",
+			"endpoint_key":         "github.commit_files",
+			"claim_metadata_ready": true,
+		}
+		adapterContract := map[string]any{
+			"mode":           "redacted_attempt_adapter_contract",
+			"operation_name": "open_review_request",
+			"endpoint_key":   "github.open_review",
+		}
+		dispatchPlan := providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, responseDiagnostics, adapterContract, claimPlan)
+		if dispatchPlan["dispatch_metadata_ready"] != false ||
+			dispatchPlan["attempt_claim_metadata_ready"] != false ||
+			dispatchPlan["adapter_contract_ready"] != false {
+			t.Fatalf("mismatched claim and adapter contract identities dispatch plan = %#v", dispatchPlan)
+		}
+		preflight := mapFromAny(dispatchPlan["request_validation_preflight"])
+		if preflight["dispatch_metadata_ready"] != false ||
+			preflight["attempt_claim_metadata_ready"] != false {
+			t.Fatalf("mismatched claim and adapter contract identities preflight = %#v", preflight)
 		}
 	})
 	t.Run("keeps request validation preflight blocked when dispatch metadata is not ready", func(t *testing.T) {

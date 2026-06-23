@@ -11115,8 +11115,11 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
 	providerType := providerReviewProviderFromEndpointKey(endpointKey)
-	metadataReady := boolOnlyFromAny(claimPlan["claim_metadata_ready"]) &&
-		stringFromMap(adapterContract, "mode") == "redacted_attempt_adapter_contract" &&
+	claimMetadataReady := boolOnlyFromAny(claimPlan["claim_metadata_ready"]) &&
+		providerReviewAttemptPlanMatchesOperation(claimPlan, "redacted_attempt_execution_claim_plan", operationName, endpointKey)
+	adapterContractReady := providerReviewAttemptPlanMatchesOperation(adapterContract, "redacted_attempt_adapter_contract", operationName, endpointKey)
+	metadataReady := claimMetadataReady &&
+		adapterContractReady &&
 		operationName != "" &&
 		endpointKey != "" &&
 		providerType != ""
@@ -11150,7 +11153,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 			"operation_order":                     intFromAny(operation["operation_order"], 0),
 			"provider_type":                       providerType,
 			"dispatch_metadata_ready":             metadataReady,
-			"attempt_claim_metadata_ready":        boolOnlyFromAny(claimPlan["claim_metadata_ready"]),
+			"attempt_claim_metadata_ready":        claimMetadataReady,
 			"idempotency_metadata_ready":          boolOnlyFromAny(claimPlan["idempotency_metadata_ready"]),
 			"request_materialization_ready":       boolOnlyFromAny(requestPlan["request_materialization_ready"]),
 			"branch_policy_metadata_ready":        boolOnlyFromAny(branchPolicyPlan["branch_policy_metadata_ready"]),
@@ -11197,6 +11200,8 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 		"dispatch_ready":               false,
 		"dispatch_ready_reason":        "provider_api_adapter_dispatch_not_armed",
 		"dispatch_metadata_ready":      metadataReady,
+		"attempt_claim_metadata_ready": claimMetadataReady,
+		"adapter_contract_ready":       adapterContractReady,
 		"provider_type":                providerType,
 		"adapter_kind":                 providerReviewAdapterKindForProvider(providerType),
 		"operation_name":               operationName,
