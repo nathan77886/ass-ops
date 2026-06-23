@@ -399,6 +399,7 @@ func (a disabledProviderReviewAttemptLiveAdapter) BuildPlan(input providerReview
 	if providerType == "" || operationName == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
 		return map[string]any{}
 	}
+	contractPlan := providerReviewAttemptLiveAdapterContractPlan(providerType, operationName, endpointKey, a.AdapterName())
 	return map[string]any{
 		"mode":                               "redacted_attempt_live_adapter_plan",
 		"live_adapter_state":                 "blocked",
@@ -408,12 +409,16 @@ func (a disabledProviderReviewAttemptLiveAdapter) BuildPlan(input providerReview
 		"operation_name":                     operationName,
 		"endpoint_key":                       endpointKey,
 		"adapter_name":                       a.AdapterName(),
+		"contract_plan":                      contractPlan,
 		"adapter_interface_registered":       true,
 		"live_adapter_registered":            true,
 		"live_adapter_implemented":           false,
+		"live_adapter_contract_registered":   len(contractPlan) > 0,
+		"live_adapter_contract_implemented":  false,
 		"requires_activation_plan":           true,
 		"requires_attempt_claim":             true,
 		"requires_execution_lock":            true,
+		"requires_contract_plan":             true,
 		"requires_provider_client":           true,
 		"requires_request_builder":           true,
 		"requires_execute_method":            true,
@@ -452,6 +457,80 @@ func (a disabledProviderReviewAttemptLiveAdapter) BuildPlan(input providerReview
 		"blocked_reasons": []string{
 			"provider_review_live_adapter_not_implemented",
 			"provider_review_adapter_activation_not_armed",
+			"provider_review_mutation_not_armed",
+		},
+	}
+}
+
+func providerReviewAttemptLiveAdapterContractPlan(providerType, operationName, endpointKey, adapterName string) map[string]any {
+	providerType = safeProviderReviewProviderType(providerType)
+	operationName = safeProviderReviewAttemptOperationName(operationName)
+	endpointKey = safeProviderReviewEndpointKey(endpointKey)
+	adapterName = cleanOptionalText(adapterName)
+	if providerType == "" || operationName == "" || endpointKey == "" || adapterName == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+		return map[string]any{}
+	}
+	unlockOperation := providerReviewAttemptDependencyUnlockOperation(operationName)
+	return map[string]any{
+		"mode":                                    "redacted_attempt_live_adapter_contract_plan",
+		"contract_state":                          "blocked",
+		"contract_ready":                          false,
+		"contract_ready_reason":                   "provider_review_live_adapter_contract_not_armed",
+		"provider_type":                           providerType,
+		"operation_name":                          operationName,
+		"endpoint_key":                            endpointKey,
+		"adapter_name":                            adapterName,
+		"http_method":                             providerReviewMethodForOperation(operationName),
+		"endpoint_path_template_key":              providerReviewEndpointPathTemplateKeyForOperation(providerType, operationName),
+		"payload_shape":                           providerReviewPayloadShapeForOperation(operationName),
+		"auth_scheme":                             providerReviewAuthSchemeForProvider(providerType),
+		"success_attempt_status":                  "completed",
+		"retry_attempt_status":                    "planned",
+		"failure_attempt_status":                  "failed",
+		"dependency_unlocks_operation":            unlockOperation,
+		"dependency_update_status":                providerReviewAttemptDependencyUnlockStatus(unlockOperation),
+		"requires_activation_plan":                true,
+		"requires_attempt_claim":                  true,
+		"requires_execution_lock":                 true,
+		"requires_credential_binding":             true,
+		"requires_provider_client":                true,
+		"requires_request_builder":                true,
+		"requires_transport":                      true,
+		"requires_response_handler":               true,
+		"requires_transaction_handler":            true,
+		"requires_mutation_arming":                true,
+		"contract_registered":                     true,
+		"contract_implemented":                    false,
+		"request_contract_materialized":           false,
+		"response_contract_materialized":          false,
+		"error_contract_materialized":             false,
+		"result_contract_materialized":            false,
+		"provider_request_sent":                   false,
+		"external_call_made":                      false,
+		"provider_api_call_made":                  false,
+		"provider_api_mutation":                   "disabled",
+		"request_body_included":                   false,
+		"response_body_included":                  false,
+		"headers_included":                        false,
+		"authorization_header_included":           false,
+		"provider_url_included":                   false,
+		"idempotency_key_included":                false,
+		"provider_request_id_included":            false,
+		"contains_token":                          false,
+		"contains_provider_url":                   false,
+		"contains_repository_ref":                 false,
+		"contains_branch_name":                    false,
+		"contains_file_content":                   false,
+		"live_adapter_contract_boundary_redacted": true,
+		"contract_input_fields":                   []string{"activation_plan", "attempt_claim", "execution_lock", "credential_binding", "provider_client", "request_builder", "transport", "mutation_arming"},
+		"contract_output_fields":                  []string{"attempt_status", "response_status_class", "retry_class", "dependency_update_status"},
+		"contract_error_classes":                  []string{"retryable_provider_error", "terminal_provider_error", "credential_binding_error", "request_materialization_error", "mutation_guard_error"},
+		"contract_persisted_fields":               []string{"attempt_status", "dependency_status", "response_status_class", "retry_class"},
+		"contract_suppressed_fields":              []string{"provider_url", "authorization_header", "token", "request_body", "response_body", "response_headers", "repository_ref", "branch_name", "file_content", "idempotency_key", "lock_key"},
+		"contract_sequence":                       []string{"verify_activation_contract", "verify_claim_contract", "verify_request_contract", "execute_provider_request", "classify_response_contract", "record_result_contract"},
+		"blocked_reasons": []string{
+			"provider_review_live_adapter_contract_not_armed",
+			"provider_review_live_adapter_not_implemented",
 			"provider_review_mutation_not_armed",
 		},
 	}
