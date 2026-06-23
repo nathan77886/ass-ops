@@ -1255,6 +1255,7 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 		statusByKind(sliceOfMapsFromAny(commitPlan["steps"]), "remote_binding") != "planned" {
 		t.Fatalf("git commit plan controls/backends/steps = %#v", commitPlan)
 	}
+	assertConfigRepositoryGitCommitSubplansSafe(t, commitPlan)
 	resultPlan := mapFromAny(commitPlan["result_recording_plan"])
 	if resultPlan["mode"] != "config_repository_git_commit_result_recording_plan" ||
 		resultPlan["result_recording_state"] != "blocked" ||
@@ -1323,6 +1324,13 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 		blockedResultPlan["project_version_pin_written"] != false {
 		t.Fatalf("blocked result recording plan should remain disabled: %#v", blockedResultPlan)
 	}
+	blockedApprovalPlan := mapFromAny(blockedCommitPlan["approval_request_plan"])
+	if blockedApprovalPlan["metadata_ready"] != false ||
+		!containsString(stringSliceFromAny(blockedApprovalPlan["blocked_reasons"]), "repository_role_is_not_config") ||
+		!containsString(stringSliceFromAny(blockedApprovalPlan["blocked_reasons"]), "config_remote_missing") {
+		t.Fatalf("blocked approval plan should explain missing config metadata: %#v", blockedApprovalPlan)
+	}
+	assertConfigRepositoryGitCommitSubplansSafe(t, blockedCommitPlan)
 
 	nilRole := configRepositoryScaffoldPreview(map[string]any{
 		"id":        "repo-3",
@@ -1337,6 +1345,122 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 	if nilRoleCommitPlan["plan_state"] != "blocked" ||
 		statusByKind(sliceOfMapsFromAny(nilRoleCommitPlan["steps"]), "scaffold_review") != "blocked" {
 		t.Fatalf("nil-role git commit plan = %#v", nilRoleCommitPlan)
+	}
+}
+
+func assertConfigRepositoryGitCommitSubplansSafe(t *testing.T, commitPlan map[string]any) {
+	t.Helper()
+	approvalPlan := mapFromAny(commitPlan["approval_request_plan"])
+	for _, field := range []string{"repositories[].repo_key", "repositories[].remote_id", "repositories[].config_commit_sha"} {
+		if !containsString(stringSliceFromAny(commitPlan["required_project_version_metadata"]), field) {
+			t.Fatalf("config commit required ProjectVersion metadata missing %q: %#v", field, commitPlan["required_project_version_metadata"])
+		}
+	}
+	if approvalPlan["mode"] != "config_repository_git_commit_approval_plan" ||
+		approvalPlan["request_ready"] != false ||
+		approvalPlan["request_ready_reason"] != "config_git_commit_execution_disabled" ||
+		approvalPlan["operation_created"] != false ||
+		approvalPlan["approval_request_created"] != false ||
+		approvalPlan["worker_job_created"] != false ||
+		approvalPlan["external_call_made"] != false {
+		t.Fatalf("config git approval plan should stay disabled and redacted: %#v", approvalPlan)
+	}
+	if commitPlan["plan_state"] == "planned" && approvalPlan["metadata_ready"] != true {
+		t.Fatalf("planned config commit should mark approval metadata ready: %#v", approvalPlan)
+	}
+	if commitPlan["plan_state"] == "planned" && len(stringSliceFromAny(approvalPlan["blocked_reasons"])) != 0 {
+		t.Fatalf("planned config commit should not report metadata blockers: %#v", approvalPlan["blocked_reasons"])
+	}
+	for _, field := range []string{"operation_run_id", "repository_id", "remote_id", "default_branch", "scaffold_file_count", "requested_by", "reason"} {
+		if !containsString(stringSliceFromAny(approvalPlan["required_approval_fields"]), field) {
+			t.Fatalf("config approval required fields missing %q: %#v", field, approvalPlan["required_approval_fields"])
+		}
+	}
+	for _, field := range []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "author_email"} {
+		if !containsString(stringSliceFromAny(approvalPlan["suppressed_fields"]), field) {
+			t.Fatalf("config approval suppressed_fields missing %q: %#v", field, approvalPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"config_git_commit_operation_not_created", "approval_policy_not_applied", "git_workspace_binding_not_approved", "provider_review_workflow_not_wired"} {
+		if !containsString(stringSliceFromAny(approvalPlan["execution_blockers"]), reason) {
+			t.Fatalf("config approval execution blockers missing %q: %#v", reason, approvalPlan["execution_blockers"])
+		}
+	}
+
+	workspacePlan := mapFromAny(commitPlan["workspace_execution_plan"])
+	if workspacePlan["mode"] != "config_repository_git_workspace_plan" ||
+		workspacePlan["workspace_state"] != "blocked" ||
+		workspacePlan["workspace_ready"] != false ||
+		workspacePlan["workspace_ready_reason"] != "config_git_workspace_backend_disabled" ||
+		workspacePlan["workspace_bound"] != false ||
+		workspacePlan["git_clone_performed"] != false ||
+		workspacePlan["file_content_materialized"] != false ||
+		workspacePlan["secret_scan_performed"] != false ||
+		workspacePlan["git_commit_created"] != false ||
+		workspacePlan["git_push_performed"] != false ||
+		workspacePlan["provider_review_created"] != false ||
+		workspacePlan["external_call_made"] != false ||
+		workspacePlan["contains_file_content"] != false ||
+		workspacePlan["contains_secret_values"] != false {
+		t.Fatalf("config workspace plan should stay disabled and redacted: %#v", workspacePlan)
+	}
+	if commitPlan["plan_state"] == "planned" && workspacePlan["metadata_ready"] != true {
+		t.Fatalf("planned config commit should mark workspace metadata ready: %#v", workspacePlan)
+	}
+	for _, field := range []string{"operation_run_id", "repository_id", "remote_id", "workspace_id", "scaffold_file_count", "secret_scan_status", "commit_author"} {
+		if !containsString(stringSliceFromAny(workspacePlan["required_workspace_fields"]), field) {
+			t.Fatalf("config workspace required fields missing %q: %#v", field, workspacePlan["required_workspace_fields"])
+		}
+	}
+	for _, field := range []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "author_email"} {
+		if !containsString(stringSliceFromAny(workspacePlan["suppressed_fields"]), field) {
+			t.Fatalf("config workspace suppressed_fields missing %q: %#v", field, workspacePlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"git_workspace_backend_disabled", "secret_scan_not_performed", "git_commit_not_created", "provider_review_not_created"} {
+		if !containsString(stringSliceFromAny(workspacePlan["blocked_reasons"]), reason) {
+			t.Fatalf("config workspace blocked reasons missing %q: %#v", reason, workspacePlan["blocked_reasons"])
+		}
+	}
+
+	pinPlan := mapFromAny(commitPlan["project_version_pin_plan"])
+	if pinPlan["mode"] != "config_repository_project_version_pin_validation_plan" ||
+		pinPlan["pin_state"] != "blocked" ||
+		pinPlan["pin_ready"] != false ||
+		pinPlan["pin_ready_reason"] != "config_commit_sha_pin_write_disabled" ||
+		pinPlan["project_version_pin_written"] != false ||
+		pinPlan["config_commit_sha_recorded"] != false ||
+		pinPlan["live_commit_validation_started"] != false ||
+		pinPlan["live_commit_validation_recorded"] != false ||
+		pinPlan["git_fetch_performed"] != false ||
+		pinPlan["external_call_made"] != false ||
+		pinPlan["contains_commit_sha"] != false ||
+		pinPlan["contains_remote_url"] != false {
+		t.Fatalf("config ProjectVersion pin plan should stay disabled and redacted: %#v", pinPlan)
+	}
+	if commitPlan["plan_state"] == "planned" && pinPlan["metadata_ready"] != true {
+		t.Fatalf("planned config commit should mark pin metadata ready: %#v", pinPlan)
+	}
+	for _, field := range []string{"project_version_id", "repository_id", "remote_id", "repo_key", "config_commit_sha", "validation_status"} {
+		if !containsString(stringSliceFromAny(pinPlan["required_pin_fields"]), field) {
+			t.Fatalf("config pin required fields missing %q: %#v", field, pinPlan["required_pin_fields"])
+		}
+	}
+	for _, field := range []string{"remote_url", "branch_name", "commit_message", "commit_sha", "git_credentials", "provider_token", "provider_response_body"} {
+		if !containsString(stringSliceFromAny(pinPlan["suppressed_fields"]), field) {
+			t.Fatalf("config pin suppressed_fields missing %q: %#v", field, pinPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"project_version_pin_write_disabled", "live_remote_commit_validation_not_performed"} {
+		if !containsString(stringSliceFromAny(pinPlan["blocked_reasons"]), reason) {
+			t.Fatalf("config pin blocked reasons missing %q: %#v", reason, pinPlan["blocked_reasons"])
+		}
+	}
+	encoded, _ := json.Marshal(commitPlan)
+	for _, forbidden := range []string{"secret_values_here", "git@github.com", "https://token@", "Bearer", "password", "author@example.com"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("config git commit subplans leaked %q: %s", forbidden, encoded)
+		}
 	}
 }
 

@@ -2663,8 +2663,13 @@ function ProjectDetail() {
                   <Tag>{configScaffold.data.external_call_made ? 'external call' : 'no external call'}</Tag>
                   <Tag>{configScaffold.data.file_content_included ? 'content included' : 'paths only'}</Tag>
                   {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.plan_state === 'planned' ? 'blue' : 'red'}>commit {configScaffold.data.git_commit_plan.plan_state}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag color="gold">approval {configScaffold.data.git_commit_plan.approval_request_plan.request_state || 'blocked'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag>{configScaffold.data.git_commit_plan.approval_request_plan.metadata_ready ? 'approval metadata ready' : 'approval metadata missing'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag>{configScaffold.data.git_commit_plan.approval_request_plan.request_ready ? 'request ready' : 'request disabled'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.workspace_execution_plan ? <Tag color="gold">workspace {configScaffold.data.git_commit_plan.workspace_execution_plan.workspace_state || 'blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.git_commit_created ? 'commit created' : 'no commit'}</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.live_commit_validation_performed ? 'live validation' : 'no live validation'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.project_version_pin_plan ? <Tag color="gold">pin {configScaffold.data.git_commit_plan.project_version_pin_plan.pin_state || 'blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag color="gold">result {configScaffold.data.git_commit_plan.result_recording_plan.result_recording_state || 'blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.result_written ? 'result recorded' : 'no result record'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.project_version_pin_written ? 'pin recorded' : 'no pin record'}</Tag> : null}

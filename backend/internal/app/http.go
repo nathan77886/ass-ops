@@ -3176,6 +3176,9 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 	if len(blockedReasons) > 0 {
 		planState = "blocked"
 	}
+	approvalPlan := configRepositoryGitCommitApprovalPlan(planState, blockedReasons)
+	workspacePlan := configRepositoryGitCommitWorkspacePlan(len(files), len(remotes), defaultBranch != "")
+	pinValidationPlan := configRepositoryProjectVersionPinValidationPlan(defaultBranch != "", len(remotes) > 0)
 	steps := []map[string]any{
 		{
 			"kind":   "scaffold_review",
@@ -3251,8 +3254,98 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		"steps":                             steps,
 		"execution_sequence":                []string{"review_scaffold", "bind_config_remote", "checkout_clean_workspace", "create_review_branch", "materialize_files", "run_secret_scan", "commit_scaffold", "push_review_branch", "open_review_request", "pin_config_commit_sha", "validate_remote_commit"},
 		"required_project_version_metadata": []string{"repositories[].repo_key", "repositories[].remote_id", "repositories[].config_commit_sha"},
+		"approval_request_plan":             approvalPlan,
+		"workspace_execution_plan":          workspacePlan,
+		"project_version_pin_plan":          pinValidationPlan,
 		"result_recording_plan":             configRepositoryGitCommitResultRecordingPlan(),
 		"message":                           "Config repository Git commit and live validation are planned only; no files, Git refs, provider requests, or ProjectVersion pins are written.",
+	}
+}
+
+func configRepositoryGitCommitApprovalPlan(planState string, blockedReasons []string) map[string]any {
+	metadataReady := planState == "planned"
+	metadataBlockedReasons := append([]string{}, blockedReasons...)
+	return map[string]any{
+		"mode":                     "config_repository_git_commit_approval_plan",
+		"request_state":            planState,
+		"request_ready":            false,
+		"request_ready_reason":     "config_git_commit_execution_disabled",
+		"metadata_ready":           metadataReady,
+		"operation_created":        false,
+		"approval_request_created": false,
+		"worker_job_created":       false,
+		"external_call_made":       false,
+		"required_approval_fields": []string{"operation_run_id", "repository_id", "remote_id", "default_branch", "scaffold_file_count", "requested_by", "reason"},
+		"suppressed_fields":        []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "author_email"},
+		"blocked_reasons":          metadataBlockedReasons,
+		"execution_blockers":       []string{"config_git_commit_operation_not_created", "approval_policy_not_applied", "git_workspace_binding_not_approved", "provider_review_workflow_not_wired"},
+		"required_operator_action": "Request approval for the config Git workflow before checkout, file materialization, commit, push, ProjectVersion pin, or live validation.",
+	}
+}
+
+func configRepositoryGitCommitWorkspacePlan(fileCount, remoteCount int, defaultBranchConfigured bool) map[string]any {
+	metadataReady := fileCount > 0 && remoteCount > 0 && defaultBranchConfigured
+	blockedReasons := []string{"git_workspace_backend_disabled", "secret_scan_not_performed", "git_commit_not_created", "provider_review_not_created"}
+	if fileCount == 0 {
+		blockedReasons = append(blockedReasons, "scaffold_files_missing")
+	}
+	if remoteCount == 0 {
+		blockedReasons = append(blockedReasons, "config_remote_missing")
+	}
+	if !defaultBranchConfigured {
+		blockedReasons = append(blockedReasons, "default_branch_missing")
+	}
+	return map[string]any{
+		"mode":                      "config_repository_git_workspace_plan",
+		"workspace_state":           "blocked",
+		"workspace_ready":           false,
+		"workspace_ready_reason":    "config_git_workspace_backend_disabled",
+		"metadata_ready":            metadataReady,
+		"workspace_bound":           false,
+		"git_clone_performed":       false,
+		"file_content_materialized": false,
+		"secret_scan_performed":     false,
+		"git_commit_created":        false,
+		"git_push_performed":        false,
+		"provider_review_created":   false,
+		"external_call_made":        false,
+		"contains_file_content":     false,
+		"contains_secret_values":    false,
+		"required_workspace_fields": []string{"operation_run_id", "repository_id", "remote_id", "workspace_id", "scaffold_file_count", "secret_scan_status", "commit_author"},
+		"suppressed_fields":         []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "author_email"},
+		"blocked_reasons":           blockedReasons,
+		"execution_sequence":        []string{"bind_clean_workspace", "materialize_scaffold_files", "run_secret_scan", "create_review_branch", "commit_scaffold", "push_review_branch", "open_provider_review"},
+		"message":                   "Config Git workspace execution is preview-only; no workspace, file content, Git ref, commit, push, or provider review is created.",
+	}
+}
+
+func configRepositoryProjectVersionPinValidationPlan(defaultBranchConfigured, remoteConfigured bool) map[string]any {
+	metadataReady := defaultBranchConfigured && remoteConfigured
+	blockedReasons := []string{"project_version_pin_write_disabled", "live_remote_commit_validation_not_performed"}
+	if !remoteConfigured {
+		blockedReasons = append(blockedReasons, "config_remote_missing")
+	}
+	if !defaultBranchConfigured {
+		blockedReasons = append(blockedReasons, "default_branch_missing")
+	}
+	return map[string]any{
+		"mode":                            "config_repository_project_version_pin_validation_plan",
+		"pin_state":                       "blocked",
+		"pin_ready":                       false,
+		"pin_ready_reason":                "config_commit_sha_pin_write_disabled",
+		"metadata_ready":                  metadataReady,
+		"project_version_pin_written":     false,
+		"config_commit_sha_recorded":      false,
+		"live_commit_validation_started":  false,
+		"live_commit_validation_recorded": false,
+		"git_fetch_performed":             false,
+		"external_call_made":              false,
+		"contains_commit_sha":             false,
+		"contains_remote_url":             false,
+		"required_pin_fields":             []string{"project_version_id", "repository_id", "remote_id", "repo_key", "config_commit_sha", "validation_status"},
+		"suppressed_fields":               []string{"remote_url", "branch_name", "commit_message", "commit_sha", "git_credentials", "provider_token", "provider_response_body"},
+		"blocked_reasons":                 blockedReasons,
+		"message":                         "ProjectVersion config_commit_sha pinning and live remote validation are not performed by this preview.",
 	}
 }
 
