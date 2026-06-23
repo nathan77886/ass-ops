@@ -191,13 +191,22 @@ func TestProviderReviewAttemptAdapterSurfaceConsistency(t *testing.T) {
 			if contractPlan["provider_type"] != tt.provider ||
 				contractPlan["operation_name"] != tt.operation ||
 				contractPlan["endpoint_key"] != tt.endpoint ||
+				contractPlan["adapter_name"] != liveAdapterPlan["adapter_name"] ||
 				contractPlan["http_method"] != tt.httpMethod ||
 				contractPlan["endpoint_path_template_key"] != tt.templateKey ||
 				contractPlan["payload_shape"] != tt.payloadShape ||
 				contractPlan["auth_scheme"] != tt.authScheme ||
+				contractPlan["builder_name"] != tt.builderName ||
+				contractPlan["client_kind"] != tt.clientKind ||
+				contractPlan["execute_method_name"] != tt.executeMethod ||
+				contractPlan["response_handler_name"] != tt.responseHandler ||
 				contractPlan["dependency_unlocks_operation"] != tt.unlockOperation ||
 				contractPlan["provider_api_mutation"] != "disabled" {
 				t.Fatalf("live adapter contract plan inconsistent: %#v", contractPlan)
+			}
+			contractCapabilities := stringSliceFromAny(contractPlan["required_capabilities"])
+			if len(contractCapabilities) != 1 || contractCapabilities[0] != tt.capability {
+				t.Fatalf("live adapter contract capabilities mismatch for %s/%s: %#v", tt.provider, tt.operation, contractCapabilities)
 			}
 
 			for name, plan := range map[string]map[string]any{

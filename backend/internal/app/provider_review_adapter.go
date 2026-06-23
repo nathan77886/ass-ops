@@ -470,6 +470,13 @@ func providerReviewAttemptLiveAdapterContractPlan(providerType, operationName, e
 	if providerType == "" || operationName == "" || endpointKey == "" || adapterName == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
 		return map[string]any{}
 	}
+	builder := providerReviewAttemptRequestBuilderForOperation(operationName)
+	clientFactory := providerReviewAttemptProviderClientFactoryForProvider(providerType)
+	executeMethod := providerReviewAttemptExecuteMethodForOperation(operationName)
+	responseHandler := providerReviewAttemptResponseHandlerForOperation(operationName)
+	if builder == nil || clientFactory == nil || executeMethod == nil || responseHandler == nil {
+		return map[string]any{}
+	}
 	unlockOperation := providerReviewAttemptDependencyUnlockOperation(operationName)
 	return map[string]any{
 		"mode":                                    "redacted_attempt_live_adapter_contract_plan",
@@ -484,6 +491,11 @@ func providerReviewAttemptLiveAdapterContractPlan(providerType, operationName, e
 		"endpoint_path_template_key":              providerReviewEndpointPathTemplateKeyForOperation(providerType, operationName),
 		"payload_shape":                           providerReviewPayloadShapeForOperation(operationName),
 		"auth_scheme":                             providerReviewAuthSchemeForProvider(providerType),
+		"builder_name":                            builder.BuilderName(),
+		"client_kind":                             clientFactory.ClientKind(),
+		"execute_method_name":                     executeMethod.MethodName(),
+		"response_handler_name":                   responseHandler.HandlerName(),
+		"required_capabilities":                   providerReviewClientRequiredCapabilitiesForOperation(operationName),
 		"success_attempt_status":                  "completed",
 		"retry_attempt_status":                    "planned",
 		"failure_attempt_status":                  "failed",
