@@ -586,7 +586,7 @@ func providerReviewAttemptRequestBuilderForOperation(operationName string) provi
 	case "create_branch_ref":
 		return disabledProviderReviewAttemptRequestBuilder{builderName: "build_redacted_branch_ref_request"}
 	case "commit_starter_files":
-		return disabledProviderReviewAttemptRequestBuilder{builderName: "build_redacted_commit_files_request"}
+		return disabledProviderReviewAttemptRequestBuilder{builderName: providerReviewExpectedPayloadBuilderName(operationName)}
 	case "open_review_request":
 		return disabledProviderReviewAttemptRequestBuilder{builderName: "build_redacted_review_request"}
 	default:
