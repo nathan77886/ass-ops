@@ -4703,6 +4703,16 @@ func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReaso
 			"provider_test_delivery",
 			"sanitized_result_recording",
 		},
+		"callback_execution_sequence": []string{
+			"verify_public_staging_origin",
+			"review_provider_webhook_settings",
+			"send_provider_test_delivery",
+			"observe_sanitized_callback_event",
+			"replay_event_to_repo_sync",
+			"refresh_provider_actions_state",
+			"record_redacted_rehearsal_result",
+			"review_provider_pair_thresholds",
+		},
 		"disabled_backends": []string{
 			"provider_webhook_settings_write",
 			"provider_test_delivery",
@@ -4723,33 +4733,133 @@ func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReaso
 			"delivery_payload",
 			"delivery_response",
 		},
-		"blocked_reasons":       blockedReasons,
-		"execution_blockers":    executionBlockers,
-		"result_recording_plan": webhookProviderCallbackRehearsalResultRecordingPlan(),
-		"message":               "Provider callback rehearsal is audit-only; no provider settings, external delivery, webhook event, replay, repo sync, or GitHub Actions refresh is performed.",
+		"blocked_reasons":        blockedReasons,
+		"execution_blockers":     executionBlockers,
+		"public_endpoint_plan":   webhookProviderCallbackPublicEndpointPlan(planState, readinessReasons),
+		"provider_delivery_plan": webhookProviderCallbackDeliveryPlan(planState),
+		"threshold_tuning_plan":  webhookProviderCallbackThresholdTuningPlan(planState),
+		"result_recording_plan":  webhookProviderCallbackRehearsalResultRecordingPlan(),
+		"message":                "Provider callback rehearsal is audit-only; no provider settings, external delivery, webhook event, replay, repo sync, or GitHub Actions refresh is performed.",
+	}
+}
+
+func webhookProviderCallbackPublicEndpointPlan(planState string, readinessReasons []string) map[string]any {
+	publicOriginReady := true
+	blockedReasons := make([]string, 0)
+	for _, reason := range readinessReasons {
+		if strings.Contains(reason, "ASSOPS_GATEWAY_URL") || strings.Contains(reason, "public HTTP(S) origin") {
+			publicOriginReady = false
+			blockedReasons = append(blockedReasons, reason)
+		}
+	}
+	endpointState := "planned"
+	if planState != "planned" || !publicOriginReady {
+		endpointState = "blocked"
+	}
+	return map[string]any{
+		"mode":                    "provider_callback_public_endpoint_plan",
+		"endpoint_state":          endpointState,
+		"public_origin_ready":     publicOriginReady,
+		"public_staging_required": true,
+		"dns_probe_performed":     false,
+		"tls_probe_performed":     false,
+		"provider_ping_performed": false,
+		"external_call_made":      false,
+		"contains_provider_url":   false,
+		"contains_token":          false,
+		"required_controls":       []string{"public_https_origin", "dns_review", "tls_review", "provider_callback_path_review"},
+		"disabled_backends":       []string{"dns_probe", "tls_probe", "provider_callback_ping"},
+		"suppressed_fields":       []string{"provider_url", "request_headers", "provider_token", "shared_secret"},
+		"blocked_reasons":         blockedReasons,
+		"execution_blockers":      []string{"public_staging_hostname_not_verified"},
+		"message":                 "Public endpoint verification is planned only; no DNS, TLS, or provider callback probe is performed.",
+	}
+}
+
+func webhookProviderCallbackDeliveryPlan(planState string) map[string]any {
+	deliveryState := "blocked"
+	if planState == "planned" {
+		deliveryState = "planned"
+	}
+	return map[string]any{
+		"mode":                         "provider_callback_delivery_plan",
+		"delivery_state":               deliveryState,
+		"provider_settings_written":    false,
+		"provider_test_delivery_sent":  false,
+		"provider_delivery_received":   false,
+		"delivery_signature_validated": false,
+		"delivery_deduplicated":        false,
+		"webhook_event_created":        false,
+		"external_call_made":           false,
+		"contains_token":               false,
+		"contains_secret":              false,
+		"contains_payload":             false,
+		"required_controls": []string{
+			"provider_settings_operator_review",
+			"webhook_secret_rotation_review",
+			"test_delivery_id_capture",
+			"signature_validation",
+			"delivery_id_deduplication",
+		},
+		"disabled_backends": []string{
+			"provider_webhook_settings_write",
+			"provider_test_delivery",
+			"external_callback_wait",
+			"webhook_event_insert",
+		},
+		"suppressed_fields":  []string{"secret_token", "shared_secret", "signature_header", "provider_token", "request_headers", "request_body", "delivery_payload", "delivery_response"},
+		"blocked_reasons":    []string{"real_provider_test_delivery_not_performed"},
+		"execution_blockers": []string{"provider_callback_rehearsal_not_performed"},
+		"message":            "Provider delivery rehearsal is planned only; no provider settings are written and no test delivery is sent.",
+	}
+}
+
+func webhookProviderCallbackThresholdTuningPlan(planState string) map[string]any {
+	thresholdState := "blocked"
+	if planState == "planned" {
+		thresholdState = "planned"
+	}
+	return map[string]any{
+		"mode":                              "provider_callback_threshold_tuning_plan",
+		"threshold_state":                   thresholdState,
+		"live_volume_observed":              false,
+		"provider_pair_thresholds_tuned":    false,
+		"sync_capacity_thresholds_tuned":    false,
+		"webhook_delivery_thresholds_tuned": false,
+		"github_actions_thresholds_tuned":   false,
+		"threshold_configuration_written":   false,
+		"external_call_made":                false,
+		"required_observations":             []string{"provider_pair_active_runs", "provider_pair_recent_failures", "webhook_delivery_failures", "github_actions_run_volume"},
+		"threshold_review_sequence":         []string{"collect_live_sync_volume", "compare_provider_limits", "adjust_warning_thresholds", "adjust_danger_thresholds", "record_threshold_review"},
+		"disabled_backends":                 []string{"provider_metrics_fetch", "threshold_configuration_write", "sync_capacity_backfill"},
+		"suppressed_fields":                 []string{"provider_token", "provider_url", "request_headers", "provider_response_body"},
+		"blocked_reasons":                   []string{"real_provider_volume_not_observed"},
+		"execution_blockers":                []string{"provider_pair_thresholds_need_live_volume_tuning"},
+		"message":                           "Provider-pair threshold tuning is planned only; current thresholds stay unchanged until real rehearsal volume is observed.",
 	}
 }
 
 func webhookProviderCallbackRehearsalResultRecordingPlan() map[string]any {
 	return map[string]any{
-		"mode":                           "provider_callback_rehearsal_result_recording_plan",
-		"result_recording_state":         "blocked",
-		"result_recording_ready":         false,
-		"result_recording_ready_reason":  "provider_callback_rehearsal_execution_not_performed",
-		"recording_enabled":              false,
-		"result_written":                 false,
-		"webhook_connection_updated":     false,
-		"webhook_event_recorded":         false,
-		"operation_log_written":          false,
-		"repo_sync_result_recorded":      false,
-		"github_actions_result_recorded": false,
-		"raw_request_headers_recorded":   false,
-		"raw_request_body_recorded":      false,
-		"raw_provider_response_recorded": false,
-		"contains_token":                 false,
-		"contains_secret":                false,
-		"contains_payload":               false,
-		"contains_provider_url":          false,
+		"mode":                             "provider_callback_rehearsal_result_recording_plan",
+		"result_recording_state":           "blocked",
+		"result_recording_ready":           false,
+		"result_recording_ready_reason":    "provider_callback_rehearsal_execution_not_performed",
+		"recording_enabled":                false,
+		"result_written":                   false,
+		"webhook_connection_updated":       false,
+		"webhook_event_recorded":           false,
+		"operation_log_written":            false,
+		"repo_sync_result_recorded":        false,
+		"github_actions_result_recorded":   false,
+		"threshold_tuning_result_recorded": false,
+		"raw_request_headers_recorded":     false,
+		"raw_request_body_recorded":        false,
+		"raw_provider_response_recorded":   false,
+		"contains_token":                   false,
+		"contains_secret":                  false,
+		"contains_payload":                 false,
+		"contains_provider_url":            false,
 		"result_recording_sequence": []string{
 			"classify_provider_delivery",
 			"record_sanitized_delivery_summary",
@@ -4766,6 +4876,7 @@ func webhookProviderCallbackRehearsalResultRecordingPlan() map[string]any {
 			"event_type",
 			"repo_sync_enqueued",
 			"github_actions_refresh_status",
+			"provider_pair_threshold_state",
 		},
 		"suppressed_fields": []string{
 			"secret_token",

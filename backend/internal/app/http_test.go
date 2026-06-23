@@ -11852,10 +11852,85 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 					t.Fatalf("provider callback disabled backends missing %q: %#v", backend, plan["disabled_backends"])
 				}
 			}
+			for _, step := range []string{"verify_public_staging_origin", "send_provider_test_delivery", "review_provider_pair_thresholds"} {
+				if !containsString(stringSliceFromAny(plan["callback_execution_sequence"]), step) {
+					t.Fatalf("provider callback execution sequence missing %q: %#v", step, plan["callback_execution_sequence"])
+				}
+			}
 			for _, field := range []string{"secret_token", "shared_secret", "signature_header", "provider_token", "provider_url", "request_headers", "request_body", "delivery_payload", "delivery_response"} {
 				if !containsString(stringSliceFromAny(plan["suppressed_fields"]), field) {
 					t.Fatalf("provider callback suppressed fields missing %q: %#v", field, plan["suppressed_fields"])
 				}
+			}
+			publicEndpointPlan := mapFromAny(plan["public_endpoint_plan"])
+			if publicEndpointPlan["mode"] != "provider_callback_public_endpoint_plan" ||
+				publicEndpointPlan["public_staging_required"] != true ||
+				publicEndpointPlan["dns_probe_performed"] != false ||
+				publicEndpointPlan["tls_probe_performed"] != false ||
+				publicEndpointPlan["provider_ping_performed"] != false ||
+				publicEndpointPlan["external_call_made"] != false ||
+				publicEndpointPlan["contains_provider_url"] != false ||
+				publicEndpointPlan["contains_token"] != false {
+				t.Fatalf("provider callback public endpoint plan should stay disabled and redacted: %#v", publicEndpointPlan)
+			}
+			if tc.wantStatus == "ready" {
+				if publicEndpointPlan["endpoint_state"] != "planned" || publicEndpointPlan["public_origin_ready"] != true {
+					t.Fatalf("ready provider callback public endpoint plan = %#v", publicEndpointPlan)
+				}
+			} else if strings.Contains(tc.wantMessage, "ASSOPS_GATEWAY_URL") {
+				if publicEndpointPlan["endpoint_state"] != "blocked" || publicEndpointPlan["public_origin_ready"] != false {
+					t.Fatalf("blocked provider callback public endpoint plan = %#v", publicEndpointPlan)
+				}
+			}
+			for _, backend := range []string{"dns_probe", "tls_probe", "provider_callback_ping"} {
+				if !containsString(stringSliceFromAny(publicEndpointPlan["disabled_backends"]), backend) {
+					t.Fatalf("provider callback public endpoint disabled backends missing %q: %#v", backend, publicEndpointPlan["disabled_backends"])
+				}
+			}
+			deliveryPlan := mapFromAny(plan["provider_delivery_plan"])
+			if deliveryPlan["mode"] != "provider_callback_delivery_plan" ||
+				deliveryPlan["provider_settings_written"] != false ||
+				deliveryPlan["provider_test_delivery_sent"] != false ||
+				deliveryPlan["provider_delivery_received"] != false ||
+				deliveryPlan["delivery_signature_validated"] != false ||
+				deliveryPlan["delivery_deduplicated"] != false ||
+				deliveryPlan["webhook_event_created"] != false ||
+				deliveryPlan["external_call_made"] != false ||
+				deliveryPlan["contains_token"] != false ||
+				deliveryPlan["contains_secret"] != false ||
+				deliveryPlan["contains_payload"] != false {
+				t.Fatalf("provider callback delivery plan should stay disabled and redacted: %#v", deliveryPlan)
+			}
+			for _, control := range []string{"provider_settings_operator_review", "test_delivery_id_capture", "signature_validation"} {
+				if !containsString(stringSliceFromAny(deliveryPlan["required_controls"]), control) {
+					t.Fatalf("provider callback delivery controls missing %q: %#v", control, deliveryPlan["required_controls"])
+				}
+			}
+			wantSubplanState := "blocked"
+			if tc.wantStatus == "ready" {
+				wantSubplanState = "planned"
+			}
+			if deliveryPlan["delivery_state"] != wantSubplanState {
+				t.Fatalf("provider callback delivery state = %#v, want %s", deliveryPlan, wantSubplanState)
+			}
+			thresholdPlan := mapFromAny(plan["threshold_tuning_plan"])
+			if thresholdPlan["mode"] != "provider_callback_threshold_tuning_plan" ||
+				thresholdPlan["live_volume_observed"] != false ||
+				thresholdPlan["provider_pair_thresholds_tuned"] != false ||
+				thresholdPlan["sync_capacity_thresholds_tuned"] != false ||
+				thresholdPlan["webhook_delivery_thresholds_tuned"] != false ||
+				thresholdPlan["github_actions_thresholds_tuned"] != false ||
+				thresholdPlan["threshold_configuration_written"] != false ||
+				thresholdPlan["external_call_made"] != false {
+				t.Fatalf("provider callback threshold tuning plan should stay disabled: %#v", thresholdPlan)
+			}
+			for _, observation := range []string{"provider_pair_active_runs", "provider_pair_recent_failures", "webhook_delivery_failures", "github_actions_run_volume"} {
+				if !containsString(stringSliceFromAny(thresholdPlan["required_observations"]), observation) {
+					t.Fatalf("provider callback threshold observations missing %q: %#v", observation, thresholdPlan["required_observations"])
+				}
+			}
+			if thresholdPlan["threshold_state"] != wantSubplanState {
+				t.Fatalf("provider callback threshold state = %#v, want %s", thresholdPlan, wantSubplanState)
 			}
 			resultPlan := mapFromAny(plan["result_recording_plan"])
 			if resultPlan["mode"] != "provider_callback_rehearsal_result_recording_plan" ||
@@ -11868,6 +11943,7 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 				resultPlan["operation_log_written"] != false ||
 				resultPlan["repo_sync_result_recorded"] != false ||
 				resultPlan["github_actions_result_recorded"] != false ||
+				resultPlan["threshold_tuning_result_recorded"] != false ||
 				resultPlan["raw_request_headers_recorded"] != false ||
 				resultPlan["raw_request_body_recorded"] != false ||
 				resultPlan["raw_provider_response_recorded"] != false ||
@@ -11877,7 +11953,7 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 				resultPlan["contains_provider_url"] != false {
 				t.Fatalf("provider callback result recording plan should stay disabled and redacted: %#v", resultPlan)
 			}
-			for _, field := range []string{"provider", "public_origin_valid", "delivery_status", "signature_valid", "event_type", "repo_sync_enqueued", "github_actions_refresh_status"} {
+			for _, field := range []string{"provider", "public_origin_valid", "delivery_status", "signature_valid", "event_type", "repo_sync_enqueued", "github_actions_refresh_status", "provider_pair_threshold_state"} {
 				if !containsString(stringSliceFromAny(resultPlan["result_diagnostic_fields"]), field) {
 					t.Fatalf("provider callback result diagnostic fields missing %q: %#v", field, resultPlan["result_diagnostic_fields"])
 				}

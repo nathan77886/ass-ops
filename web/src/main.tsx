@@ -3215,11 +3215,17 @@ function GitRemotes() {
             { title: 'Rehearsal', render: (_, row) => {
               const readiness = row.callback_rehearsal || {};
               const providerPlan = readiness.provider_rehearsal_plan || {};
+              const publicEndpointPlan = providerPlan.public_endpoint_plan || {};
+              const deliveryPlan = providerPlan.provider_delivery_plan || {};
+              const thresholdPlan = providerPlan.threshold_tuning_plan || {};
               const resultPlan = providerPlan.result_recording_plan || {};
               const status = readiness.status || 'unknown';
               return <Space size={4} wrap>
                 <Tag color={status === 'ready' ? 'green' : status === 'blocked' ? 'red' : 'default'}>{status}</Tag>
                 <Tag color={providerPlan.plan_state === 'planned' ? 'gold' : 'red'}>{providerPlan.plan_state || 'blocked'}</Tag>
+                <Tag color={publicEndpointPlan.public_origin_ready ? 'green' : 'red'}>{publicEndpointPlan.public_origin_ready ? 'public origin' : 'no public origin'}</Tag>
+                <Tag color={deliveryPlan.delivery_state === 'planned' ? 'gold' : 'red'}>{deliveryPlan.provider_test_delivery_sent ? 'test delivered' : 'no test delivery'}</Tag>
+                <Tag color={thresholdPlan.threshold_state === 'planned' ? 'gold' : 'red'}>{thresholdPlan.provider_pair_thresholds_tuned ? 'thresholds tuned' : 'thresholds pending'}</Tag>
                 <Tag>{providerPlan.external_call_made ? 'provider call' : 'no provider call'}</Tag>
                 <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
                 <Typography.Text>{shortText(readiness.message, 56)}</Typography.Text>
