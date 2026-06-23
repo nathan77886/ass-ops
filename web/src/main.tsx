@@ -1119,6 +1119,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptTransactionProviderCallBoundaryPlan = attemptTransactionPlan.provider_call_boundary_plan || {};
   const attemptInvocationPlan = attemptDispatchPlan.invocation_plan || {};
   const attemptInvocationPlanMode = typeof attemptInvocationPlan.mode === 'string' ? attemptInvocationPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter invocation plan';
+  const attemptInvocationProviderSendPlan = attemptInvocationPlan.provider_send_plan || {};
   const attemptInvocationSequence = Array.isArray(attemptInvocationPlan.invocation_sequence) ? attemptInvocationPlan.invocation_sequence : [];
   const attemptExecutionCandidateGates = Array.isArray(attemptExecutionCandidate.gates) ? attemptExecutionCandidate.gates : [];
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
@@ -1530,6 +1531,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           </Tag>
           <Tag>{String(attemptInvocationPlan.invocation_ready_reason || 'provider_api_invocation_not_armed')}</Tag>
           <Tag>steps {attemptInvocationSequence.length}</Tag>
+          <Tag>send {String(attemptInvocationProviderSendPlan.provider_send_state ?? 'blocked')}</Tag>
           <Tag>{attemptInvocationPlan.provider_api_call_made === true ? 'api called' : 'no api call'}</Tag>
           <Tag>{String(attemptInvocationPlan.provider_api_mutation || 'disabled')}</Tag>
         </Space>
