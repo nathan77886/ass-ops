@@ -8,6 +8,7 @@ Sources:
 - Notion "想法": https://app.notion.com/p/383e7c17fa818123923bc8494b115be4
 - Notion "产品设计": https://app.notion.com/p/383e7c17fa8181cbaff5c43beb3f61ca
 - Notion "功能落地": https://app.notion.com/p/383e7c17fa818110a8b4d25889ef3978
+- Notion "05 第一版本 MVP 范围与执行方案": https://app.notion.com/p/385e7c17fa81812a9641f6d55ec0853c
 
 ## Current Shape
 
@@ -39,6 +40,24 @@ The Dashboard and `assops-tool project readiness` now use the same first-version
 - AI context: graph evidence plus agent-task-to-runtime and agent-task-to-`context.generate` tool-call links.
 
 This makes the current gap measurable: a first-version demo is ready only when the live environment can satisfy those ten graph-backed gates, not merely when individual tables contain sample rows.
+
+## Notion MVP Acceptance Gap
+
+The latest Notion MVP execution page narrows the first version to nine concrete acceptance scenarios around Project -> ProjectGitRepository -> GitRemote. Current code covers the backbone of that model, but several scenario-level acceptance items remain incomplete:
+
+| Notion acceptance scenario | Current code evidence | First-version gap |
+| --- | --- | --- |
+| 1. Create project and record multi-repository/multi-remote structure | `projects`, `project_git_repositories`, and `git_remotes` tables exist; gateway exposes project, repository, and remote CRUD; web project detail supports repository and remote entry. | Needs real environment demo data that proves one logical repository with multiple remotes through the graph-backed readiness gate. |
+| 2. Multi-address sync | RepoSyncAsset lifecycle, repository sync, remote sync, Gitea webhook intake, replay, and repo sync run history exist. | Provider-level Gitea/GitHub callback rehearsal still needs a public staging hostname; provider-pair thresholds still need real-volume tuning. |
+| 3. GitHub Tag and Actions | `repo_tag_runs`, repository/remote tag routes, GitHub Actions list/sync routes, worker support, and web controls exist. | Tag readiness is not yet represented as a first-version gate, and remote-specific tag success still needs environment rehearsal against real GitHub remotes. |
+| 4. Config repository | Logical repositories have `repo_role`, and `config` can be modeled as a ProjectGitRepository. | No dedicated config-repository initialization flow for `envs/dev|test|prod` and no ProjectVersion linkage to config commits in the UI. |
+| 5. Version manifest | `project_versions` table exists in the initial migration. | No exposed ProjectVersion API or page for selecting repo/remote/tag/SHA entries, GitHub Actions linkage, config commit, or Argo revision. |
+| 6. Argo service sync and pod logs | Argo connection create/list, app sync, deployment targets, deployment records, rollback points, and operation logs exist. | Notion's pod/container log flow is missing: no Argo pods API, pod log query model, or UI for selecting pod/container logs. |
+| 7. SSH machine operation | SSH machine CRUD, SSH command execution, command run list, operation logs, approvals, and canonical audit graph evidence exist. | SSH verify is not a first-class exposed operation separate from command execution. |
+| 8. Agent controlled execution | Agent task, plan generation, approval, simulated execution, tool-call audit rows, and graph-backed context readiness exist. | Real worker-backed tool execution remains mostly audit/simulation-only for agent flows. |
+| 9. Agent code modification | Codex CLI readiness, patch workflow guardrails, and disabled-backend audit details are explicit and tested. | Real source remote checkout, agent branch creation, diff review, commit, and push are intentionally disabled. |
+
+The most direct remaining work for Notion's 05 MVP is therefore not more generic asset inventory. It is: ProjectVersion API/UI, config repository initialization, Argo pod log query support, SSH verify as a first-class operation, and real-but-guarded Agent code patch/commit/push execution.
 
 ## Notion Target
 
