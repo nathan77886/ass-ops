@@ -634,6 +634,30 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}) {
   ).length;
 }
 
+function countSSHGraphLinks(graph: AnyRow = {}) {
+  const byCommand: Record<string, { operation?: boolean; machine?: boolean }> = {};
+  const commandEntry = (assetID: string) => {
+    byCommand[assetID] ||= {};
+    return byCommand[assetID];
+  };
+  const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
+    const relation = String(edge.relation_type || '');
+    const from = String(edge.from_asset_id || '');
+    const to = String(edge.to_asset_id || '');
+    if (relation === 'ran_ssh_command' && from.startsWith('operation_run:') && to.startsWith('ssh_command_run:')) {
+      nextCounts.operationCommands += 1;
+      commandEntry(to).operation = true;
+    }
+    if (relation === 'executed_on' && from.startsWith('ssh_command_run:') && to.startsWith('ssh_machine:')) {
+      nextCounts.commandMachines += 1;
+      commandEntry(from).machine = true;
+    }
+    return nextCounts;
+  }, { operationCommands: 0, commandMachines: 0, completeCommands: 0 });
+  counts.completeCommands = Object.values(byCommand).filter((entry) => entry.operation && entry.machine).length;
+  return counts;
+}
+
 function countArgoGraphLinks(graph: AnyRow = {}) {
   const byApp: Record<string, { connection?: boolean; target?: boolean }> = {};
   const appEntry = (assetID: string) => {
@@ -685,6 +709,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const repositoryGraphLinks = countRepositoryGraphLinks(graph);
   const repoSyncGraphLinks = countRepoSyncGraphLinks(graph);
   const githubActionLinks = countGitHubActionGraphLinks(graph);
+  const sshGraphLinks = countSSHGraphLinks(graph);
   const argoGraphLinks = countArgoGraphLinks(graph);
   const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.argo_app || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0) + argoGraphLinks.connectionApps + argoGraphLinks.appTargets;
   const graphNodes = graphItems(graph, 'nodes').length;
@@ -725,7 +750,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'ssh',
       label: 'Register SSH machines and audited commands',
       next: 'Register an SSH machine and run an approval-gated command.',
-      ...readinessState((assetCounts.host || 0) > 0 && sshRuns > 0, `${assetCounts.host || 0} hosts / ${sshRuns} commands`, (assetCounts.host || 0) > 0 || sshRuns > 0)
+      ...readinessState((assetCounts.host || 0) > 0 && sshRuns > 0 && sshGraphLinks.completeCommands > 0, `${assetCounts.host || 0} hosts / ${sshRuns} command ops / ${assetCounts.ssh_command_run || 0} command assets / ${sshGraphLinks.completeCommands} complete command links`, (assetCounts.host || 0) > 0 || sshRuns > 0 || (assetCounts.ssh_command_run || 0) > 0 || sshGraphLinks.operationCommands > 0 || sshGraphLinks.commandMachines > 0)
     },
     {
       key: 'argo',

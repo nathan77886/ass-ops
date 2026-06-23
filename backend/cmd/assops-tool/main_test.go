@@ -282,6 +282,49 @@ func TestFirstVersionReadinessReportRequiresArgoSync(t *testing.T) {
 	}
 }
 
+func TestFirstVersionReadinessReportRequiresSSHCommandGraphLinks(t *testing.T) {
+	withoutGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "host"},
+		{"asset_type": "ssh_command_run"},
+	}, []map[string]any{
+		{"operation_type": "ssh.exec"},
+	}, nil, map[string]any{"edges": []any{}})
+	if got := readinessByKey(t, withoutGraphLinks, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 1 command ops / 1 command assets / 0 complete command links" {
+		t.Fatalf("ssh readiness without graph links = %#v, want partial with graph evidence", got)
+	}
+
+	ready := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "host"},
+		{"asset_type": "ssh_command_run"},
+	}, []map[string]any{
+		{"operation_type": "ssh.exec"},
+	}, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "operation_run:10", "to_asset_id": "ssh_command_run:20", "relation_type": "ran_ssh_command"},
+			map[string]any{"from_asset_id": "ssh_command_run:20", "to_asset_id": "ssh_machine:30", "relation_type": "executed_on"},
+		},
+	})
+	if got := readinessByKey(t, ready, "ssh"); got.Status != "ready" || got.Evidence != "1 hosts / 1 command ops / 1 command assets / 1 complete command links" {
+		t.Fatalf("ssh readiness with complete command graph = %#v, want ready", got)
+	}
+
+	crossCommandAggregation := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "host"},
+		{"asset_type": "ssh_command_run"},
+		{"asset_type": "ssh_command_run"},
+	}, []map[string]any{
+		{"operation_type": "ssh.exec"},
+	}, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "operation_run:10", "to_asset_id": "ssh_command_run:20", "relation_type": "ran_ssh_command"},
+			map[string]any{"from_asset_id": "ssh_command_run:21", "to_asset_id": "ssh_machine:30", "relation_type": "executed_on"},
+		},
+	})
+	if got := readinessByKey(t, crossCommandAggregation, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 1 command ops / 2 command assets / 0 complete command links" {
+		t.Fatalf("ssh readiness with cross-command aggregate links = %#v, want partial without a complete command", got)
+	}
+}
+
 func TestFirstVersionReadinessReportRequiresWebhookEventForSyncTrigger(t *testing.T) {
 	withoutEvent := firstVersionReadinessReport([]map[string]any{
 		{"asset_type": "webhook_connection", "metadata": map[string]any{"provider": "gitea"}},
@@ -506,6 +549,22 @@ func TestCountGitHubActionGraphLinks(t *testing.T) {
 	}
 	if got := countGitHubActionGraphLinks(graph); got != 1 {
 		t.Fatalf("countGitHubActionGraphLinks = %d, want 1", got)
+	}
+}
+
+func TestCountSSHGraphLinks(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "operation_run:10", "to_asset_id": "ssh_command_run:20", "relation_type": "ran_ssh_command"},
+			map[string]any{"from_asset_id": "ssh_command_run:20", "to_asset_id": "ssh_machine:30", "relation_type": "executed_on"},
+			map[string]any{"from_asset_id": "operation_run:11", "to_asset_id": "ssh_machine:31", "relation_type": "executed_on"},
+			map[string]any{"from_asset_id": "operation_run:12", "to_asset_id": "ssh_command_run:21", "relation_type": "executed_on"},
+			map[string]any{"from_asset_id": "ssh_command_run:22", "to_asset_id": "ssh_machine:32", "relation_type": "executed_on"},
+		},
+	}
+	got := countSSHGraphLinks(graph)
+	if got.OperationCommands != 1 || got.CommandMachines != 2 || got.CompleteCommands != 1 {
+		t.Fatalf("countSSHGraphLinks = %#v, want one operation-command, two command-machine, and one complete command", got)
 	}
 }
 
