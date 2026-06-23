@@ -1975,6 +1975,7 @@ func TestSSHMachineRehearsalPreviewSanitizesEvidence(t *testing.T) {
 	if evidence["completed_verify"] != true || evidence["completed_exec"] != true || intFromAny(evidence["verify_runs"], 0) != 1 || intFromAny(evidence["exec_runs"], 0) != 1 {
 		t.Fatalf("unexpected evidence summary: %#v", evidence)
 	}
+	assertSSHRehearsalPlansSafe(t, preview)
 	latestExec := mapFromAny(evidence["latest_exec"])
 	if latestExec["command"] != nil || latestExec["stdout"] != nil || latestExec["stderr"] != nil {
 		t.Fatalf("latest exec leaked sensitive fields: %#v", latestExec)
@@ -2116,6 +2117,14 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			if len(required) != tt.wantRequiredChecks {
 				t.Fatalf("required_live_rehearsal = %#v, want len %d", required, tt.wantRequiredChecks)
 			}
+			assertSSHRehearsalPlansSafe(t, preview)
+			approvalPlan := mapFromAny(preview["approval_request_plan"])
+			if tt.wantState == "blocked" && !containsString(stringSliceFromAny(approvalPlan["blocked_reasons"]), "machine_metadata_incomplete") {
+				t.Fatalf("blocked rehearsal should report metadata blocker: %#v", approvalPlan)
+			}
+			if tt.wantState != "blocked" && len(stringSliceFromAny(approvalPlan["blocked_reasons"])) != 0 {
+				t.Fatalf("metadata-ready rehearsal should not report metadata blockers: %#v", approvalPlan)
+			}
 			if tt.name == "unknown operation does not count as exec" && evidence["completed_exec"] != false {
 				t.Fatalf("unknown operation should not complete exec: %#v", evidence)
 			}
@@ -2157,6 +2166,7 @@ func TestGetSSHMachineRehearsalHandlerReturnsReadOnlyPlan(t *testing.T) {
 	if payload["mode"] != "ssh_rehearsal_plan_preview" || payload["execution_enabled"] != false || payload["ssh_process_started"] != false {
 		t.Fatalf("unexpected rehearsal payload: %#v", payload)
 	}
+	assertSSHRehearsalPlansSafe(t, payload)
 	evidence := mapFromAny(payload["recent_evidence"])
 	if evidence["completed_verify"] != true || evidence["completed_exec"] != false {
 		t.Fatalf("unexpected evidence: %#v", evidence)
@@ -2166,6 +2176,82 @@ func TestGetSSHMachineRehearsalHandlerReturnsReadOnlyPlan(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
+	t.Helper()
+	approvalPlan := mapFromAny(preview["approval_request_plan"])
+	if approvalPlan["mode"] != "ssh_rehearsal_approval_request_plan" ||
+		approvalPlan["request_ready"] != false ||
+		approvalPlan["request_ready_reason"] != "ssh_rehearsal_live_execution_disabled" ||
+		approvalPlan["operation_created"] != false ||
+		approvalPlan["approval_request_created"] != false ||
+		approvalPlan["worker_job_created"] != false ||
+		approvalPlan["runtime_auth_binding_queued"] != false ||
+		approvalPlan["ssh_process_started"] != false ||
+		approvalPlan["external_call_made"] != false {
+		t.Fatalf("ssh approval request plan should stay disabled and redacted: %#v", approvalPlan)
+	}
+	for _, reason := range []string{"ssh_rehearsal_operation_not_created", "approval_policy_not_applied", "runtime_auth_binding_not_approved", "ssh_process_backend_disabled"} {
+		if !containsString(stringSliceFromAny(approvalPlan["execution_blockers"]), reason) {
+			t.Fatalf("ssh approval execution blockers missing %q: %#v", reason, approvalPlan["execution_blockers"])
+		}
+		if !containsString(stringSliceFromAny(preview["execution_blockers"]), reason) {
+			t.Fatalf("ssh preview execution blockers missing %q: %#v", reason, preview["execution_blockers"])
+		}
+	}
+	for _, field := range []string{"operation_run_id", "ssh_machine_id", "operation_type", "host", "port", "username", "auth_type", "requested_by", "reason"} {
+		if !containsString(stringSliceFromAny(approvalPlan["required_approval_fields"]), field) {
+			t.Fatalf("ssh approval required fields missing %q: %#v", field, approvalPlan["required_approval_fields"])
+		}
+	}
+	for _, field := range []string{"private_key", "passphrase", "known_hosts_body", "command", "stdout", "stderr", "raw_error", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(approvalPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh approval suppressed_fields missing %q: %#v", field, approvalPlan["suppressed_fields"])
+		}
+	}
+	resultPlan := mapFromAny(preview["result_recording_plan"])
+	if resultPlan["mode"] != "ssh_rehearsal_result_recording_plan" ||
+		resultPlan["recording_state"] != "blocked" ||
+		resultPlan["recording_ready"] != false ||
+		resultPlan["recording_ready_reason"] != "ssh_rehearsal_execution_not_performed" ||
+		resultPlan["recording_enabled"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["operation_log_written"] != false ||
+		resultPlan["canonical_asset_sync_queued"] != false ||
+		resultPlan["status_snapshot_written"] != false ||
+		resultPlan["stdout_included"] != false ||
+		resultPlan["stderr_included"] != false ||
+		resultPlan["raw_error_included"] != false ||
+		resultPlan["private_key_included"] != false ||
+		resultPlan["known_hosts_included"] != false ||
+		resultPlan["authorization_header_included"] != false {
+		t.Fatalf("ssh result recording plan should stay disabled and redacted: %#v", resultPlan)
+	}
+	for _, field := range []string{"operation_run_id", "ssh_machine_id", "operation_type", "status", "exit_code", "started_at", "finished_at", "sanitization_status"} {
+		if !containsString(stringSliceFromAny(resultPlan["required_result_fields"]), field) {
+			t.Fatalf("ssh result required fields missing %q: %#v", field, resultPlan["required_result_fields"])
+		}
+	}
+	for _, field := range []string{"private_key", "passphrase", "known_hosts_body", "command", "stdout", "stderr", "raw_error", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(resultPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh result suppressed_fields missing %q: %#v", field, resultPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"ssh_rehearsal_execution_not_performed", "sanitized_ssh_result_not_recorded", "canonical_asset_sync_not_performed"} {
+		if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), reason) {
+			t.Fatalf("ssh result blocked reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
+		}
+	}
+	if !strings.Contains(cleanPreviewString(resultPlan["message"]), "not recorded") {
+		t.Fatalf("ssh result recording message should not imply recorded output: %#v", resultPlan["message"])
+	}
+	encoded, _ := json.Marshal(preview)
+	for _, forbidden := range []string{"BEGIN OPENSSH PRIVATE KEY", "secret output", "secret error", "known-hosts-secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("ssh rehearsal plan leaked %q: %s", forbidden, encoded)
+		}
 	}
 }
 

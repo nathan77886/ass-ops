@@ -16325,6 +16325,8 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 	if !hasExecuted {
 		requiredLiveRehearsal = append(requiredLiveRehearsal, "ssh.exec")
 	}
+	approvalPlan := sshRehearsalApprovalRequestPlan(metadataReady, hasVerified, hasExecuted)
+	resultRecordingPlan := sshRehearsalResultRecordingPlan()
 
 	steps := []map[string]any{
 		{
@@ -16376,6 +16378,8 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 		"secret_included":         false,
 		"auth_reference_present":  hasKeyReference || authType != "",
 		"known_hosts_configured":  hasKnownHostsReference,
+		"approval_request_plan":   approvalPlan,
+		"result_recording_plan":   resultRecordingPlan,
 		"required_live_rehearsal": requiredLiveRehearsal,
 		"required_controls": []string{
 			"machine_metadata_review",
@@ -16393,6 +16397,7 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 			"raw_error",
 			"command_output",
 		},
+		"execution_blockers": approvalPlan["execution_blockers"],
 		"machine": map[string]any{
 			"id":         machine["id"],
 			"project_id": machine["project_id"],
@@ -16404,6 +16409,58 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 		},
 		"steps":           steps,
 		"recent_evidence": evidence,
+	}
+}
+
+func sshRehearsalApprovalRequestPlan(metadataReady, hasVerified, hasExecuted bool) map[string]any {
+	requestState := "planned"
+	metadataBlockedReasons := []string{}
+	if !metadataReady {
+		requestState = "blocked"
+		metadataBlockedReasons = append(metadataBlockedReasons, "machine_metadata_incomplete")
+	}
+	return map[string]any{
+		"mode":                        "ssh_rehearsal_approval_request_plan",
+		"request_state":               requestState,
+		"request_ready":               false,
+		"request_ready_reason":        "ssh_rehearsal_live_execution_disabled",
+		"metadata_ready":              metadataReady,
+		"completed_verify_evidence":   hasVerified,
+		"completed_exec_evidence":     hasExecuted,
+		"operation_created":           false,
+		"approval_request_created":    false,
+		"worker_job_created":          false,
+		"runtime_auth_binding_queued": false,
+		"ssh_process_started":         false,
+		"external_call_made":          false,
+		"required_approval_fields":    []string{"operation_run_id", "ssh_machine_id", "operation_type", "host", "port", "username", "auth_type", "requested_by", "reason"},
+		"suppressed_fields":           []string{"private_key", "passphrase", "known_hosts_body", "command", "stdout", "stderr", "raw_error", "runtime_secret"},
+		"blocked_reasons":             metadataBlockedReasons,
+		"execution_blockers":          []string{"ssh_rehearsal_operation_not_created", "approval_policy_not_applied", "runtime_auth_binding_not_approved", "ssh_process_backend_disabled"},
+	}
+}
+
+func sshRehearsalResultRecordingPlan() map[string]any {
+	return map[string]any{
+		"mode":                          "ssh_rehearsal_result_recording_plan",
+		"recording_state":               "blocked",
+		"recording_ready":               false,
+		"recording_ready_reason":        "ssh_rehearsal_execution_not_performed",
+		"recording_enabled":             false,
+		"result_written":                false,
+		"operation_log_written":         false,
+		"canonical_asset_sync_queued":   false,
+		"status_snapshot_written":       false,
+		"stdout_included":               false,
+		"stderr_included":               false,
+		"raw_error_included":            false,
+		"private_key_included":          false,
+		"known_hosts_included":          false,
+		"authorization_header_included": false,
+		"required_result_fields":        []string{"operation_run_id", "ssh_machine_id", "operation_type", "status", "exit_code", "started_at", "finished_at", "sanitization_status"},
+		"suppressed_fields":             []string{"private_key", "passphrase", "known_hosts_body", "command", "stdout", "stderr", "raw_error", "runtime_secret"},
+		"blocked_reasons":               []string{"ssh_rehearsal_execution_not_performed", "sanitized_ssh_result_not_recorded", "canonical_asset_sync_not_performed"},
+		"message":                       "SSH rehearsal results are not recorded by this preview; future execution must persist sanitized metadata without command output or auth material.",
 	}
 }
 

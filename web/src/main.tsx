@@ -4251,6 +4251,8 @@ function ConfigPage() {
     private_key_included: sshRehearsal.data.private_key_included,
     stdout_included: sshRehearsal.data.stdout_included,
     stderr_included: sshRehearsal.data.stderr_included,
+    approval_request_plan: sshRehearsal.data.approval_request_plan,
+    result_recording_plan: sshRehearsal.data.result_recording_plan,
     required_live_rehearsal: sshRehearsal.data.required_live_rehearsal,
     required_controls: sshRehearsal.data.required_controls,
     steps: sshRehearsal.data.steps,
@@ -4411,8 +4413,10 @@ function ConfigPage() {
                   <Tag color={sshRehearsalView.rehearsal_state === 'ready' ? 'green' : sshRehearsalView.rehearsal_state === 'blocked' ? 'red' : 'gold'}>{sshRehearsalView.rehearsal_state}</Tag>
                   <Tag>{sshRehearsalView.execution_enabled ? 'execution enabled' : 'execution disabled'}</Tag>
                   <Tag>{sshRehearsalView.ssh_process_started ? 'ssh started' : 'no ssh process'}</Tag>
+                  {sshRehearsalView.approval_request_plan ? <Tag color="gold">approval {sshRehearsalView.approval_request_plan.request_state || 'blocked'}</Tag> : null}
                   <Tag>{sshRehearsalView.private_key_included ? 'key included' : 'no key material'}</Tag>
                   <Tag>{sshRehearsalView.stdout_included || sshRehearsalView.stderr_included ? 'output included' : 'no command output'}</Tag>
+                  {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.recording_state || 'blocked'} recording</Tag> : null}
                   <Tag>{sshRehearsalView.recent_evidence?.verify_runs || 0} verify runs</Tag>
                   <Tag>{sshRehearsalView.recent_evidence?.exec_runs || 0} exec runs</Tag>
                   <Tag>{sshRehearsalView.recent_evidence?.unknown_runs || 0} unknown runs</Tag>
