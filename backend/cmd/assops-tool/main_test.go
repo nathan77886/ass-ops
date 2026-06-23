@@ -395,6 +395,39 @@ func TestFirstVersionReadinessReportRequiresWebhookEventForSyncTrigger(t *testin
 	}
 }
 
+func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
+	withoutEvidence := firstVersionReadinessReportWithGraph(nil, nil, nil, nil)
+	if got := readinessByKey(t, withoutEvidence, "project"); got.Status != "missing" || got.Evidence != "0 project assets / 0 project graph nodes" {
+		t.Fatalf("project readiness without evidence = %#v, want missing", got)
+	}
+
+	withNilGraph := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "project"},
+	}, nil, nil, nil)
+	if got := readinessByKey(t, withNilGraph, "project"); got.Status != "partial" || got.Evidence != "1 project assets / 0 project graph nodes" {
+		t.Fatalf("project readiness with nil graph = %#v, want partial", got)
+	}
+
+	withoutGraphNode := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "project"},
+	}, nil, nil, map[string]any{"nodes": []any{}})
+	if got := readinessByKey(t, withoutGraphNode, "project"); got.Status != "partial" || got.Evidence != "1 project assets / 0 project graph nodes" {
+		t.Fatalf("project readiness without graph node = %#v, want partial", got)
+	}
+
+	withGraphNode := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "project"},
+	}, nil, nil, map[string]any{
+		"nodes": []any{
+			map[string]any{"id": "project:1"},
+			map[string]any{"id": "repository:10"},
+		},
+	})
+	if got := readinessByKey(t, withGraphNode, "project"); got.Status != "ready" || got.Evidence != "1 project assets / 1 project graph nodes" {
+		t.Fatalf("project readiness with graph node = %#v, want ready", got)
+	}
+}
+
 func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 	withoutGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "repository"},

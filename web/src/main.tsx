@@ -636,6 +636,10 @@ function graphItems(graph: AnyRow = {}, key: string) {
   return Array.isArray(graph[key]) ? graph[key] : [];
 }
 
+function countGraphNodesByPrefix(graph: AnyRow = {}, prefix: string) {
+  return graphItems(graph, 'nodes').filter((node: AnyRow) => String(node.id ?? '').startsWith(prefix)).length;
+}
+
 function countRepositoryGraphLinks(graph: AnyRow = {}) {
   const byRepository: Record<string, { project?: boolean; remotes: Record<string, boolean> }> = {};
   const repositoryEntry = (assetID: string) => {
@@ -857,12 +861,13 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const graphNodes = graphItems(graph, 'nodes').length;
   const graphEdges = graphItems(graph, 'edges').length;
   const graphEvidence = graphNodes + graphEdges;
+  const projectGraphNodes = countGraphNodesByPrefix(graph, 'project:');
   return [
     {
       key: 'project',
       label: 'Create/import project asset',
       next: 'Create a project or run the demo seed.',
-      ...readinessState((assetCounts.project || 0) > 0, assetCounts.project || 0)
+      ...readinessState((assetCounts.project || 0) > 0 && projectGraphNodes > 0, `${assetCounts.project || 0} project assets / ${projectGraphNodes} project graph nodes`, (assetCounts.project || 0) > 0 || projectGraphNodes > 0)
     },
     {
       key: 'repositories',

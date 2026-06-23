@@ -1310,6 +1310,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	graphNodes := len(apiItemsByKey(graph, "nodes"))
 	graphEdges := len(apiItemsByKey(graph, "edges"))
 	graphEvidence := graphNodes + graphEdges
+	projectGraphNodes := countGraphNodesByPrefix(graph, "project:")
 	repositoryGraphLinks := countRepositoryGraphLinks(graph)
 	repoSyncGraphLinks := countRepoSyncGraphLinks(graph)
 	webhookSyncGraphLinks := countWebhookSyncGraphLinks(graph)
@@ -1321,7 +1322,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	argoEvidence := assetCounts["argo_connection"] + assetCounts["argo_app"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"] + argoGraphLinks.ConnectionApps + argoGraphLinks.AppTargets
 
 	rows := []readinessRow{
-		readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0, assetCounts["project"], false),
+		readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0 && projectGraphNodes > 0, fmt.Sprintf("%d project assets / %d project graph nodes", assetCounts["project"], projectGraphNodes), assetCounts["project"] > 0 || projectGraphNodes > 0),
 		readinessItem("repositories", "Attach source and mirror repositories", "Add repository metadata and at least two Git remotes.", assetCounts["repository"] > 0 && assetCounts["git_remote"] >= 2 && repositoryGraphLinks.CompleteRepos > 0, fmt.Sprintf("%d repos / %d remotes / %d complete repos / %d project links / %d remote links", assetCounts["repository"], assetCounts["git_remote"], repositoryGraphLinks.CompleteRepos, repositoryGraphLinks.ProjectRepository, repositoryGraphLinks.RepositoryRemotes), assetCounts["repository"] > 0 || assetCounts["git_remote"] > 0 || repositoryGraphLinks.ProjectRepository > 0 || repositoryGraphLinks.RepositoryRemotes > 0),
 		readinessItem("repo_sync", "Define RepoSyncAsset", "Create a RepoSyncAsset between source and mirror remotes.", assetCounts["repo_sync"] > 0 && repoSyncGraphLinks.CompleteSyncs > 0, fmt.Sprintf("%d repo syncs / %d complete syncs / %d repository links / %d source links / %d target links", assetCounts["repo_sync"], repoSyncGraphLinks.CompleteSyncs, repoSyncGraphLinks.RepositorySync, repoSyncGraphLinks.SourceRemotes, repoSyncGraphLinks.TargetRemotes), assetCounts["repo_sync"] > 0 || repoSyncGraphLinks.RepositorySync > 0 || repoSyncGraphLinks.SourceRemotes > 0 || repoSyncGraphLinks.TargetRemotes > 0),
 		readinessItem("sync_trigger", "Trigger sync manually and from webhook", "Run a manual sync and receive or replay a Gitea webhook event.", syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0 && webhookSyncGraphLinks.CompleteChains > 0, fmt.Sprintf("%d sync ops / %d Gitea webhooks / %d Gitea events / %d complete webhook chains", syncTriggered, giteaWebhooks, giteaWebhookEvents, webhookSyncGraphLinks.CompleteChains), syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0 || webhookSyncGraphLinks.ConnectionEvents > 0 || webhookSyncGraphLinks.EventRepoSyncs > 0 || webhookSyncGraphLinks.EventOperations > 0),
@@ -1448,6 +1449,17 @@ func countContextGraphLinks(assets []map[string]any, graph map[string]any) conte
 		}
 	}
 	return counts
+}
+
+func countGraphNodesByPrefix(graph map[string]any, prefix string) int {
+	count := 0
+	for _, node := range apiItemsByKey(graph, "nodes") {
+		id := fmt.Sprint(node["id"])
+		if strings.HasPrefix(id, prefix) {
+			count++
+		}
+	}
+	return count
 }
 
 func readinessItem(key, label, next string, done bool, evidence any, partial bool) readinessRow {
