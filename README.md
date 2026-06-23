@@ -160,7 +160,7 @@ Security defaults:
 - Provider review request materialization, provider-send, and retry/backoff plans reject mismatched operation/endpoint pairs before any future provider request can be staged; attempt operations map to endpoint operations as `create_branch_ref -> create_branch_ref`, `commit_starter_files -> commit_files`, and `open_review_request -> open_review`.
 - Provider review request materialization and response plans also reject mismatched payload-builder or response-handler names, so generic sanitized defaults cannot be staged for concrete provider operations.
 - Provider review dispatch metadata now requires both the execution claim plan and adapter contract to match the same operation and endpoint before downstream request validation can be treated as metadata-ready.
-- Provider review downstream subplans now require matching mode, operation, and endpoint identity before branch policy, provider-send, retry/backoff, response result recording, transaction, provider-call boundary, or execution-lock metadata can be treated as ready.
+- Provider review downstream subplans now require matching mode, operation, and endpoint identity before branch policy, provider-send, retry/backoff, response result recording, transaction, provider-call boundary, or execution-lock metadata can be treated as ready; invocation, activation, execution-lock, transaction, and provider-call boundary paths also require the execution claim plan itself to match the same operation and endpoint before accepting `claim_metadata_ready`.
 
 ## MVP Boundaries
 

@@ -11115,8 +11115,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
 	providerType := providerReviewProviderFromEndpointKey(endpointKey)
-	claimMetadataReady := boolOnlyFromAny(claimPlan["claim_metadata_ready"]) &&
-		providerReviewAttemptPlanMatchesOperation(claimPlan, "redacted_attempt_execution_claim_plan", operationName, endpointKey)
+	claimMetadataReady := providerReviewAttemptClaimPlanReadyForOperation(claimPlan, operationName, endpointKey)
 	adapterContractReady := providerReviewAttemptPlanMatchesOperation(adapterContract, "redacted_attempt_adapter_contract", operationName, endpointKey)
 	metadataReady := claimMetadataReady &&
 		adapterContractReady &&
@@ -11261,6 +11260,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 	executionLockPlan := providerReviewAttemptAdapterExecutionLockPlan(operation, claimPlan, transactionPlan)
 	providerSendPlan := providerReviewAttemptAdapterProviderSendPlan(operation, requestPlan, credentialPlan, runtimePlan, transportPlan)
 	activationPlan := providerReviewAttemptAdapterActivationPlan(operation, claimPlan, executionLockPlan, credentialPlan, runtimePlan, requestPlan, transportPlan, providerSendPlan, responsePlan, transactionPlan)
+	claimMetadataReady := providerReviewAttemptClaimPlanReadyForOperation(claimPlan, operationName, endpointKey)
 	return map[string]any{
 		"mode":                              "redacted_attempt_adapter_invocation_plan",
 		"invocation_state":                  "blocked",
@@ -11274,7 +11274,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"execution_lock_plan":               executionLockPlan,
 		"adapter_activation_plan":           activationPlan,
 		"provider_send_plan":                providerSendPlan,
-		"claim_metadata_ready":              boolOnlyFromAny(claimPlan["claim_metadata_ready"]),
+		"claim_metadata_ready":              claimMetadataReady,
 		"execution_lock_metadata_ready":     boolOnlyFromAny(executionLockPlan["execution_lock_metadata_ready"]),
 		"adapter_activation_metadata_ready": boolOnlyFromAny(activationPlan["adapter_activation_metadata_ready"]),
 		"credential_binding_ready":          boolOnlyFromAny(credentialPlan["credential_binding_ready"]),
@@ -11285,7 +11285,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"provider_send_metadata_ready":      boolOnlyFromAny(providerSendPlan["provider_send_metadata_ready"]),
 		"response_recording_ready":          boolOnlyFromAny(responsePlan["response_recording_ready"]),
 		"transaction_metadata_ready":        boolOnlyFromAny(transactionPlan["transaction_metadata_ready"]),
-		"claim_metadata_ready_reason":       providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(claimPlan["claim_metadata_ready"]), "provider_review_claim_metadata_not_ready"),
+		"claim_metadata_ready_reason":       providerReviewAttemptInvocationReadyReason(claimMetadataReady, "provider_review_claim_metadata_not_ready"),
 		"execution_lock_ready_reason":       stringFromMap(executionLockPlan, "execution_lock_metadata_ready_reason"),
 		"adapter_activation_ready_reason":   stringFromMap(activationPlan, "adapter_activation_metadata_ready_reason"),
 		"adapter_runtime_ready_reason":      providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(runtimePlan["runtime_ready"]), "provider_review_adapter_runtime_not_ready"),
@@ -11419,7 +11419,7 @@ func providerReviewAttemptAdapterActivationPlan(operation, claimPlan, executionL
 		return map[string]any{}
 	}
 	liveAdapterPlan := providerReviewAttemptLiveAdapterPlan(providerType, operationName, endpointKey)
-	claimReady := boolOnlyFromAny(claimPlan["claim_metadata_ready"])
+	claimReady := providerReviewAttemptClaimPlanReadyForOperation(claimPlan, operationName, endpointKey)
 	executionLockReady := boolOnlyFromAny(executionLockPlan["execution_lock_metadata_ready"])
 	credentialReady := boolOnlyFromAny(credentialPlan["credential_binding_ready"])
 	runtimeReady := boolOnlyFromAny(runtimePlan["runtime_ready"])
@@ -11541,7 +11541,7 @@ func providerReviewAttemptAdapterExecutionLockPlan(operation, claimPlan, transac
 	if operationName == "" || endpointKey == "" {
 		return map[string]any{}
 	}
-	claimMetadataReady := boolOnlyFromAny(claimPlan["claim_metadata_ready"])
+	claimMetadataReady := providerReviewAttemptClaimPlanReadyForOperation(claimPlan, operationName, endpointKey)
 	transactionMetadataReady := boolOnlyFromAny(transactionPlan["transaction_metadata_ready"]) &&
 		providerReviewAttemptPlanMatchesOperation(transactionPlan, "redacted_attempt_adapter_transaction_plan", operationName, endpointKey)
 	metadataReady := claimMetadataReady && transactionMetadataReady
@@ -11792,7 +11792,7 @@ func providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, responseP
 		"transaction_state":                  "blocked",
 		"transaction_ready":                  false,
 		"transaction_ready_reason":           "provider_review_transaction_not_armed",
-		"transaction_metadata_ready":         boolOnlyFromAny(claimPlan["claim_metadata_ready"]) && providerReviewAttemptPlanMatchesOperation(responsePlan, providerReviewAttemptAdapterResponsePlanMode, operationName, endpointKey),
+		"transaction_metadata_ready":         providerReviewAttemptClaimPlanReadyForOperation(claimPlan, operationName, endpointKey) && providerReviewAttemptPlanMatchesOperation(responsePlan, providerReviewAttemptAdapterResponsePlanMode, operationName, endpointKey),
 		"operation_name":                     operationName,
 		"endpoint_key":                       endpointKey,
 		"operation_order":                    intFromAny(operation["operation_order"], 0),
@@ -11861,7 +11861,7 @@ func providerReviewAttemptAdapterProviderCallBoundaryPlan(operation, claimPlan, 
 	if operationName == "" || endpointKey == "" {
 		return map[string]any{}
 	}
-	metadataReady := boolOnlyFromAny(claimPlan["claim_metadata_ready"]) &&
+	metadataReady := providerReviewAttemptClaimPlanReadyForOperation(claimPlan, operationName, endpointKey) &&
 		providerReviewAttemptPlanMatchesOperation(responsePlan, providerReviewAttemptAdapterResponsePlanMode, operationName, endpointKey)
 	return map[string]any{
 		"mode":                                  "redacted_attempt_adapter_provider_call_boundary_plan",
@@ -12367,6 +12367,11 @@ func providerReviewAttemptPlanMatchesOperation(plan map[string]any, mode, operat
 		stringFromMap(plan, "mode") == mode &&
 		safeProviderReviewAttemptOperationName(stringFromMap(plan, "operation_name")) == operationName &&
 		safeProviderReviewEndpointKey(stringFromMap(plan, "endpoint_key")) == endpointKey
+}
+
+func providerReviewAttemptClaimPlanReadyForOperation(plan map[string]any, operationName, endpointKey string) bool {
+	return boolOnlyFromAny(plan["claim_metadata_ready"]) &&
+		providerReviewAttemptPlanMatchesOperation(plan, "redacted_attempt_execution_claim_plan", operationName, endpointKey)
 }
 
 func providerReviewAttemptPayloadBuilderMatchesOperation(operationName, payloadBuilder string) bool {

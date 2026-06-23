@@ -5800,7 +5800,12 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		"endpoint_key":    "github.create_branch_ref",
 		"operation_order": 10,
 	}
-	claimPlan := map[string]any{"claim_metadata_ready": true}
+	claimPlan := map[string]any{
+		"mode":                 "redacted_attempt_execution_claim_plan",
+		"operation_name":       "create_branch_ref",
+		"endpoint_key":         "github.create_branch_ref",
+		"claim_metadata_ready": true,
+	}
 	requestPlan := map[string]any{"request_materialization_ready": false}
 	credentialPlan := map[string]any{"credential_binding_ready": false}
 	runtimePlan := map[string]any{"runtime_ready": false}
@@ -6433,6 +6438,22 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		notReadyClaimLockPlan["transaction_metadata_ready"] != true {
 		t.Fatalf("not ready claim execution lock plan = %#v", notReadyClaimLockPlan)
 	}
+	mismatchedClaimLockPlan := providerReviewAttemptAdapterExecutionLockPlan(
+		operation,
+		map[string]any{
+			"mode":                 "redacted_attempt_execution_claim_plan",
+			"operation_name":       "commit_starter_files",
+			"endpoint_key":         "github.commit_files",
+			"claim_metadata_ready": true,
+		},
+		transactionPlan,
+	)
+	if mismatchedClaimLockPlan["execution_lock_metadata_ready"] != false ||
+		mismatchedClaimLockPlan["execution_lock_metadata_ready_reason"] != "provider_review_execution_lock_claim_metadata_not_ready" ||
+		mismatchedClaimLockPlan["claim_metadata_ready"] != false ||
+		mismatchedClaimLockPlan["transaction_metadata_ready"] != true {
+		t.Fatalf("mismatched claim identity execution lock plan = %#v", mismatchedClaimLockPlan)
+	}
 	notReadyTransactionLockPlan := providerReviewAttemptAdapterExecutionLockPlan(
 		operation,
 		claimPlan,
@@ -6521,6 +6542,53 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		notReadyClaimPlan["adapter_activation_metadata_ready"] != false ||
 		notReadyClaimPlan["adapter_activation_ready_reason"] != "provider_review_activation_claim_metadata_not_ready" {
 		t.Fatalf("not ready claim invocation plan = %#v", notReadyClaimPlan)
+	}
+	mismatchedClaimPlan := providerReviewAttemptAdapterInvocationPlan(
+		operation,
+		map[string]any{
+			"mode":                 "redacted_attempt_execution_claim_plan",
+			"operation_name":       "commit_starter_files",
+			"endpoint_key":         "github.commit_files",
+			"claim_metadata_ready": true,
+		},
+		requestPlan,
+		credentialPlan,
+		runtimePlan,
+		branchPolicyPlan,
+		transportPlan,
+		responsePlan,
+		transactionPlan,
+	)
+	if mismatchedClaimPlan["claim_metadata_ready"] != false ||
+		mismatchedClaimPlan["claim_metadata_ready_reason"] != "provider_review_claim_metadata_not_ready" ||
+		mismatchedClaimPlan["execution_lock_metadata_ready"] != false ||
+		mismatchedClaimPlan["execution_lock_ready_reason"] != "provider_review_execution_lock_claim_metadata_not_ready" ||
+		mismatchedClaimPlan["adapter_activation_metadata_ready"] != false ||
+		mismatchedClaimPlan["adapter_activation_ready_reason"] != "provider_review_activation_claim_metadata_not_ready" {
+		t.Fatalf("mismatched claim identity invocation plan = %#v", mismatchedClaimPlan)
+	}
+	mismatchedClaimActivationPlan := providerReviewAttemptAdapterActivationPlan(
+		operation,
+		map[string]any{
+			"mode":                 "redacted_attempt_execution_claim_plan",
+			"operation_name":       "commit_starter_files",
+			"endpoint_key":         "github.commit_files",
+			"claim_metadata_ready": true,
+		},
+		executionLockPlan,
+		credentialPlan,
+		runtimePlan,
+		requestPlan,
+		transportPlan,
+		providerSendPlan,
+		responsePlan,
+		transactionPlan,
+	)
+	if mismatchedClaimActivationPlan["adapter_activation_metadata_ready"] != false ||
+		mismatchedClaimActivationPlan["adapter_activation_metadata_ready_reason"] != "provider_review_activation_claim_metadata_not_ready" ||
+		mismatchedClaimActivationPlan["claim_metadata_ready"] != false ||
+		mismatchedClaimActivationPlan["execution_lock_metadata_ready"] != true {
+		t.Fatalf("mismatched claim identity activation plan = %#v", mismatchedClaimActivationPlan)
 	}
 	notReadyTransactionPlan := providerReviewAttemptAdapterInvocationPlan(
 		operation,
@@ -8281,7 +8349,12 @@ func TestProviderReviewAttemptAdapterTransactionPlan(t *testing.T) {
 		"endpoint_key":    "github.create_branch_ref",
 		"operation_order": 10,
 	}
-	claimPlan := map[string]any{"claim_metadata_ready": true}
+	claimPlan := map[string]any{
+		"mode":                 "redacted_attempt_execution_claim_plan",
+		"operation_name":       "create_branch_ref",
+		"endpoint_key":         "github.create_branch_ref",
+		"claim_metadata_ready": true,
+	}
 	responsePlan := map[string]any{
 		"mode":                         "redacted_attempt_adapter_response_plan",
 		"operation_name":               "create_branch_ref",
@@ -8461,6 +8534,19 @@ func TestProviderReviewAttemptAdapterTransactionPlan(t *testing.T) {
 	nilClaimPlan := providerReviewAttemptAdapterTransactionPlan(operation, nil, responsePlan)
 	if nilClaimPlan["transaction_metadata_ready"] != false {
 		t.Fatalf("nil claim transaction plan = %#v", nilClaimPlan)
+	}
+	mismatchedClaimPlan := providerReviewAttemptAdapterTransactionPlan(operation, map[string]any{
+		"mode":                 "redacted_attempt_execution_claim_plan",
+		"operation_name":       "commit_starter_files",
+		"endpoint_key":         "github.commit_files",
+		"claim_metadata_ready": true,
+	}, responsePlan)
+	if mismatchedClaimPlan["transaction_metadata_ready"] != false {
+		t.Fatalf("mismatched claim identity transaction plan should not be metadata-ready: %#v", mismatchedClaimPlan)
+	}
+	mismatchedClaimBoundaryPlan := mapFromAny(mismatchedClaimPlan["provider_call_boundary_plan"])
+	if mismatchedClaimBoundaryPlan["provider_call_boundary_metadata_ready"] != false {
+		t.Fatalf("mismatched claim identity boundary plan should not be metadata-ready: %#v", mismatchedClaimBoundaryPlan)
 	}
 	mismatchedResponseModePlan := providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, map[string]any{"mode": "raw_response_plan"})
 	if mismatchedResponseModePlan["transaction_metadata_ready"] != false {
