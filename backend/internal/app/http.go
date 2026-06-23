@@ -5987,6 +5987,45 @@ func assetInventorySQL() string {
 		FROM project_git_repositories r
 		UNION ALL
 		SELECT
+			'project_version:' || pv.id::text,
+			pv.project_id::text,
+			'project_version',
+			pv.version,
+			pv.version,
+			COALESCE(NULLIF(pv.source, ''), 'manual'),
+			'project_version',
+			pv.version,
+			'active',
+			'normal',
+			'project_versions',
+			pv.id::text,
+			jsonb_build_object(
+				'source', pv.source,
+				'repository_count', COALESCE(version_manifest.repository_count, 0),
+				'has_repository_manifest', jsonb_typeof(pv.metadata->'repositories')='array',
+				'has_config_commit', COALESCE(version_manifest.has_config_commit, false),
+				'has_action_link', COALESCE(version_manifest.has_action_link, false),
+				'has_argo_revision', COALESCE(version_manifest.has_argo_revision, false)
+			),
+			pv.created_at,
+			pv.created_at
+		FROM project_versions pv
+		LEFT JOIN LATERAL (
+			SELECT
+				count(*)::int AS repository_count,
+				bool_or(manifest_repo.item->>'repo_role'='config' OR COALESCE(NULLIF(manifest_repo.item->>'config_commit_sha', ''), '') <> '') AS has_config_commit,
+				bool_or(COALESCE(NULLIF(manifest_repo.item->>'github_action_run_id', ''), '') <> '') AS has_action_link,
+				bool_or(COALESCE(NULLIF(manifest_repo.item->>'argo_revision', ''), '') <> '') AS has_argo_revision
+			FROM jsonb_array_elements(
+				CASE
+					WHEN jsonb_typeof(pv.metadata->'repositories')='array'
+					THEN pv.metadata->'repositories'
+					ELSE '[]'::jsonb
+				END
+			) AS manifest_repo(item)
+		) version_manifest ON true
+		UNION ALL
+		SELECT
 			'template_file:' || ptf.id::text,
 			ptf.project_id::text,
 			'template_file',
@@ -6558,6 +6597,77 @@ func assetRelationInventorySQL() string {
 			op.created_at
 		FROM projects p
 		JOIN operation_runs op ON op.project_id=p.id
+		UNION ALL
+		SELECT
+			'project:' || p.id::text || ':owns:project_version:' || pv.id::text,
+			p.id::text,
+			'project:' || p.id::text,
+			'project_version:' || pv.id::text,
+			'owns_version',
+			jsonb_build_object('version', pv.version, 'source', pv.source),
+			pv.created_at
+		FROM projects p
+		JOIN project_versions pv ON pv.project_id=p.id
+		UNION ALL
+		SELECT
+			'project_version:' || pv.id::text || ':includes_repository:repository:' || r.id::text,
+			pv.project_id::text,
+			'project_version:' || pv.id::text,
+			'repository:' || r.id::text,
+			'includes_repository',
+			jsonb_build_object(
+				'version', pv.version,
+				'repository_id', r.id,
+				'has_tag', COALESCE(NULLIF(manifest_repo.item->>'tag', ''), '') <> '',
+				'has_commit_sha', COALESCE(NULLIF(manifest_repo.item->>'commit_sha', ''), '') <> ''
+			),
+			pv.created_at
+		FROM project_versions pv
+		JOIN LATERAL jsonb_array_elements(
+			CASE
+				WHEN jsonb_typeof(pv.metadata->'repositories')='array'
+				THEN pv.metadata->'repositories'
+				ELSE '[]'::jsonb
+			END
+		) AS manifest_repo(item) ON true
+		JOIN project_git_repositories r ON r.id=CASE
+			WHEN (manifest_repo.item->>'repository_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+			THEN (manifest_repo.item->>'repository_id')::uuid
+			ELSE NULL
+		END
+			AND r.project_id=pv.project_id
+		UNION ALL
+		SELECT
+			'project_version:' || pv.id::text || ':pins_remote:git_remote:' || gr.id::text,
+			pv.project_id::text,
+			'project_version:' || pv.id::text,
+			'git_remote:' || gr.id::text,
+			'pins_remote',
+			jsonb_build_object(
+				'version', pv.version,
+				'remote_id', gr.id,
+				'has_tag', COALESCE(NULLIF(manifest_repo.item->>'tag', ''), '') <> '',
+				'has_commit_sha', COALESCE(NULLIF(manifest_repo.item->>'commit_sha', ''), '') <> '',
+				'has_github_action_run', COALESCE(NULLIF(manifest_repo.item->>'github_action_run_id', ''), '') <> '',
+				'has_argo_revision', COALESCE(NULLIF(manifest_repo.item->>'argo_revision', ''), '') <> ''
+			),
+			pv.created_at
+		FROM project_versions pv
+		JOIN LATERAL jsonb_array_elements(
+			CASE
+				WHEN jsonb_typeof(pv.metadata->'repositories')='array'
+				THEN pv.metadata->'repositories'
+				ELSE '[]'::jsonb
+			END
+		) AS manifest_repo(item) ON true
+		JOIN git_remotes gr ON gr.id=CASE
+			WHEN (manifest_repo.item->>'remote_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+			THEN (manifest_repo.item->>'remote_id')::uuid
+			ELSE NULL
+		END
+		-- Git remotes inherit project ownership through their logical repository.
+		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
+			AND r.project_id=pv.project_id
 		UNION ALL
 		SELECT
 			'operation_run:' || op.id::text || ':dispatched_worker_job:worker_job:' || wj.id::text,

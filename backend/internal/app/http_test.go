@@ -507,6 +507,13 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		"'provider_account'",
 		"'template_file'",
 		"'repository'",
+		"'project_version'",
+		"FROM project_versions pv",
+		"'repository_count'",
+		"'has_repository_manifest'",
+		"'has_config_commit'",
+		"'has_action_link'",
+		"'has_argo_revision'",
 		"'git_remote'",
 		"'operation_run'",
 		"FROM operation_runs op",
@@ -577,6 +584,7 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		t.Fatalf("operation approval delegation user ids should not be exposed in assetInventorySQL")
 	}
 	for _, forbidden := range []*regexp.Regexp{
+		regexp.MustCompile(`'metadata'\s*,\s*pv\.metadata`),
 		regexp.MustCompile(`'input'\s*,\s*atc\.input`),
 		regexp.MustCompile(`'output'\s*,\s*atc\.output`),
 		regexp.MustCompile(`'error_message'\s*,\s*atc\.error_message`),
@@ -672,6 +680,15 @@ func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
 	sql := assetRelationInventorySQL()
 	for _, token := range []string{
 		"'project:' || p.id::text || ':owns:operation_run:' || op.id::text",
+		"'project:' || p.id::text || ':owns:project_version:' || pv.id::text",
+		"'project_version:' || pv.id::text || ':includes_repository:repository:' || r.id::text",
+		"'project_version:' || pv.id::text || ':pins_remote:git_remote:' || gr.id::text",
+		"'owns_version'",
+		"'includes_repository'",
+		"'pins_remote'",
+		"jsonb_array_elements",
+		"manifest_repo.item->>'repository_id'",
+		"manifest_repo.item->>'remote_id'",
 		"'operation_run:' || op.id::text || ':dispatched_worker_job:worker_job:' || wj.id::text",
 		"'worker_job:' || wj.id::text || ':assigned_to:worker_node:' || wn.id::text",
 		"'project:' || p.id::text || ':owns:operation_approval:' || oa.id::text",
@@ -757,6 +774,7 @@ func TestAssetRelationInventorySQLIncludesOperationRunEdges(t *testing.T) {
 		regexp.MustCompile(`\bat\.prompt\b`),
 		regexp.MustCompile(`\bac\.config\b`),
 		regexp.MustCompile(`\bsm\.metadata\b`),
+		regexp.MustCompile(`'metadata'\s*,\s*pv\.metadata`),
 	} {
 		if forbidden.MatchString(sql) {
 			t.Fatalf("assetRelationInventorySQL should not expose sensitive operation details matching %q", forbidden.String())
@@ -813,6 +831,9 @@ func TestAssetRelationInventorySQLIncludesCoreRelations(t *testing.T) {
 	for _, token := range []string{
 		"'owns' AS relation_type",
 		"'provider_account:' || pa.id::text || ':manages:git_remote:' || gr.id::text",
+		"'owns_version'",
+		"'includes_repository'",
+		"'pins_remote'",
 		"'has_remote'",
 		"'has_sync'",
 		"'synced_from'",
