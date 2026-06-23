@@ -112,6 +112,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/projects/{id}/git-repositories", s.listGitRepositories)
 		r.Get("/api/git-repositories/{id}", s.getGitRepository)
 		r.Patch("/api/git-repositories/{id}", s.updateGitRepository)
+		r.Get("/api/git-repositories/{id}/config-scaffold", s.getConfigRepositoryScaffold)
 		r.Post("/api/git-repositories/{id}/sync", s.createRepositorySync)
 		r.Post("/api/git-repositories/{id}/tags", s.createRepositoryTag)
 		r.Get("/api/git-repositories/{id}/repo-sync-assets", s.listRepoSyncAssets)
@@ -2974,6 +2975,33 @@ func (s *Server) getGitRepository(w http.ResponseWriter, r *http.Request) {
 	writeQueryOne(w, item, err)
 }
 
+func (s *Server) getConfigRepositoryScaffold(w http.ResponseWriter, r *http.Request) {
+	repoID := chi.URLParam(r, "id")
+	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_repository", ID: repoID, ProjectID: projectID}, "read") {
+		return
+	}
+	repo, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	remotes, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT id, name, remote_key, provider_type, remote_role, default_branch, latest_sha, last_sync_status
+		FROM git_remotes
+		WHERE project_git_repository_id=$1
+		ORDER BY created_at DESC`, repoID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load git remotes")
+		return
+	}
+	writeJSON(w, http.StatusOK, configRepositoryScaffoldPreview(repo, remotes))
+}
+
 func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
 	repoID := chi.URLParam(r, "id")
 	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
@@ -3039,6 +3067,87 @@ func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]any) map[string]any {
+	repoRole := strings.ToLower(strings.TrimSpace(stringFromMap(repo, "repo_role")))
+	environments := []string{"dev", "test", "prod"}
+	files := make([]map[string]any, 0, len(environments)*3+1)
+	for _, env := range environments {
+		files = append(files,
+			map[string]any{
+				"path":        "envs/" + env + "/values.yaml",
+				"environment": env,
+				"purpose":     "environment values entrypoint",
+				"required":    true,
+			},
+			map[string]any{
+				"path":        "envs/" + env + "/secrets.example.yaml",
+				"environment": env,
+				"purpose":     "redacted secret shape only; real secrets stay outside Git",
+				"required":    true,
+			},
+			map[string]any{
+				"path":        "envs/" + env + "/README.md",
+				"environment": env,
+				"purpose":     "operator notes, owners, rollout checks, and rollback hints",
+				"required":    true,
+			},
+		)
+	}
+	files = append(files, map[string]any{
+		"path":        "README.md",
+		"environment": "all",
+		"purpose":     "config repository overview and branch/review policy",
+		"required":    true,
+	})
+	remoteSummaries := make([]map[string]any, 0, len(remotes))
+	for _, remote := range remotes {
+		remoteSummaries = append(remoteSummaries, map[string]any{
+			"id":               remote["id"],
+			"name":             remote["name"],
+			"remote_key":       remote["remote_key"],
+			"provider_type":    remote["provider_type"],
+			"remote_role":      remote["remote_role"],
+			"default_branch":   remote["default_branch"],
+			"latest_sha":       remote["latest_sha"],
+			"last_sync_status": remote["last_sync_status"],
+		})
+	}
+	blockedReasons := []string{}
+	if repoRole != "config" {
+		blockedReasons = append(blockedReasons, "repository_role_is_not_config")
+	}
+	if len(remotes) == 0 {
+		blockedReasons = append(blockedReasons, "config_remote_missing")
+	}
+	scaffoldState := "ready"
+	if len(blockedReasons) > 0 {
+		scaffoldState = "blocked"
+	}
+	return map[string]any{
+		"mode":                   "config_repository_scaffold_preview",
+		"scaffold_state":         scaffoldState,
+		"repository_id":          repo["id"],
+		"repository_name":        stringFromMap(repo, "name"),
+		"repo_key":               stringFromMap(repo, "repo_key"),
+		"repo_role":              stringFromMap(repo, "repo_role"),
+		"default_branch":         stringFromMap(repo, "default_branch"),
+		"environments":           environments,
+		"files":                  files,
+		"file_count":             len(files),
+		"remote_count":           len(remotes),
+		"remotes":                remoteSummaries,
+		"required_controls":      []string{"config_remote_review", "branch_policy_review", "human_file_review", "project_version_config_commit_pin"},
+		"blocked_reasons":        blockedReasons,
+		"git_write_performed":    false,
+		"external_call_made":     false,
+		"file_content_included":  false,
+		"secret_included":        false,
+		"live_commit_validation": "not_performed",
+		"next_step":              "Create or sync the config remote, commit the scaffold files through a reviewed Git workflow, then pin config_commit_sha in ProjectVersion.",
+		"suppressed_fields":      []string{"file_content", "secret_values", "git_credentials", "provider_token", "author_email"},
+	}
 }
 
 func (s *Server) createRepositorySync(w http.ResponseWriter, r *http.Request) {

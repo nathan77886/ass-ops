@@ -1039,6 +1039,127 @@ func TestProjectIDForProjectVersion(t *testing.T) {
 	}
 }
 
+func TestConfigRepositoryScaffoldPreview(t *testing.T) {
+	preview := configRepositoryScaffoldPreview(map[string]any{
+		"id":             "repo-1",
+		"name":           "Config Repository",
+		"repo_key":       "config",
+		"repo_role":      "config",
+		"default_branch": "main",
+	}, []map[string]any{{
+		"id":               "remote-1",
+		"name":             "origin",
+		"remote_key":       "github",
+		"provider_type":    "github",
+		"remote_role":      "target",
+		"default_branch":   "main",
+		"latest_sha":       "abc123",
+		"last_sync_status": "completed",
+	}})
+
+	if preview["mode"] != "config_repository_scaffold_preview" ||
+		preview["scaffold_state"] != "ready" ||
+		preview["git_write_performed"] != false ||
+		preview["external_call_made"] != false ||
+		preview["file_content_included"] != false ||
+		preview["secret_included"] != false ||
+		preview["file_count"] != 10 ||
+		preview["remote_count"] != 1 {
+		t.Fatalf("config scaffold preview = %#v", preview)
+	}
+	files := sliceOfMapsFromAny(preview["files"])
+	if len(files) != 10 {
+		t.Fatalf("files = %#v", files)
+	}
+	paths := map[string]bool{}
+	for _, file := range files {
+		paths[fmt.Sprint(file["path"])] = true
+		if fmt.Sprint(file["path"]) == "envs/prod/secrets.example.yaml" && file["required"] != true {
+			t.Fatalf("prod secrets example should be required: %#v", file)
+		}
+	}
+	for _, path := range []string{"envs/dev/values.yaml", "envs/test/README.md", "envs/prod/secrets.example.yaml", "README.md"} {
+		if !paths[path] {
+			t.Fatalf("missing scaffold path %s in %#v", path, paths)
+		}
+	}
+	suppressed := stringSliceFromAny(preview["suppressed_fields"])
+	if !containsString(suppressed, "secret_values") || !containsString(suppressed, "git_credentials") {
+		t.Fatalf("suppressed fields = %#v", suppressed)
+	}
+
+	blocked := configRepositoryScaffoldPreview(map[string]any{
+		"id":        "repo-2",
+		"name":      "Service",
+		"repo_key":  "service",
+		"repo_role": "service",
+	}, nil)
+	if blocked["scaffold_state"] != "blocked" {
+		t.Fatalf("blocked scaffold state = %#v", blocked)
+	}
+	reasons := stringSliceFromAny(blocked["blocked_reasons"])
+	if !containsString(reasons, "repository_role_is_not_config") || !containsString(reasons, "config_remote_missing") {
+		t.Fatalf("blocked reasons = %#v", reasons)
+	}
+
+	nilRole := configRepositoryScaffoldPreview(map[string]any{
+		"id":        "repo-3",
+		"name":      "Legacy",
+		"repo_key":  "legacy",
+		"repo_role": nil,
+	}, nil)
+	if nilRole["repo_role"] != "" {
+		t.Fatalf("nil repo role should not leak as string: %#v", nilRole["repo_role"])
+	}
+}
+
+func TestGetConfigRepositoryScaffoldHandler(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+
+	mock.ExpectQuery(`SELECT project_id FROM project_git_repositories WHERE id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`SELECT \* FROM project_git_repositories WHERE id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "repo_key", "repo_role", "default_branch"}).
+			AddRow("repo-1", "project-1", "Config Repository", "config", "config", "main"))
+	mock.ExpectQuery(`(?s)SELECT id, name, remote_key, provider_type, remote_role, default_branch, latest_sha, last_sync_status\s+FROM git_remotes\s+WHERE project_git_repository_id=\$1\s+ORDER BY created_at DESC`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "remote_key", "provider_type", "remote_role", "default_branch", "latest_sha", "last_sync_status"}).
+			AddRow("remote-1", "origin", "github", "github", "target", "main", "abc123", "completed"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/git-repositories/repo-1/config-scaffold", nil)
+	req = withRouteParam(req, "id", "repo-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.getConfigRepositoryScaffold(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if payload["mode"] != "config_repository_scaffold_preview" ||
+		payload["scaffold_state"] != "ready" ||
+		payload["git_write_performed"] != false ||
+		payload["external_call_made"] != false ||
+		payload["file_content_included"] != false ||
+		payload["remote_count"] != float64(1) {
+		t.Fatalf("payload = %#v", payload)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestCreateProjectVersionUpsertsByProjectAndVersion(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

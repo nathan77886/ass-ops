@@ -2539,6 +2539,7 @@ function ProjectDetail() {
   const [validatingVersionID, setValidatingVersionID] = useState<string>();
   const [configInitializing, setConfigInitializing] = useState(false);
   const configRepo = repoRows.find((row: AnyRow) => row.repo_role === 'config');
+  const configScaffold = useLoad(() => configRepo ? api(`/api/git-repositories/${configRepo.id}/config-scaffold`) : Promise.resolve(undefined), [configRepo?.id]);
   async function initializeConfigRepo() {
     if (!project || configRepo || repos.loading || configInitializing) return;
     setConfigInitializing(true);
@@ -2614,6 +2615,34 @@ function ProjectDetail() {
             { title: 'Status', render: (_, row) => <Tag>{row.status || 'active'}</Tag> },
             { title: 'Default branch', dataIndex: 'default_branch' }
           ]} />
+          {configScaffold.data && (
+            <Card title="Config scaffold preview" loading={configScaffold.loading}>
+              <Space direction="vertical" size={8} className="full">
+                <Space wrap>
+                  <Tag color={configScaffold.data.scaffold_state === 'ready' ? 'green' : 'red'}>{configScaffold.data.scaffold_state || 'blocked'}</Tag>
+                  <Tag>{configScaffold.data.file_count || 0} files</Tag>
+                  <Tag>{configScaffold.data.remote_count || 0} remotes</Tag>
+                  <Tag>{configScaffold.data.git_write_performed ? 'git write' : 'no git write'}</Tag>
+                  <Tag>{configScaffold.data.external_call_made ? 'external call' : 'no external call'}</Tag>
+                  <Tag>{configScaffold.data.file_content_included ? 'content included' : 'paths only'}</Tag>
+                </Space>
+                {Array.isArray(configScaffold.data.blocked_reasons) && configScaffold.data.blocked_reasons.length > 0 && (
+                  <Alert showIcon type="warning" message={configScaffold.data.blocked_reasons.join(', ')} />
+                )}
+                <Table<AnyRow>
+                  size="small"
+                  rowKey="path"
+                  dataSource={configScaffold.data.files || []}
+                  pagination={false}
+                  columns={[
+                    { title: 'Path', dataIndex: 'path' },
+                    { title: 'Env', render: (_, row) => <Tag>{row.environment || 'all'}</Tag> },
+                    { title: 'Purpose', dataIndex: 'purpose' }
+                  ]}
+                />
+              </Space>
+            </Card>
+          )}
           <CreateModal title="Create repository" open={repoOpen} setOpen={setRepoOpen} fields={['name', 'repo_key', 'display_name', 'repo_role', 'description', 'default_branch']} onSubmit={(v) => api(`/api/projects/${project.id}/git-repositories`, { method: 'POST', body: JSON.stringify(v) }).then(repos.reload)} />
           <Toolbar title="Versions" onCreate={() => setVersionOpen(true)} />
           {versionValidation && (
