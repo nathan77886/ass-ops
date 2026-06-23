@@ -1016,6 +1016,35 @@ func TestCreateProjectVersionRejectsOverlongVersion(t *testing.T) {
 	}
 }
 
+func TestListSSHCommandRunsIncludesOperationType(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)SELECT scr\.\*, op\.operation_type.*LEFT JOIN operation_runs op ON op\.id=scr\.operation_run_id.*WHERE scr\.project_id=\$1`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_run_id", "ssh_machine_id", "project_id", "command", "status", "operation_type"}).
+			AddRow("run-1", "op-1", "machine-1", "project-1", "true", "completed", "ssh.verify"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ssh-command-runs?project_id=project-1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.listSSHCommandRuns(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"operation_type":"ssh.verify"`) {
+		t.Fatalf("response missing operation_type: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestProviderAccountsMigrationIncludesTableAndRemoteFK(t *testing.T) {
 	content, err := os.ReadFile("../../migrations/003_provider_accounts.sql")
 	if err != nil {
@@ -11265,6 +11294,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "argo_apps_sync.enqueue")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "ssh_machine.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "ssh_command.enqueue")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "ssh_verify.enqueue")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.delete")`,
 		`SyncCanonicalAssetsWith(r.Context(), tx)`,

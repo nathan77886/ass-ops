@@ -180,6 +180,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/webhook-events/{id}/replay", s.replayWebhookEvent)
 		r.Post("/api/projects/{id}/ssh-machines", s.createSSHMachine)
 		r.Get("/api/projects/{id}/ssh-machines", s.listSSHMachines)
+		r.Post("/api/ssh-machines/{id}/verify", s.verifySSHMachine)
 		r.Post("/api/ssh-machines/{id}/commands", s.createSSHCommand)
 		r.Get("/api/ssh-command-runs", s.listSSHCommandRuns)
 		r.Post("/api/projects/{id}/context/generate", s.generateContext)
@@ -10578,7 +10579,7 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 		}
 		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "ssh_command":
-		op, run, err := s.enqueueSSHCommandRun(ctx, tx, stringFromMap(payload, "machine_id"), mapFromAny(payload["input"]), actorID)
+		op, run, err := s.enqueueSSHCommandRun(ctx, tx, stringFromMap(payload, "machine_id"), mapFromAny(payload["input"]), actorID, "ssh.exec", "")
 		if err != nil {
 			return nil, "", err
 		}
@@ -14608,19 +14609,49 @@ func (s *Server) createSSHCommand(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicyOrApproval(w, r, PolicyResource{Type: "ssh_machine", ID: machineID, ProjectID: fmt.Sprint(machine["project_id"])}, "ssh.exec", "ssh "+fmt.Sprint(machine["name"]), payload) {
 		return
 	}
+	s.createSSHRun(w, r, machineID, input, "ssh.exec", "ssh "+fmt.Sprint(machine["name"]), "ssh_command.enqueue")
+}
+
+func (s *Server) verifySSHMachine(w http.ResponseWriter, r *http.Request) {
+	machineID := chi.URLParam(r, "id")
+	machine, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM ssh_machines WHERE id=$1", machineID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	input := map[string]any{
+		"ssh_machine_id":  machineID,
+		"command":         "true",
+		"timeout_seconds": 15,
+		"verify":          true,
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "ssh_machine", ID: machineID, ProjectID: fmt.Sprint(machine["project_id"])}, "ssh.verify") {
+		return
+	}
+	s.createSSHRun(w, r, machineID, input, "ssh.verify", "verify ssh "+fmt.Sprint(machine["name"]), "ssh_verify.enqueue")
+}
+
+func (s *Server) createSSHRun(w http.ResponseWriter, r *http.Request, machineID string, input map[string]any, operationType, title, syncReason string) {
 	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not start SSH command transaction")
 		return
 	}
 	defer tx.Rollback()
-	op, run, err := s.enqueueSSHCommandRun(r.Context(), tx, machineID, input, currentUser(r).ID)
+	op, run, err := s.enqueueSSHCommandRun(r.Context(), tx, machineID, input, currentUser(r).ID, operationType, title)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ssh_command.enqueue") {
-		return
+	switch syncReason {
+	case "ssh_verify.enqueue":
+		if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ssh_verify.enqueue") {
+			return
+		}
+	default:
+		if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ssh_command.enqueue") {
+			return
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit SSH command")
@@ -14629,7 +14660,7 @@ func (s *Server) createSSHCommand(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"operation": op, "run": run})
 }
 
-func (s *Server) enqueueSSHCommandRun(ctx context.Context, tx *sqlx.Tx, machineID string, input map[string]any, actorID string) (map[string]any, map[string]any, error) {
+func (s *Server) enqueueSSHCommandRun(ctx context.Context, tx *sqlx.Tx, machineID string, input map[string]any, actorID, operationType, title string) (map[string]any, map[string]any, error) {
 	machine, err := queryOne(ctx, tx, "SELECT * FROM ssh_machines WHERE id=$1 FOR SHARE", machineID)
 	if err != nil {
 		return nil, nil, err
@@ -14638,13 +14669,19 @@ func (s *Server) enqueueSSHCommandRun(ctx context.Context, tx *sqlx.Tx, machineI
 	if command == "" {
 		return nil, nil, fmt.Errorf("command is required")
 	}
+	if operationType == "" {
+		operationType = "ssh.exec"
+	}
+	if title == "" {
+		title = "ssh " + fmt.Sprint(machine["name"])
+	}
 	op, err := enqueueOperationTx(
 		ctx,
 		tx,
 		fmt.Sprint(machine["project_id"]),
 		"",
-		"ssh.exec",
-		"ssh "+fmt.Sprint(machine["name"]),
+		operationType,
+		title,
 		input,
 		[]string{"ssh"},
 		"control-worker",
@@ -14679,16 +14716,20 @@ func (s *Server) listSSHCommandRuns(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case machineID != "":
 		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT * FROM ssh_command_runs
-			WHERE ssh_machine_id=$1
-			ORDER BY created_at DESC
+			SELECT scr.*, op.operation_type
+			FROM ssh_command_runs scr
+			LEFT JOIN operation_runs op ON op.id=scr.operation_run_id
+			WHERE scr.ssh_machine_id=$1
+			ORDER BY scr.created_at DESC
 			LIMIT 100`, machineID)
 		writeQueryResult(w, items, err)
 	case projectID != "":
 		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT * FROM ssh_command_runs
-			WHERE project_id=$1
-			ORDER BY created_at DESC
+			SELECT scr.*, op.operation_type
+			FROM ssh_command_runs scr
+			LEFT JOIN operation_runs op ON op.id=scr.operation_run_id
+			WHERE scr.project_id=$1
+			ORDER BY scr.created_at DESC
 			LIMIT 100`, projectID)
 		writeQueryResult(w, items, err)
 	default:
@@ -15078,6 +15119,7 @@ func (s *Server) BuildContextFiles(ctx context.Context, projectID string) (map[s
 		{"name": "repo.sync", "description": "sync repository adapter"},
 		{"name": "repo.tag", "description": "tag repository adapter"},
 		{"name": "github.actions.sync", "description": "GitHub Actions query adapter"},
+		{"name": "ssh.verify", "description": "SSH machine connectivity check"},
 		{"name": "ssh.exec", "description": "SSH command adapter"},
 	}
 	rollbackGuardrail := rollbackGuardrailSummary(rollbackPoints)

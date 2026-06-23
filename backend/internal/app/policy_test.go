@@ -40,6 +40,12 @@ func TestPolicyChecker_Check(t *testing.T) {
 			want:   PolicyRequireConfirm,
 		},
 		{
+			name:   "developer can verify ssh machine",
+			user:   &User{Role: "developer"},
+			action: "ssh.verify",
+			want:   PolicyAllow,
+		},
+		{
 			name:   "viewer can read",
 			user:   &User{Role: "viewer"},
 			action: "read",

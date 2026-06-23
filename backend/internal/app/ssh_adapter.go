@@ -72,6 +72,13 @@ func (e *SSHExecutor) Execute(ctx context.Context, db sqlx.ExtContext, opID stri
 		return nil, fmt.Errorf("command is required")
 	}
 	timeout := intFromAny(input["timeout_seconds"], 60)
+	verify := boolOnlyFromAny(input["verify"])
+	if verify {
+		command = "true"
+		if timeout <= 0 || timeout > 15 {
+			timeout = 15
+		}
+	}
 	if timeout <= 0 || timeout > 300 {
 		timeout = 60
 	}
@@ -95,6 +102,7 @@ func (e *SSHExecutor) Execute(ctx context.Context, db sqlx.ExtContext, opID stri
 			"host":            machine["host"],
 			"port":            machine["port"],
 			"timeout_seconds": timeout,
+			"verify":          verify,
 		},
 	}
 	if err != nil {

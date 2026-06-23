@@ -198,7 +198,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "repo.sync", "repo.sync_remote", "repo.tag", "repo.create_tag", "ssh.exec", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute":
+	case "repo.sync", "repo.sync_remote", "repo.tag", "repo.create_tag", "ssh.exec", "ssh.verify", "argo.apps.sync", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute":
 		return true
 	default:
 		return false
@@ -218,12 +218,13 @@ func (w *ControlWorker) dispatchDueApprovalEscalations(ctx context.Context) erro
 }
 
 func operationRunResult(job map[string]any, result map[string]any) map[string]any {
-	if fmt.Sprint(job["tool_name"]) != "ssh.exec" {
+	toolName := fmt.Sprint(job["tool_name"])
+	if toolName != "ssh.exec" && toolName != "ssh.verify" {
 		return result
 	}
 	safe := map[string]any{
 		"adapter": true,
-		"tool":    "ssh.exec",
+		"tool":    toolName,
 		"message": "ssh command output is available only through the SSH command run API",
 	}
 	for _, key := range []string{"exit_code", "duration_ms", "error"} {
@@ -502,7 +503,9 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 	case "repo.tag", "repo.create_tag":
 		_, err := db.ExecContext(ctx, "UPDATE repo_tag_runs SET status='running', started_at=COALESCE(started_at, now()) WHERE operation_run_id=$1", opID)
 		return err
-	case "ssh.exec":
+	case "ssh.exec", "ssh.verify":
+		// Verify is audited through the same SSH run table, but the executor
+		// defensively forces the command to a no-op connectivity check.
 		if _, err := db.ExecContext(ctx, "UPDATE ssh_command_runs SET status='running', started_at=COALESCE(started_at, now()) WHERE operation_run_id=$1", opID); err != nil {
 			return err
 		}
@@ -595,7 +598,7 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 		syncResult, err := NewArgoSyncer().SyncApps(ctx, w.store.DB, opID)
 		mergeArgoSyncResult(result, syncResult)
 		return result, err
-	case "ssh.exec":
+	case "ssh.exec", "ssh.verify":
 		execution, err := NewSSHExecutor().Execute(ctx, w.store.DB, opID)
 		mergeSSHExecutionResult(result, execution)
 		return result, err
@@ -718,7 +721,7 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 			return fmt.Errorf("syncing canonical assets for failed Argo app sync: %w", err)
 		}
 		return nil
-	case "ssh.exec":
+	case "ssh.exec", "ssh.verify":
 		stdout, stderr := gitExecutionOutputFromMap(result)
 		exitCode := nullableIntFromMap(result, "exit_code")
 		if _, err := tx.ExecContext(ctx, `
@@ -901,7 +904,7 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 		return nil
 	case "argo.apps.sync":
 		return w.recordArgoSyncAdapterRun(ctx, tx, result)
-	case "ssh.exec":
+	case "ssh.exec", "ssh.verify":
 		stdout, stderr := gitExecutionOutputFromMap(result)
 		exitCode := nullableIntFromMap(result, "exit_code")
 		if _, err := tx.ExecContext(ctx, `

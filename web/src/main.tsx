@@ -4120,6 +4120,19 @@ function ConfigPage() {
       message.error(error.message);
     }
   }
+  async function verifySSHMachine() {
+    if (!sshPick.selectedID) {
+      message.error('Select an SSH machine first');
+      return;
+    }
+    try {
+      await api(`/api/ssh-machines/${sshPick.selectedID}/verify`, { method: 'POST', body: '{}' });
+      message.success('SSH verify queued');
+      sshRuns.reload();
+    } catch (error: any) {
+      message.error(error.message);
+    }
+  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Typography.Title level={2}>Argo / SSH</Typography.Title>
@@ -4129,6 +4142,7 @@ function ConfigPage() {
           <Toolbar title="SSH Machines" onCreate={() => setSSHOpen(true)} disabled={!project} />
           <EntitySelect label="Machine" rows={sshRows} value={sshPick.selectedID} onChange={sshPick.setSelectedID} />
           <Space>
+            <Button onClick={verifySSHMachine} disabled={!sshPick.selectedID}>Verify</Button>
             <Button type="primary" onClick={() => setCommandOpen(true)} disabled={!sshPick.selectedID}>Run command</Button>
             <Button onClick={sshRuns.reload} disabled={!project}>Refresh runs</Button>
           </Space>
@@ -4140,6 +4154,7 @@ function ConfigPage() {
             { title: 'Auth', dataIndex: 'auth_type' }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={sshRuns.data?.items || []} pagination={{ pageSize: 6 }} columns={[
+            { title: 'Type', render: (_, row) => <Tag color={row.operation_type === 'ssh.verify' ? 'cyan' : 'default'}>{row.operation_type || 'unknown'}</Tag> },
             { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{row.status}</Tag> },
             { title: 'Command', dataIndex: 'command' },
             { title: 'Exit', dataIndex: 'exit_code' },
