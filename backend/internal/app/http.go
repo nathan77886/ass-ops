@@ -5977,6 +5977,7 @@ func assetInventorySQL() string {
 				'required_approval_count', oa.required_approval_count,
 				'approved_count', COALESCE(decision_counts.approved_count, 0),
 				'rejected_count', COALESCE(decision_counts.rejected_count, 0),
+				'active_delegation_count', COALESCE(delegation_counts.active_delegation_count, 0),
 				'notification_status', oa.notification_status,
 				'escalation_count', oa.escalation_count
 			),
@@ -5990,6 +5991,11 @@ func assetInventorySQL() string {
 			FROM operation_approval_decisions oad
 			WHERE oad.operation_approval_id=oa.id
 		) decision_counts ON true
+		LEFT JOIN LATERAL (
+			SELECT count(*) FILTER (WHERE revoked_at IS NULL)::int AS active_delegation_count
+			FROM operation_approval_delegations oadel
+			WHERE oadel.operation_approval_id=oa.id
+		) delegation_counts ON true
 		UNION ALL
 		SELECT
 			'operation_approval_rule:' || oar.id::text,
@@ -9865,6 +9871,9 @@ func (s *Server) createOperationApprovalDelegation(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusInternalServerError, "could not create approval delegation")
 		return
 	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.delegation.create") {
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit approval delegation")
 		return
@@ -9918,6 +9927,9 @@ func (s *Server) revokeOperationApprovalDelegation(w http.ResponseWriter, r *htt
 		RETURNING *`, chi.URLParam(r, "delegationID"), chi.URLParam(r, "id"))
 	if err != nil {
 		writeQueryOne(w, item, err)
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.delegation.revoke") {
 		return
 	}
 	if err := tx.Commit(); err != nil {

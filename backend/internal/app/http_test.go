@@ -508,6 +508,8 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 		"FROM operation_approvals oa",
 		"'required_approval_count', oa.required_approval_count",
 		"'approved_count', COALESCE(decision_counts.approved_count, 0)",
+		"'active_delegation_count', COALESCE(delegation_counts.active_delegation_count, 0)",
+		"FROM operation_approval_delegations oadel",
 		"WHEN oa.status IN ('rejected', 'expired') THEN 'high'",
 		"'operation_approval_rule'",
 		"FROM operation_approval_rules oar",
@@ -560,6 +562,12 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 	}
 	if regexp.MustCompile(`\boar\.metadata\b`).MatchString(sql) {
 		t.Fatalf("operation approval rule metadata should not be exposed in assetInventorySQL")
+	}
+	if regexp.MustCompile(`\boadel\.reason\b`).MatchString(sql) {
+		t.Fatalf("operation approval delegation reason should not be exposed in assetInventorySQL")
+	}
+	if regexp.MustCompile(`\boadel\.(from_user_id|to_user_id)\b`).MatchString(sql) {
+		t.Fatalf("operation approval delegation user ids should not be exposed in assetInventorySQL")
 	}
 	for _, forbidden := range []*regexp.Regexp{
 		regexp.MustCompile(`'input'\s*,\s*atc\.input`),
@@ -11139,6 +11147,8 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.progress")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.execute")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.reject")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.delegation.create")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.delegation.revoke")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation.cancel")`,
 		`syncing canonical assets for expired operation approvals`,
 		`could not sync canonical assets after approval notification`,
