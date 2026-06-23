@@ -839,7 +839,8 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const syncTriggered = (operationCounts['repo.sync'] || 0) + (operationCounts['repo.sync_remote'] || 0);
   const giteaWebhooks = countRowsByTypeMetadata(assets, 'webhook_connection', 'provider', 'gitea');
   const giteaWebhookEvents = countRowsByTypeMetadata(assets, 'webhook_event', 'provider', 'gitea');
-  const sshRuns = (operationCounts['ssh.exec'] || 0) + (operationCounts['ssh.command'] || 0);
+  const sshVerifyRuns = operationCounts['ssh.verify'] || 0;
+  const sshCommandRuns = (operationCounts['ssh.exec'] || 0) + (operationCounts['ssh.command'] || 0);
   const approvalEvidence = Number(approvalSummary.total || 0);
   const pendingApprovalOps = operations.filter((row) => String(row.status || '') === 'pending_approval').length;
   const approvalAssets = assetCounts.operation_approval || 0;
@@ -896,8 +897,8 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
     {
       key: 'ssh',
       label: 'Register SSH machines and audited commands',
-      next: 'Register an SSH machine and run an approval-gated command.',
-      ...readinessState((assetCounts.host || 0) > 0 && sshRuns > 0 && sshGraphLinks.completeCommands > 0, `${assetCounts.host || 0} hosts / ${sshRuns} command ops / ${assetCounts.ssh_command_run || 0} command assets / ${sshGraphLinks.completeCommands} complete command links`, (assetCounts.host || 0) > 0 || sshRuns > 0 || (assetCounts.ssh_command_run || 0) > 0 || sshGraphLinks.operationCommands > 0 || sshGraphLinks.commandMachines > 0)
+      next: 'Verify an SSH machine, then run an approval-gated command.',
+      ...readinessState((assetCounts.host || 0) > 0 && sshVerifyRuns > 0 && sshCommandRuns > 0 && sshGraphLinks.completeCommands >= 2, `${assetCounts.host || 0} hosts / ${sshVerifyRuns} verify ops / ${sshCommandRuns} command ops / ${assetCounts.ssh_command_run || 0} command assets / ${sshGraphLinks.completeCommands} complete audit chains`, (assetCounts.host || 0) > 0 || sshVerifyRuns > 0 || sshCommandRuns > 0 || (assetCounts.ssh_command_run || 0) > 0 || sshGraphLinks.operationCommands > 0 || sshGraphLinks.commandMachines > 0)
     },
     {
       key: 'argo',

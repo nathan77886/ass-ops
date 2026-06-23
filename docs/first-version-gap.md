@@ -33,7 +33,7 @@ The Dashboard and `assops-tool project readiness` now use the same first-version
 - RepoSyncAsset: repository-to-sync, sync-to-source-remote, and sync-to-target-remote graph links.
 - Manual and webhook sync: Gitea webhook connection and event linked through the same RepoSyncAsset and operation run.
 - GitHub Actions: project-to-repository-to-remote-to-action-run graph chain.
-- SSH audit: operation-to-command-run-to-machine graph chain plus command-run asset evidence.
+- SSH audit: host asset evidence, first-class `ssh.verify` operation evidence, SSH command operation evidence, and at least two operation-to-command-run-to-machine graph audit chains plus command-run asset evidence.
 - Argo deployment view: connection-to-app-to-target graph chain plus sync-operation evidence.
 - Operation history: canonical operation-run asset plus operation log evidence.
 - Approval policy: approval request asset, active approval-rule asset, and rule-to-approval `governs` relation.
@@ -53,7 +53,7 @@ The latest Notion MVP execution page narrows the first version to nine concrete 
 | 4. Config repository | Logical repositories have `repo_role`, and `config` can be modeled as a ProjectGitRepository. | No dedicated config-repository initialization flow for `envs/dev|test|prod` and no ProjectVersion linkage to config commits in the UI. |
 | 5. Version manifest | `project_versions` table exists, gateway exposes create/list/get ProjectVersion APIs, and Project Detail can create/list manifest metadata with repo/remote/tag/SHA/action-run/revision entries. | Still needs validation against live Git refs, GitHub Actions linkage beyond recorded run IDs, config commit selection helpers, Argo revision binding from live app state, and canonical graph evidence. |
 | 6. Argo service sync and pod logs | Argo connection create/list, app sync, deployment targets, deployment records, rollback points, and operation logs exist. | Notion's pod/container log flow is missing: no Argo pods API, pod log query model, or UI for selecting pod/container logs. |
-| 7. SSH machine operation | SSH machine CRUD, first-class SSH verify operation, SSH command execution, command run list, operation logs, approvals, and canonical audit graph evidence exist. | Still needs real-environment rehearsal for verify/exec against authorized machines and clearer readiness evidence that verify and command audit both succeeded. |
+| 7. SSH machine operation | SSH machine CRUD, first-class SSH verify operation, SSH command execution, command run list, operation logs, approvals, and canonical readiness evidence that verify and command operations plus two SSH audit chains exist. | Still needs real-environment rehearsal for verify/exec against authorized machines. |
 | 8. Agent controlled execution | Agent task, plan generation, approval, simulated execution, tool-call audit rows, and graph-backed context readiness exist. | Real worker-backed tool execution remains mostly audit/simulation-only for agent flows. |
 | 9. Agent code modification | Codex CLI readiness, patch workflow guardrails, and disabled-backend audit details are explicit and tested. | Real source remote checkout, agent branch creation, diff review, commit, and push are intentionally disabled. |
 
