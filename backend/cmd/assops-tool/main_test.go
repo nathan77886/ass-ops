@@ -436,6 +436,15 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 	withoutEvidence := firstVersionReadinessReportWithGraph(nil, nil, nil, nil)
 	if got := readinessByKey(t, withoutEvidence, "project"); got.Status != "missing" || got.Evidence != "0 project assets / 0 project graph nodes" {
 		t.Fatalf("project readiness without evidence = %#v, want missing", got)
+	} else {
+		plan := mapFromAny(got.DemoDataRehearsalPlan)
+		if plan["plan_state"] != "blocked" ||
+			plan["execution_enabled"] != false ||
+			plan["demo_seed_written"] != false ||
+			!containsString(stringSliceFromAny(plan["blocked_reasons"]), "live_demo_graph_evidence_incomplete") {
+			t.Fatalf("project demo rehearsal plan without evidence = %#v", plan)
+		}
+		assertDemoDataRehearsalPlanSafe(t, plan)
 	}
 
 	withNilGraph := firstVersionReadinessReportWithGraph([]map[string]any{
@@ -443,6 +452,16 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 	}, nil, nil, nil)
 	if got := readinessByKey(t, withNilGraph, "project"); got.Status != "partial" || got.Evidence != "1 project assets / 0 project graph nodes" {
 		t.Fatalf("project readiness with nil graph = %#v, want partial", got)
+	} else {
+		plan := mapFromAny(got.DemoDataRehearsalPlan)
+		counts := intMapFromAny(plan["evidence_counts"])
+		if plan["plan_state"] != "planned" ||
+			counts["project_assets"] != 1 ||
+			counts["project_graph_nodes"] != 0 ||
+			!containsString(stringSliceFromAny(plan["blocked_reasons"]), "live_demo_graph_evidence_incomplete") {
+			t.Fatalf("project demo rehearsal plan with nil graph = %#v", plan)
+		}
+		assertDemoDataRehearsalPlanSafe(t, plan)
 	}
 
 	withoutGraphNode := firstVersionReadinessReportWithGraph([]map[string]any{
@@ -450,6 +469,13 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 	}, nil, nil, map[string]any{"nodes": []any{}})
 	if got := readinessByKey(t, withoutGraphNode, "project"); got.Status != "partial" || got.Evidence != "1 project assets / 0 project graph nodes" {
 		t.Fatalf("project readiness without graph node = %#v, want partial", got)
+	} else {
+		plan := mapFromAny(got.DemoDataRehearsalPlan)
+		if plan["plan_state"] != "planned" ||
+			!containsString(stringSliceFromAny(plan["blocked_reasons"]), "live_demo_graph_evidence_incomplete") {
+			t.Fatalf("project demo rehearsal plan without graph node = %#v", plan)
+		}
+		assertDemoDataRehearsalPlanSafe(t, plan)
 	}
 
 	withGraphNode := firstVersionReadinessReportWithGraph([]map[string]any{
@@ -462,6 +488,18 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 	})
 	if got := readinessByKey(t, withGraphNode, "project"); got.Status != "ready" || got.Evidence != "1 project assets / 1 project graph nodes" {
 		t.Fatalf("project readiness with graph node = %#v, want ready", got)
+	} else {
+		plan := mapFromAny(got.DemoDataRehearsalPlan)
+		counts := intMapFromAny(plan["evidence_counts"])
+		if plan["plan_state"] != "observed" ||
+			plan["project_created"] != false ||
+			plan["asset_graph_written"] != false ||
+			counts["project_assets"] != 1 ||
+			counts["project_graph_nodes"] != 1 ||
+			len(stringSliceFromAny(plan["blocked_reasons"])) != 0 {
+			t.Fatalf("project demo rehearsal plan with graph node = %#v", plan)
+		}
+		assertDemoDataRehearsalPlanSafe(t, plan)
 	}
 }
 
@@ -475,6 +513,19 @@ func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 	})
 	if got := readinessByKey(t, withoutGraphLinks, "repositories"); got.Status != "partial" || got.Evidence != "1 repos / 2 remotes / 0 complete repos / 0 project links / 0 remote links" {
 		t.Fatalf("repository readiness without graph links = %#v, want partial with graph evidence", got)
+	} else {
+		plan := mapFromAny(got.DemoDataRehearsalPlan)
+		counts := intMapFromAny(plan["evidence_counts"])
+		if plan["plan_state"] != "planned" ||
+			plan["repository_created"] != false ||
+			plan["git_remote_created"] != false ||
+			plan["contains_remote_url"] != false ||
+			counts["repository_assets"] != 1 ||
+			counts["git_remote_assets"] != 2 ||
+			counts["complete_repository_paths"] != 0 {
+			t.Fatalf("repository demo rehearsal plan without graph links = %#v", plan)
+		}
+		assertDemoDataRehearsalPlanSafe(t, plan)
 	}
 
 	withGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
@@ -490,6 +541,17 @@ func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 	})
 	if got := readinessByKey(t, withGraphLinks, "repositories"); got.Status != "ready" || got.Evidence != "1 repos / 2 remotes / 1 complete repos / 1 project links / 2 remote links" {
 		t.Fatalf("repository readiness with graph links = %#v, want ready", got)
+	} else {
+		plan := mapFromAny(got.DemoDataRehearsalPlan)
+		counts := intMapFromAny(plan["evidence_counts"])
+		if plan["plan_state"] != "observed" ||
+			counts["complete_repository_paths"] != 1 ||
+			counts["project_repository_links"] != 1 ||
+			counts["repository_remote_links"] != 2 ||
+			len(stringSliceFromAny(plan["blocked_reasons"])) != 0 {
+			t.Fatalf("repository demo rehearsal plan with graph links = %#v", plan)
+		}
+		assertDemoDataRehearsalPlanSafe(t, plan)
 	}
 
 	crossRepositoryAggregation := firstVersionReadinessReportWithGraph([]map[string]any{
@@ -1477,6 +1539,72 @@ func readinessByKey(t *testing.T, report map[string]any, key string) readinessRo
 	}
 	t.Fatalf("readiness item %q not found", key)
 	return readinessRow{}
+}
+
+func mapFromAny(value any) map[string]any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return typed
+	default:
+		return nil
+	}
+}
+
+func intMapFromAny(value any) map[string]int {
+	switch typed := value.(type) {
+	case map[string]int:
+		return typed
+	case map[string]any:
+		items := map[string]int{}
+		for key, value := range typed {
+			switch number := value.(type) {
+			case int:
+				items[key] = number
+			case int64:
+				items[key] = int(number)
+			case float64:
+				items[key] = int(number)
+			}
+		}
+		return items
+	default:
+		return nil
+	}
+}
+
+func assertDemoDataRehearsalPlanSafe(t *testing.T, plan map[string]any) {
+	t.Helper()
+	if plan["mode"] != "first_version_demo_data_rehearsal_plan" ||
+		plan["execution_enabled"] != false ||
+		plan["external_call_made"] != false ||
+		plan["demo_seed_written"] != false ||
+		plan["project_created"] != false ||
+		plan["repository_created"] != false ||
+		plan["git_remote_created"] != false ||
+		plan["asset_graph_written"] != false ||
+		plan["contains_remote_url"] != false ||
+		plan["contains_credentials"] != false {
+		t.Fatalf("demo data rehearsal plan should stay audit-only and redacted: %#v", plan)
+	}
+	for _, backend := range []string{"project_create", "repository_create", "git_remote_create", "demo_seed_write", "asset_graph_write"} {
+		if !containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
+			t.Fatalf("demo data rehearsal disabled backends missing %q: %#v", backend, plan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"} {
+		if !containsString(stringSliceFromAny(plan["suppressed_fields"]), field) {
+			t.Fatalf("demo data rehearsal suppressed fields missing %q: %#v", field, plan["suppressed_fields"])
+		}
+	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func writeSHA256SUMS(t *testing.T, dir string, files map[string]string) {

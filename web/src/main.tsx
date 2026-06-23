@@ -847,6 +847,30 @@ function readinessState(done: boolean, evidence: React.ReactNode, hasPartialEvid
   return { status: 'missing', color: 'red', evidence };
 }
 
+function demoDataRehearsalPlan(status: string, evidenceCounts: AnyRow, requiredEvidence: string[]) {
+  const planState = status === 'ready' ? 'observed' : status === 'missing' ? 'blocked' : 'planned';
+  return {
+    mode: 'first_version_demo_data_rehearsal_plan',
+    plan_state: planState,
+    readiness_status: status,
+    execution_enabled: false,
+    external_call_made: false,
+    demo_seed_written: false,
+    project_created: false,
+    repository_created: false,
+    git_remote_created: false,
+    asset_graph_written: false,
+    contains_remote_url: false,
+    contains_credentials: false,
+    required_evidence: requiredEvidence,
+    evidence_counts: evidenceCounts,
+    disabled_backends: ['project_create', 'repository_create', 'git_remote_create', 'demo_seed_write', 'asset_graph_write'],
+    suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret'],
+    blocked_reasons: status === 'ready' ? [] : ['live_demo_graph_evidence_incomplete'],
+    message: 'Demo data rehearsal is audit-only; create project/repository/remote evidence in the live environment, then sync the canonical asset graph.'
+  };
+}
+
 function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] = [], approvalSummary: AnyRow = {}, graph: AnyRow = {}) {
   const assetCounts = countByField(assets, 'asset_type');
   const operationCounts = countByField(operations, 'operation_type');
@@ -878,18 +902,22 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const graphEdges = graphItems(graph, 'edges').length;
   const graphEvidence = graphNodes + graphEdges;
   const projectGraphNodes = countGraphNodesByPrefix(graph, 'project:');
+  const projectState = readinessState((assetCounts.project || 0) > 0 && projectGraphNodes > 0, `${assetCounts.project || 0} project assets / ${projectGraphNodes} project graph nodes`, (assetCounts.project || 0) > 0 || projectGraphNodes > 0);
+  const repositoryState = readinessState((assetCounts.repository || 0) > 0 && (assetCounts.git_remote || 0) >= 2 && repositoryGraphLinks.completeRepos > 0, `${assetCounts.repository || 0} repos / ${assetCounts.git_remote || 0} remotes / ${repositoryGraphLinks.completeRepos} complete repos / ${repositoryGraphLinks.projectRepository} project links / ${repositoryGraphLinks.repositoryRemotes} remote links`, (assetCounts.repository || 0) > 0 || (assetCounts.git_remote || 0) > 0 || repositoryGraphLinks.projectRepository > 0 || repositoryGraphLinks.repositoryRemotes > 0);
   return [
     {
       key: 'project',
       label: 'Create/import project asset',
       next: 'Create a project or run the demo seed.',
-      ...readinessState((assetCounts.project || 0) > 0 && projectGraphNodes > 0, `${assetCounts.project || 0} project assets / ${projectGraphNodes} project graph nodes`, (assetCounts.project || 0) > 0 || projectGraphNodes > 0)
+      ...projectState,
+      demo_data_rehearsal_plan: demoDataRehearsalPlan(projectState.status, { project_assets: assetCounts.project || 0, project_graph_nodes: projectGraphNodes }, ['project_asset', 'project_graph_node'])
     },
     {
       key: 'repositories',
       label: 'Attach source and mirror repositories',
       next: 'Add repository metadata and at least two Git remotes.',
-      ...readinessState((assetCounts.repository || 0) > 0 && (assetCounts.git_remote || 0) >= 2 && repositoryGraphLinks.completeRepos > 0, `${assetCounts.repository || 0} repos / ${assetCounts.git_remote || 0} remotes / ${repositoryGraphLinks.completeRepos} complete repos / ${repositoryGraphLinks.projectRepository} project links / ${repositoryGraphLinks.repositoryRemotes} remote links`, (assetCounts.repository || 0) > 0 || (assetCounts.git_remote || 0) > 0 || repositoryGraphLinks.projectRepository > 0 || repositoryGraphLinks.repositoryRemotes > 0)
+      ...repositoryState,
+      demo_data_rehearsal_plan: demoDataRehearsalPlan(repositoryState.status, { repository_assets: assetCounts.repository || 0, git_remote_assets: assetCounts.git_remote || 0, complete_repository_paths: repositoryGraphLinks.completeRepos, project_repository_links: repositoryGraphLinks.projectRepository, repository_remote_links: repositoryGraphLinks.repositoryRemotes }, ['repository_asset', 'two_git_remote_assets', 'project_to_repository_graph_link', 'repository_to_two_remotes_graph_path'])
     },
     {
       key: 'repo_sync',
@@ -1180,6 +1208,15 @@ function Dashboard() {
             { title: 'Status', render: (_, row) => <Tag color={row.color}>{row.status}</Tag> },
             { title: 'Demo proof', dataIndex: 'label' },
             { title: 'Evidence', render: (_, row) => <Typography.Text>{String(row.evidence)}</Typography.Text> },
+            { title: 'Demo plan', render: (_, row) => {
+              const plan = row.demo_data_rehearsal_plan;
+              if (!plan) return null;
+              return <Space size={4} wrap>
+                <Tag color={plan.plan_state === 'observed' ? 'green' : plan.plan_state === 'blocked' ? 'red' : 'gold'}>{plan.plan_state}</Tag>
+                <Tag>{plan.demo_seed_written ? 'seed written' : 'no seed write'}</Tag>
+                <Tag>{plan.asset_graph_written ? 'graph written' : 'no graph write'}</Tag>
+              </Space>;
+            } },
             { title: 'Next', dataIndex: 'next' }
           ]}
         />

@@ -1251,11 +1251,12 @@ func firstContextFile(root, name string) (string, error) {
 }
 
 type readinessRow struct {
-	Key      string `json:"key"`
-	Label    string `json:"label"`
-	Status   string `json:"status"`
-	Evidence any    `json:"evidence"`
-	Next     string `json:"next"`
+	Key                   string `json:"key"`
+	Label                 string `json:"label"`
+	Status                string `json:"status"`
+	Evidence              any    `json:"evidence"`
+	Next                  string `json:"next"`
+	DemoDataRehearsalPlan any    `json:"demo_data_rehearsal_plan,omitempty"`
 }
 
 func getProjectReadiness(base, token string) error {
@@ -1323,9 +1324,22 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	contextGraphLinks := countContextGraphLinks(assets, graph)
 	argoEvidence := assetCounts["argo_connection"] + assetCounts["argo_app"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"] + argoGraphLinks.ConnectionApps + argoGraphLinks.AppTargets
 
+	projectRow := readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0 && projectGraphNodes > 0, fmt.Sprintf("%d project assets / %d project graph nodes", assetCounts["project"], projectGraphNodes), assetCounts["project"] > 0 || projectGraphNodes > 0)
+	projectRow.DemoDataRehearsalPlan = projectDemoDataRehearsalPlan(projectRow.Status, map[string]int{
+		"project_assets":      assetCounts["project"],
+		"project_graph_nodes": projectGraphNodes,
+	}, []string{"project_asset", "project_graph_node"})
+	repositoriesRow := readinessItem("repositories", "Attach source and mirror repositories", "Add repository metadata and at least two Git remotes.", assetCounts["repository"] > 0 && assetCounts["git_remote"] >= 2 && repositoryGraphLinks.CompleteRepos > 0, fmt.Sprintf("%d repos / %d remotes / %d complete repos / %d project links / %d remote links", assetCounts["repository"], assetCounts["git_remote"], repositoryGraphLinks.CompleteRepos, repositoryGraphLinks.ProjectRepository, repositoryGraphLinks.RepositoryRemotes), assetCounts["repository"] > 0 || assetCounts["git_remote"] > 0 || repositoryGraphLinks.ProjectRepository > 0 || repositoryGraphLinks.RepositoryRemotes > 0)
+	repositoriesRow.DemoDataRehearsalPlan = projectDemoDataRehearsalPlan(repositoriesRow.Status, map[string]int{
+		"repository_assets":         assetCounts["repository"],
+		"git_remote_assets":         assetCounts["git_remote"],
+		"complete_repository_paths": repositoryGraphLinks.CompleteRepos,
+		"project_repository_links":  repositoryGraphLinks.ProjectRepository,
+		"repository_remote_links":   repositoryGraphLinks.RepositoryRemotes,
+	}, []string{"repository_asset", "two_git_remote_assets", "project_to_repository_graph_link", "repository_to_two_remotes_graph_path"})
 	rows := []readinessRow{
-		readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0 && projectGraphNodes > 0, fmt.Sprintf("%d project assets / %d project graph nodes", assetCounts["project"], projectGraphNodes), assetCounts["project"] > 0 || projectGraphNodes > 0),
-		readinessItem("repositories", "Attach source and mirror repositories", "Add repository metadata and at least two Git remotes.", assetCounts["repository"] > 0 && assetCounts["git_remote"] >= 2 && repositoryGraphLinks.CompleteRepos > 0, fmt.Sprintf("%d repos / %d remotes / %d complete repos / %d project links / %d remote links", assetCounts["repository"], assetCounts["git_remote"], repositoryGraphLinks.CompleteRepos, repositoryGraphLinks.ProjectRepository, repositoryGraphLinks.RepositoryRemotes), assetCounts["repository"] > 0 || assetCounts["git_remote"] > 0 || repositoryGraphLinks.ProjectRepository > 0 || repositoryGraphLinks.RepositoryRemotes > 0),
+		projectRow,
+		repositoriesRow,
 		readinessItem("repo_sync", "Define RepoSyncAsset", "Create a RepoSyncAsset between source and mirror remotes.", assetCounts["repo_sync"] > 0 && repoSyncGraphLinks.CompleteSyncs > 0, fmt.Sprintf("%d repo syncs / %d complete syncs / %d repository links / %d source links / %d target links", assetCounts["repo_sync"], repoSyncGraphLinks.CompleteSyncs, repoSyncGraphLinks.RepositorySync, repoSyncGraphLinks.SourceRemotes, repoSyncGraphLinks.TargetRemotes), assetCounts["repo_sync"] > 0 || repoSyncGraphLinks.RepositorySync > 0 || repoSyncGraphLinks.SourceRemotes > 0 || repoSyncGraphLinks.TargetRemotes > 0),
 		readinessItem("sync_trigger", "Trigger sync manually and from webhook", "Run a manual sync and receive or replay a Gitea webhook event.", syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0 && webhookSyncGraphLinks.CompleteChains > 0, fmt.Sprintf("%d sync ops / %d Gitea webhooks / %d Gitea events / %d complete webhook chains", syncTriggered, giteaWebhooks, giteaWebhookEvents, webhookSyncGraphLinks.CompleteChains), syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0 || webhookSyncGraphLinks.ConnectionEvents > 0 || webhookSyncGraphLinks.EventRepoSyncs > 0 || webhookSyncGraphLinks.EventOperations > 0),
 		readinessItem("github_actions", "See GitHub tags and Actions state", "Create a repository tag and sync GitHub Actions for the mirror remote or receive workflow_run webhooks.", assetCounts["pipeline_run"] > 0 && githubActionLinks.CompleteActionRuns > 0 && repoTagRuns > 0 && githubActionLinks.CompleteTaggedRemotes > 0, fmt.Sprintf("%d pipeline runs / %d complete action chains / %d tag ops / %d complete tag links / %d project links / %d remote links / %d action links / %d tag links", assetCounts["pipeline_run"], githubActionLinks.CompleteActionRuns, repoTagRuns, githubActionLinks.CompleteTaggedRemotes, githubActionLinks.ProjectRepositories, githubActionLinks.RepositoryRemotes, githubActionLinks.RemoteActionRuns, githubActionLinks.TaggedRemotes), assetCounts["pipeline_run"] > 0 || repoTagRuns > 0 || githubActionLinks.ProjectRepositories > 0 || githubActionLinks.RepositoryRemotes > 0 || githubActionLinks.RemoteActionRuns > 0 || githubActionLinks.TaggedRemotes > 0),
@@ -1462,6 +1476,51 @@ func countGraphNodesByPrefix(graph map[string]any, prefix string) int {
 		}
 	}
 	return count
+}
+
+func projectDemoDataRehearsalPlan(status string, evidence map[string]int, requiredEvidence []string) map[string]any {
+	planState := "planned"
+	if status == "ready" {
+		planState = "observed"
+	} else if status == "missing" {
+		planState = "blocked"
+	}
+	blockedReasons := []string{}
+	if status != "ready" {
+		blockedReasons = append(blockedReasons, "live_demo_graph_evidence_incomplete")
+	}
+	return map[string]any{
+		"mode":                 "first_version_demo_data_rehearsal_plan",
+		"plan_state":           planState,
+		"readiness_status":     status,
+		"execution_enabled":    false,
+		"external_call_made":   false,
+		"demo_seed_written":    false,
+		"project_created":      false,
+		"repository_created":   false,
+		"git_remote_created":   false,
+		"asset_graph_written":  false,
+		"contains_remote_url":  false,
+		"contains_credentials": false,
+		"required_evidence":    requiredEvidence,
+		"evidence_counts":      evidence,
+		"disabled_backends": []string{
+			"project_create",
+			"repository_create",
+			"git_remote_create",
+			"demo_seed_write",
+			"asset_graph_write",
+		},
+		"suppressed_fields": []string{
+			"remote_url",
+			"git_credentials",
+			"provider_token",
+			"repository_secret",
+			"webhook_secret",
+		},
+		"blocked_reasons": blockedReasons,
+		"message":         "Demo data rehearsal is audit-only; create project/repository/remote evidence in the live environment, then sync the canonical asset graph.",
+	}
 }
 
 func readinessItem(key, label, next string, done bool, evidence any, partial bool) readinessRow {
