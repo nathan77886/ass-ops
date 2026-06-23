@@ -1340,6 +1340,163 @@ func TestGetConfigRepositoryScaffoldHandler(t *testing.T) {
 	}
 }
 
+func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
+	items := repoTagRunsWithRemoteRehearsal([]map[string]any{
+		{
+			"id":               "run-1",
+			"status":           "completed",
+			"tag_name":         "v1.0.0",
+			"target_sha":       "abc123",
+			"target_remote_id": "remote-1",
+			"tag_message":      "do-not-serialize",
+		},
+		{
+			"id":               "run-2",
+			"status":           "queued",
+			"tag_name":         "v1.0.1",
+			"target_sha":       "",
+			"target_remote_id": "remote-1",
+		},
+		{
+			"id":         "run-3",
+			"status":     "queued",
+			"tag_name":   "",
+			"target_sha": "def456",
+		},
+		{
+			"id":            "run-4",
+			"status":        "success",
+			"tag_name":      "v1.0.2",
+			"target_sha":    "abc456",
+			"git_remote_id": "remote-2",
+		},
+		{
+			"id":               "run-5",
+			"status":           "failed",
+			"tag_name":         "v1.0.3",
+			"target_sha":       "abc789",
+			"target_remote_id": "remote-3",
+		},
+		{
+			"id":               "run-6",
+			"tag_name":         "v1.0.4",
+			"target_sha":       "abc999",
+			"target_remote_id": "remote-4",
+		},
+	})
+	observedPlan := mapFromAny(items[0]["remote_rehearsal_plan"])
+	if observedPlan["mode"] != "repo_tag_remote_rehearsal_plan" ||
+		observedPlan["rehearsal_state"] != "observed" ||
+		observedPlan["tag_run_status"] != "completed" ||
+		observedPlan["tag_name_configured"] != true ||
+		observedPlan["target_sha_configured"] != true ||
+		observedPlan["target_remote_bound"] != true ||
+		observedPlan["live_remote_tag_success_observed"] != true {
+		t.Fatalf("observed tag rehearsal plan = %#v", observedPlan)
+	}
+	assertRepoTagRemoteRehearsalPlanSafe(t, observedPlan)
+	plannedPlan := mapFromAny(items[1]["remote_rehearsal_plan"])
+	if plannedPlan["rehearsal_state"] != "planned" ||
+		plannedPlan["target_sha_configured"] != false ||
+		!containsString(stringSliceFromAny(plannedPlan["blocked_reasons"]), "target_sha_missing") ||
+		!containsString(stringSliceFromAny(plannedPlan["blocked_reasons"]), "live_remote_tag_success_not_observed") {
+		t.Fatalf("planned tag rehearsal plan = %#v", plannedPlan)
+	}
+	assertRepoTagRemoteRehearsalPlanSafe(t, plannedPlan)
+	blockedPlan := mapFromAny(items[2]["remote_rehearsal_plan"])
+	if blockedPlan["rehearsal_state"] != "blocked" ||
+		blockedPlan["tag_name_configured"] != false ||
+		blockedPlan["target_remote_bound"] != false ||
+		!containsString(stringSliceFromAny(blockedPlan["blocked_reasons"]), "tag_name_missing") ||
+		!containsString(stringSliceFromAny(blockedPlan["blocked_reasons"]), "target_remote_missing") {
+		t.Fatalf("blocked tag rehearsal plan = %#v", blockedPlan)
+	}
+	assertRepoTagRemoteRehearsalPlanSafe(t, blockedPlan)
+	fallbackPlan := mapFromAny(items[3]["remote_rehearsal_plan"])
+	if fallbackPlan["rehearsal_state"] != "observed" ||
+		fallbackPlan["tag_run_status"] != "success" ||
+		fallbackPlan["target_remote_bound"] != true ||
+		fallbackPlan["live_remote_tag_success_observed"] != true {
+		t.Fatalf("git_remote_id fallback tag rehearsal plan = %#v", fallbackPlan)
+	}
+	assertRepoTagRemoteRehearsalPlanSafe(t, fallbackPlan)
+	failedPlan := mapFromAny(items[4]["remote_rehearsal_plan"])
+	if failedPlan["rehearsal_state"] != "failed" ||
+		failedPlan["live_remote_tag_success_observed"] != false ||
+		failedPlan["live_remote_tag_failed_observed"] != true ||
+		!containsString(stringSliceFromAny(failedPlan["blocked_reasons"]), "live_remote_tag_failed_observed") {
+		t.Fatalf("failed tag rehearsal plan = %#v", failedPlan)
+	}
+	assertRepoTagRemoteRehearsalPlanSafe(t, failedPlan)
+	unknownPlan := mapFromAny(items[5]["remote_rehearsal_plan"])
+	if unknownPlan["rehearsal_state"] != "planned" ||
+		unknownPlan["tag_run_status"] != "unknown" ||
+		unknownPlan["live_remote_tag_success_observed"] != false {
+		t.Fatalf("unknown status tag rehearsal plan = %#v", unknownPlan)
+	}
+	assertRepoTagRemoteRehearsalPlanSafe(t, unknownPlan)
+	encodedPlan, _ := json.Marshal(observedPlan)
+	for _, forbidden := range []string{"do-not-serialize", "git@github.com", "https://token@", "Bearer", "password"} {
+		if strings.Contains(string(encodedPlan), forbidden) {
+			t.Fatalf("tag rehearsal plan leaked %q: %s", forbidden, encodedPlan)
+		}
+	}
+}
+
+func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
+	t.Helper()
+	if plan["execution_enabled"] != false ||
+		plan["external_call_made"] != false ||
+		plan["git_tag_created"] != false ||
+		plan["git_push_performed"] != false ||
+		plan["github_actions_refresh_performed"] != false ||
+		plan["remote_tag_lookup_performed"] != false ||
+		plan["result_written"] != false ||
+		plan["contains_token"] != false ||
+		plan["contains_remote_url"] != false ||
+		plan["contains_ref_name"] != false ||
+		plan["contains_tag_message"] != false {
+		t.Fatalf("tag rehearsal plan should keep live execution disabled and redacted: %#v", plan)
+	}
+	for _, backend := range []string{"git_tag", "git_push", "remote_tag_lookup", "github_actions_api_sync", "repo_tag_run_update"} {
+		if !containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
+			t.Fatalf("disabled backends missing %q: %#v", backend, plan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"remote_url", "git_credentials", "provider_token", "authorization_header", "tag_message", "git_output", "github_actions_response"} {
+		if !containsString(stringSliceFromAny(plan["suppressed_fields"]), field) {
+			t.Fatalf("suppressed fields missing %q: %#v", field, plan["suppressed_fields"])
+		}
+	}
+	resultPlan := mapFromAny(plan["result_recording_plan"])
+	if resultPlan["mode"] != "repo_tag_remote_rehearsal_result_recording_plan" ||
+		resultPlan["result_recording_state"] != "blocked" ||
+		resultPlan["result_recording_ready"] != false ||
+		resultPlan["recording_enabled"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["repo_tag_run_updated"] != false ||
+		resultPlan["github_action_runs_synced"] != false ||
+		resultPlan["remote_tag_success_recorded"] != false ||
+		resultPlan["raw_git_output_recorded"] != false ||
+		resultPlan["raw_provider_response_recorded"] != false ||
+		resultPlan["contains_token"] != false ||
+		resultPlan["contains_remote_url"] != false ||
+		resultPlan["contains_ref_name"] != false ||
+		resultPlan["contains_tag_message"] != false {
+		t.Fatalf("tag rehearsal result plan should stay disabled and redacted: %#v", resultPlan)
+	}
+	for _, field := range []string{"tag_run_status", "tag_name_configured", "target_sha_configured", "target_remote_bound", "live_remote_tag_success_observed", "live_remote_tag_failed_observed", "github_actions_refresh_status"} {
+		if !containsString(stringSliceFromAny(resultPlan["result_diagnostic_fields"]), field) {
+			t.Fatalf("result diagnostic fields missing %q: %#v", field, resultPlan["result_diagnostic_fields"])
+		}
+	}
+	for _, field := range []string{"remote_url", "git_credentials", "provider_token", "authorization_header", "tag_message", "git_output", "github_actions_response", "provider_response_body", "provider_response_headers"} {
+		if !containsString(stringSliceFromAny(resultPlan["suppressed_fields"]), field) {
+			t.Fatalf("result suppressed fields missing %q: %#v", field, resultPlan["suppressed_fields"])
+		}
+	}
+}
+
 func TestCreateProjectVersionUpsertsByProjectAndVersion(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

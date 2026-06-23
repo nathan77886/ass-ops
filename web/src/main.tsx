@@ -3115,6 +3115,15 @@ function GitRemotes() {
         </Space> },
         { key: 'tags', label: 'Tag runs', children: <Table<AnyRow> rowKey="id" dataSource={tagRuns.data?.items || []} pagination={{ pageSize: 6 }} columns={[
           { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{row.status}</Tag> },
+          { title: 'Rehearsal', render: (_, row) => {
+            const plan = row.remote_rehearsal_plan || {};
+            const resultPlan = plan.result_recording_plan || {};
+            return <Space size={4} wrap>
+              <Tag color={plan.rehearsal_state === 'observed' ? 'green' : plan.rehearsal_state === 'blocked' || plan.rehearsal_state === 'failed' ? 'red' : 'gold'}>{plan.rehearsal_state || 'planned'}</Tag>
+              <Tag>{plan.live_remote_tag_success_observed ? 'remote success' : 'no remote success'}</Tag>
+              <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
+            </Space>;
+          } },
           { title: 'Tag', dataIndex: 'tag_name' },
           { title: 'Target SHA', dataIndex: 'target_sha' },
           { title: 'Target', dataIndex: 'target_remote_id' },
