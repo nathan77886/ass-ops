@@ -3661,10 +3661,12 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateProviderSendPlan["auth_scheme"] != "bearer_token" ||
 		candidateProviderSendPlan["content_type"] != "application/json" ||
 		candidateProviderSendPlan["timeout_seconds"] != 15 ||
+		len(mapFromAny(candidateProviderSendPlan["retry_backoff_plan"])) == 0 ||
 		candidateProviderSendPlan["requires_request_materialization"] != true ||
 		candidateProviderSendPlan["requires_credential_binding"] != true ||
 		candidateProviderSendPlan["requires_adapter_runtime"] != true ||
 		candidateProviderSendPlan["requires_transport"] != true ||
+		candidateProviderSendPlan["requires_retry_backoff_plan"] != true ||
 		candidateProviderSendPlan["requires_mutation_arming"] != true ||
 		candidateProviderSendPlan["request_materialization_ready"] != false ||
 		candidateProviderSendPlan["credential_binding_ready"] != false ||
@@ -3712,6 +3714,72 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateProviderSendSuppressedFields[0] != "request_url" ||
 		candidateProviderSendSuppressedFields[9] != "file_content" {
 		t.Fatalf("attempt execution candidate provider send suppressed fields = %#v", candidateProviderSendSuppressedFields)
+	}
+	candidateRetryBackoffPlan := mapFromAny(candidateProviderSendPlan["retry_backoff_plan"])
+	if candidateRetryBackoffPlan["mode"] != "redacted_attempt_adapter_retry_backoff_plan" ||
+		candidateRetryBackoffPlan["retry_backoff_state"] != "blocked" ||
+		candidateRetryBackoffPlan["retry_backoff_ready"] != false ||
+		candidateRetryBackoffPlan["retry_backoff_ready_reason"] != "provider_retry_backoff_not_armed" ||
+		candidateRetryBackoffPlan["retry_backoff_metadata_ready"] != true ||
+		candidateRetryBackoffPlan["operation_name"] != "create_branch_ref" ||
+		candidateRetryBackoffPlan["endpoint_key"] != "github.create_branch_ref" ||
+		candidateRetryBackoffPlan["operation_order"] != 10 ||
+		candidateRetryBackoffPlan["retry_policy"] != "retry_only_after_response_diagnostics" ||
+		candidateRetryBackoffPlan["max_attempts"] != 3 ||
+		candidateRetryBackoffPlan["initial_backoff_seconds"] != 30 ||
+		candidateRetryBackoffPlan["max_backoff_seconds"] != 300 ||
+		candidateRetryBackoffPlan["jitter"] != "full" ||
+		candidateRetryBackoffPlan["requires_response_diagnostics"] != true ||
+		candidateRetryBackoffPlan["requires_idempotency_ledger"] != true ||
+		candidateRetryBackoffPlan["requires_attempt_ledger"] != true ||
+		candidateRetryBackoffPlan["requires_mutation_arming"] != true ||
+		candidateRetryBackoffPlan["retry_scheduled"] != false ||
+		candidateRetryBackoffPlan["retry_attempt_recorded"] != false ||
+		candidateRetryBackoffPlan["retry_after_value_recorded"] != false ||
+		candidateRetryBackoffPlan["retry_after_header_included"] != false ||
+		candidateRetryBackoffPlan["provider_rate_limit_value_included"] != false ||
+		candidateRetryBackoffPlan["provider_error_code_included"] != false ||
+		candidateRetryBackoffPlan["external_call_made"] != false ||
+		candidateRetryBackoffPlan["provider_api_call_made"] != false ||
+		candidateRetryBackoffPlan["provider_api_mutation"] != "disabled" ||
+		candidateRetryBackoffPlan["request_body_included"] != false ||
+		candidateRetryBackoffPlan["response_body_included"] != false ||
+		candidateRetryBackoffPlan["headers_included"] != false ||
+		candidateRetryBackoffPlan["authorization_header_included"] != false ||
+		candidateRetryBackoffPlan["provider_url_included"] != false ||
+		candidateRetryBackoffPlan["idempotency_key_included"] != false ||
+		candidateRetryBackoffPlan["contains_token"] != false ||
+		candidateRetryBackoffPlan["contains_provider_url"] != false ||
+		candidateRetryBackoffPlan["contains_repository_ref"] != false ||
+		candidateRetryBackoffPlan["contains_branch_name"] != false ||
+		candidateRetryBackoffPlan["contains_file_content"] != false ||
+		candidateRetryBackoffPlan["retry_backoff_boundary_redacted"] != true {
+		t.Fatalf("attempt execution candidate retry backoff plan = %#v", candidateRetryBackoffPlan)
+	}
+	candidateBackoffRetryClasses := stringSliceFromAny(candidateRetryBackoffPlan["retryable_status_classes"])
+	candidateBackoffTransportRetryClasses := stringSliceFromAny(candidateRetryBackoffPlan["transport_retryable_status_classes"])
+	if len(candidateBackoffRetryClasses) != 1 || candidateBackoffRetryClasses[0] != "5xx" || len(candidateBackoffTransportRetryClasses) != 1 || candidateBackoffTransportRetryClasses[0] != "5xx" {
+		t.Fatalf("attempt execution candidate retry classes = %#v / %#v", candidateBackoffRetryClasses, candidateBackoffTransportRetryClasses)
+	}
+	candidateRetrySequence := stringSliceFromAny(candidateRetryBackoffPlan["retry_backoff_sequence"])
+	if len(candidateRetrySequence) != 4 ||
+		candidateRetrySequence[0] != "classify_retryable_response" ||
+		candidateRetrySequence[3] != "schedule_backoff_retry" {
+		t.Fatalf("attempt execution candidate retry sequence = %#v", candidateRetrySequence)
+	}
+	candidateRetrySuppressedFields := stringSliceFromAny(candidateRetryBackoffPlan["retry_backoff_suppressed_fields"])
+	if len(candidateRetrySuppressedFields) != 12 ||
+		candidateRetrySuppressedFields[0] != "retry_after_value" ||
+		candidateRetrySuppressedFields[11] != "file_content" {
+		t.Fatalf("attempt execution candidate retry suppressed fields = %#v", candidateRetrySuppressedFields)
+	}
+	candidateRetryBlockedReasons := stringSliceFromAny(candidateRetryBackoffPlan["blocked_reasons"])
+	if len(candidateRetryBlockedReasons) != 4 ||
+		candidateRetryBlockedReasons[0] != "provider_retry_backoff_not_armed" ||
+		candidateRetryBlockedReasons[1] != "provider_response_diagnostics_not_recorded" ||
+		candidateRetryBlockedReasons[2] != "provider_idempotency_ledger_not_claimed" ||
+		candidateRetryBlockedReasons[3] != "provider_review_mutation_not_armed" {
+		t.Fatalf("attempt execution candidate retry blocked reasons = %#v", candidateRetryBlockedReasons)
 	}
 	candidateProviderSendBlockedReasons := stringSliceFromAny(candidateProviderSendPlan["blocked_reasons"])
 	if len(candidateProviderSendBlockedReasons) != 5 ||
@@ -4681,7 +4749,7 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 	requestPlan := map[string]any{"request_materialization_ready": false}
 	credentialPlan := map[string]any{"credential_binding_ready": false}
 	runtimePlan := map[string]any{"runtime_ready": false}
-	transportPlan := map[string]any{"mode": "redacted_attempt_adapter_transport_plan", "transport_ready": true}
+	transportPlan := map[string]any{"mode": "redacted_attempt_adapter_transport_plan", "transport_ready": true, "retryable_status_classes": []string{"5xx"}}
 	responsePlan := map[string]any{"response_recording_ready": false}
 	transactionPlan := map[string]any{"transaction_metadata_ready": true}
 	plan := providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, runtimePlan, transportPlan, responsePlan, transactionPlan)
@@ -4771,10 +4839,12 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		providerSendPlan["auth_scheme"] != "bearer_token" ||
 		providerSendPlan["content_type"] != "application/json" ||
 		providerSendPlan["timeout_seconds"] != 15 ||
+		len(mapFromAny(providerSendPlan["retry_backoff_plan"])) == 0 ||
 		providerSendPlan["requires_request_materialization"] != true ||
 		providerSendPlan["requires_credential_binding"] != true ||
 		providerSendPlan["requires_adapter_runtime"] != true ||
 		providerSendPlan["requires_transport"] != true ||
+		providerSendPlan["requires_retry_backoff_plan"] != true ||
 		providerSendPlan["requires_mutation_arming"] != true ||
 		providerSendPlan["request_materialization_ready"] != false ||
 		providerSendPlan["credential_binding_ready"] != false ||
@@ -4827,6 +4897,75 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		sendSuppressedFields[9] != "file_content" {
 		t.Fatalf("provider send suppressed fields = %#v", sendSuppressedFields)
 	}
+	retryBackoffPlan := mapFromAny(providerSendPlan["retry_backoff_plan"])
+	if retryBackoffPlan["mode"] != "redacted_attempt_adapter_retry_backoff_plan" ||
+		retryBackoffPlan["retry_backoff_state"] != "blocked" ||
+		retryBackoffPlan["retry_backoff_ready"] != false ||
+		retryBackoffPlan["retry_backoff_ready_reason"] != "provider_retry_backoff_not_armed" ||
+		retryBackoffPlan["retry_backoff_metadata_ready"] != true ||
+		retryBackoffPlan["operation_name"] != "create_branch_ref" ||
+		retryBackoffPlan["endpoint_key"] != "github.create_branch_ref" ||
+		retryBackoffPlan["operation_order"] != 10 ||
+		retryBackoffPlan["retry_policy"] != "retry_only_after_response_diagnostics" ||
+		retryBackoffPlan["max_attempts"] != 3 ||
+		retryBackoffPlan["initial_backoff_seconds"] != 30 ||
+		retryBackoffPlan["max_backoff_seconds"] != 300 ||
+		retryBackoffPlan["jitter"] != "full" ||
+		retryBackoffPlan["requires_response_diagnostics"] != true ||
+		retryBackoffPlan["requires_idempotency_ledger"] != true ||
+		retryBackoffPlan["requires_attempt_ledger"] != true ||
+		retryBackoffPlan["requires_mutation_arming"] != true ||
+		retryBackoffPlan["retry_scheduled"] != false ||
+		retryBackoffPlan["retry_attempt_recorded"] != false ||
+		retryBackoffPlan["retry_after_value_recorded"] != false ||
+		retryBackoffPlan["retry_after_header_included"] != false ||
+		retryBackoffPlan["provider_rate_limit_value_included"] != false ||
+		retryBackoffPlan["provider_error_code_included"] != false ||
+		retryBackoffPlan["external_call_made"] != false ||
+		retryBackoffPlan["provider_api_call_made"] != false ||
+		retryBackoffPlan["provider_api_mutation"] != "disabled" ||
+		retryBackoffPlan["request_body_included"] != false ||
+		retryBackoffPlan["response_body_included"] != false ||
+		retryBackoffPlan["headers_included"] != false ||
+		retryBackoffPlan["authorization_header_included"] != false ||
+		retryBackoffPlan["provider_url_included"] != false ||
+		retryBackoffPlan["idempotency_key_included"] != false ||
+		retryBackoffPlan["contains_token"] != false ||
+		retryBackoffPlan["contains_provider_url"] != false ||
+		retryBackoffPlan["contains_repository_ref"] != false ||
+		retryBackoffPlan["contains_branch_name"] != false ||
+		retryBackoffPlan["contains_file_content"] != false ||
+		retryBackoffPlan["retry_backoff_boundary_redacted"] != true {
+		t.Fatalf("retry backoff plan = %#v", retryBackoffPlan)
+	}
+	retryClasses := stringSliceFromAny(retryBackoffPlan["retryable_status_classes"])
+	transportRetryClasses := stringSliceFromAny(retryBackoffPlan["transport_retryable_status_classes"])
+	if len(retryClasses) != 1 || retryClasses[0] != "5xx" || len(transportRetryClasses) != 1 || transportRetryClasses[0] != "5xx" {
+		t.Fatalf("retry classes = %#v / %#v", retryClasses, transportRetryClasses)
+	}
+	retrySequence := stringSliceFromAny(retryBackoffPlan["retry_backoff_sequence"])
+	if len(retrySequence) != 4 ||
+		retrySequence[0] != "classify_retryable_response" ||
+		retrySequence[1] != "verify_idempotency_ledger" ||
+		retrySequence[2] != "record_retry_decision" ||
+		retrySequence[3] != "schedule_backoff_retry" {
+		t.Fatalf("retry sequence = %#v", retrySequence)
+	}
+	retrySuppressedFields := stringSliceFromAny(retryBackoffPlan["retry_backoff_suppressed_fields"])
+	if len(retrySuppressedFields) != 12 ||
+		retrySuppressedFields[0] != "retry_after_value" ||
+		retrySuppressedFields[6] != "authorization_header" ||
+		retrySuppressedFields[11] != "file_content" {
+		t.Fatalf("retry suppressed fields = %#v", retrySuppressedFields)
+	}
+	retryBlockedReasons := stringSliceFromAny(retryBackoffPlan["blocked_reasons"])
+	if len(retryBlockedReasons) != 4 ||
+		retryBlockedReasons[0] != "provider_retry_backoff_not_armed" ||
+		retryBlockedReasons[1] != "provider_response_diagnostics_not_recorded" ||
+		retryBlockedReasons[2] != "provider_idempotency_ledger_not_claimed" ||
+		retryBlockedReasons[3] != "provider_review_mutation_not_armed" {
+		t.Fatalf("retry blocked reasons = %#v", retryBlockedReasons)
+	}
 	sendBlockedReasons := stringSliceFromAny(providerSendPlan["blocked_reasons"])
 	if len(sendBlockedReasons) != 5 ||
 		sendBlockedReasons[0] != "provider_request_send_not_armed" ||
@@ -4852,6 +4991,9 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 	}
 	if got := providerReviewAttemptAdapterInvocationPlan(nil, nil, nil, nil, nil, nil, nil, nil); len(got) != 0 {
 		t.Fatalf("empty operation invocation plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterRetryBackoffPlan(operation, map[string]any{"mode": "raw_transport_plan"}); len(got) != 0 {
+		t.Fatalf("mismatched transport retry backoff plan = %#v", got)
 	}
 	got := providerReviewAttemptAdapterInvocationPlan(
 		map[string]any{"name": "raw_operation", "endpoint_key": "github.create_branch_ref"},
