@@ -1122,6 +1122,22 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptInvocationExecutionLockPlan = attemptInvocationPlan.execution_lock_plan || {};
   const attemptInvocationActivationPlan = attemptInvocationPlan.adapter_activation_plan || {};
   const attemptInvocationLiveAdapterPlan = attemptInvocationActivationPlan.live_adapter_plan || {};
+  const attemptInvocationLiveAdapterContractPlan = attemptInvocationLiveAdapterPlan.contract_plan || {};
+  const attemptInvocationLiveAdapterContractInputs = Array.isArray(attemptInvocationLiveAdapterContractPlan.contract_input_fields)
+    ? attemptInvocationLiveAdapterContractPlan.contract_input_fields
+    : [];
+  const attemptInvocationLiveAdapterContractOutputs = Array.isArray(attemptInvocationLiveAdapterContractPlan.contract_output_fields)
+    ? attemptInvocationLiveAdapterContractPlan.contract_output_fields
+    : [];
+  const attemptInvocationLiveAdapterContractErrors = Array.isArray(attemptInvocationLiveAdapterContractPlan.contract_error_classes)
+    ? attemptInvocationLiveAdapterContractPlan.contract_error_classes
+    : [];
+  const attemptInvocationLiveAdapterContractPersistedFields = Array.isArray(attemptInvocationLiveAdapterContractPlan.contract_persisted_fields)
+    ? attemptInvocationLiveAdapterContractPlan.contract_persisted_fields
+    : [];
+  const attemptInvocationLiveAdapterContractSuppressedFields = Array.isArray(attemptInvocationLiveAdapterContractPlan.contract_suppressed_fields)
+    ? attemptInvocationLiveAdapterContractPlan.contract_suppressed_fields
+    : [];
   const attemptInvocationProviderSendPlan = attemptInvocationPlan.provider_send_plan || {};
   const attemptInvocationRetryBackoffPlan = attemptInvocationProviderSendPlan.retry_backoff_plan || {};
   const attemptInvocationSequence = Array.isArray(attemptInvocationPlan.invocation_sequence) ? attemptInvocationPlan.invocation_sequence : [];
@@ -1542,6 +1558,25 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>retry {String(attemptInvocationRetryBackoffPlan.retry_backoff_state ?? 'blocked')}</Tag>
           <Tag>{attemptInvocationPlan.provider_api_call_made === true ? 'api called' : 'no api call'}</Tag>
           <Tag>{String(attemptInvocationPlan.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {attemptInvocationLiveAdapterContractPlan.mode ? (
+        <Space size={4} wrap>
+          <Tag>{String(attemptInvocationLiveAdapterContractPlan.mode).replaceAll('_', ' ')}</Tag>
+          <Tag color={attemptInvocationLiveAdapterContractPlan.contract_state === 'blocked' ? 'red' : 'gold'}>
+            contract {String(attemptInvocationLiveAdapterContractPlan.contract_state ?? 'blocked')}
+          </Tag>
+          <Tag>{String(attemptInvocationLiveAdapterContractPlan.contract_ready_reason ?? 'provider_review_live_adapter_contract_not_armed')}</Tag>
+          <Tag>{attemptInvocationLiveAdapterContractPlan.contract_registered === true ? 'contract registered' : 'contract missing'}</Tag>
+          <Tag>{attemptInvocationLiveAdapterContractPlan.contract_implemented === true ? 'contract spec defined' : 'contract spec pending'}</Tag>
+          <Tag>inputs {attemptInvocationLiveAdapterContractInputs.length}</Tag>
+          <Tag>outputs {attemptInvocationLiveAdapterContractOutputs.length}</Tag>
+          <Tag>errors {attemptInvocationLiveAdapterContractErrors.length}</Tag>
+          <Tag>persist {attemptInvocationLiveAdapterContractPersistedFields.length}</Tag>
+          <Tag>suppressed {attemptInvocationLiveAdapterContractSuppressedFields.length}</Tag>
+          <Tag>{attemptInvocationLiveAdapterContractPlan.live_adapter_contract_boundary_redacted === true ? 'boundary redacted' : 'boundary open'}</Tag>
+          <Tag>{attemptInvocationLiveAdapterContractPlan.provider_api_call_made === true ? 'api called' : 'no api call'}</Tag>
+          <Tag>{String(attemptInvocationLiveAdapterContractPlan.provider_api_mutation ?? 'disabled')}</Tag>
         </Space>
       ) : null}
       {attemptExecutionCandidateGates.length ? (
