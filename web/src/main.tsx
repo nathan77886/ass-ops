@@ -4483,8 +4483,10 @@ function ConfigPage() {
                     {podLogPreview.retrieval_plan ? <Tag color="red">retrieval {podLogPreview.retrieval_plan.plan_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan ? <Tag>{podLogPreview.retrieval_plan.step_count || 0} retrieval steps</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan ? <Tag color="red">execute {podLogPreview.retrieval_plan.execution_plan.execution_state || 'blocked'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.approval_request_plan ? <Tag color="gold">approval {podLogPreview.retrieval_plan.execution_plan.approval_request_plan.request_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.secret_included ? 'secrets included' : 'no secrets'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_written ? 'result written' : 'no result write'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.recording_state || 'blocked'} recording</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.disabled_backends?.length || 0} disabled backends</Tag> : null}
                   </Space>
                   <JSONBlock value={podLogPreview} />

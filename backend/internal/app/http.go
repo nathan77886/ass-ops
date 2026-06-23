@@ -15826,6 +15826,7 @@ func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]an
 		"mode":                          "pod_log_execution_plan_preview",
 		"execution_state":               "blocked",
 		"prerequisite_state":            prerequisiteState,
+		"approval_request_plan":         argoPodLogApprovalRequestPlan(query, target, prerequisiteState),
 		"execution_enabled":             false,
 		"external_call_made":            false,
 		"operation_enqueued":            false,
@@ -15854,9 +15855,50 @@ func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]an
 	}
 }
 
+func argoPodLogApprovalRequestPlan(query, target map[string]any, prerequisiteState string) map[string]any {
+	namespaceReady := strings.TrimSpace(fmt.Sprint(target["namespace"])) != ""
+	clusterReady := strings.TrimSpace(fmt.Sprint(target["cluster_name"])) != ""
+	podReady := strings.TrimSpace(fmt.Sprint(query["pod_name"])) != ""
+	metadataReady := namespaceReady && clusterReady && podReady && prerequisiteState == "metadata_available"
+	requestState := "blocked"
+	if metadataReady {
+		requestState = "planned"
+	}
+	metadataBlockedReasons := []string{}
+	if !clusterReady {
+		metadataBlockedReasons = append(metadataBlockedReasons, "cluster_name_missing")
+	}
+	if !namespaceReady {
+		metadataBlockedReasons = append(metadataBlockedReasons, "namespace_missing")
+	}
+	if !podReady {
+		metadataBlockedReasons = append(metadataBlockedReasons, "pod_name_missing")
+	}
+	return map[string]any{
+		"mode":                         "pod_log_approval_request_plan",
+		"request_state":                requestState,
+		"request_ready":                false,
+		"request_ready_reason":         "pod_log_live_execution_disabled",
+		"metadata_ready":               metadataReady,
+		"operation_created":            false,
+		"approval_request_created":     false,
+		"worker_job_created":           false,
+		"kubeconfig_binding_requested": false,
+		"external_call_made":           false,
+		"required_action":              "Create a high-risk operation approval request before any pod log worker can bind kubeconfig or stream logs.",
+		"required_approval_fields":     []string{"operation_run_id", "deployment_target_id", "cluster_name", "namespace", "pod_name", "container_name", "tail_lines", "since_seconds", "requested_by", "reason"},
+		"suppressed_fields":            []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret", "approval_reason_detail"},
+		"blocked_reasons":              metadataBlockedReasons,
+		"execution_blockers":           []string{"pod_log_operation_not_created", "approval_policy_not_applied", "kubeconfig_binding_not_approved"},
+	}
+}
+
 func argoPodLogResultRecordingPlan() map[string]any {
 	return map[string]any{
 		"mode":                          "pod_log_result_recording_plan",
+		"recording_state":               "blocked",
+		"recording_ready":               false,
+		"recording_ready_reason":        "pod_log_execution_not_performed",
 		"recording_enabled":             false,
 		"result_written":                false,
 		"operation_log_written":         false,
@@ -15867,8 +15909,9 @@ func argoPodLogResultRecordingPlan() map[string]any {
 		"raw_response_included":         false,
 		"kubeconfig_included":           false,
 		"authorization_header_included": false,
-		"required_result_fields":        []string{"operation_run_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at"},
+		"required_result_fields":        []string{"operation_run_id", "approval_request_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at", "redaction_status"},
 		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret", "raw_kubernetes_response"},
+		"blocked_reasons":               []string{"pod_log_execution_not_performed", "sanitized_log_result_not_recorded", "canonical_asset_sync_not_performed"},
 		"message":                       "Pod log results are not recorded by this preview; future execution must store sanitized metadata and explicitly reviewed redacted log content only.",
 	}
 }

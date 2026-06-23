@@ -564,7 +564,7 @@ func TestArgoPodLogQueryPreviewIsReadOnlyAndRedacted(t *testing.T) {
 }
 
 func TestArgoPodLogQueryPreviewReportsMissingTargetMetadata(t *testing.T) {
-	preview := argoPodLogQueryPreview("api", "", 0, 60, map[string]any{"id": "target-1", "name": "prod"})
+	preview := argoPodLogQueryPreview("", "", 0, 60, map[string]any{"id": "target-1", "name": "prod"})
 	query := mapFromAny(preview["query"])
 	if query["tail_lines"] != 200 || query["since_seconds"] != 60 {
 		t.Fatalf("pod log default query = %#v", query)
@@ -575,14 +575,24 @@ func TestArgoPodLogQueryPreviewReportsMissingTargetMetadata(t *testing.T) {
 	}
 	plan := mapFromAny(preview["retrieval_plan"])
 	steps := sliceOfMapsFromAny(plan["steps"])
-	if statusByKind(steps, "target_scope_check") != "blocked" || plan["blocked_count"] != 4 {
+	if statusByKind(steps, "target_scope_check") != "blocked" ||
+		statusByKind(steps, "pod_identity_confirmation") != "blocked" ||
+		plan["blocked_count"] != 5 {
 		t.Fatalf("pod log retrieval plan should block missing target metadata: %#v", plan)
 	}
 	executionPlan := mapFromAny(plan["execution_plan"])
 	if executionPlan["prerequisite_state"] != "metadata_blocked" ||
-		executionPlan["planned_step_count"] != 2 ||
-		executionPlan["blocked_step_count"] != 4 {
+		executionPlan["planned_step_count"] != 1 ||
+		executionPlan["blocked_step_count"] != 5 {
 		t.Fatalf("metadata-blocked pod log execution plan = %#v", executionPlan)
+	}
+	approvalPlan := mapFromAny(executionPlan["approval_request_plan"])
+	if approvalPlan["request_state"] != "blocked" ||
+		approvalPlan["metadata_ready"] != false ||
+		!containsString(stringSliceFromAny(approvalPlan["blocked_reasons"]), "namespace_missing") ||
+		!containsString(stringSliceFromAny(approvalPlan["blocked_reasons"]), "cluster_name_missing") ||
+		!containsString(stringSliceFromAny(approvalPlan["blocked_reasons"]), "pod_name_missing") {
+		t.Fatalf("metadata-blocked pod log approval plan = %#v", approvalPlan)
 	}
 	assertPodLogExecutionPlanSafe(t, executionPlan)
 }
@@ -612,8 +622,43 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 			t.Fatalf("pod log execution suppressed_fields missing %q: %#v", field, executionPlan["suppressed_fields"])
 		}
 	}
+	approvalPlan := mapFromAny(executionPlan["approval_request_plan"])
+	if approvalPlan["mode"] != "pod_log_approval_request_plan" ||
+		approvalPlan["request_ready"] != false ||
+		approvalPlan["request_ready_reason"] != "pod_log_live_execution_disabled" ||
+		approvalPlan["operation_created"] != false ||
+		approvalPlan["approval_request_created"] != false ||
+		approvalPlan["worker_job_created"] != false ||
+		approvalPlan["kubeconfig_binding_requested"] != false ||
+		approvalPlan["external_call_made"] != false {
+		t.Fatalf("pod log approval request plan should stay disabled and redacted: %#v", approvalPlan)
+	}
+	if executionPlan["prerequisite_state"] == "metadata_available" && approvalPlan["request_state"] != "planned" {
+		t.Fatalf("metadata-ready pod log approval request plan should be planned but disabled: %#v", approvalPlan)
+	}
+	if executionPlan["prerequisite_state"] == "metadata_available" && len(stringSliceFromAny(approvalPlan["blocked_reasons"])) != 0 {
+		t.Fatalf("metadata-ready pod log approval request plan should not report metadata blockers: %#v", approvalPlan["blocked_reasons"])
+	}
+	for _, reason := range []string{"pod_log_operation_not_created", "approval_policy_not_applied", "kubeconfig_binding_not_approved"} {
+		if !containsString(stringSliceFromAny(approvalPlan["execution_blockers"]), reason) {
+			t.Fatalf("pod log approval execution blockers missing %q: %#v", reason, approvalPlan["execution_blockers"])
+		}
+	}
+	for _, field := range []string{"operation_run_id", "deployment_target_id", "cluster_name", "namespace", "pod_name", "container_name", "tail_lines", "since_seconds", "requested_by", "reason"} {
+		if !containsString(stringSliceFromAny(approvalPlan["required_approval_fields"]), field) {
+			t.Fatalf("pod log approval required fields missing %q: %#v", field, approvalPlan["required_approval_fields"])
+		}
+	}
+	for _, field := range []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret", "approval_reason_detail"} {
+		if !containsString(stringSliceFromAny(approvalPlan["suppressed_fields"]), field) {
+			t.Fatalf("pod log approval suppressed_fields missing %q: %#v", field, approvalPlan["suppressed_fields"])
+		}
+	}
 	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
-	if resultPlan["recording_enabled"] != false ||
+	if resultPlan["recording_state"] != "blocked" ||
+		resultPlan["recording_ready"] != false ||
+		resultPlan["recording_ready_reason"] != "pod_log_execution_not_performed" ||
+		resultPlan["recording_enabled"] != false ||
 		resultPlan["result_written"] != false ||
 		resultPlan["operation_log_written"] != false ||
 		resultPlan["log_body_included"] != false ||
@@ -623,9 +668,19 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		resultPlan["authorization_header_included"] != false {
 		t.Fatalf("pod log result recording plan should keep all result flags false: %#v", resultPlan)
 	}
+	for _, field := range []string{"operation_run_id", "approval_request_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at", "redaction_status"} {
+		if !containsString(stringSliceFromAny(resultPlan["required_result_fields"]), field) {
+			t.Fatalf("pod log result required fields missing %q: %#v", field, resultPlan["required_result_fields"])
+		}
+	}
 	for _, field := range []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret", "raw_kubernetes_response"} {
 		if !containsString(stringSliceFromAny(resultPlan["suppressed_fields"]), field) {
 			t.Fatalf("pod log result suppressed_fields missing %q: %#v", field, resultPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"pod_log_execution_not_performed", "sanitized_log_result_not_recorded", "canonical_asset_sync_not_performed"} {
+		if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), reason) {
+			t.Fatalf("pod log result blocked reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
 		}
 	}
 	encodedExecutionPlan, _ := json.Marshal(executionPlan)
