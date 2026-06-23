@@ -2038,6 +2038,75 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 			t.Fatalf("execution plan suppressed_fields missing %q: %#v", field, executionPlan["suppressed_fields"])
 		}
 	}
+	for _, planKey := range []string{"git_ref_fetch_plan", "github_actions_refresh_plan", "argo_revision_refresh_plan"} {
+		kindPlan := mapFromAny(executionPlan[planKey])
+		if kindPlan["refresh_state"] == "" ||
+			kindPlan["external_call_made"] != false {
+			t.Fatalf("refresh kind plan should have state and keep external calls disabled: %s %#v", planKey, kindPlan)
+		}
+		for _, reason := range []string{"provider_refresh_execution_backend_disabled"} {
+			if kindPlan["refresh_state"] != "not_required" && !containsString(stringSliceFromAny(kindPlan["execution_blockers"]), reason) {
+				t.Fatalf("refresh kind plan execution blockers missing %q: %s %#v", reason, planKey, kindPlan)
+			}
+		}
+	}
+	gitFetchPlan := mapFromAny(executionPlan["git_ref_fetch_plan"])
+	if gitFetchPlan["mode"] != "provider_refresh_git_ref_fetch_plan" ||
+		gitFetchPlan["git_fetch_performed"] != false ||
+		gitFetchPlan["git_remote_sync_performed"] != false ||
+		gitFetchPlan["remote_ref_verified"] != false ||
+		gitFetchPlan["synced_state_written"] != false ||
+		gitFetchPlan["contains_remote_url"] != false ||
+		gitFetchPlan["contains_git_credentials"] != false ||
+		gitFetchPlan["contains_commit_body"] != false {
+		t.Fatalf("git fetch subplan should stay disabled and redacted: %#v", gitFetchPlan)
+	}
+	for _, backend := range []string{"git_fetch", "git_remote_sync", "synced_state_write"} {
+		if !containsString(stringSliceFromAny(gitFetchPlan["disabled_backends"]), backend) {
+			t.Fatalf("git fetch subplan disabled backend missing %q: %#v", backend, gitFetchPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"remote_url", "git_credentials", "authorization_header", "commit_body", "raw_git_output"} {
+		if !containsString(stringSliceFromAny(gitFetchPlan["suppressed_fields"]), field) {
+			t.Fatalf("git fetch subplan suppressed field missing %q: %#v", field, gitFetchPlan["suppressed_fields"])
+		}
+	}
+	actionsPlan := mapFromAny(executionPlan["github_actions_refresh_plan"])
+	if actionsPlan["mode"] != "provider_refresh_github_actions_plan" ||
+		actionsPlan["github_actions_api_called"] != false ||
+		actionsPlan["github_actions_runs_synced"] != false ||
+		actionsPlan["github_actions_scope_verified"] != false ||
+		actionsPlan["synced_state_written"] != false ||
+		actionsPlan["contains_provider_token"] != false ||
+		actionsPlan["contains_remote_url"] != false ||
+		actionsPlan["contains_provider_response"] != false {
+		t.Fatalf("GitHub Actions subplan should stay disabled and redacted: %#v", actionsPlan)
+	}
+	for _, backend := range []string{"github_actions_api_sync", "synced_state_write", "provider_response_recording"} {
+		if !containsString(stringSliceFromAny(actionsPlan["disabled_backends"]), backend) {
+			t.Fatalf("GitHub Actions subplan disabled backend missing %q: %#v", backend, actionsPlan["disabled_backends"])
+		}
+	}
+	argoPlan := mapFromAny(executionPlan["argo_revision_refresh_plan"])
+	if argoPlan["mode"] != "provider_refresh_argo_revision_plan" ||
+		argoPlan["argocd_api_called"] != false ||
+		argoPlan["argocd_app_refresh_performed"] != false ||
+		argoPlan["argo_revision_bound"] != false ||
+		argoPlan["synced_state_written"] != false ||
+		argoPlan["contains_provider_token"] != false ||
+		argoPlan["contains_argo_response"] != false {
+		t.Fatalf("Argo refresh subplan should stay disabled and redacted: %#v", argoPlan)
+	}
+	for _, backend := range []string{"argocd_app_sync", "synced_state_write", "argo_response_recording"} {
+		if !containsString(stringSliceFromAny(argoPlan["disabled_backends"]), backend) {
+			t.Fatalf("Argo subplan disabled backend missing %q: %#v", backend, argoPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"provider_token", "authorization_header", "argo_response", "raw_argo_response", "provider_response_body", "provider_response_headers"} {
+		if !containsString(stringSliceFromAny(argoPlan["suppressed_fields"]), field) {
+			t.Fatalf("Argo subplan suppressed field missing %q: %#v", field, argoPlan["suppressed_fields"])
+		}
+	}
 	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
 	if resultPlan["mode"] != "provider_refresh_result_recording_plan" ||
 		resultPlan["result_recording_state"] != "blocked" ||
@@ -2049,13 +2118,16 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 		resultPlan["canonical_asset_sync_queued"] != false ||
 		resultPlan["status_snapshot_written"] != false ||
 		resultPlan["validation_rerun_recorded"] != false ||
+		resultPlan["git_ref_fetch_result_recorded"] != false ||
+		resultPlan["github_actions_result_recorded"] != false ||
+		resultPlan["argo_revision_result_recorded"] != false ||
 		resultPlan["raw_response_included"] != false ||
 		resultPlan["raw_git_output_included"] != false ||
 		resultPlan["raw_argo_response_included"] != false ||
 		resultPlan["provider_request_id_included"] != false {
 		t.Fatalf("refresh result recording plan should keep all result flags false: %#v", resultPlan)
 	}
-	for _, field := range []string{"operation_run_id", "refresh_kind", "status", "started_at", "finished_at", "synced_entity_count", "validation_rerun_status"} {
+	for _, field := range []string{"operation_run_id", "refresh_kind", "status", "started_at", "finished_at", "synced_entity_count", "git_ref_fetch_status", "github_actions_refresh_status", "argo_revision_refresh_status", "validation_rerun_status"} {
 		if !containsString(stringSliceFromAny(resultPlan["required_result_fields"]), field) {
 			t.Fatalf("result plan required_result_fields missing %q: %#v", field, resultPlan["required_result_fields"])
 		}

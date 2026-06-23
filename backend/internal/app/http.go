@@ -7007,6 +7007,9 @@ func projectVersionProviderRefreshExecutionPlan(steps []map[string]any, refreshP
 		"suppressed_fields":             []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "github_actions_response", "argo_response", "commit_body", "workflow_logs"},
 		"blocked_reasons":               []string{"provider_refresh_execution_backend_disabled", "provider_mutation_not_armed", "result_recording_not_wired"},
 		"execution_sequence":            []string{"request_operation_approval", "bind_provider_credentials", "claim_refresh_operation", "run_git_ref_fetch", "run_github_actions_refresh", "run_argocd_app_refresh", "record_synced_state", "rerun_validation_preview"},
+		"git_ref_fetch_plan":            providerRefreshKindExecutionPlan("git_ref_fetch", plannedKinds, blockedKinds),
+		"github_actions_refresh_plan":   providerRefreshKindExecutionPlan("github_actions_api_refresh", plannedKinds, blockedKinds),
+		"argo_revision_refresh_plan":    providerRefreshKindExecutionPlan("argocd_app_refresh", plannedKinds, blockedKinds),
 		"result_recording_plan":         projectVersionProviderRefreshResultRecordingPlan(plannedKinds),
 		"message":                       "Provider refresh execution is a redacted plan only; no Git fetch, provider API call, Argo call, synced-state write, or validation rerun is performed.",
 		"required_operator_action":      "Approve and run the planned refresh operation in a future execution path, then re-open ProjectVersion validation.",
@@ -7015,27 +7018,121 @@ func projectVersionProviderRefreshExecutionPlan(steps []map[string]any, refreshP
 	}
 }
 
+func providerRefreshKindExecutionPlan(kind string, plannedKinds, blockedKinds []string) map[string]any {
+	state := "not_required"
+	if stringInSlice(plannedKinds, kind) {
+		state = "planned"
+	} else if stringInSlice(blockedKinds, kind) {
+		state = "blocked"
+	}
+	switch kind {
+	case "git_ref_fetch":
+		return map[string]any{
+			"mode":                       "provider_refresh_git_ref_fetch_plan",
+			"kind":                       kind,
+			"refresh_state":              state,
+			"git_fetch_performed":        false,
+			"git_remote_sync_performed":  false,
+			"remote_ref_verified":        false,
+			"synced_state_write_planned": state == "planned",
+			"synced_state_written":       false,
+			"external_call_made":         false,
+			"contains_remote_url":        false,
+			"contains_git_credentials":   false,
+			"contains_commit_body":       false,
+			"required_controls":          []string{"git_remote_credential_review", "ref_validation_policy", "synced_state_write_audit"},
+			"disabled_backends":          []string{"git_fetch", "git_remote_sync", "synced_state_write"},
+			"suppressed_fields":          []string{"remote_url", "git_credentials", "authorization_header", "commit_body", "raw_git_output"},
+			"blocked_reasons":            providerRefreshKindBlockedReasons(state, "git_ref_fetch_not_performed"),
+			"execution_blockers":         []string{"provider_refresh_execution_backend_disabled", "git_fetch_not_performed"},
+			"message":                    "Git ref refresh is planned only; no Git fetch, remote sync, ref verification, or synced-state write is performed.",
+		}
+	case "github_actions_api_refresh":
+		return map[string]any{
+			"mode":                          "provider_refresh_github_actions_plan",
+			"kind":                          kind,
+			"refresh_state":                 state,
+			"github_actions_api_called":     false,
+			"github_actions_runs_synced":    false,
+			"github_actions_scope_verified": false,
+			"synced_state_write_planned":    state == "planned",
+			"synced_state_written":          false,
+			"external_call_made":            false,
+			"contains_provider_token":       false,
+			"contains_remote_url":           false,
+			"contains_provider_response":    false,
+			"required_controls":             []string{"github_actions_scope_review", "provider_account_binding", "synced_state_write_audit"},
+			"disabled_backends":             []string{"github_actions_api_sync", "synced_state_write", "provider_response_recording"},
+			"suppressed_fields":             []string{"provider_token", "authorization_header", "remote_url", "github_actions_response", "workflow_logs", "provider_response_body", "provider_response_headers"},
+			"blocked_reasons":               providerRefreshKindBlockedReasons(state, "github_actions_api_refresh_not_performed"),
+			"execution_blockers":            []string{"provider_refresh_execution_backend_disabled", "github_actions_api_sync_not_performed"},
+			"message":                       "GitHub Actions refresh is planned only; no provider API call, workflow run sync, response capture, or synced-state write is performed.",
+		}
+	case "argocd_app_refresh":
+		return map[string]any{
+			"mode":                         "provider_refresh_argo_revision_plan",
+			"kind":                         kind,
+			"refresh_state":                state,
+			"argocd_api_called":            false,
+			"argocd_app_refresh_performed": false,
+			"argo_revision_bound":          false,
+			"synced_state_write_planned":   state == "planned",
+			"synced_state_written":         false,
+			"external_call_made":           false,
+			"contains_provider_token":      false,
+			"contains_argo_response":       false,
+			"required_controls":            []string{"argo_connection_review", "argo_revision_binding", "synced_state_write_audit"},
+			"disabled_backends":            []string{"argocd_app_sync", "synced_state_write", "argo_response_recording"},
+			"suppressed_fields":            []string{"provider_token", "authorization_header", "argo_response", "raw_argo_response", "provider_response_body", "provider_response_headers"},
+			"blocked_reasons":              providerRefreshKindBlockedReasons(state, "argocd_app_refresh_not_performed"),
+			"execution_blockers":           []string{"provider_refresh_execution_backend_disabled", "argocd_app_sync_not_performed"},
+			"message":                      "Argo revision refresh is planned only; no Argo API call, app refresh, revision binding, or synced-state write is performed.",
+		}
+	default:
+		return map[string]any{
+			"mode":               "provider_refresh_unknown_kind_plan",
+			"kind":               kind,
+			"refresh_state":      state,
+			"external_call_made": false,
+			"blocked_reasons":    providerRefreshKindBlockedReasons(state, "provider_refresh_kind_not_performed"),
+		}
+	}
+}
+
+func providerRefreshKindBlockedReasons(state, executionReason string) []string {
+	if state == "not_required" {
+		return []string{"refresh_kind_not_required"}
+	}
+	if state == "blocked" {
+		return []string{"refresh_kind_blocked", executionReason}
+	}
+	return []string{executionReason}
+}
+
 func projectVersionProviderRefreshResultRecordingPlan(plannedKinds []string) map[string]any {
 	return map[string]any{
-		"mode":                          "provider_refresh_result_recording_plan",
-		"result_recording_state":        "blocked",
-		"result_recording_ready":        false,
-		"result_recording_ready_reason": "provider_refresh_execution_not_performed",
-		"recording_enabled":             false,
-		"result_written":                false,
-		"operation_log_written":         false,
-		"canonical_asset_sync_queued":   false,
-		"status_snapshot_written":       false,
-		"validation_rerun_recorded":     false,
-		"planned_refresh_kinds":         plannedKinds,
-		"required_result_fields":        []string{"operation_run_id", "refresh_kind", "status", "started_at", "finished_at", "synced_entity_count", "validation_rerun_status"},
-		"suppressed_fields":             []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
-		"blocked_reasons":               []string{"provider_refresh_execution_not_performed", "synced_state_write_not_performed", "validation_rerun_not_performed"},
-		"message":                       "Refresh results are not recorded by this preview; future execution must write sanitized status, counts, and validation rerun state only.",
-		"raw_response_included":         false,
-		"raw_git_output_included":       false,
-		"raw_argo_response_included":    false,
-		"provider_request_id_included":  false,
+		"mode":                           "provider_refresh_result_recording_plan",
+		"result_recording_state":         "blocked",
+		"result_recording_ready":         false,
+		"result_recording_ready_reason":  "provider_refresh_execution_not_performed",
+		"recording_enabled":              false,
+		"result_written":                 false,
+		"operation_log_written":          false,
+		"canonical_asset_sync_queued":    false,
+		"status_snapshot_written":        false,
+		"validation_rerun_recorded":      false,
+		"git_ref_fetch_result_recorded":  false,
+		"github_actions_result_recorded": false,
+		"argo_revision_result_recorded":  false,
+		"planned_refresh_kinds":          plannedKinds,
+		"required_result_fields":         []string{"operation_run_id", "refresh_kind", "status", "started_at", "finished_at", "synced_entity_count", "git_ref_fetch_status", "github_actions_refresh_status", "argo_revision_refresh_status", "validation_rerun_status"},
+		"suppressed_fields":              []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
+		"blocked_reasons":                []string{"provider_refresh_execution_not_performed", "synced_state_write_not_performed", "validation_rerun_not_performed"},
+		"message":                        "Refresh results are not recorded by this preview; future execution must write sanitized status, counts, and validation rerun state only.",
+		"raw_response_included":          false,
+		"raw_git_output_included":        false,
+		"raw_argo_response_included":     false,
+		"provider_request_id_included":   false,
 	}
 }
 
