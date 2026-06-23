@@ -262,6 +262,34 @@ func TestFirstVersionReadinessReportUsesApprovalSummary(t *testing.T) {
 	}
 }
 
+func TestFirstVersionReadinessReportRequiresOperationLogs(t *testing.T) {
+	withoutLogs := firstVersionReadinessReport([]map[string]any{
+		{"asset_type": "operation_run"},
+	}, []map[string]any{
+		{"operation_type": "repo.sync", "log_count": 0},
+	}, nil)
+	if got := readinessByKey(t, withoutLogs, "operations"); got.Status != "partial" || got.Evidence != "1 runs / 0 with logs" {
+		t.Fatalf("operations readiness without logs = %#v, want partial with log evidence", got)
+	}
+
+	withLogs := firstVersionReadinessReport(nil, []map[string]any{
+		{"operation_type": "repo.sync", "log_count": 2},
+	}, nil)
+	if got := readinessByKey(t, withLogs, "operations"); got.Status != "ready" || got.Evidence != "1 runs / 1 with logs" {
+		t.Fatalf("operations readiness with logs = %#v, want ready with log evidence", got)
+	}
+}
+
+func TestCountOperationRowsWithLogsHandlesMissingLogCount(t *testing.T) {
+	rows := []map[string]any{
+		{"operation_type": "repo.sync"},
+		{"operation_type": "ssh.exec", "log_count": 1},
+	}
+	if got := countOperationRowsWithLogs(rows); got != 1 {
+		t.Fatalf("countOperationRowsWithLogs with missing log_count = %d, want 1", got)
+	}
+}
+
 func TestReleasePromotionPlanIncludesVerificationAndRollout(t *testing.T) {
 	artifactDir := t.TempDir()
 	files := map[string]string{

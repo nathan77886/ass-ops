@@ -7329,16 +7329,33 @@ func (s *Server) listOperations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := currentUser(r)
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT *
-		FROM operation_runs op
-		WHERE $1 OR op.project_id IS NULL OR EXISTS (
-			SELECT 1 FROM project_members pm
-			WHERE pm.project_id=op.project_id AND pm.user_id=$2
-		)
-		ORDER BY created_at DESC
-		LIMIT 100`, userCanReadAllProjects(user), userIDOrNil(user))
+	items, err := queryMaps(r.Context(), s.store.DB, operationListSQL(), userCanReadAllProjects(user), userIDOrNil(user))
 	writeQueryResult(w, items, err)
+}
+
+func operationListSQL() string {
+	return `
+		SELECT op.*,
+			COALESCE(log_counts.log_count, 0) AS log_count
+		FROM (
+			-- Keep visibility filtering and LIMIT inside this subquery so the
+			-- lateral log count only touches the currently visible page.
+			SELECT *
+			FROM operation_runs op
+			WHERE $1 OR op.project_id IS NULL OR EXISTS (
+				SELECT 1 FROM project_members pm
+				WHERE pm.project_id=op.project_id AND pm.user_id=$2
+			)
+			ORDER BY op.created_at DESC
+			LIMIT 100
+		) op
+		LEFT JOIN LATERAL (
+			SELECT count(*)::int AS log_count
+			FROM operation_logs
+			WHERE operation_run_id=op.id
+		) log_counts ON true
+		ORDER BY op.created_at DESC
+		LIMIT 100`
 }
 
 func (s *Server) getWorkerQueueSummary(w http.ResponseWriter, r *http.Request) {

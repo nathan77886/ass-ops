@@ -610,6 +610,28 @@ func TestAssetInventorySQLIncludesCoreAssetTypes(t *testing.T) {
 	}
 }
 
+func TestOperationListSQLIncludesLogCountEvidence(t *testing.T) {
+	sql := operationListSQL()
+	for _, token := range []string{
+		"SELECT op.*",
+		"COALESCE(log_counts.log_count, 0) AS log_count",
+		"LEFT JOIN LATERAL",
+		"FROM operation_logs",
+		"WHERE operation_run_id=op.id",
+		"$1 OR op.project_id IS NULL",
+		"project_members pm",
+		"LIMIT 100",
+		"ORDER BY op.created_at DESC",
+	} {
+		if !strings.Contains(sql, token) {
+			t.Fatalf("operationListSQL missing %s", token)
+		}
+	}
+	if count := strings.Count(sql, "LIMIT 100"); count < 2 {
+		t.Fatalf("operationListSQL should keep inner and outer LIMIT 100, found %d in %s", count, sql)
+	}
+}
+
 func TestAssetRelationInventorySQLIncludesAgentTaskEdges(t *testing.T) {
 	sql := assetRelationInventorySQL()
 	for _, token := range []string{
