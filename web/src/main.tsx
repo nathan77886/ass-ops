@@ -579,6 +579,51 @@ function countContextGenerationEvidence(assets: AnyRow[] = []) {
   ).length;
 }
 
+function apiAssetGraphID(row: AnyRow = {}) {
+  for (const key of ['asset_id', 'id']) {
+    if (typeof row[key] !== 'string') continue;
+    const value = row[key].trim();
+    if (value) return value;
+  }
+  const type = String(row.asset_type ?? '').trim();
+  const sourceID = String(row.source_id ?? '').trim();
+  return type && sourceID ? `${type}:${sourceID}` : '';
+}
+
+function countContextGraphLinks(assets: AnyRow[] = [], graph: AnyRow = {}) {
+  const contextToolCalls = new Set(
+    assets
+      .filter((row) =>
+        String(row.asset_type ?? '') === 'agent_tool_call' &&
+        String(row.metadata?.tool_name ?? '') === 'context.generate' &&
+        ['queued', 'completed'].includes(String(row.status ?? '').toLowerCase())
+      )
+      .map(apiAssetGraphID)
+      .filter((assetID) => assetID.startsWith('agent_tool_call:'))
+  );
+  const byTask: Record<string, { runtime?: boolean; contextTool?: boolean }> = {};
+  const taskEntry = (assetID: string) => {
+    byTask[assetID] ??= {};
+    return byTask[assetID];
+  };
+  const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
+    const relation = String(edge.relation_type ?? '');
+    const from = String(edge.from_asset_id ?? '');
+    const to = String(edge.to_asset_id ?? '');
+    if (relation === 'uses_runtime' && from.startsWith('agent_task:') && to.startsWith('ai_runtime:')) {
+      nextCounts.taskRuntimes += 1;
+      taskEntry(from).runtime = true;
+    }
+    if (relation === 'records_tool_call' && from.startsWith('agent_task:') && contextToolCalls.has(to)) {
+      nextCounts.taskContextToolCalls += 1;
+      taskEntry(from).contextTool = true;
+    }
+    return nextCounts;
+  }, { taskRuntimes: 0, taskContextToolCalls: 0, completeContextTasks: 0 });
+  counts.completeContextTasks = Object.values(byTask).filter((entry) => entry.runtime && entry.contextTool).length;
+  return counts;
+}
+
 function countRowsByTypeStatus(rows: AnyRow[] = [], type: string, status: string) {
   return rows.filter((row) => String(row.asset_type || '') === type && String(row.status || '') === status).length;
 }
@@ -807,6 +852,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const sshGraphLinks = countSSHGraphLinks(graph);
   const argoGraphLinks = countArgoGraphLinks(graph);
   const approvalGraphLinks = countApprovalGraphLinks(graph);
+  const contextGraphLinks = countContextGraphLinks(assets, graph);
   const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.argo_app || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0) + argoGraphLinks.connectionApps + argoGraphLinks.appTargets;
   const graphNodes = graphItems(graph, 'nodes').length;
   const graphEdges = graphItems(graph, 'edges').length;
@@ -870,7 +916,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'context',
       label: 'Generate AI-readable context from graph',
       next: 'Create an agent task or AI runtime after syncing the canonical asset ledger.',
-      ...readinessState(contextEvidence > 0 && contextGenerations > 0 && graphEvidence > 0, `${contextEvidence} context assets / ${contextGenerations} context generations / ${graphNodes} graph nodes / ${graphEdges} graph edges`, contextEvidence > 0 || contextGenerations > 0 || graphEvidence > 0)
+      ...readinessState(contextEvidence > 0 && contextGenerations > 0 && graphEvidence > 0 && contextGraphLinks.completeContextTasks > 0, `${contextEvidence} context assets / ${contextGenerations} context generations / ${contextGraphLinks.completeContextTasks} complete context tasks / ${contextGraphLinks.taskRuntimes} runtime links / ${contextGraphLinks.taskContextToolCalls} context tool links / ${graphNodes} graph nodes / ${graphEdges} graph edges`, contextEvidence > 0 || contextGenerations > 0 || graphEvidence > 0 || contextGraphLinks.taskRuntimes > 0 || contextGraphLinks.taskContextToolCalls > 0)
     }
   ];
 }

@@ -794,7 +794,7 @@ func TestFirstVersionReadinessReportRequiresOperationLogs(t *testing.T) {
 
 func TestFirstVersionReadinessReportRequiresContextGraphEvidence(t *testing.T) {
 	missing := firstVersionReadinessReportWithGraph(nil, nil, nil, nil)
-	if got := readinessByKey(t, missing, "context"); got.Status != "missing" || got.Evidence != "0 context assets / 0 context generations / 0 graph nodes / 0 graph edges" {
+	if got := readinessByKey(t, missing, "context"); got.Status != "missing" || got.Evidence != "0 context assets / 0 context generations / 0 complete context tasks / 0 runtime links / 0 context tool links / 0 graph nodes / 0 graph edges" {
 		t.Fatalf("context readiness without context or graph evidence = %#v, want missing", got)
 	}
 
@@ -802,14 +802,14 @@ func TestFirstVersionReadinessReportRequiresContextGraphEvidence(t *testing.T) {
 		{"asset_type": "ai_runtime"},
 		{"asset_type": "agent_task"},
 	}, nil, nil, nil)
-	if got := readinessByKey(t, withoutGraph, "context"); got.Status != "partial" || got.Evidence != "2 context assets / 0 context generations / 0 graph nodes / 0 graph edges" {
+	if got := readinessByKey(t, withoutGraph, "context"); got.Status != "partial" || got.Evidence != "2 context assets / 0 context generations / 0 complete context tasks / 0 runtime links / 0 context tool links / 0 graph nodes / 0 graph edges" {
 		t.Fatalf("context readiness without graph evidence = %#v, want partial with graph evidence", got)
 	}
 
 	graphOnly := firstVersionReadinessReportWithGraph(nil, nil, nil, map[string]any{
 		"nodes": []any{map[string]any{"id": "project:1"}},
 	})
-	if got := readinessByKey(t, graphOnly, "context"); got.Status != "partial" || got.Evidence != "0 context assets / 0 context generations / 1 graph nodes / 0 graph edges" {
+	if got := readinessByKey(t, graphOnly, "context"); got.Status != "partial" || got.Evidence != "0 context assets / 0 context generations / 0 complete context tasks / 0 runtime links / 0 context tool links / 1 graph nodes / 0 graph edges" {
 		t.Fatalf("context readiness without context assets = %#v, want partial with graph evidence", got)
 	}
 
@@ -819,19 +819,50 @@ func TestFirstVersionReadinessReportRequiresContextGraphEvidence(t *testing.T) {
 		"nodes": []any{map[string]any{"id": "project:1"}},
 		"edges": []any{map[string]any{"from_asset_id": "project:1", "to_asset_id": "repo:1"}},
 	})
-	if got := readinessByKey(t, withoutGeneration, "context"); got.Status != "partial" || got.Evidence != "1 context assets / 0 context generations / 1 graph nodes / 1 graph edges" {
+	if got := readinessByKey(t, withoutGeneration, "context"); got.Status != "partial" || got.Evidence != "1 context assets / 0 context generations / 0 complete context tasks / 0 runtime links / 0 context tool links / 1 graph nodes / 1 graph edges" {
 		t.Fatalf("context readiness without generation evidence = %#v, want partial", got)
 	}
 
-	withGeneration := firstVersionReadinessReportWithGraph([]map[string]any{
+	withoutContextGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "ai_runtime"},
-		{"asset_type": "agent_tool_call", "status": "completed", "metadata": map[string]any{"tool_name": "context.generate"}},
+		{"asset_type": "agent_task"},
+		{"asset_type": "agent_tool_call", "id": "agent_tool_call:20", "status": "completed", "metadata": map[string]any{"tool_name": "context.generate"}},
 	}, nil, nil, map[string]any{
 		"nodes": []any{map[string]any{"id": "project:1"}},
 		"edges": []any{map[string]any{"from_asset_id": "project:1", "to_asset_id": "repo:1"}},
 	})
-	if got := readinessByKey(t, withGeneration, "context"); got.Status != "ready" || got.Evidence != "1 context assets / 1 context generations / 1 graph nodes / 1 graph edges" {
-		t.Fatalf("context readiness with graph evidence = %#v, want ready with graph evidence", got)
+	if got := readinessByKey(t, withoutContextGraphLinks, "context"); got.Status != "partial" || got.Evidence != "2 context assets / 1 context generations / 0 complete context tasks / 0 runtime links / 0 context tool links / 1 graph nodes / 1 graph edges" {
+		t.Fatalf("context readiness without task graph links = %#v, want partial", got)
+	}
+
+	crossTaskAggregation := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "ai_runtime"},
+		{"asset_type": "agent_task"},
+		{"asset_type": "agent_tool_call", "id": "agent_tool_call:20", "status": "completed", "metadata": map[string]any{"tool_name": "context.generate"}},
+	}, nil, nil, map[string]any{
+		"nodes": []any{map[string]any{"id": "project:1"}},
+		"edges": []any{
+			map[string]any{"from_asset_id": "agent_task:10", "to_asset_id": "ai_runtime:30", "relation_type": "uses_runtime"},
+			map[string]any{"from_asset_id": "agent_task:11", "to_asset_id": "agent_tool_call:20", "relation_type": "records_tool_call"},
+		},
+	})
+	if got := readinessByKey(t, crossTaskAggregation, "context"); got.Status != "partial" || got.Evidence != "2 context assets / 1 context generations / 0 complete context tasks / 1 runtime links / 1 context tool links / 1 graph nodes / 2 graph edges" {
+		t.Fatalf("context readiness with cross-task links = %#v, want partial without complete context task", got)
+	}
+
+	withGeneration := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "ai_runtime"},
+		{"asset_type": "agent_task"},
+		{"asset_type": "agent_tool_call", "id": "agent_tool_call:20", "status": "completed", "metadata": map[string]any{"tool_name": "context.generate"}},
+	}, nil, nil, map[string]any{
+		"nodes": []any{map[string]any{"id": "project:1"}},
+		"edges": []any{
+			map[string]any{"from_asset_id": "agent_task:10", "to_asset_id": "ai_runtime:30", "relation_type": "uses_runtime"},
+			map[string]any{"from_asset_id": "agent_task:10", "to_asset_id": "agent_tool_call:20", "relation_type": "records_tool_call"},
+		},
+	})
+	if got := readinessByKey(t, withGeneration, "context"); got.Status != "ready" || got.Evidence != "2 context assets / 1 context generations / 1 complete context tasks / 1 runtime links / 1 context tool links / 1 graph nodes / 2 graph edges" {
+		t.Fatalf("context readiness with complete task graph = %#v, want ready", got)
 	}
 }
 
@@ -845,6 +876,27 @@ func TestCountContextGenerationEvidence(t *testing.T) {
 	}
 	if got := countContextGenerationEvidence(assets); got != 2 {
 		t.Fatalf("countContextGenerationEvidence = %d, want 2", got)
+	}
+}
+
+func TestCountContextGraphLinks(t *testing.T) {
+	assets := []map[string]any{
+		{"asset_type": "agent_tool_call", "id": "agent_tool_call:20", "status": "completed", "metadata": map[string]any{"tool_name": "context.generate"}},
+		{"asset_type": "agent_tool_call", "id": "agent_tool_call:21", "status": "failed", "metadata": map[string]any{"tool_name": "context.generate"}},
+		{"asset_type": "agent_tool_call", "source_id": "22", "status": "queued", "metadata": map[string]any{"tool_name": "context.generate"}},
+	}
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "agent_task:10", "to_asset_id": "ai_runtime:30", "relation_type": "uses_runtime"},
+			map[string]any{"from_asset_id": "agent_task:10", "to_asset_id": "agent_tool_call:20", "relation_type": "records_tool_call"},
+			map[string]any{"from_asset_id": "agent_task:11", "to_asset_id": "agent_tool_call:21", "relation_type": "records_tool_call"},
+			map[string]any{"from_asset_id": "agent_task:12", "to_asset_id": "agent_tool_call:22", "relation_type": "records_tool_call"},
+			map[string]any{"from_asset_id": "operation_run:1", "to_asset_id": "agent_tool_call:20", "relation_type": "records_tool_call"},
+		},
+	}
+	got := countContextGraphLinks(assets, graph)
+	if got.TaskRuntimes != 1 || got.TaskContextToolCalls != 2 || got.CompleteContextTasks != 1 {
+		t.Fatalf("countContextGraphLinks = %#v, want one runtime, two context tool links, and one complete context task", got)
 	}
 }
 
