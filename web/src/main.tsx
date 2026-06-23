@@ -719,6 +719,22 @@ function countArgoGraphLinks(graph: AnyRow = {}) {
   return counts;
 }
 
+function countApprovalGraphLinks(graph: AnyRow = {}) {
+  return graphItems(graph, 'edges').reduce((counts, edge: AnyRow) => {
+    const relation = String(edge.relation_type || '');
+    const from = String(edge.from_asset_id || '');
+    const to = String(edge.to_asset_id || '');
+    if (relation === 'governs' && from.startsWith('operation_approval_rule:') && to.startsWith('operation_approval:')) {
+      counts.ruleApprovals += 1;
+    }
+    // Pending approvals can be ready before a gated operation exists; keep this as display/future execution evidence.
+    if (relation === 'gates_operation' && from.startsWith('operation_approval:') && to.startsWith('operation_run:')) {
+      counts.approvalOperations += 1;
+    }
+    return counts;
+  }, { ruleApprovals: 0, approvalOperations: 0 });
+}
+
 function graphPayloadAvailable(graph: AnyRow | null) {
   if (!graph) return false;
   return Object.prototype.hasOwnProperty.call(graph, 'nodes') || Object.prototype.hasOwnProperty.call(graph, 'edges');
@@ -739,6 +755,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const sshRuns = (operationCounts['ssh.exec'] || 0) + (operationCounts['ssh.command'] || 0);
   const approvalEvidence = Number(approvalSummary.total || 0);
   const pendingApprovalOps = operations.filter((row) => String(row.status || '') === 'pending_approval').length;
+  const approvalAssets = assetCounts.operation_approval || 0;
   const activeApprovalRules = countRowsByTypeStatus(assets, 'operation_approval_rule', 'active');
   const operationAssets = assetCounts.operation_run || 0;
   const listedOperationRuns = operations.length;
@@ -751,6 +768,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const githubActionLinks = countGitHubActionGraphLinks(graph);
   const sshGraphLinks = countSSHGraphLinks(graph);
   const argoGraphLinks = countArgoGraphLinks(graph);
+  const approvalGraphLinks = countApprovalGraphLinks(graph);
   const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.argo_app || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0) + argoGraphLinks.connectionApps + argoGraphLinks.appTargets;
   const graphNodes = graphItems(graph, 'nodes').length;
   const graphEdges = graphItems(graph, 'edges').length;
@@ -808,7 +826,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'approval',
       label: 'Enforce approval for high-risk operations',
       next: 'Queue a high-risk action that creates an approval request.',
-      ...readinessState((approvalEvidence > 0 || pendingApprovalOps > 0) && activeApprovalRules > 0, `${approvalEvidence} approvals / ${pendingApprovalOps} pending ops / ${activeApprovalRules} active rules`, approvalEvidence > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0)
+      ...readinessState(approvalAssets > 0 && activeApprovalRules > 0 && approvalGraphLinks.ruleApprovals > 0, `${approvalEvidence} approvals / ${approvalAssets} approval assets / ${pendingApprovalOps} pending ops / ${activeApprovalRules} active rules / ${approvalGraphLinks.ruleApprovals} governed approvals`, approvalEvidence > 0 || approvalAssets > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0 || approvalGraphLinks.ruleApprovals > 0)
     },
     {
       key: 'context',

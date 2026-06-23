@@ -633,6 +633,21 @@ func TestCountArgoGraphLinks(t *testing.T) {
 	}
 }
 
+func TestCountApprovalGraphLinks(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "operation_approval_rule:10", "to_asset_id": "operation_approval:20", "relation_type": "governs"},
+			map[string]any{"from_asset_id": "operation_approval:20", "to_asset_id": "operation_run:30", "relation_type": "gates_operation"},
+			map[string]any{"from_asset_id": "operation_approval_rule:11", "to_asset_id": "operation_run:31", "relation_type": "governs"},
+			map[string]any{"from_asset_id": "operation_approval:21", "to_asset_id": "operation_approval_rule:12", "relation_type": "gates_operation"},
+		},
+	}
+	got := countApprovalGraphLinks(graph)
+	if got.RuleApprovals != 1 || got.ApprovalOperations != 1 {
+		t.Fatalf("countApprovalGraphLinks = %#v, want one rule-approval and one approval-operation link", got)
+	}
+}
+
 func TestFirstVersionReadinessReportApprovalReadinessMatrix(t *testing.T) {
 	withoutSummary := firstVersionReadinessReport(nil, []map[string]any{
 		{"operation_type": "approval.notify", "status": "completed"},
@@ -642,21 +657,33 @@ func TestFirstVersionReadinessReportApprovalReadinessMatrix(t *testing.T) {
 	}
 
 	withSummary := firstVersionReadinessReport(nil, nil, map[string]any{"total": float64(1)})
-	if got := readinessByKey(t, withSummary, "approval"); got.Status != "partial" || got.Evidence != "1 approvals / 0 pending ops / 0 active rules" {
+	if got := readinessByKey(t, withSummary, "approval"); got.Status != "partial" || got.Evidence != "1 approvals / 0 approval assets / 0 pending ops / 0 active rules / 0 governed approvals" {
 		t.Fatalf("approval status from summary without rule = %#v, want partial with rule evidence", got)
 	}
 
 	withRule := firstVersionReadinessReport([]map[string]any{
 		{"asset_type": "operation_approval_rule", "status": "active"},
 	}, nil, map[string]any{"total": float64(1)})
-	if got := readinessByKey(t, withRule, "approval"); got.Status != "ready" || got.Evidence != "1 approvals / 0 pending ops / 1 active rules" {
-		t.Fatalf("approval status from summary and rule = %#v, want ready", got)
+	if got := readinessByKey(t, withRule, "approval"); got.Status != "partial" || got.Evidence != "1 approvals / 0 approval assets / 0 pending ops / 1 active rules / 0 governed approvals" {
+		t.Fatalf("approval status from summary and rule without graph = %#v, want partial", got)
+	}
+
+	withGovernedApproval := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "operation_approval", "status": "pending"},
+		{"asset_type": "operation_approval_rule", "status": "active"},
+	}, nil, map[string]any{"total": float64(1)}, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "operation_approval_rule:10", "to_asset_id": "operation_approval:20", "relation_type": "governs"},
+		},
+	})
+	if got := readinessByKey(t, withGovernedApproval, "approval"); got.Status != "ready" || got.Evidence != "1 approvals / 1 approval assets / 0 pending ops / 1 active rules / 1 governed approvals" {
+		t.Fatalf("approval status from governed approval asset and active rule = %#v, want ready", got)
 	}
 
 	ruleOnly := firstVersionReadinessReport([]map[string]any{
 		{"asset_type": "operation_approval_rule", "status": "active"},
 	}, nil, nil)
-	if got := readinessByKey(t, ruleOnly, "approval"); got.Status != "partial" || got.Evidence != "0 approvals / 0 pending ops / 1 active rules" {
+	if got := readinessByKey(t, ruleOnly, "approval"); got.Status != "partial" || got.Evidence != "0 approvals / 0 approval assets / 0 pending ops / 1 active rules / 0 governed approvals" {
 		t.Fatalf("approval status from rule without request evidence = %#v, want partial", got)
 	}
 }
@@ -672,20 +699,20 @@ func TestCountAPITypeStatus(t *testing.T) {
 	}
 }
 
-func TestFirstVersionReadinessReportUsesPendingApprovalOperation(t *testing.T) {
+func TestFirstVersionReadinessReportTreatsPendingApprovalOperationAsPartialEvidence(t *testing.T) {
 	report := firstVersionReadinessReport([]map[string]any{
 		{"asset_type": "operation_approval_rule", "status": "active"},
 	}, []map[string]any{
 		{"operation_type": "ssh.exec", "status": "pending_approval"},
 	}, nil)
-	if got := readinessByKey(t, report, "approval"); got.Status != "ready" || got.Evidence != "0 approvals / 1 pending ops / 1 active rules" {
-		t.Fatalf("approval status from pending operation and rule = %#v, want ready", got)
+	if got := readinessByKey(t, report, "approval"); got.Status != "partial" || got.Evidence != "0 approvals / 0 approval assets / 1 pending ops / 1 active rules / 0 governed approvals" {
+		t.Fatalf("approval status from pending operation and rule without graph = %#v, want partial", got)
 	}
 
 	withoutRule := firstVersionReadinessReport(nil, []map[string]any{
 		{"operation_type": "ssh.exec", "status": "pending_approval"},
 	}, nil)
-	if got := readinessByKey(t, withoutRule, "approval"); got.Status != "partial" || got.Evidence != "0 approvals / 1 pending ops / 0 active rules" {
+	if got := readinessByKey(t, withoutRule, "approval"); got.Status != "partial" || got.Evidence != "0 approvals / 0 approval assets / 1 pending ops / 0 active rules / 0 governed approvals" {
 		t.Fatalf("approval status from pending operation without rule = %#v, want partial", got)
 	}
 }
@@ -694,7 +721,7 @@ func TestFirstVersionReadinessReportIgnoresDisabledApprovalRules(t *testing.T) {
 	report := firstVersionReadinessReport([]map[string]any{
 		{"asset_type": "operation_approval_rule", "status": "disabled"},
 	}, nil, map[string]any{"total": float64(1)})
-	if got := readinessByKey(t, report, "approval"); got.Status != "partial" || got.Evidence != "1 approvals / 0 pending ops / 0 active rules" {
+	if got := readinessByKey(t, report, "approval"); got.Status != "partial" || got.Evidence != "1 approvals / 0 approval assets / 0 pending ops / 0 active rules / 0 governed approvals" {
 		t.Fatalf("approval status with disabled rule = %#v, want partial without active rule evidence", got)
 	}
 }
