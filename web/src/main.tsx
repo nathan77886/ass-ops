@@ -4593,9 +4593,15 @@ function ConfigPage() {
                     {podLogPreview.retrieval_plan ? <Tag>{podLogPreview.retrieval_plan.step_count || 0} retrieval steps</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan ? <Tag color="red">execute {podLogPreview.retrieval_plan.execution_plan.execution_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.approval_request_plan ? <Tag color="gold">approval {podLogPreview.retrieval_plan.execution_plan.approval_request_plan.request_state || 'blocked'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_binding_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.kubeconfig_binding_plan.binding_state === 'planned' ? 'gold' : 'red'}>kubeconfig {podLogPreview.retrieval_plan.execution_plan.kubeconfig_binding_plan.binding_state || 'blocked'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.pod_scope_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state === 'planned' ? 'gold' : 'red'}>scope {podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state || 'blocked'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.log_capture_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state === 'planned' ? 'gold' : 'red'}>capture {podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.secret_included ? 'secrets included' : 'no secrets'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_written ? 'result written' : 'no result write'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.recording_state || 'blocked'} recording</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.kubeconfig_binding_recorded ? 'kubeconfig recorded' : 'no kubeconfig record'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.pod_scope_recorded ? 'scope recorded' : 'no scope record'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.log_capture_recorded ? 'capture recorded' : 'no capture record'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.disabled_backends?.length || 0} disabled backends</Tag> : null}
                   </Space>
                   <JSONBlock value={podLogPreview} />

@@ -622,6 +622,99 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 			t.Fatalf("pod log execution suppressed_fields missing %q: %#v", field, executionPlan["suppressed_fields"])
 		}
 	}
+	kubeconfigPlan := mapFromAny(executionPlan["kubeconfig_binding_plan"])
+	if kubeconfigPlan["mode"] != "pod_log_kubeconfig_binding_plan" ||
+		kubeconfigPlan["kubeconfig_bound"] != false ||
+		kubeconfigPlan["kubernetes_client_created"] != false ||
+		kubeconfigPlan["token_subject_reviewed"] != false ||
+		kubeconfigPlan["external_call_made"] != false ||
+		kubeconfigPlan["contains_kubeconfig"] != false ||
+		kubeconfigPlan["contains_cluster_token"] != false ||
+		kubeconfigPlan["contains_authorization_header"] != false {
+		t.Fatalf("pod log kubeconfig binding plan should stay disabled and redacted: %#v", kubeconfigPlan)
+	}
+	if executionPlan["prerequisite_state"] == "metadata_available" && kubeconfigPlan["binding_state"] != "planned" {
+		t.Fatalf("metadata-ready kubeconfig binding plan should be planned: %#v", kubeconfigPlan)
+	}
+	if executionPlan["prerequisite_state"] != "metadata_available" && kubeconfigPlan["binding_state"] != "blocked" {
+		t.Fatalf("metadata-blocked kubeconfig binding plan should be blocked: %#v", kubeconfigPlan)
+	}
+	if !containsString(stringSliceFromAny(kubeconfigPlan["blocked_reasons"]), "kubeconfig_binding_not_performed") {
+		t.Fatalf("kubeconfig binding blocked reasons missing execution reason: %#v", kubeconfigPlan["blocked_reasons"])
+	}
+	for _, backend := range []string{"kubeconfig_binding", "kubernetes_client_create", "token_subject_review"} {
+		if !containsString(stringSliceFromAny(kubeconfigPlan["disabled_backends"]), backend) {
+			t.Fatalf("kubeconfig binding disabled backend missing %q: %#v", backend, kubeconfigPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key"} {
+		if !containsString(stringSliceFromAny(kubeconfigPlan["suppressed_fields"]), field) {
+			t.Fatalf("kubeconfig binding suppressed field missing %q: %#v", field, kubeconfigPlan["suppressed_fields"])
+		}
+	}
+	podScopePlan := mapFromAny(executionPlan["pod_scope_plan"])
+	if podScopePlan["mode"] != "pod_log_pod_scope_plan" ||
+		podScopePlan["target_scope_verified"] != false ||
+		podScopePlan["pod_identity_confirmed"] != false ||
+		podScopePlan["container_scope_confirmed"] != false ||
+		podScopePlan["external_call_made"] != false ||
+		podScopePlan["contains_pod_env"] != false ||
+		podScopePlan["contains_secret_env"] != false {
+		t.Fatalf("pod log scope plan should stay disabled and redacted: %#v", podScopePlan)
+	}
+	if executionPlan["prerequisite_state"] == "metadata_available" && podScopePlan["scope_state"] != "planned" {
+		t.Fatalf("metadata-ready pod scope plan should be planned: %#v", podScopePlan)
+	}
+	if executionPlan["prerequisite_state"] != "metadata_available" && podScopePlan["scope_state"] != "blocked" {
+		t.Fatalf("metadata-blocked pod scope plan should be blocked: %#v", podScopePlan)
+	}
+	if !containsString(stringSliceFromAny(podScopePlan["blocked_reasons"]), "pod_scope_not_verified") {
+		t.Fatalf("pod scope blocked reasons missing execution reason: %#v", podScopePlan["blocked_reasons"])
+	}
+	for _, backend := range []string{"kubernetes_pod_lookup", "argocd_pod_lookup"} {
+		if !containsString(stringSliceFromAny(podScopePlan["disabled_backends"]), backend) {
+			t.Fatalf("pod scope disabled backend missing %q: %#v", backend, podScopePlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"pod_env", "secret_env", "volume_secret", "owner_references", "pod_annotations"} {
+		if !containsString(stringSliceFromAny(podScopePlan["suppressed_fields"]), field) {
+			t.Fatalf("pod scope suppressed field missing %q: %#v", field, podScopePlan["suppressed_fields"])
+		}
+	}
+	logCapturePlan := mapFromAny(executionPlan["log_capture_plan"])
+	if logCapturePlan["mode"] != "pod_log_capture_plan" ||
+		logCapturePlan["kubernetes_api_call"] != false ||
+		logCapturePlan["argocd_api_call"] != false ||
+		logCapturePlan["kubectl_command_invoked"] != false ||
+		logCapturePlan["log_stream_opened"] != false ||
+		logCapturePlan["log_body_included"] != false ||
+		logCapturePlan["redacted_log_body_included"] != false ||
+		logCapturePlan["redaction_performed"] != false ||
+		logCapturePlan["external_call_made"] != false ||
+		logCapturePlan["contains_log_body"] != false ||
+		logCapturePlan["contains_redacted_log_body"] != false ||
+		logCapturePlan["contains_raw_response"] != false {
+		t.Fatalf("pod log capture plan should stay disabled and redacted: %#v", logCapturePlan)
+	}
+	if executionPlan["prerequisite_state"] == "metadata_available" && logCapturePlan["capture_state"] != "planned" {
+		t.Fatalf("metadata-ready log capture plan should be planned: %#v", logCapturePlan)
+	}
+	if executionPlan["prerequisite_state"] != "metadata_available" && logCapturePlan["capture_state"] != "blocked" {
+		t.Fatalf("metadata-blocked log capture plan should be blocked: %#v", logCapturePlan)
+	}
+	if !containsString(stringSliceFromAny(logCapturePlan["blocked_reasons"]), "pod_log_execution_not_performed") {
+		t.Fatalf("log capture blocked reasons missing execution reason: %#v", logCapturePlan["blocked_reasons"])
+	}
+	for _, backend := range []string{"kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "log_stream_result_write"} {
+		if !containsString(stringSliceFromAny(logCapturePlan["disabled_backends"]), backend) {
+			t.Fatalf("log capture disabled backend missing %q: %#v", backend, logCapturePlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"log_body", "redacted_log_body", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret"} {
+		if !containsString(stringSliceFromAny(logCapturePlan["suppressed_fields"]), field) {
+			t.Fatalf("log capture suppressed field missing %q: %#v", field, logCapturePlan["suppressed_fields"])
+		}
+	}
 	approvalPlan := mapFromAny(executionPlan["approval_request_plan"])
 	if approvalPlan["mode"] != "pod_log_approval_request_plan" ||
 		approvalPlan["request_ready"] != false ||
@@ -663,12 +756,15 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		resultPlan["operation_log_written"] != false ||
 		resultPlan["log_body_included"] != false ||
 		resultPlan["redacted_log_body_included"] != false ||
+		resultPlan["kubeconfig_binding_recorded"] != false ||
+		resultPlan["pod_scope_recorded"] != false ||
+		resultPlan["log_capture_recorded"] != false ||
 		resultPlan["raw_response_included"] != false ||
 		resultPlan["kubeconfig_included"] != false ||
 		resultPlan["authorization_header_included"] != false {
 		t.Fatalf("pod log result recording plan should keep all result flags false: %#v", resultPlan)
 	}
-	for _, field := range []string{"operation_run_id", "approval_request_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at", "redaction_status"} {
+	for _, field := range []string{"operation_run_id", "approval_request_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at", "kubeconfig_binding_status", "pod_scope_status", "log_capture_status", "redaction_status"} {
 		if !containsString(stringSliceFromAny(resultPlan["required_result_fields"]), field) {
 			t.Fatalf("pod log result required fields missing %q: %#v", field, resultPlan["required_result_fields"])
 		}

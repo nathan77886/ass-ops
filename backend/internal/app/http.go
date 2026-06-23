@@ -16408,8 +16408,116 @@ func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]an
 		"disabled_backends":             []string{"worker_claim", "kubeconfig_binding", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "log_stream_result_write"},
 		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret"},
 		"execution_sequence":            []string{"request_operation_approval", "bind_namespace_scoped_kubeconfig", "verify_target_scope", "confirm_pod_identity", "open_pod_log_stream", "redact_log_body", "record_sanitized_result"},
+		"kubeconfig_binding_plan":       argoPodLogKubeconfigBindingPlan(prerequisiteState, namespaceReady, clusterReady),
+		"pod_scope_plan":                argoPodLogPodScopePlan(query, target, prerequisiteState),
+		"log_capture_plan":              argoPodLogCapturePlan(prerequisiteState),
 		"result_recording_plan":         argoPodLogResultRecordingPlan(),
 		"message":                       "Pod log execution is a redacted plan only; no kubeconfig, Kubernetes/Argo call, log stream, or log body is produced.",
+	}
+}
+
+func argoPodLogKubeconfigBindingPlan(prerequisiteState string, namespaceReady, clusterReady bool) map[string]any {
+	bindingState := "blocked"
+	if prerequisiteState == "metadata_available" {
+		bindingState = "planned"
+	}
+	blockedReasons := []string{"kubeconfig_binding_not_performed"}
+	if !clusterReady {
+		blockedReasons = append(blockedReasons, "cluster_name_missing")
+	}
+	if !namespaceReady {
+		blockedReasons = append(blockedReasons, "namespace_missing")
+	}
+	return map[string]any{
+		"mode":                          "pod_log_kubeconfig_binding_plan",
+		"binding_state":                 bindingState,
+		"metadata_ready":                prerequisiteState == "metadata_available",
+		"namespace_scoped_required":     true,
+		"kubeconfig_bound":              false,
+		"kubernetes_client_created":     false,
+		"token_subject_reviewed":        false,
+		"external_call_made":            false,
+		"contains_kubeconfig":           false,
+		"contains_cluster_token":        false,
+		"contains_authorization_header": false,
+		"required_controls":             []string{"environment_review", "namespace_scoped_kubeconfig", "token_subject_review", "rbac_read_logs_review"},
+		"disabled_backends":             []string{"kubeconfig_binding", "kubernetes_client_create", "token_subject_review"},
+		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key"},
+		"blocked_reasons":               blockedReasons,
+		"execution_blockers":            []string{"kubeconfig_binding_not_approved", "kubeconfig_binding_not_performed"},
+		"message":                       "Kubeconfig binding is planned only; no kubeconfig, cluster token, client certificate, or Kubernetes client is created.",
+	}
+}
+
+func argoPodLogPodScopePlan(query, target map[string]any, prerequisiteState string) map[string]any {
+	podName := strings.TrimSpace(fmt.Sprint(query["pod_name"]))
+	containerName := strings.TrimSpace(fmt.Sprint(query["container_name"]))
+	namespaceReady := strings.TrimSpace(fmt.Sprint(target["namespace"])) != ""
+	clusterReady := strings.TrimSpace(fmt.Sprint(target["cluster_name"])) != ""
+	podReady := podName != ""
+	scopeState := "blocked"
+	if prerequisiteState == "metadata_available" {
+		scopeState = "planned"
+	}
+	blockedReasons := []string{"pod_scope_not_verified"}
+	if !clusterReady {
+		blockedReasons = append(blockedReasons, "cluster_name_missing")
+	}
+	if !namespaceReady {
+		blockedReasons = append(blockedReasons, "namespace_missing")
+	}
+	if !podReady {
+		blockedReasons = append(blockedReasons, "pod_name_missing")
+	}
+	return map[string]any{
+		"mode":                      "pod_log_pod_scope_plan",
+		"scope_state":               scopeState,
+		"metadata_ready":            prerequisiteState == "metadata_available",
+		"pod_name_present":          podReady,
+		"container_name_present":    containerName != "",
+		"default_container_allowed": containerName == "",
+		"target_scope_verified":     false,
+		"pod_identity_confirmed":    false,
+		"container_scope_confirmed": false,
+		"external_call_made":        false,
+		"contains_pod_env":          false,
+		"contains_secret_env":       false,
+		"required_controls":         []string{"namespace_confirmation", "pod_name_confirmation", "container_scope_confirmation", "operator_confirmation"},
+		"disabled_backends":         []string{"kubernetes_pod_lookup", "argocd_pod_lookup"},
+		"suppressed_fields":         []string{"pod_env", "secret_env", "volume_secret", "owner_references", "pod_annotations"},
+		"blocked_reasons":           blockedReasons,
+		"execution_blockers":        []string{"pod_scope_not_verified", "pod_identity_not_confirmed"},
+		"message":                   "Pod and container scope verification is planned only; no pod lookup, env, annotation, or secret material is read.",
+	}
+}
+
+func argoPodLogCapturePlan(prerequisiteState string) map[string]any {
+	captureState := "blocked"
+	if prerequisiteState == "metadata_available" {
+		captureState = "planned"
+	}
+	return map[string]any{
+		"mode":                       "pod_log_capture_plan",
+		"capture_state":              captureState,
+		"metadata_ready":             prerequisiteState == "metadata_available",
+		"kubernetes_api_call":        false,
+		"argocd_api_call":            false,
+		"kubectl_command_invoked":    false,
+		"log_stream_opened":          false,
+		"log_body_included":          false,
+		"redacted_log_body_included": false,
+		"redaction_performed":        false,
+		"result_write_planned":       captureState == "planned",
+		"external_call_made":         false,
+		"contains_log_body":          false,
+		"contains_redacted_log_body": false,
+		"contains_raw_response":      false,
+		"required_controls":          []string{"operation_approval", "log_line_redaction", "tail_limit_enforcement", "result_redaction_review"},
+		"disabled_backends":          []string{"kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "log_stream_result_write"},
+		"suppressed_fields":          []string{"log_body", "redacted_log_body", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret"},
+		"blocked_reasons":            []string{"pod_log_execution_not_performed", "log_stream_not_opened", "sanitized_log_result_not_recorded"},
+		"execution_blockers":         []string{"pod_log_backend_disabled", "log_stream_result_write_disabled"},
+		"message":                    "Pod log capture is planned only; no log stream, raw body, redacted body, Kubernetes response, or result row is produced.",
 	}
 }
 
@@ -16462,12 +16570,15 @@ func argoPodLogResultRecordingPlan() map[string]any {
 		"operation_log_written":         false,
 		"canonical_asset_sync_queued":   false,
 		"status_snapshot_written":       false,
+		"kubeconfig_binding_recorded":   false,
+		"pod_scope_recorded":            false,
+		"log_capture_recorded":          false,
 		"log_body_included":             false,
 		"redacted_log_body_included":    false,
 		"raw_response_included":         false,
 		"kubeconfig_included":           false,
 		"authorization_header_included": false,
-		"required_result_fields":        []string{"operation_run_id", "approval_request_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at", "redaction_status"},
+		"required_result_fields":        []string{"operation_run_id", "approval_request_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at", "kubeconfig_binding_status", "pod_scope_status", "log_capture_status", "redaction_status"},
 		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret", "raw_kubernetes_response"},
 		"blocked_reasons":               []string{"pod_log_execution_not_performed", "sanitized_log_result_not_recorded", "canonical_asset_sync_not_performed"},
 		"message":                       "Pod log results are not recorded by this preview; future execution must store sanitized metadata and explicitly reviewed redacted log content only.",
