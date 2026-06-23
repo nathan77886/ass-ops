@@ -1119,6 +1119,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptTransactionProviderCallBoundaryPlan = attemptTransactionPlan.provider_call_boundary_plan || {};
   const attemptInvocationPlan = attemptDispatchPlan.invocation_plan || {};
   const attemptInvocationPlanMode = typeof attemptInvocationPlan.mode === 'string' ? attemptInvocationPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter invocation plan';
+  const attemptInvocationExecutionLockPlan = attemptInvocationPlan.execution_lock_plan || {};
   const attemptInvocationProviderSendPlan = attemptInvocationPlan.provider_send_plan || {};
   const attemptInvocationRetryBackoffPlan = attemptInvocationProviderSendPlan.retry_backoff_plan || {};
   const attemptInvocationSequence = Array.isArray(attemptInvocationPlan.invocation_sequence) ? attemptInvocationPlan.invocation_sequence : [];
@@ -1532,6 +1533,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           </Tag>
           <Tag>{String(attemptInvocationPlan.invocation_ready_reason || 'provider_api_invocation_not_armed')}</Tag>
           <Tag>steps {attemptInvocationSequence.length}</Tag>
+          <Tag>lock {String(attemptInvocationExecutionLockPlan.execution_lock_state ?? 'blocked')}</Tag>
           <Tag>send {String(attemptInvocationProviderSendPlan.provider_send_state ?? 'blocked')}</Tag>
           <Tag>retry {String(attemptInvocationRetryBackoffPlan.retry_backoff_state ?? 'blocked')}</Tag>
           <Tag>{attemptInvocationPlan.provider_api_call_made === true ? 'api called' : 'no api call'}</Tag>

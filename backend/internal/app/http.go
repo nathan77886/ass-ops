@@ -11197,6 +11197,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 	if operationName == "" || endpointKey == "" {
 		return map[string]any{}
 	}
+	executionLockPlan := providerReviewAttemptAdapterExecutionLockPlan(operation, claimPlan, transactionPlan)
 	providerSendPlan := providerReviewAttemptAdapterProviderSendPlan(operation, requestPlan, credentialPlan, runtimePlan, transportPlan)
 	return map[string]any{
 		"mode":                              "redacted_attempt_adapter_invocation_plan",
@@ -11206,10 +11207,12 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"operation_name":                    operationName,
 		"endpoint_key":                      endpointKey,
 		"operation_order":                   intFromAny(operation["operation_order"], 0),
-		"invocation_sequence":               []string{"claim_attempt", "claim_idempotency", "bind_credential", "select_adapter_runtime", "materialize_request", "send_provider_request", "record_response", "record_transaction_boundary", "unlock_dependency"},
-		"required_subplans":                 []string{"claim_plan", "credential_binding_plan", "adapter_runtime_plan", "request_materialization_plan", "transport_plan", "provider_send_plan", "response_plan", "transaction_plan"},
+		"invocation_sequence":               []string{"claim_attempt", "claim_idempotency", "claim_execution_lock", "bind_credential", "select_adapter_runtime", "materialize_request", "send_provider_request", "record_response", "record_transaction_boundary", "unlock_dependency"},
+		"required_subplans":                 []string{"claim_plan", "execution_lock_plan", "credential_binding_plan", "adapter_runtime_plan", "request_materialization_plan", "transport_plan", "provider_send_plan", "response_plan", "transaction_plan"},
+		"execution_lock_plan":               executionLockPlan,
 		"provider_send_plan":                providerSendPlan,
 		"claim_metadata_ready":              boolOnlyFromAny(claimPlan["claim_metadata_ready"]),
+		"execution_lock_metadata_ready":     boolOnlyFromAny(executionLockPlan["execution_lock_metadata_ready"]),
 		"credential_binding_ready":          boolOnlyFromAny(credentialPlan["credential_binding_ready"]),
 		"adapter_runtime_ready":             boolOnlyFromAny(runtimePlan["runtime_ready"]),
 		"request_materialization_ready":     boolOnlyFromAny(requestPlan["request_materialization_ready"]),
@@ -11218,12 +11221,14 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"response_recording_ready":          boolOnlyFromAny(responsePlan["response_recording_ready"]),
 		"transaction_metadata_ready":        boolOnlyFromAny(transactionPlan["transaction_metadata_ready"]),
 		"claim_metadata_ready_reason":       providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(claimPlan["claim_metadata_ready"]), "provider_review_claim_metadata_not_ready"),
+		"execution_lock_ready_reason":       stringFromMap(executionLockPlan, "execution_lock_metadata_ready_reason"),
 		"adapter_runtime_ready_reason":      providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(runtimePlan["runtime_ready"]), "provider_review_adapter_runtime_not_ready"),
 		"transport_metadata_ready_reason":   providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(transportPlan["transport_ready"]), "provider_review_transport_metadata_not_ready"),
 		"provider_send_ready_reason":        providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(providerSendPlan["provider_send_metadata_ready"]), "provider_request_send_not_armed"),
 		"transaction_metadata_ready_reason": providerReviewAttemptInvocationReadyReason(boolOnlyFromAny(transactionPlan["transaction_metadata_ready"]), "provider_review_transaction_metadata_not_ready"),
 		"requires_attempt_claim":            true,
 		"requires_idempotency_claim":        true,
+		"requires_execution_lock":           true,
 		"requires_credential_binding":       true,
 		"requires_adapter_runtime":          true,
 		"requires_request_materialization":  true,
@@ -11233,6 +11238,8 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"requires_mutation_arming":          true,
 		"attempt_claim_recorded":            false,
 		"idempotency_claim_recorded":        false,
+		"execution_lock_acquired":           false,
+		"duplicate_send_detected":           false,
 		"credential_bound":                  false,
 		"adapter_runtime_bound":             false,
 		"request_materialized":              false,
@@ -11259,6 +11266,7 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 		"invocation_boundary_redacted":      true,
 		"blocked_reasons": []string{
 			"provider_review_attempt_claim_not_recorded",
+			"provider_review_execution_lock_not_acquired",
 			"provider_credential_runtime_binding_not_armed",
 			"provider_review_adapter_runtime_not_bound",
 			"provider_request_not_materialized",
@@ -11268,6 +11276,88 @@ func providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPla
 			"provider_review_mutation_not_armed",
 		},
 	}
+}
+
+func providerReviewAttemptAdapterExecutionLockPlan(operation, claimPlan, transactionPlan map[string]any) map[string]any {
+	if len(operation) == 0 {
+		return map[string]any{}
+	}
+	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+	if operationName == "" || endpointKey == "" {
+		return map[string]any{}
+	}
+	claimMetadataReady := boolOnlyFromAny(claimPlan["claim_metadata_ready"])
+	transactionMetadataReady := boolOnlyFromAny(transactionPlan["transaction_metadata_ready"])
+	metadataReady := claimMetadataReady && transactionMetadataReady
+	return map[string]any{
+		"mode":                                  "redacted_attempt_adapter_execution_lock_plan",
+		"execution_lock_state":                  "blocked",
+		"execution_lock_ready":                  false,
+		"execution_lock_ready_reason":           "provider_review_execution_lock_not_armed",
+		"execution_lock_metadata_ready":         metadataReady,
+		"execution_lock_metadata_ready_reason":  providerReviewAttemptExecutionLockMetadataReadyReason(claimMetadataReady, transactionMetadataReady),
+		"operation_name":                        operationName,
+		"endpoint_key":                          endpointKey,
+		"operation_order":                       intFromAny(operation["operation_order"], 0),
+		"claim_status_from":                     "planned",
+		"claim_status_to":                       "running",
+		"lock_scope":                            "provider_review_attempt_operation",
+		"lock_key_kind":                         "attempt_operation_hash",
+		"duplicate_send_policy":                 "block_duplicate_provider_send",
+		"stale_running_policy":                  "manual_recovery_required",
+		"requires_database_transaction":         true,
+		"requires_attempt_claim":                true,
+		"requires_attempt_status_planned":       true,
+		"requires_dependency_ready":             true,
+		"requires_optimistic_lock":              true,
+		"requires_idempotency_claim":            true,
+		"requires_mutation_arming":              true,
+		"claim_metadata_ready":                  claimMetadataReady,
+		"transaction_metadata_ready":            transactionMetadataReady,
+		"attempt_claim_recorded":                false,
+		"idempotency_claim_recorded":            false,
+		"execution_lock_acquired":               false,
+		"optimistic_lock_verified":              false,
+		"duplicate_send_detected":               false,
+		"stale_running_recovered":               false,
+		"provider_request_sent":                 false,
+		"external_call_made":                    false,
+		"provider_api_call_made":                false,
+		"provider_api_mutation":                 "disabled",
+		"request_body_included":                 false,
+		"response_body_included":                false,
+		"headers_included":                      false,
+		"authorization_header_included":         false,
+		"provider_url_included":                 false,
+		"idempotency_key_included":              false,
+		"provider_request_id_included":          false,
+		"contains_token":                        false,
+		"contains_provider_url":                 false,
+		"contains_repository_ref":               false,
+		"contains_branch_name":                  false,
+		"contains_file_content":                 false,
+		"execution_lock_boundary_redacted":      true,
+		"execution_lock_sequence":               []string{"verify_attempt_status_planned", "verify_dependency_ready", "claim_attempt_running", "claim_idempotency_scope", "mark_duplicate_send_guard", "release_lock_after_transaction"},
+		"execution_lock_suppressed_fields":      []string{"lock_key", "idempotency_key", "provider_request_id", "provider_url", "authorization_header", "token", "repository_ref", "branch_name", "file_content"},
+		"execution_lock_transaction_boundaries": []string{"claim_attempt_start", "duplicate_send_guard", "provider_call_boundary", "attempt_status_update"},
+		"blocked_reasons": []string{
+			"provider_review_execution_lock_not_armed",
+			"provider_review_attempt_claim_not_recorded",
+			"provider_idempotency_ledger_not_claimed",
+			"provider_review_mutation_not_armed",
+		},
+	}
+}
+
+func providerReviewAttemptExecutionLockMetadataReadyReason(claimMetadataReady, transactionMetadataReady bool) string {
+	if !claimMetadataReady {
+		return "provider_review_execution_lock_claim_metadata_not_ready"
+	}
+	if !transactionMetadataReady {
+		return "provider_review_execution_lock_transaction_metadata_not_ready"
+	}
+	return "ready"
 }
 
 func providerReviewAttemptAdapterProviderSendPlan(operation, requestPlan, credentialPlan, runtimePlan, transportPlan map[string]any) map[string]any {
