@@ -696,6 +696,7 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}) {
   const repositoriesWithProject: Record<string, boolean> = {};
   const remoteRepositories: Record<string, Record<string, boolean>> = {};
   const remoteActionRuns: Record<string, Record<string, boolean>> = {};
+  const taggedRemoteOps: Record<string, Record<string, boolean>> = {};
   const addRemoteRepository = (remoteID: string, repositoryID: string) => {
     remoteRepositories[remoteID] ??= {};
     remoteRepositories[remoteID][repositoryID] = true;
@@ -703,6 +704,10 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}) {
   const addRemoteActionRun = (remoteID: string, actionID: string) => {
     remoteActionRuns[remoteID] ??= {};
     remoteActionRuns[remoteID][actionID] = true;
+  };
+  const addTaggedRemoteOp = (remoteID: string, operationID: string) => {
+    taggedRemoteOps[remoteID] ??= {};
+    taggedRemoteOps[remoteID][operationID] = true;
   };
   const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
     const relation = String(edge.relation_type || '');
@@ -720,11 +725,20 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}) {
       nextCounts.remoteActionRuns += 1;
       addRemoteActionRun(from, to);
     }
+    const tagStatus = String(edge.metadata?.status || '').trim().toLowerCase();
+    if (relation === 'tagged_remote' && from.startsWith('operation_run:') && to.startsWith('git_remote:') && ['completed', 'succeeded', 'success'].includes(tagStatus)) {
+      nextCounts.taggedRemotes += 1;
+      addTaggedRemoteOp(to, from);
+    }
     return nextCounts;
-  }, { projectRepositories: 0, repositoryRemotes: 0, remoteActionRuns: 0, completeActionRuns: 0 });
+  }, { projectRepositories: 0, repositoryRemotes: 0, remoteActionRuns: 0, taggedRemotes: 0, completeActionRuns: 0, completeTaggedRemotes: 0 });
   counts.completeActionRuns = Object.entries(remoteActionRuns).reduce((total, [remoteID, actionRuns]) => {
     const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
     return hasProjectRepository ? total + Object.keys(actionRuns).length : total;
+  }, 0);
+  counts.completeTaggedRemotes = Object.entries(taggedRemoteOps).reduce((total, [remoteID, operations]) => {
+    const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
+    return hasProjectRepository ? total + Object.keys(operations).length : total;
   }, 0);
   return counts;
 }
@@ -854,6 +868,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const repoSyncGraphLinks = countRepoSyncGraphLinks(graph);
   const webhookSyncGraphLinks = countWebhookSyncGraphLinks(graph);
   const githubActionLinks = countGitHubActionGraphLinks(graph);
+  const repoTagRuns = (operationCounts['repo.tag'] || 0) + (operationCounts['repo.create_tag'] || 0);
   const sshGraphLinks = countSSHGraphLinks(graph);
   const argoGraphLinks = countArgoGraphLinks(graph);
   const approvalGraphLinks = countApprovalGraphLinks(graph);
@@ -890,9 +905,9 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
     },
     {
       key: 'github_actions',
-      label: 'See GitHub Actions state',
-      next: 'Sync GitHub Actions for the mirror remote or receive workflow_run webhooks.',
-      ...readinessState((assetCounts.pipeline_run || 0) > 0 && githubActionLinks.completeActionRuns > 0, `${assetCounts.pipeline_run || 0} pipeline runs / ${githubActionLinks.completeActionRuns} complete action chains / ${githubActionLinks.projectRepositories} project links / ${githubActionLinks.repositoryRemotes} remote links / ${githubActionLinks.remoteActionRuns} action links`, (assetCounts.pipeline_run || 0) > 0 || githubActionLinks.projectRepositories > 0 || githubActionLinks.repositoryRemotes > 0 || githubActionLinks.remoteActionRuns > 0)
+      label: 'See GitHub tags and Actions state',
+      next: 'Create a repository tag and sync GitHub Actions for the mirror remote or receive workflow_run webhooks.',
+      ...readinessState((assetCounts.pipeline_run || 0) > 0 && githubActionLinks.completeActionRuns > 0 && repoTagRuns > 0 && githubActionLinks.completeTaggedRemotes > 0, `${assetCounts.pipeline_run || 0} pipeline runs / ${githubActionLinks.completeActionRuns} complete action chains / ${repoTagRuns} tag ops / ${githubActionLinks.completeTaggedRemotes} complete tag links / ${githubActionLinks.projectRepositories} project links / ${githubActionLinks.repositoryRemotes} remote links / ${githubActionLinks.remoteActionRuns} action links / ${githubActionLinks.taggedRemotes} tag links`, (assetCounts.pipeline_run || 0) > 0 || repoTagRuns > 0 || githubActionLinks.projectRepositories > 0 || githubActionLinks.repositoryRemotes > 0 || githubActionLinks.remoteActionRuns > 0 || githubActionLinks.taggedRemotes > 0)
     },
     {
       key: 'ssh',

@@ -32,7 +32,7 @@ The Dashboard and `assops-tool project readiness` now use the same first-version
 - Repository attachment: same repository linked from project to at least two Git remotes.
 - RepoSyncAsset: repository-to-sync, sync-to-source-remote, and sync-to-target-remote graph links.
 - Manual and webhook sync: Gitea webhook connection and event linked through the same RepoSyncAsset and operation run.
-- GitHub Actions: project-to-repository-to-remote-to-action-run graph chain.
+- GitHub Tag and Actions: project-to-repository-to-remote-to-action-run graph chain plus completed/succeeded/success tag operation linked to a project-owned remote.
 - SSH audit: host asset evidence, first-class `ssh.verify` operation evidence, SSH command operation evidence, and at least two operation-to-command-run-to-machine graph audit chains plus command-run asset evidence.
 - Argo deployment view: connection-to-app-to-target graph chain plus sync-operation evidence.
 - Operation history: canonical operation-run asset plus operation log evidence.
@@ -49,7 +49,7 @@ The latest Notion MVP execution page narrows the first version to nine concrete 
 | --- | --- | --- |
 | 1. Create project and record multi-repository/multi-remote structure | `projects`, `project_git_repositories`, and `git_remotes` tables exist; gateway exposes project, repository, and remote CRUD; web project detail supports repository and remote entry. | Needs real environment demo data that proves one logical repository with multiple remotes through the graph-backed readiness gate. |
 | 2. Multi-address sync | RepoSyncAsset lifecycle, repository sync, remote sync, Gitea webhook intake, replay, and repo sync run history exist. | Provider-level Gitea/GitHub callback rehearsal still needs a public staging hostname; provider-pair thresholds still need real-volume tuning. |
-| 3. GitHub Tag and Actions | `repo_tag_runs`, repository/remote tag routes, GitHub Actions list/sync routes, worker support, and web controls exist. | Tag readiness is not yet represented as a first-version gate, and remote-specific tag success still needs environment rehearsal against real GitHub remotes. |
+| 3. GitHub Tag and Actions | `repo_tag_runs`, repository/remote tag routes, GitHub Actions list/sync routes, worker support, web controls, and the first-version GitHub readiness gate now require both a graph-backed GitHub Actions chain and a completed repository tag linked to a project-owned remote. | Remote-specific tag success still needs environment rehearsal against real GitHub remotes. |
 | 4. Config repository | Logical repositories have `repo_role`, `config` can be modeled as a ProjectGitRepository, Project Detail has a config-repository initializer for `envs/dev|test|prod`, and ProjectVersion manifest items can record `config_commit_sha` for config repositories. | Still needs real Git file scaffolding for `envs/dev|test|prod` and live commit validation against the config remote. |
 | 5. Version manifest | `project_versions` table exists, gateway exposes create/list/get ProjectVersion APIs, Project Detail can create/list manifest metadata with repo/remote/tag/SHA/config-SHA/action-run/revision entries, canonical assets link ProjectVersion to its project/repositories/remotes, and a synced-state validation preview checks manifest refs against local remote/tag/Actions/Argo observations without external calls. | Still needs real provider refresh before validation: live Git fetch/ref verification, GitHub Actions API refresh, and Argo app refresh/revision binding from live state. |
 | 6. Argo service sync and pod logs | Argo connection create/list, app sync, deployment targets, deployment records, rollback points, operation logs, and read-only pod log query preview with target/pod/container/tail controls exist. | Real pod/container log retrieval is still disabled: no kubeconfig binding, no Kubernetes/Argo log API call, and no returned log body. |
@@ -219,7 +219,7 @@ For a first version aligned with the Notion scope, the project should be able to
 2. Attach source and mirror repositories as assets.
 3. Define a RepoSyncAsset between them.
 4. Trigger sync manually and from a Gitea webhook.
-5. See GitHub Actions state tied back to the repository/project.
+5. See GitHub tag and Actions state tied back to the repository/project.
 6. Register SSH machines and run controlled commands with audit output.
 7. Sync Argo apps and see their deployment target relationship to the project.
 8. View operation history and logs.
