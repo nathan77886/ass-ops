@@ -1300,6 +1300,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	argoEvidence := assetCounts["argo_connection"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"]
 	approvalEvidence := intFromAPI(approvals["total"])
 	pendingApprovalOps := countAPIStatus(operations, "pending_approval")
+	activeApprovalRules := countAPITypeStatus(assets, "operation_approval_rule", "active")
 	operationRuns := max(assetCounts["operation_run"], len(operations))
 	operationLogs := countOperationRowsWithLogs(operations)
 	contextEvidence := assetCounts["agent_task"] + assetCounts["ai_runtime"]
@@ -1316,7 +1317,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		readinessItem("ssh", "Register SSH machines and audited commands", "Register an SSH machine and run an approval-gated command.", assetCounts["host"] > 0 && sshRuns > 0, fmt.Sprintf("%d hosts / %d commands", assetCounts["host"], sshRuns), assetCounts["host"] > 0 || sshRuns > 0),
 		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0, fmt.Sprintf("%d targets / %d Argo connections / %d sync ops", assetCounts["deployment_target"], assetCounts["argo_connection"], operationCounts["argo.apps.sync"]), argoEvidence > 0),
 		readinessItem("operations", "View operation history and logs", "Run any controlled operation and inspect its logs.", operationRuns > 0 && operationLogs > 0, fmt.Sprintf("%d runs / %d with logs", operationRuns, operationLogs), operationRuns > 0),
-		readinessItem("approval", "Enforce approval for high-risk operations", "Queue a high-risk action that creates an approval request.", approvalEvidence > 0 || pendingApprovalOps > 0, fmt.Sprintf("%d approvals / %d pending ops", approvalEvidence, pendingApprovalOps), approvalEvidence > 0 || pendingApprovalOps > 0),
+		readinessItem("approval", "Enforce approval for high-risk operations", "Queue a high-risk action that creates an approval request.", (approvalEvidence > 0 || pendingApprovalOps > 0) && activeApprovalRules > 0, fmt.Sprintf("%d approvals / %d pending ops / %d active rules", approvalEvidence, pendingApprovalOps, activeApprovalRules), approvalEvidence > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0),
 		readinessItem("context", "Generate AI-readable context from graph", "Create an agent task or AI runtime after syncing the canonical asset ledger.", contextEvidence > 0 && graphEvidence > 0, fmt.Sprintf("%d context assets / %d graph nodes / %d graph edges", contextEvidence, graphNodes, graphEdges), contextEvidence > 0 || graphEvidence > 0),
 	}
 
@@ -1404,6 +1405,16 @@ func countAPIStatus(rows []map[string]any, status string) int {
 	count := 0
 	for _, row := range rows {
 		if fmt.Sprint(row["status"]) == status {
+			count++
+		}
+	}
+	return count
+}
+
+func countAPITypeStatus(rows []map[string]any, typ, status string) int {
+	count := 0
+	for _, row := range rows {
+		if fmt.Sprint(row["asset_type"]) == typ && fmt.Sprint(row["status"]) == status {
 			count++
 		}
 	}

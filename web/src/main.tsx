@@ -571,6 +571,10 @@ function countOperationRowsWithLogs(rows: AnyRow[] = []) {
   return rows.filter((row) => Number(row.log_count || 0) > 0).length;
 }
 
+function countRowsByTypeStatus(rows: AnyRow[] = [], type: string, status: string) {
+  return rows.filter((row) => String(row.asset_type || '') === type && String(row.status || '') === status).length;
+}
+
 function graphItems(graph: AnyRow = {}, key: string) {
   return Array.isArray(graph[key]) ? graph[key] : [];
 }
@@ -595,6 +599,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0);
   const approvalEvidence = Number(approvalSummary.total || 0);
   const pendingApprovalOps = operations.filter((row) => String(row.status || '') === 'pending_approval').length;
+  const activeApprovalRules = countRowsByTypeStatus(assets, 'operation_approval_rule', 'active');
   const operationRuns = Math.max(assetCounts.operation_run || 0, operations.length);
   const operationLogs = countOperationRowsWithLogs(operations);
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
@@ -654,7 +659,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'approval',
       label: 'Enforce approval for high-risk operations',
       next: 'Queue a high-risk action that creates an approval request.',
-      ...readinessState(approvalEvidence > 0 || pendingApprovalOps > 0, `${approvalEvidence} approvals / ${pendingApprovalOps} pending ops`, approvalEvidence > 0 || pendingApprovalOps > 0)
+      ...readinessState((approvalEvidence > 0 || pendingApprovalOps > 0) && activeApprovalRules > 0, `${approvalEvidence} approvals / ${pendingApprovalOps} pending ops / ${activeApprovalRules} active rules`, approvalEvidence > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0)
     },
     {
       key: 'context',
