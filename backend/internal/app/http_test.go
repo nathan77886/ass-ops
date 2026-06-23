@@ -213,6 +213,101 @@ func TestRollbackExecutionPlanReadOnly(t *testing.T) {
 	}
 }
 
+func TestRollbackExecutionPlanMatchesSQLPreviewContract(t *testing.T) {
+	sql := rollbackPointReadinessSQL(20)
+	plan := rollbackExecutionPlan("previewable", "read_only_preview")
+	for _, tt := range []struct {
+		name  string
+		value string
+	}{
+		{"mode", "redacted_rollback_execution_plan"},
+		{"plan_state", "blocked"},
+		{"plan_ready_reason", "rollback_execution_backend_disabled"},
+		{"execution_mode", "read_only_preview"},
+		{"approval_action", "deployment.rollback"},
+		{"rollback_mutation", "disabled"},
+	} {
+		if plan[tt.name] != tt.value {
+			t.Fatalf("rollbackExecutionPlan[%s] = %#v, want %q", tt.name, plan[tt.name], tt.value)
+		}
+		if !strings.Contains(sql, fmt.Sprintf("'%s', '%s'", tt.name, tt.value)) {
+			t.Fatalf("rollbackPointReadinessSQL missing %s=%s", tt.name, tt.value)
+		}
+	}
+	for _, name := range []string{
+		"plan_ready",
+		"execution_enabled",
+		"rollback_request_materialized",
+		"revision_verified",
+		"manifest_diff_rendered",
+		"dry_run_performed",
+		"kubernetes_client_constructed",
+		"helm_rollback_invoked",
+		"kubectl_rollout_invoked",
+		"argocd_rollback_invoked",
+		"rollback_started",
+		"external_call_made",
+		"kubernetes_api_call_made",
+		"helm_command_invoked",
+		"kubeconfig_included",
+		"secret_included",
+		"manifest_body_included",
+		"helm_values_included",
+		"cluster_credential_included",
+		"revision_value_included",
+		"contains_token",
+		"contains_kubeconfig",
+		"contains_secret",
+		"contains_manifest_body",
+	} {
+		if plan[name] != false {
+			t.Fatalf("rollbackExecutionPlan[%s] = %#v, want false", name, plan[name])
+		}
+		if !strings.Contains(sql, fmt.Sprintf("'%s', false", name)) {
+			t.Fatalf("rollbackPointReadinessSQL missing %s=false", name)
+		}
+	}
+	for _, name := range []string{
+		"requires_approval",
+		"requires_environment_review",
+		"requires_kubeconfig_binding",
+		"requires_revision_verification",
+		"requires_manifest_diff",
+		"requires_dry_run_preflight",
+		"requires_operator_confirmation",
+		"rollback_boundary_redacted",
+	} {
+		if plan[name] != true {
+			t.Fatalf("rollbackExecutionPlan[%s] = %#v, want true", name, plan[name])
+		}
+		if !strings.Contains(sql, fmt.Sprintf("'%s', true", name)) {
+			t.Fatalf("rollbackPointReadinessSQL missing %s=true", name)
+		}
+	}
+	for _, tt := range []struct {
+		name string
+		want []string
+	}{
+		{"blocked_reasons", []string{"rollback_execution_backend_disabled", "rollback_mutation_not_armed"}},
+		{"required_controls", []string{"operation_approval", "environment_review", "kubeconfig_binding", "revision_verification", "manifest_diff", "server_side_dry_run", "operator_confirmation"}},
+		{"disabled_backends", []string{"helm_rollback", "kubectl_rollout_undo", "argocd_rollback", "rollback_execute"}},
+		{"suppressed_fields", []string{"kubeconfig", "cluster_token", "authorization_header", "secret_manifest", "rendered_manifest", "helm_values", "image_pull_secret", "environment_secret", "revision_value"}},
+		{"execution_sequence", []string{"request_approval", "bind_environment", "bind_kubeconfig", "verify_revision", "render_manifest_diff", "run_server_side_dry_run", "record_rollback_audit", "start_rollback"}},
+	} {
+		got := stringSliceFromAny(plan[tt.name])
+		if !slices.Equal(got, tt.want) {
+			t.Fatalf("rollbackExecutionPlan[%s] = %#v, want %#v", tt.name, got, tt.want)
+		}
+		expectedSQL := fmt.Sprintf("'%s', jsonb_build_array('%s')", tt.name, strings.Join(tt.want, "', '"))
+		if !strings.Contains(sql, expectedSQL) {
+			t.Fatalf("rollbackPointReadinessSQL missing %s array contract", tt.name)
+		}
+	}
+	if !strings.Contains(sql, "THEN 'metadata_available' ELSE 'metadata_blocked' END") {
+		t.Fatal("rollbackPointReadinessSQL missing prerequisite-state readiness mapping")
+	}
+}
+
 func TestRollbackGuardrailSummary(t *testing.T) {
 	empty := rollbackGuardrailSummary(nil)
 	if empty["execution_enabled"] != false || empty["execution_mode"] != "read_only_preview" || empty["total"] != 0 {

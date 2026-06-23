@@ -14109,6 +14109,8 @@ func rollbackPointReadinessSQL(limit int) string {
 	if limit <= 0 {
 		limit = 20
 	}
+	// Keep rollback_execution_plan in sync with rollbackExecutionPlan; tests lock
+	// the redacted preview contract because this SQL feeds API/context surfaces.
 	return fmt.Sprintf(`
 		SELECT rp.*,
 			dt.name AS deployment_target_name,
