@@ -2320,7 +2320,12 @@ func (s *Server) getProjectVersionValidation(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "could not load Argo connections")
 		return
 	}
-	writeJSON(w, http.StatusOK, projectVersionValidationPreview(version, remotes, tagRuns, actionRuns, argoApps, argoConnections))
+	refreshOperations, err := queryProjectVersionRefreshOperations(r.Context(), s.store.DB, fmt.Sprint(version["id"]))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load project version refresh operations")
+		return
+	}
+	writeJSON(w, http.StatusOK, projectVersionValidationPreview(version, remotes, tagRuns, actionRuns, argoApps, argoConnections, refreshOperations))
 }
 
 func (s *Server) refreshProjectVersionProviders(w http.ResponseWriter, r *http.Request) {
@@ -2523,6 +2528,20 @@ func sanitizedProjectVersionRefreshStep(step map[string]any) map[string]any {
 		"remote_key": step["remote_key"],
 		"reason":     step["reason"],
 	}
+}
+
+func queryProjectVersionRefreshOperations(ctx context.Context, db sqlx.ExtContext, versionID string) ([]map[string]any, error) {
+	versionID = strings.TrimSpace(versionID)
+	if versionID == "" || versionID == "<nil>" {
+		return nil, nil
+	}
+	return queryMaps(ctx, db, `
+		SELECT id, operation_type, status, error, input, started_at, finished_at, created_at, updated_at
+		FROM operation_runs
+		WHERE input->>'project_version_id'=$1
+			AND operation_type IN ('git.refs.refresh', 'github.actions.sync', 'argo.apps.sync')
+		ORDER BY created_at DESC
+		LIMIT 50`, versionID)
 }
 
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -7019,7 +7038,13 @@ func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, a
 	if len(argoConnections) > 0 {
 		argoConnectionRows = argoConnections[0]
 	}
+	var refreshOperationRows []map[string]any
+	if len(argoConnections) > 1 {
+		refreshOperationRows = argoConnections[1]
+	}
+	refreshSummary := projectVersionRefreshResultSummary(refreshOperationRows)
 	refreshPlan := projectVersionProviderRefreshPlan(repositories, remotes, argoConnectionRows)
+	attachProjectVersionRefreshResultSummary(refreshPlan, refreshSummary)
 	overall := "blocked"
 	switch {
 	case len(items) > 0 && blocked == 0 && partial == 0:
@@ -7028,22 +7053,206 @@ func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, a
 		overall = "partial"
 	}
 	return map[string]any{
-		"version_id":              version["id"],
-		"version":                 version["version"],
-		"mode":                    "synced_state_validation_preview",
-		"validation_state":        overall,
-		"external_call_made":      false,
-		"provider_api_called":     false,
-		"git_fetch_performed":     false,
-		"argocd_api_called":       false,
-		"validation_source":       "local_synced_database_state",
-		"repository_count":        len(items),
-		"ready_count":             ready,
-		"partial_count":           partial,
-		"blocked_count":           blocked,
-		"items":                   items,
-		"provider_refresh_plan":   refreshPlan,
-		"required_live_rehearsal": stringSliceFromAny(refreshPlan["required_live_rehearsal"]),
+		"version_id":                      version["id"],
+		"version":                         version["version"],
+		"mode":                            "synced_state_validation_preview",
+		"validation_state":                overall,
+		"external_call_made":              false,
+		"provider_api_called":             false,
+		"git_fetch_performed":             false,
+		"argocd_api_called":               false,
+		"validation_source":               "local_synced_database_state",
+		"repository_count":                len(items),
+		"ready_count":                     ready,
+		"partial_count":                   partial,
+		"blocked_count":                   blocked,
+		"items":                           items,
+		"provider_refresh_plan":           refreshPlan,
+		"provider_refresh_result_summary": refreshSummary,
+		"required_live_rehearsal":         stringSliceFromAny(refreshPlan["required_live_rehearsal"]),
+	}
+}
+
+func projectVersionRefreshResultSummary(operations []map[string]any) map[string]any {
+	statusCounts := map[string]any{}
+	kindCounts := map[string]any{}
+	kinds := []string{}
+	items := make([]map[string]any, 0, len(operations))
+	queued, running, completed, failed, canceled := 0, 0, 0, 0, 0
+	for _, operation := range operations {
+		status := strings.TrimSpace(fmt.Sprint(operation["status"]))
+		if status == "" || status == "<nil>" {
+			status = "unknown"
+		}
+		input := mapFromAny(operation["input"])
+		refreshKind := strings.TrimSpace(fmt.Sprint(input["refresh_kind"]))
+		if refreshKind == "" || refreshKind == "<nil>" {
+			refreshKind = strings.TrimSpace(fmt.Sprint(operation["operation_type"]))
+		}
+		if refreshKind == "" || refreshKind == "<nil>" {
+			refreshKind = "unknown"
+		}
+		if !stringInSlice(kinds, refreshKind) {
+			kinds = append(kinds, refreshKind)
+		}
+		perKindCounts := mapFromAny(kindCounts[refreshKind])
+		if len(perKindCounts) == 0 {
+			perKindCounts = map[string]any{}
+			kindCounts[refreshKind] = perKindCounts
+		}
+		statusCounts[status] = intFromAny(statusCounts[status], 0) + 1
+		perKindCounts[status] = intFromAny(perKindCounts[status], 0) + 1
+		switch status {
+		case "queued":
+			queued++
+		case "running":
+			running++
+		case "completed":
+			completed++
+		case "failed":
+			failed++
+		case "canceled":
+			canceled++
+		}
+		item := map[string]any{
+			"operation_run_id":      operation["id"],
+			"operation_type":        operation["operation_type"],
+			"refresh_kind":          refreshKind,
+			"status":                status,
+			"started_at":            operation["started_at"],
+			"finished_at":           operation["finished_at"],
+			"created_at":            operation["created_at"],
+			"updated_at":            operation["updated_at"],
+			"raw_response_included": false,
+			"secret_included":       false,
+		}
+		if status == "failed" {
+			item["error_recorded"] = cleanOptionalText(fmt.Sprint(operation["error"])) != ""
+		}
+		items = append(items, item)
+	}
+	operationCount := len(operations)
+	terminalCount := completed + failed + canceled
+	activeCount := queued + running
+	rerunStatus := "not_requested"
+	if operationCount > 0 {
+		rerunStatus = "waiting_for_workers"
+		if activeCount == 0 && failed == 0 && canceled == 0 {
+			rerunStatus = "recorded"
+		} else if activeCount == 0 && failed > 0 {
+			rerunStatus = "refresh_failed"
+		} else if activeCount == 0 && canceled > 0 {
+			rerunStatus = "refresh_canceled"
+		}
+	}
+	return map[string]any{
+		"mode":                      "project_version_refresh_result_summary",
+		"operation_count":           operationCount,
+		"queued_count":              queued,
+		"running_count":             running,
+		"completed_count":           completed,
+		"failed_count":              failed,
+		"canceled_count":            canceled,
+		"active_count":              activeCount,
+		"terminal_count":            terminalCount,
+		"validation_rerun_status":   rerunStatus,
+		"validation_rerun_recorded": rerunStatus == "recorded",
+		"has_refresh_failures":      failed > 0,
+		"has_refresh_cancellations": canceled > 0,
+		"refresh_kinds":             kinds,
+		"status_counts":             statusCounts,
+		"status_counts_by_kind":     kindCounts,
+		"items":                     items,
+		"raw_response_included":     false,
+		"secret_included":           false,
+		"suppressed_fields":         []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
+	}
+}
+
+func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summary map[string]any) {
+	if refreshPlan == nil || summary == nil {
+		return
+	}
+	refreshPlan["result_summary"] = summary
+	executionPlan := mapFromAny(refreshPlan["execution_plan"])
+	if len(executionPlan) == 0 {
+		return
+	}
+	operationCount := intFromAny(summary["operation_count"], 0)
+	validationRecorded := summary["validation_rerun_recorded"] == true
+	executionPlan["operation_enqueued"] = operationCount > 0
+	executionPlan["worker_job_created"] = operationCount > 0
+	executionPlan["validation_reopened"] = validationRecorded
+	executionPlan["refresh_result_summary"] = summary
+	if resultPlan := mapFromAny(executionPlan["result_recording_plan"]); len(resultPlan) > 0 {
+		resultPlan["result_recording_state"] = projectVersionRefreshResultRecordingState(summary)
+		resultPlan["result_recording_ready"] = operationCount > 0
+		resultPlan["result_recording_ready_reason"] = projectVersionRefreshResultRecordingReason(summary)
+		resultPlan["recording_enabled"] = operationCount > 0
+		resultPlan["result_written"] = operationCount > 0
+		resultPlan["operation_log_written"] = operationCount > 0
+		resultPlan["canonical_asset_sync_queued"] = operationCount > 0
+		resultPlan["status_snapshot_written"] = operationCount > 0
+		resultPlan["validation_rerun_recorded"] = validationRecorded
+		resultPlan["git_ref_fetch_result_recorded"] = projectVersionRefreshKindObserved(summary, "git_ref_fetch")
+		resultPlan["github_actions_result_recorded"] = projectVersionRefreshKindObserved(summary, "github_actions_api_refresh")
+		resultPlan["argo_revision_result_recorded"] = projectVersionRefreshKindObserved(summary, "argocd_app_refresh")
+		resultPlan["refresh_result_summary"] = summary
+		resultPlan["blocked_reasons"] = projectVersionRefreshResultBlockedReasons(summary)
+	}
+}
+
+func projectVersionRefreshResultRecordingState(summary map[string]any) string {
+	switch strings.TrimSpace(fmt.Sprint(summary["validation_rerun_status"])) {
+	case "recorded":
+		return "recorded"
+	case "waiting_for_workers":
+		return "waiting"
+	case "refresh_failed":
+		return "failed"
+	case "refresh_canceled":
+		return "canceled"
+	default:
+		return "blocked"
+	}
+}
+
+func projectVersionRefreshResultRecordingReason(summary map[string]any) string {
+	switch strings.TrimSpace(fmt.Sprint(summary["validation_rerun_status"])) {
+	case "recorded":
+		return "validation_rerun_recorded"
+	case "waiting_for_workers":
+		return "refresh_workers_still_running"
+	case "refresh_failed":
+		return "refresh_worker_failed"
+	case "refresh_canceled":
+		return "refresh_worker_canceled"
+	default:
+		return "provider_refresh_execution_not_performed"
+	}
+}
+
+func projectVersionRefreshKindObserved(summary map[string]any, kind string) bool {
+	counts := mapFromAny(mapFromAny(summary["status_counts_by_kind"])[kind])
+	total := 0
+	for _, value := range counts {
+		total += intFromAny(value, 0)
+	}
+	return total > 0
+}
+
+func projectVersionRefreshResultBlockedReasons(summary map[string]any) []string {
+	switch strings.TrimSpace(fmt.Sprint(summary["validation_rerun_status"])) {
+	case "recorded":
+		return []string{}
+	case "waiting_for_workers":
+		return []string{"refresh_workers_still_running"}
+	case "refresh_failed":
+		return []string{"refresh_worker_failed"}
+	case "refresh_canceled":
+		return []string{"refresh_worker_canceled"}
+	default:
+		return []string{"provider_refresh_execution_not_performed", "synced_state_write_not_performed", "validation_rerun_not_performed"}
 	}
 }
 

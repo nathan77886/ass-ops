@@ -2303,6 +2303,166 @@ func TestProjectVersionValidationPreviewReportsPartialAndBlockedChecks(t *testin
 	assertProviderRefreshExecutionPlanSafe(t, executionPlan)
 }
 
+func TestProjectVersionValidationPreviewIncludesRefreshResultSummary(t *testing.T) {
+	preview := projectVersionValidationPreview(
+		map[string]any{
+			"id":      "version-1",
+			"version": "v0.1.0",
+			"metadata": map[string]any{"repositories": []any{
+				map[string]any{"repo_key": "service", "remote_id": "remote-1", "commit_sha": "abc123", "github_action_run_id": "run-1"},
+			}},
+		},
+		[]map[string]any{{"id": "remote-1", "provider_type": "github", "latest_sha": "abc123"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		[]map[string]any{
+			{"id": "op-git", "operation_type": "git.refs.refresh", "status": "completed", "input": map[string]any{"refresh_kind": "git_ref_fetch"}},
+			{"id": "op-actions", "operation_type": "github.actions.sync", "status": "running", "input": map[string]any{"refresh_kind": "github_actions_api_refresh"}},
+		},
+	)
+	summary := mapFromAny(preview["provider_refresh_result_summary"])
+	if summary["mode"] != "project_version_refresh_result_summary" ||
+		summary["operation_count"] != 2 ||
+		summary["completed_count"] != 1 ||
+		summary["running_count"] != 1 ||
+		summary["active_count"] != 1 ||
+		summary["validation_rerun_status"] != "waiting_for_workers" ||
+		summary["validation_rerun_recorded"] != false ||
+		summary["raw_response_included"] != false ||
+		summary["secret_included"] != false {
+		t.Fatalf("refresh result summary = %#v", summary)
+	}
+	refreshPlan := mapFromAny(preview["provider_refresh_plan"])
+	executionPlan := mapFromAny(refreshPlan["execution_plan"])
+	if executionPlan["operation_enqueued"] != true ||
+		executionPlan["worker_job_created"] != true ||
+		executionPlan["validation_reopened"] != false {
+		t.Fatalf("refresh execution plan did not reflect observed operations: %#v", executionPlan)
+	}
+	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
+	if resultPlan["result_recording_state"] != "waiting" ||
+		resultPlan["result_recording_ready"] != true ||
+		resultPlan["result_written"] != true ||
+		resultPlan["git_ref_fetch_result_recorded"] != true ||
+		resultPlan["github_actions_result_recorded"] != true ||
+		resultPlan["validation_rerun_recorded"] != false ||
+		!containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), "refresh_workers_still_running") {
+		t.Fatalf("refresh result recording plan = %#v", resultPlan)
+	}
+	encoded, _ := json.Marshal(preview)
+	for _, forbidden := range []string{"secret-token", "Bearer secret", "https://token@", "raw_provider_response\":true", "raw_git_output\":\""} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("refresh summary leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestProjectVersionRefreshResultSummaryRecordsValidationRerunWhenTerminal(t *testing.T) {
+	summary := projectVersionRefreshResultSummary([]map[string]any{
+		{"id": "op-git", "operation_type": "git.refs.refresh", "status": "completed", "input": map[string]any{"refresh_kind": "git_ref_fetch"}},
+		{"id": "op-actions", "operation_type": "github.actions.sync", "status": "completed", "input": map[string]any{"refresh_kind": "github_actions_api_refresh"}},
+	})
+	if summary["validation_rerun_status"] != "recorded" ||
+		summary["validation_rerun_recorded"] != true ||
+		summary["terminal_count"] != 2 ||
+		summary["active_count"] != 0 ||
+		summary["has_refresh_failures"] != false {
+		t.Fatalf("terminal refresh summary = %#v", summary)
+	}
+	if reasons := projectVersionRefreshResultBlockedReasons(summary); len(reasons) != 0 {
+		t.Fatalf("terminal refresh summary should not have blocked reasons: %#v", reasons)
+	}
+}
+
+func TestProjectVersionRefreshResultSummaryReportsFailures(t *testing.T) {
+	summary := projectVersionRefreshResultSummary([]map[string]any{
+		{"id": "op-git", "operation_type": "git.refs.refresh", "status": "failed", "error": "sanitized failure", "input": map[string]any{"refresh_kind": "git_ref_fetch"}},
+	})
+	if summary["validation_rerun_status"] != "refresh_failed" ||
+		summary["validation_rerun_recorded"] != false ||
+		summary["failed_count"] != 1 ||
+		summary["has_refresh_failures"] != true {
+		t.Fatalf("failed refresh summary = %#v", summary)
+	}
+	if !containsString(projectVersionRefreshResultBlockedReasons(summary), "refresh_worker_failed") {
+		t.Fatalf("failed refresh summary should report refresh_worker_failed: %#v", summary)
+	}
+	items := sliceOfMapsFromAny(summary["items"])
+	if len(items) != 1 || items[0]["error_recorded"] != true || items[0]["raw_response_included"] != false {
+		t.Fatalf("failed refresh item = %#v", items)
+	}
+}
+
+func TestProjectVersionRefreshResultSummaryStatusCombinations(t *testing.T) {
+	tests := []struct {
+		name         string
+		statuses     []string
+		wantStatus   string
+		wantReason   string
+		wantState    string
+		wantActive   int
+		wantFailed   bool
+		wantCanceled int
+	}{
+		{
+			name:       "queued only waits",
+			statuses:   []string{"queued"},
+			wantStatus: "waiting_for_workers",
+			wantReason: "refresh_workers_still_running",
+			wantState:  "waiting",
+			wantActive: 1,
+		},
+		{
+			name:         "canceled only is not failed",
+			statuses:     []string{"canceled"},
+			wantStatus:   "refresh_canceled",
+			wantReason:   "refresh_worker_canceled",
+			wantState:    "canceled",
+			wantCanceled: 1,
+		},
+		{
+			name:       "running and failed still waits",
+			statuses:   []string{"running", "failed"},
+			wantStatus: "waiting_for_workers",
+			wantReason: "refresh_workers_still_running",
+			wantState:  "waiting",
+			wantActive: 1,
+			wantFailed: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			operations := make([]map[string]any, 0, len(tt.statuses))
+			for index, status := range tt.statuses {
+				operations = append(operations, map[string]any{
+					"id":             fmt.Sprintf("op-%d", index),
+					"operation_type": "git.refs.refresh",
+					"status":         status,
+					"input":          map[string]any{"refresh_kind": "git_ref_fetch"},
+				})
+			}
+			summary := projectVersionRefreshResultSummary(operations)
+			if summary["validation_rerun_status"] != tt.wantStatus ||
+				intFromAny(summary["active_count"], 0) != tt.wantActive ||
+				intFromAny(summary["canceled_count"], 0) != tt.wantCanceled ||
+				summary["has_refresh_failures"] != tt.wantFailed {
+				t.Fatalf("summary = %#v", summary)
+			}
+			if got := projectVersionRefreshResultRecordingState(summary); got != tt.wantState {
+				t.Fatalf("recording state = %q, want %q", got, tt.wantState)
+			}
+			if got := projectVersionRefreshResultRecordingReason(summary); got != tt.wantReason {
+				t.Fatalf("recording reason = %q, want %q", got, tt.wantReason)
+			}
+			if !containsString(projectVersionRefreshResultBlockedReasons(summary), tt.wantReason) {
+				t.Fatalf("blocked reasons missing %q: %#v", tt.wantReason, projectVersionRefreshResultBlockedReasons(summary))
+			}
+		})
+	}
+}
+
 func TestProjectVersionProviderRefreshExecutionPlanBlocked(t *testing.T) {
 	refreshPlan := projectVersionProviderRefreshPlan(
 		[]map[string]any{
@@ -2622,6 +2782,10 @@ func TestGetProjectVersionValidationHandlerScopesQueries(t *testing.T) {
 	mock.ExpectQuery(`(?s)SELECT id, name, last_sync_status\s+FROM argo_connections\s+WHERE project_id=\$1\s+ORDER BY updated_at DESC\s+LIMIT 100`).
 		WithArgs("project-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "last_sync_status"}))
+	mock.ExpectQuery(`(?s)SELECT id, operation_type, status, error, input, started_at, finished_at, created_at, updated_at\s+FROM operation_runs\s+WHERE input->>'project_version_id'=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "error", "input", "started_at", "finished_at", "created_at", "updated_at"}).
+			AddRow("op-git", "git.refs.refresh", "completed", "", []byte(`{"refresh_kind":"git_ref_fetch"}`), time.Now(), time.Now(), time.Now(), time.Now()))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/project-versions/version-1/validation", nil)
 	req = withRouteParam(req, "id", "version-1")
@@ -2639,6 +2803,10 @@ func TestGetProjectVersionValidationHandlerScopesQueries(t *testing.T) {
 	}
 	if payload["mode"] != "synced_state_validation_preview" || payload["external_call_made"] != false || payload["validation_state"] != "ready" {
 		t.Fatalf("validation payload = %#v", payload)
+	}
+	summary := mapFromAny(payload["provider_refresh_result_summary"])
+	if summary["operation_count"] != float64(1) || summary["validation_rerun_recorded"] != true {
+		t.Fatalf("validation refresh result summary = %#v", summary)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
