@@ -164,6 +164,33 @@ Minimum first-version rehearsal record:
 
 GitHub Actions also includes `.github/workflows/restore-rehearsal.yml`, a weekly and manual scheduled rehearsal that runs the same backup and disposable restore flow against temporary runner databases and uploads the JSON report as a short-retention artifact. Treat it as a drift detector for the backup tooling; it does not replace an environment-specific rehearsal against retained production backups.
 
+For artifact-based retained production backups, `.github/workflows/production-retained-backup.yml` provides a protected publication path. It can be run manually and also has a weekly schedule that is disabled by default. Configure the protected GitHub environment with:
+
+- `ASSOPS_ACTIVE_DATABASE_URL`: active production database URL used by `assops-tool db backup-retain`; if the URL includes a password, `assops-tool` strips it from the `pg_dump` command-line argument and passes it through `PGPASSWORD`.
+- `ASSOPS_ACTIVE_DATABASE_PASSWORD`: optional password passed through `PGPASSWORD` when the URL omits a password.
+
+Run the backup publication workflow manually before enabling the schedule:
+
+```bash
+gh workflow run production-retained-backup.yml \
+  -f github_environment=production \
+  -f runner=ubuntu-latest \
+  -f artifact_name=retained-assops-backup \
+  -f retention_days=14 \
+  -f keep_count=3
+```
+
+The workflow validates its inputs, uses a concurrency group per GitHub environment, disables shell tracing before calling `assops-tool db backup-retain`, stages exactly one `assops-*.dump`, rejects `.env`, kubeconfig, log, key, and PEM-like files, and uploads a private repository artifact. It does not restore data, delete remote artifacts, publish to external storage, encrypt the dump before upload, or bypass GitHub artifact size limits. Use an external environment-owned path or encrypted storage publication for large databases or stricter data-handling requirements.
+
+Set these repository variables only after the protected environment, runner reachability, and manual backup publication run have been reviewed:
+
+- `ASSOPS_PRODUCTION_RETAINED_BACKUP_ENABLED=true`
+- `ASSOPS_PRODUCTION_RETAINED_BACKUP_ENVIRONMENT=production`
+- `ASSOPS_PRODUCTION_RETAINED_BACKUP_RUNNER=ubuntu-latest`
+- `ASSOPS_PRODUCTION_RETAINED_BACKUP_ARTIFACT=retained-assops-backup`
+- `ASSOPS_PRODUCTION_RETAINED_BACKUP_RETENTION_DAYS=14`
+- `ASSOPS_PRODUCTION_RETAINED_BACKUP_KEEP_COUNT=3`
+
 For retained environment backups, `.github/workflows/production-restore-rehearsal.yml` provides a protected rehearsal path. It can be run manually and also has a weekly schedule that is disabled by default. Configure a GitHub environment such as `production` with:
 
 - `ASSOPS_REHEARSAL_DATABASE_URL`: URL of a pre-created disposable restore database whose name includes `rehearsal`, `restore`, `test`, `tmp`, `scratch`, or `disposable`.
@@ -205,7 +232,7 @@ assops-tool release backup-schedule-plan \
   /backups/release-notes/backup-schedule-plan.md
 ```
 
-The generated plan includes the required environment secrets, a retained-backup publication contract, a one-time `gh workflow run production-restore-rehearsal.yml` manual dispatch check, and the scheduled configuration values. The publication contract is intentionally offline: it says the rehearsal workflow consumes exactly one retained `assops-*.dump` from an environment-owned backup job or read-only mounted store, records non-secret timestamp/source/retention/checksum metadata, and must not create, rotate, delete, overwrite, or publish retained backups itself. For artifact sources, the workflow also rejects artifacts that do not contain exactly one dump or that include `.env`, kubeconfig, log, key, or PEM-like files. Enable the scheduled trigger only after the manual dispatch succeeds against the chosen retained backup source.
+The generated plan includes the required environment secrets, a retained-backup publication contract, a one-time `gh workflow run production-restore-rehearsal.yml` manual dispatch check, and the scheduled configuration values. The publication contract is intentionally offline: it says the rehearsal workflow consumes exactly one retained `assops-*.dump` from either the default-off production retained backup artifact workflow, another environment-owned backup job, or a read-only mounted store, records non-secret timestamp/source/retention/checksum metadata when the producer supports it, and must not create, rotate, delete, overwrite, or publish retained backups itself. For artifact sources, the restore rehearsal workflow also rejects artifacts that do not contain exactly one dump or that include `.env`, kubeconfig, log, key, or PEM-like files. Enable the scheduled trigger only after the manual dispatch succeeds against the chosen retained backup source.
 
 Set these repository variables to enable the scheduled path:
 

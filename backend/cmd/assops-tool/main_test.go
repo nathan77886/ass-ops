@@ -346,6 +346,9 @@ func TestReleaseBackupSchedulePlanForArtifactSource(t *testing.T) {
 		"Retained Backup Publication Contract",
 		"Publication must be produced by the environment-owned retained backup job",
 		"must contain exactly one `assops-*.dump` backup",
+		"production-retained-backup.yml",
+		"raw `pg_dump` custom-format file",
+		"external storage, additional encryption, and large-database handling remain environment-owned",
 		"must stay unexpired for at least `14 days`",
 		"do not include `.env`, database URLs, kubeconfigs, or raw logs",
 		"The checked-in schedule is `17 3 * * 1`",
@@ -395,7 +398,7 @@ func TestProductionRestoreRehearsalWorkflowValidatesArtifactContents(t *testing.
 	source := string(content)
 	for _, want := range []string{
 		"Retained backup artifact must contain exactly one assops-*.dump file",
-		"-iname '.env'",
+		"-iname '.env*'",
 		"-iname '*kubeconfig*'",
 		"-iname '*.log'",
 		"-iname '*.key'",
@@ -404,6 +407,51 @@ func TestProductionRestoreRehearsalWorkflowValidatesArtifactContents(t *testing.
 	} {
 		if !strings.Contains(source, want) {
 			t.Fatalf("production restore rehearsal workflow missing %q", want)
+		}
+	}
+}
+
+func TestProductionRetainedBackupWorkflowGuardrails(t *testing.T) {
+	content, err := os.ReadFile("../../../.github/workflows/production-retained-backup.yml")
+	if err != nil {
+		t.Fatalf("read production retained backup workflow: %v", err)
+	}
+	source := string(content)
+	for _, want := range []string{
+		"ASSOPS_PRODUCTION_RETAINED_BACKUP_ENABLED == 'true'",
+		"production-retained-backup-${{",
+		"cancel-in-progress: false",
+		"name: ${{ github.event_name == 'workflow_dispatch' && inputs.github_environment || vars.ASSOPS_PRODUCTION_RETAINED_BACKUP_ENVIRONMENT || 'production' }}",
+		"DATABASE_URL: ${{ secrets.ASSOPS_ACTIVE_DATABASE_URL }}",
+		"PGPASSWORD: ${{ secrets.ASSOPS_ACTIVE_DATABASE_PASSWORD }}",
+		"ASSOPS_ACTIVE_DATABASE_URL environment secret is required",
+		"set +x",
+		"bin/assops-tool db backup-retain .assops/retained-backups \"$INPUT_KEEP_COUNT\"",
+		"Retained backup artifact must contain exactly one assops-*.dump file",
+		"-iname '.env*'",
+		"-iname '*kubeconfig*'",
+		"-iname '*.log'",
+		"-iname '*.key'",
+		"-iname '*.pem'",
+		"No database URL, password, kubeconfig, or raw log files are written to the artifact staging directory.",
+		"actions/upload-artifact@v4",
+		"retention-days: ${{ env.INPUT_RETENTION_DAYS }}",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("production retained backup workflow missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"pg_dump -Fc",
+		"pg_dump --file",
+		"/tmp/assops-backup-retain.json",
+		"cat /tmp/assops-backup-retain.json",
+		"echo \"$DATABASE_URL\"",
+		"echo $DATABASE_URL",
+		"ASSOPS_ACTIVE_DATABASE_URL=",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("production retained backup workflow contains forbidden pattern %q", forbidden)
 		}
 	}
 }
@@ -515,6 +563,20 @@ func TestSanitizeCommandOutput(t *testing.T) {
 	got := sanitizeCommandOutput("failed postgres://assops:secret@db/assops password secret", []string{"postgres://assops:secret@db/assops", "secret"})
 	if strings.Contains(got, "secret") || strings.Contains(got, "postgres://assops:secret@db/assops") {
 		t.Fatalf("output leaked secret: %q", got)
+	}
+}
+
+func TestBackupAndRestoreCommandsUseNoPasswordPrompt(t *testing.T) {
+	content, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read assops-tool main.go: %v", err)
+	}
+	source := string(content)
+	if got := strings.Count(source, `"pg_dump", "-Fc", "--no-owner", "--no-password", "--file"`); got < 2 {
+		t.Fatalf("backup pg_dump commands should use --no-password, found %d guarded invocations", got)
+	}
+	if got := strings.Count(source, `"pg_restore", "--clean", "--if-exists", "--no-owner", "--no-password", "--dbname"`); got < 2 {
+		t.Fatalf("restore pg_restore commands should use --no-password, found %d guarded invocations", got)
 	}
 }
 

@@ -146,7 +146,7 @@ jobs:
             exit 1
           fi
           if find .assops/input-backup -type f \( \
-            -iname '.env' -o \
+            -iname '.env*' -o \
             -iname '*.env' -o \
             -iname '*kubeconfig*' -o \
             -iname '*.kubeconfig' -o \

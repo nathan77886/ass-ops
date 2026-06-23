@@ -180,7 +180,7 @@ func runDBCommand(cfg app.Config, args []string) error {
 		if err != nil {
 			return err
 		}
-		return runExternalDBTool(ctx, env, secrets, "pg_dump", "-Fc", "--no-owner", "--file", args[1], dbURL)
+		return runExternalDBTool(ctx, env, secrets, "pg_dump", "-Fc", "--no-owner", "--no-password", "--file", args[1], dbURL)
 	case "backup-retain":
 		if len(args) != 3 {
 			return usage()
@@ -205,7 +205,7 @@ func runDBCommand(cfg app.Config, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := runExternalDBTool(ctx, env, secrets, "pg_dump", "-Fc", "--no-owner", "--file", backupPath, dbURL); err != nil {
+		if err := runExternalDBTool(ctx, env, secrets, "pg_dump", "-Fc", "--no-owner", "--no-password", "--file", backupPath, dbURL); err != nil {
 			_ = os.Remove(backupPath)
 			return err
 		}
@@ -230,7 +230,7 @@ func runDBCommand(cfg app.Config, args []string) error {
 		if err != nil {
 			return err
 		}
-		return runExternalDBTool(ctx, env, secrets, "pg_restore", "--clean", "--if-exists", "--no-owner", "--dbname", dbURL, args[1])
+		return runExternalDBTool(ctx, env, secrets, "pg_restore", "--clean", "--if-exists", "--no-owner", "--no-password", "--dbname", dbURL, args[1])
 	case "rehearse-restore":
 		if len(args) != 3 && len(args) != 4 {
 			return usage()
@@ -257,7 +257,7 @@ func rehearseRestore(ctx context.Context, cfg app.Config, backupPath, targetData
 	if err != nil {
 		return err
 	}
-	restoreOutput, err := runExternalDBToolOutput(ctx, env, secrets, "pg_restore", "--clean", "--if-exists", "--no-owner", "--dbname", targetDBURL, backupPath)
+	restoreOutput, err := runExternalDBToolOutput(ctx, env, secrets, "pg_restore", "--clean", "--if-exists", "--no-owner", "--no-password", "--dbname", targetDBURL, backupPath)
 	if err != nil {
 		return err
 	}
@@ -506,6 +506,8 @@ func releaseBackupSchedulePlan(repo, environment, runner, cronExpr, backupSource
 	fmt.Fprintf(&b, "- Publication metadata must record the backup timestamp, source environment, retention window, and checksum location without embedding database URLs or credentials.\n")
 	fmt.Fprintf(&b, "- The rehearsal workflow is a consumer only; it must not create, rotate, delete, or overwrite retained backups.\n")
 	if sourceKind == "artifact" {
+		fmt.Fprintf(&b, "- The checked-in `.github/workflows/production-retained-backup.yml` workflow can publish artifact `%s`, but it is disabled until the protected environment secrets, runner, artifact retention, and repository variable gate are configured.\n", sourceValue)
+		fmt.Fprintf(&b, "- GitHub artifact publication uploads a raw `pg_dump` custom-format file to private repository Actions storage; external storage, additional encryption, and large-database handling remain environment-owned.\n")
 		fmt.Fprintf(&b, "- Artifact `%s` must stay unexpired for at least `%d days` and remain private to repository Actions readers until the rehearsal report is attached to release notes.\n", sourceValue, retention)
 		fmt.Fprintf(&b, "- The artifact producer should upload only the dump and non-secret manifest/checksum metadata; do not include `.env`, database URLs, kubeconfigs, or raw logs.\n\n")
 	} else {

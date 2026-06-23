@@ -1,0 +1,154 @@
+name: Production Retained Backup Artifact
+
+on:
+  schedule:
+    # Disabled by default unless ASSOPS_PRODUCTION_RETAINED_BACKUP_ENABLED=true
+    # is configured at the repository/environment variable layer.
+    - cron: "47 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      github_environment:
+        description: GitHub environment that stores active database backup secrets
+        required: true
+        default: production
+        type: string
+      runner:
+        description: Runner label that is allowed to reach the active database
+        required: true
+        default: ubuntu-latest
+        type: string
+      artifact_name:
+        description: Artifact name consumed by production-restore-rehearsal.yml
+        required: true
+        default: retained-assops-backup
+        type: string
+      retention_days:
+        description: Days to retain the private retained backup artifact
+        required: true
+        default: 14
+        type: number
+      keep_count:
+        description: Local retained backup files to keep during this workflow run
+        required: true
+        default: 3
+        type: number
+
+permissions:
+  contents: read
+  actions: write
+
+# This workflow uploads a raw pg_dump custom-format backup to private GitHub
+# Actions artifact storage. Large databases, additional encryption, external
+# storage publication, and mounted-path retention remain environment-owned.
+concurrency:
+  group: production-retained-backup-${{ github.event_name == 'workflow_dispatch' && inputs.github_environment || vars.ASSOPS_PRODUCTION_RETAINED_BACKUP_ENVIRONMENT || 'production' }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Production Retained Backup Artifact
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.ASSOPS_PRODUCTION_RETAINED_BACKUP_ENABLED == 'true' }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || vars.ASSOPS_PRODUCTION_RETAINED_BACKUP_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    environment:
+      name: ${{ github.event_name == 'workflow_dispatch' && inputs.github_environment || vars.ASSOPS_PRODUCTION_RETAINED_BACKUP_ENVIRONMENT || 'production' }}
+    env:
+      DATABASE_URL: ${{ secrets.ASSOPS_ACTIVE_DATABASE_URL }}
+      PGPASSWORD: ${{ secrets.ASSOPS_ACTIVE_DATABASE_PASSWORD }}
+      INPUT_ARTIFACT_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_name || vars.ASSOPS_PRODUCTION_RETAINED_BACKUP_ARTIFACT || 'retained-assops-backup' }}
+      INPUT_RETENTION_DAYS: ${{ github.event_name == 'workflow_dispatch' && inputs.retention_days || vars.ASSOPS_PRODUCTION_RETAINED_BACKUP_RETENTION_DAYS || '14' }}
+      INPUT_KEEP_COUNT: ${{ github.event_name == 'workflow_dispatch' && inputs.keep_count || vars.ASSOPS_PRODUCTION_RETAINED_BACKUP_KEEP_COUNT || '3' }}
+      STAGING_DIR: .assops/retained-artifact
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 || sudo apt-get install -y postgresql-client
+          pg_dump --version
+
+      - name: Build assops-tool
+        run: |
+          mkdir -p bin .assops/retained-backups "$STAGING_DIR"
+          go build -trimpath -o bin/assops-tool ./backend/cmd/assops-tool
+
+      - name: Validate backup inputs
+        run: |
+          test -n "$DATABASE_URL" || (echo "ASSOPS_ACTIVE_DATABASE_URL environment secret is required" && exit 1)
+          case "$INPUT_ARTIFACT_NAME" in
+            ""|*[!A-Za-z0-9._-]*)
+              echo "artifact_name must contain only letters, numbers, dot, underscore, or hyphen"
+              exit 1
+              ;;
+          esac
+          case "$INPUT_RETENTION_DAYS" in
+            ""|*[!0-9]*)
+              echo "retention_days must be a number"
+              exit 1
+              ;;
+          esac
+          if [ "$INPUT_RETENTION_DAYS" -lt 1 ] || [ "$INPUT_RETENTION_DAYS" -gt 90 ]; then
+            echo "retention_days must be between 1 and 90"
+            exit 1
+          fi
+          case "$INPUT_KEEP_COUNT" in
+            ""|*[!0-9]*)
+              echo "keep_count must be a number"
+              exit 1
+              ;;
+          esac
+          if [ "$INPUT_KEEP_COUNT" -lt 1 ] || [ "$INPUT_KEEP_COUNT" -gt 30 ]; then
+            echo "keep_count must be between 1 and 30"
+            exit 1
+          fi
+
+      - name: Create retained backup
+        run: |
+          set +x
+          bin/assops-tool db backup-retain .assops/retained-backups "$INPUT_KEEP_COUNT"
+          backup="$(find .assops/retained-backups -maxdepth 1 -type f -name 'assops-*.dump' | sort | tail -n 1)"
+          test -n "$backup" || (echo "No assops-*.dump backup was created" && exit 1)
+          test -f "$backup" || (echo "Backup file not found after backup-retain" && exit 1)
+          cp "$backup" "$STAGING_DIR/$(basename "$backup")"
+          dump_count="$(find "$STAGING_DIR" -type f -name 'assops-*.dump' | wc -l | tr -d ' ')"
+          if [ "$dump_count" != "1" ]; then
+            echo "Retained backup artifact must contain exactly one assops-*.dump file; found $dump_count"
+            exit 1
+          fi
+          if find "$STAGING_DIR" -type f \( \
+            -iname '.env*' -o \
+            -iname '*.env' -o \
+            -iname '*kubeconfig*' -o \
+            -iname '*.kubeconfig' -o \
+            -iname '*.log' -o \
+            -iname '*.key' -o \
+            -iname '*.pem' \
+          \) | grep -q .; then
+            echo "Retained backup artifact contains disallowed secret/log-like files"
+            exit 1
+          fi
+          size_bytes="$(stat -c%s "$STAGING_DIR/$(basename "$backup")")"
+          {
+            echo "Published retained backup artifact staging summary."
+            echo "Artifact name: $INPUT_ARTIFACT_NAME"
+            echo "Backup file: $(basename "$backup")"
+            echo "Backup size bytes: $size_bytes"
+            echo "Retention days: $INPUT_RETENTION_DAYS"
+            echo "No database URL, password, kubeconfig, or raw log files are written to the artifact staging directory."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload private retained backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.INPUT_ARTIFACT_NAME }}
+          retention-days: ${{ env.INPUT_RETENTION_DAYS }}
+          path: ${{ env.STAGING_DIR }}
+          if-no-files-found: error
