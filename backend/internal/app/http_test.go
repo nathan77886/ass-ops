@@ -5997,6 +5997,277 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 	}
 }
 
+func TestProviderReviewAttemptAdapterProviderSendPlan(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		provider     string
+		operation    string
+		endpoint     string
+		order        int
+		method       string
+		payloadShape string
+		authScheme   string
+	}{
+		{
+			name:         "github branch ref",
+			provider:     "github",
+			operation:    "create_branch_ref",
+			endpoint:     "github.create_branch_ref",
+			order:        10,
+			method:       "POST",
+			payloadShape: "ref_from_target_branch",
+			authScheme:   "bearer_token",
+		},
+		{
+			name:         "github starter files",
+			provider:     "github",
+			operation:    "commit_starter_files",
+			endpoint:     "github.commit_files",
+			order:        20,
+			method:       "PUT",
+			payloadShape: "content_redacted_file_batch",
+			authScheme:   "bearer_token",
+		},
+		{
+			name:         "gitea review request",
+			provider:     "gitea",
+			operation:    "open_review_request",
+			endpoint:     "gitea.open_review",
+			order:        30,
+			method:       "POST",
+			payloadShape: "review_request",
+			authScheme:   "token",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			operation := map[string]any{
+				"name":            tt.operation,
+				"endpoint_key":    tt.endpoint,
+				"operation_order": tt.order,
+			}
+			requestPlan := map[string]any{"request_materialization_ready": false}
+			credentialPlan := map[string]any{"credential_binding_ready": false}
+			runtimePlan := map[string]any{"runtime_ready": false}
+			transportPlan := providerReviewAttemptAdapterTransportPlan(tt.provider, tt.operation)
+
+			plan := providerReviewAttemptAdapterProviderSendPlan(operation, requestPlan, credentialPlan, runtimePlan, transportPlan)
+			if plan["mode"] != "redacted_attempt_adapter_provider_send_plan" ||
+				plan["provider_send_state"] != "blocked" ||
+				plan["provider_send_ready"] != false ||
+				plan["provider_send_ready_reason"] != "provider_request_send_not_armed" ||
+				plan["provider_send_metadata_ready"] != false ||
+				plan["provider_type"] != tt.provider ||
+				plan["operation_name"] != tt.operation ||
+				plan["endpoint_key"] != tt.endpoint ||
+				plan["operation_order"] != tt.order ||
+				plan["method"] != tt.method ||
+				plan["payload_shape"] != tt.payloadShape ||
+				plan["auth_scheme"] != tt.authScheme ||
+				plan["content_type"] != "application/json" ||
+				plan["timeout_seconds"] != 15 ||
+				plan["request_materialization_ready"] != false ||
+				plan["credential_binding_ready"] != false ||
+				plan["adapter_runtime_ready"] != false ||
+				plan["transport_metadata_ready"] != true ||
+				plan["provider_request_sent"] != false ||
+				plan["provider_response_received"] != false ||
+				plan["external_call_made"] != false ||
+				plan["provider_api_call_made"] != false ||
+				plan["provider_api_mutation"] != "disabled" ||
+				plan["request_body_included"] != false ||
+				plan["response_body_included"] != false ||
+				plan["headers_included"] != false ||
+				plan["authorization_header_included"] != false ||
+				plan["provider_url_included"] != false ||
+				plan["idempotency_key_included"] != false ||
+				plan["provider_request_id_included"] != false ||
+				plan["contains_token"] != false ||
+				plan["contains_provider_url"] != false ||
+				plan["contains_repository_ref"] != false ||
+				plan["contains_branch_name"] != false ||
+				plan["contains_file_content"] != false ||
+				plan["provider_send_boundary_redacted"] != true {
+				t.Fatalf("provider send plan = %#v", plan)
+			}
+			sendSequence := stringSliceFromAny(plan["provider_send_sequence"])
+			if !reflect.DeepEqual(sendSequence, []string{"bind_provider_client", "apply_redacted_transport_metadata", "verify_mutation_arming", "stage_provider_request", "send_provider_request", "handoff_to_response_handler"}) {
+				t.Fatalf("provider send sequence = %#v", sendSequence)
+			}
+			sendSuppressedFields := stringSliceFromAny(plan["provider_send_suppressed_fields"])
+			for _, field := range []string{"request_url", "request_path", "request_body", "request_headers", "authorization_header", "token", "idempotency_key", "repository_ref", "branch_name", "file_content"} {
+				if !slices.Contains(sendSuppressedFields, field) {
+					t.Fatalf("provider send suppressed fields missing %q: %#v", field, sendSuppressedFields)
+				}
+			}
+			blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
+			for _, reason := range []string{"provider_request_send_not_armed", "provider_request_not_materialized", "provider_credential_runtime_binding_not_armed", "provider_review_adapter_runtime_not_bound", "provider_review_mutation_not_armed"} {
+				if !slices.Contains(blockedReasons, reason) {
+					t.Fatalf("provider send blocked reasons missing %q: %#v", reason, blockedReasons)
+				}
+			}
+
+			retryBackoffPlan := mapFromAny(plan["retry_backoff_plan"])
+			if retryBackoffPlan["mode"] != "redacted_attempt_adapter_retry_backoff_plan" ||
+				retryBackoffPlan["operation_name"] != tt.operation ||
+				retryBackoffPlan["endpoint_key"] != tt.endpoint ||
+				retryBackoffPlan["provider_api_call_made"] != false ||
+				retryBackoffPlan["provider_api_mutation"] != "disabled" {
+				t.Fatalf("retry backoff plan = %#v", retryBackoffPlan)
+			}
+
+			encoded, _ := json.Marshal(plan)
+			for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+				if strings.Contains(string(encoded), leak) {
+					t.Fatalf("provider send plan leaked %q: %s", leak, encoded)
+				}
+			}
+		})
+	}
+
+	if got := providerReviewAttemptAdapterProviderSendPlan(nil, nil, nil, nil, nil); len(got) != 0 {
+		t.Fatalf("empty provider send plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterProviderSendPlan(
+		map[string]any{"name": "raw_operation", "endpoint_key": "github.create_branch_ref"},
+		nil,
+		nil,
+		nil,
+		nil,
+	); len(got) != 0 {
+		t.Fatalf("invalid operation provider send plan = %#v", got)
+	}
+
+	readyOperation := map[string]any{"name": "create_branch_ref", "endpoint_key": "github.create_branch_ref", "operation_order": 10}
+	readyPlan := providerReviewAttemptAdapterProviderSendPlan(
+		readyOperation,
+		map[string]any{"request_materialization_ready": true},
+		map[string]any{"credential_binding_ready": true},
+		map[string]any{"runtime_ready": true},
+		providerReviewAttemptAdapterTransportPlan("github", "create_branch_ref"),
+	)
+	if readyPlan["provider_send_metadata_ready"] != true ||
+		readyPlan["request_materialization_ready"] != true ||
+		readyPlan["credential_binding_ready"] != true ||
+		readyPlan["adapter_runtime_ready"] != true ||
+		readyPlan["transport_metadata_ready"] != true ||
+		readyPlan["provider_send_ready"] != false ||
+		readyPlan["provider_send_ready_reason"] != "provider_request_send_not_armed" ||
+		readyPlan["provider_api_call_made"] != false ||
+		readyPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("ready metadata provider send plan = %#v", readyPlan)
+	}
+}
+
+func TestProviderReviewAttemptAdapterRetryBackoffPlan(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		operation string
+		endpoint  string
+		order     int
+	}{
+		{
+			name:      "branch ref",
+			operation: "create_branch_ref",
+			endpoint:  "github.create_branch_ref",
+			order:     10,
+		},
+		{
+			name:      "starter files",
+			operation: "commit_starter_files",
+			endpoint:  "github.commit_files",
+			order:     20,
+		},
+		{
+			name:      "review request",
+			operation: "open_review_request",
+			endpoint:  "gitea.open_review",
+			order:     30,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			operation := map[string]any{
+				"name":            tt.operation,
+				"endpoint_key":    tt.endpoint,
+				"operation_order": tt.order,
+			}
+			transportPlan := map[string]any{
+				"mode":                     "redacted_attempt_adapter_transport_plan",
+				"retryable_status_classes": []string{"5xx"},
+			}
+			plan := providerReviewAttemptAdapterRetryBackoffPlan(operation, transportPlan)
+			if plan["mode"] != "redacted_attempt_adapter_retry_backoff_plan" ||
+				plan["retry_backoff_state"] != "blocked" ||
+				plan["retry_backoff_ready"] != false ||
+				plan["retry_backoff_ready_reason"] != "provider_retry_backoff_not_armed" ||
+				plan["retry_backoff_metadata_ready"] != true ||
+				plan["operation_name"] != tt.operation ||
+				plan["endpoint_key"] != tt.endpoint ||
+				plan["operation_order"] != tt.order ||
+				plan["retry_policy"] != "retry_only_after_response_diagnostics" ||
+				plan["max_attempts"] != 3 ||
+				plan["initial_backoff_seconds"] != 30 ||
+				plan["max_backoff_seconds"] != 300 ||
+				plan["jitter"] != "full" ||
+				plan["requires_response_diagnostics"] != true ||
+				plan["requires_idempotency_ledger"] != true ||
+				plan["requires_attempt_ledger"] != true ||
+				plan["requires_mutation_arming"] != true ||
+				plan["retry_scheduled"] != false ||
+				plan["retry_attempt_recorded"] != false ||
+				plan["retry_after_value_recorded"] != false ||
+				plan["retry_after_header_included"] != false ||
+				plan["provider_rate_limit_value_included"] != false ||
+				plan["provider_error_code_included"] != false ||
+				plan["external_call_made"] != false ||
+				plan["provider_api_call_made"] != false ||
+				plan["provider_api_mutation"] != "disabled" ||
+				plan["request_body_included"] != false ||
+				plan["response_body_included"] != false ||
+				plan["headers_included"] != false ||
+				plan["authorization_header_included"] != false ||
+				plan["provider_url_included"] != false ||
+				plan["idempotency_key_included"] != false ||
+				plan["contains_token"] != false ||
+				plan["contains_provider_url"] != false ||
+				plan["contains_repository_ref"] != false ||
+				plan["contains_branch_name"] != false ||
+				plan["contains_file_content"] != false ||
+				plan["retry_backoff_boundary_redacted"] != true {
+				t.Fatalf("retry backoff plan = %#v", plan)
+			}
+			if got := stringSliceFromAny(plan["retryable_status_classes"]); !reflect.DeepEqual(got, []string{"5xx"}) {
+				t.Fatalf("retry classes = %#v", got)
+			}
+			if got := stringSliceFromAny(plan["transport_retryable_status_classes"]); !reflect.DeepEqual(got, []string{"5xx"}) {
+				t.Fatalf("transport retry classes = %#v", got)
+			}
+			if got := stringSliceFromAny(plan["retry_backoff_sequence"]); !reflect.DeepEqual(got, []string{"classify_retryable_response", "verify_idempotency_ledger", "record_retry_decision", "schedule_backoff_retry"}) {
+				t.Fatalf("retry sequence = %#v", got)
+			}
+			suppressedFields := stringSliceFromAny(plan["retry_backoff_suppressed_fields"])
+			for _, field := range []string{"retry_after_value", "rate_limit_remaining", "provider_error_code", "response_headers", "response_body", "provider_url", "authorization_header", "token", "idempotency_key", "repository_ref", "branch_name", "file_content"} {
+				if !slices.Contains(suppressedFields, field) {
+					t.Fatalf("retry suppressed fields missing %q: %#v", field, suppressedFields)
+				}
+			}
+			blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
+			if !reflect.DeepEqual(blockedReasons, []string{"provider_retry_backoff_not_armed", "provider_response_diagnostics_not_recorded", "provider_idempotency_ledger_not_claimed", "provider_review_mutation_not_armed"}) {
+				t.Fatalf("retry blocked reasons = %#v", blockedReasons)
+			}
+		})
+	}
+
+	if got := providerReviewAttemptAdapterRetryBackoffPlan(nil, map[string]any{"mode": "redacted_attempt_adapter_transport_plan"}); len(got) != 0 {
+		t.Fatalf("empty operation retry backoff plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterRetryBackoffPlan(
+		map[string]any{"name": "create_branch_ref", "endpoint_key": "github.create_branch_ref"},
+		map[string]any{"mode": "raw_transport_plan"},
+	); len(got) != 0 {
+		t.Fatalf("raw transport retry backoff plan = %#v", got)
+	}
+}
+
 func TestProviderReviewAttemptAdapterActivationMetadataReadyReason(t *testing.T) {
 	for _, tt := range []struct {
 		name               string
