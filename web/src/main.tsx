@@ -740,7 +740,8 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const approvalEvidence = Number(approvalSummary.total || 0);
   const pendingApprovalOps = operations.filter((row) => String(row.status || '') === 'pending_approval').length;
   const activeApprovalRules = countRowsByTypeStatus(assets, 'operation_approval_rule', 'active');
-  const operationRuns = Math.max(assetCounts.operation_run || 0, operations.length);
+  const operationAssets = assetCounts.operation_run || 0;
+  const listedOperationRuns = operations.length;
   const operationLogs = countOperationRowsWithLogs(operations);
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
   const contextGenerations = countContextGenerationEvidence(assets);
@@ -801,7 +802,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'operations',
       label: 'View operation history and logs',
       next: 'Run any controlled operation and inspect its logs.',
-      ...readinessState(operationRuns > 0 && operationLogs > 0, `${operationRuns} runs / ${operationLogs} with logs`, operationRuns > 0)
+      ...readinessState(operationAssets > 0 && operationLogs > 0, `${operationAssets} operation assets / ${listedOperationRuns} listed runs / ${operationLogs} with logs`, operationAssets > 0 || listedOperationRuns > 0 || operationLogs > 0)
     },
     {
       key: 'approval',

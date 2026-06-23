@@ -700,20 +700,34 @@ func TestFirstVersionReadinessReportIgnoresDisabledApprovalRules(t *testing.T) {
 }
 
 func TestFirstVersionReadinessReportRequiresOperationLogs(t *testing.T) {
+	allZero := firstVersionReadinessReport(nil, nil, nil)
+	if got := readinessByKey(t, allZero, "operations"); got.Status != "missing" || got.Evidence != "0 operation assets / 0 listed runs / 0 with logs" {
+		t.Fatalf("operations readiness without evidence = %#v, want missing", got)
+	}
+
 	withoutLogs := firstVersionReadinessReport([]map[string]any{
 		{"asset_type": "operation_run"},
 	}, []map[string]any{
 		{"operation_type": "repo.sync", "log_count": 0},
 	}, nil)
-	if got := readinessByKey(t, withoutLogs, "operations"); got.Status != "partial" || got.Evidence != "1 runs / 0 with logs" {
+	if got := readinessByKey(t, withoutLogs, "operations"); got.Status != "partial" || got.Evidence != "1 operation assets / 1 listed runs / 0 with logs" {
 		t.Fatalf("operations readiness without logs = %#v, want partial with log evidence", got)
 	}
 
-	withLogs := firstVersionReadinessReport(nil, []map[string]any{
+	withoutAsset := firstVersionReadinessReport(nil, []map[string]any{
 		{"operation_type": "repo.sync", "log_count": 2},
 	}, nil)
-	if got := readinessByKey(t, withLogs, "operations"); got.Status != "ready" || got.Evidence != "1 runs / 1 with logs" {
-		t.Fatalf("operations readiness with logs = %#v, want ready with log evidence", got)
+	if got := readinessByKey(t, withoutAsset, "operations"); got.Status != "partial" || got.Evidence != "0 operation assets / 1 listed runs / 1 with logs" {
+		t.Fatalf("operations readiness without operation asset = %#v, want partial with asset evidence", got)
+	}
+
+	withAssetAndLogs := firstVersionReadinessReport([]map[string]any{
+		{"asset_type": "operation_run"},
+	}, []map[string]any{
+		{"operation_type": "repo.sync", "log_count": 2},
+	}, nil)
+	if got := readinessByKey(t, withAssetAndLogs, "operations"); got.Status != "ready" || got.Evidence != "1 operation assets / 1 listed runs / 1 with logs" {
+		t.Fatalf("operations readiness with operation asset and logs = %#v, want ready", got)
 	}
 }
 
