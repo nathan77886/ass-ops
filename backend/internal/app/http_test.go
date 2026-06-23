@@ -2645,6 +2645,98 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 			t.Fatalf("ssh approval suppressed_fields missing %q: %#v", field, approvalPlan["suppressed_fields"])
 		}
 	}
+	authPlan := mapFromAny(preview["auth_binding_plan"])
+	if authPlan["mode"] != "ssh_rehearsal_auth_binding_plan" ||
+		authPlan["runtime_auth_bound"] != false ||
+		authPlan["known_hosts_bound"] != false ||
+		authPlan["ssh_client_configured"] != false ||
+		authPlan["external_call_made"] != false ||
+		authPlan["contains_private_key"] != false ||
+		authPlan["contains_passphrase"] != false ||
+		authPlan["contains_known_hosts_body"] != false ||
+		authPlan["contains_runtime_secret"] != false {
+		t.Fatalf("ssh auth binding plan should stay disabled and redacted: %#v", authPlan)
+	}
+	if approvalPlan["metadata_ready"] == true && authPlan["binding_state"] != "planned" {
+		t.Fatalf("metadata-ready auth binding plan should be planned: %#v", authPlan)
+	}
+	if approvalPlan["metadata_ready"] != true && authPlan["binding_state"] != "blocked" {
+		t.Fatalf("metadata-blocked auth binding plan should be blocked: %#v", authPlan)
+	}
+	for _, backend := range []string{"runtime_auth_binding", "known_hosts_materialization", "ssh_client_configure"} {
+		if !containsString(stringSliceFromAny(authPlan["disabled_backends"]), backend) {
+			t.Fatalf("ssh auth binding disabled backend missing %q: %#v", backend, authPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"private_key", "passphrase", "known_hosts_body", "runtime_secret", "secret_env"} {
+		if !containsString(stringSliceFromAny(authPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh auth binding suppressed field missing %q: %#v", field, authPlan["suppressed_fields"])
+		}
+	}
+	verifyPlan := mapFromAny(preview["verify_execution_plan"])
+	if verifyPlan["mode"] != "ssh_rehearsal_verify_execution_plan" ||
+		verifyPlan["operation_enqueued"] != false ||
+		verifyPlan["worker_job_created"] != false ||
+		verifyPlan["ssh_process_started"] != false ||
+		verifyPlan["verify_command_executed"] != false ||
+		verifyPlan["exit_code_recorded"] != false ||
+		verifyPlan["external_call_made"] != false ||
+		verifyPlan["stdout_included"] != false ||
+		verifyPlan["stderr_included"] != false ||
+		verifyPlan["raw_error_included"] != false ||
+		verifyPlan["contains_private_key"] != false ||
+		verifyPlan["contains_runtime_secret"] != false {
+		t.Fatalf("ssh verify execution plan should stay disabled and redacted: %#v", verifyPlan)
+	}
+	if verifyPlan["completed_verify_evidence"] == true && verifyPlan["verify_state"] != "observed" {
+		t.Fatalf("completed verify evidence should mark verify plan observed: %#v", verifyPlan)
+	}
+	if verifyPlan["metadata_ready"] != true && verifyPlan["verify_state"] != "blocked" {
+		t.Fatalf("metadata-blocked verify plan should be blocked: %#v", verifyPlan)
+	}
+	for _, backend := range []string{"worker_job_create", "ssh_process_start", "ssh_verify_execute", "ssh_result_write"} {
+		if !containsString(stringSliceFromAny(verifyPlan["disabled_backends"]), backend) {
+			t.Fatalf("ssh verify disabled backend missing %q: %#v", backend, verifyPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"private_key", "passphrase", "known_hosts_body", "stdout", "stderr", "raw_error", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(verifyPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh verify suppressed field missing %q: %#v", field, verifyPlan["suppressed_fields"])
+		}
+	}
+	execPlan := mapFromAny(preview["exec_execution_plan"])
+	if execPlan["mode"] != "ssh_rehearsal_exec_execution_plan" ||
+		execPlan["operation_enqueued"] != false ||
+		execPlan["worker_job_created"] != false ||
+		execPlan["ssh_process_started"] != false ||
+		execPlan["command_reviewed"] != false ||
+		execPlan["command_executed"] != false ||
+		execPlan["exit_code_recorded"] != false ||
+		execPlan["external_call_made"] != false ||
+		execPlan["stdout_included"] != false ||
+		execPlan["stderr_included"] != false ||
+		execPlan["raw_error_included"] != false ||
+		execPlan["contains_command"] != false ||
+		execPlan["contains_private_key"] != false ||
+		execPlan["contains_runtime_secret"] != false {
+		t.Fatalf("ssh exec execution plan should stay disabled and redacted: %#v", execPlan)
+	}
+	if execPlan["completed_exec_evidence"] == true && execPlan["exec_state"] != "observed" {
+		t.Fatalf("completed exec evidence should mark exec plan observed: %#v", execPlan)
+	}
+	if execPlan["metadata_ready"] != true && execPlan["exec_state"] != "blocked" {
+		t.Fatalf("metadata-blocked exec plan should be blocked: %#v", execPlan)
+	}
+	for _, backend := range []string{"worker_job_create", "ssh_process_start", "ssh_exec_execute", "ssh_result_write"} {
+		if !containsString(stringSliceFromAny(execPlan["disabled_backends"]), backend) {
+			t.Fatalf("ssh exec disabled backend missing %q: %#v", backend, execPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"command", "stdout", "stderr", "raw_error", "private_key", "passphrase", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(execPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh exec suppressed field missing %q: %#v", field, execPlan["suppressed_fields"])
+		}
+	}
 	resultPlan := mapFromAny(preview["result_recording_plan"])
 	if resultPlan["mode"] != "ssh_rehearsal_result_recording_plan" ||
 		resultPlan["recording_state"] != "blocked" ||
@@ -2655,6 +2747,9 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 		resultPlan["operation_log_written"] != false ||
 		resultPlan["canonical_asset_sync_queued"] != false ||
 		resultPlan["status_snapshot_written"] != false ||
+		resultPlan["auth_binding_recorded"] != false ||
+		resultPlan["verify_result_recorded"] != false ||
+		resultPlan["exec_result_recorded"] != false ||
 		resultPlan["stdout_included"] != false ||
 		resultPlan["stderr_included"] != false ||
 		resultPlan["raw_error_included"] != false ||
@@ -2663,7 +2758,7 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 		resultPlan["authorization_header_included"] != false {
 		t.Fatalf("ssh result recording plan should stay disabled and redacted: %#v", resultPlan)
 	}
-	for _, field := range []string{"operation_run_id", "ssh_machine_id", "operation_type", "status", "exit_code", "started_at", "finished_at", "sanitization_status"} {
+	for _, field := range []string{"operation_run_id", "ssh_machine_id", "operation_type", "status", "exit_code", "started_at", "finished_at", "auth_binding_status", "verify_result_status", "exec_result_status", "sanitization_status"} {
 		if !containsString(stringSliceFromAny(resultPlan["required_result_fields"]), field) {
 			t.Fatalf("ssh result required fields missing %q: %#v", field, resultPlan["required_result_fields"])
 		}
@@ -13341,19 +13436,22 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 	workerDispatchOutput := mapFromAny(steps[3]["output"])
 	workerDispatchPlan := mapFromAny(workerDispatchOutput["worker_dispatch_plan"])
 	if workerDispatchPlan["mode"] != "redacted_agent_worker_dispatch_plan" ||
-		workerDispatchPlan["dispatch_state"] != "blocked" ||
+		workerDispatchPlan["dispatch_state"] != "audit_queued" ||
 		workerDispatchPlan["prerequisite_state"] != "metadata_available" ||
-		workerDispatchPlan["worker_claim_enabled"] != false ||
+		workerDispatchPlan["audit_worker_execution_enabled"] != true ||
+		workerDispatchPlan["worker_claim_enabled"] != true ||
+		workerDispatchPlan["worker_job_created"] != true ||
 		workerDispatchPlan["tool_invocation_enabled"] != false ||
 		workerDispatchPlan["tool_invoked"] != false ||
+		workerDispatchPlan["result_callback_enabled"] != true ||
 		workerDispatchPlan["result_written"] != false {
-		t.Fatalf("worker.dispatch.plan should expose disabled worker dispatch boundary: %#v", workerDispatchPlan)
+		t.Fatalf("worker.dispatch.plan should expose queued audit worker boundary without mutation: %#v", workerDispatchPlan)
 	}
 	if !containsString(stringSliceFromAny(workerDispatchPlan["required_controls"]), "worker_capability_ai") ||
 		!containsString(stringSliceFromAny(workerDispatchPlan["allowed_tool_names"]), "context.generate") ||
 		!containsString(stringSliceFromAny(workerDispatchPlan["disabled_backends"]), "worker_tool_invoke") ||
 		!containsString(stringSliceFromAny(workerDispatchPlan["suppressed_fields"]), "tool_output") ||
-		!containsString(stringSliceFromAny(workerDispatchPlan["blocked_reasons"]), "result_callback_not_wired") {
+		!containsString(stringSliceFromAny(workerDispatchPlan["blocked_reasons"]), "repository_mutation_not_armed") {
 		t.Fatalf("worker.dispatch.plan missing controls/backends/suppression: %#v", workerDispatchPlan)
 	}
 	assertAgentWorkerDispatchSubplansSafe(t, workerDispatchPlan)
@@ -13573,17 +13671,19 @@ func TestAgentWorkerDispatchPlan(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := agentWorkerDispatchPlan(tt.runtime)
 			if got["mode"] != "redacted_agent_worker_dispatch_plan" ||
-				got["dispatch_state"] != "blocked" ||
-				got["dispatch_ready"] != false ||
-				got["dispatch_ready_reason"] != "agent_worker_execution_backend_disabled" ||
+				got["dispatch_state"] != "audit_queued" ||
+				got["dispatch_ready"] != true ||
+				got["dispatch_ready_reason"] != "agent_worker_audit_job_enqueued" ||
 				got["prerequisite_state"] != tt.wantPrerequisite ||
 				got["execution_enabled"] != false ||
-				got["worker_claim_enabled"] != false ||
-				got["worker_job_created"] != false ||
+				got["audit_worker_execution_enabled"] != true ||
+				got["worker_claim_enabled"] != true ||
+				got["worker_job_created"] != true ||
 				got["worker_node_claimed"] != false ||
 				got["tool_invocation_enabled"] != false ||
 				got["tool_invoked"] != false ||
 				got["result_written"] != false ||
+				got["result_callback_enabled"] != true ||
 				got["repository_mutation_allowed"] != false ||
 				got["external_call_made"] != false {
 				t.Fatalf("unexpected worker dispatch plan: %#v", got)
@@ -13603,7 +13703,7 @@ func TestAgentWorkerDispatchPlan(t *testing.T) {
 					t.Fatalf("allowed_tool_names missing %q: %#v", tool, got["allowed_tool_names"])
 				}
 			}
-			for _, backend := range []string{"worker_claim", "worker_tool_invoke", "codex_cli_process", "git_push"} {
+			for _, backend := range []string{"worker_tool_invoke", "codex_cli_process", "git_push"} {
 				if !containsString(stringSliceFromAny(got["disabled_backends"]), backend) {
 					t.Fatalf("disabled_backends missing %q: %#v", backend, got["disabled_backends"])
 				}
@@ -13628,16 +13728,16 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 	t.Helper()
 	claimPlan := mapFromAny(got["worker_claim_plan"])
 	if claimPlan["mode"] != "redacted_agent_worker_claim_plan" ||
-		claimPlan["claim_state"] != "blocked" ||
-		claimPlan["claim_ready"] != false ||
-		claimPlan["claim_ready_reason"] != "agent_worker_claim_backend_disabled" ||
-		claimPlan["worker_claim_enabled"] != false ||
-		claimPlan["worker_job_created"] != false ||
+		claimPlan["claim_state"] != "queued" ||
+		claimPlan["claim_ready"] != true ||
+		claimPlan["claim_ready_reason"] != "worker_job_enqueued_for_audit_execution" ||
+		claimPlan["worker_claim_enabled"] != true ||
+		claimPlan["worker_job_created"] != true ||
 		claimPlan["worker_node_claimed"] != false ||
 		claimPlan["operation_locked"] != false ||
 		claimPlan["idempotency_claimed"] != false ||
 		claimPlan["external_call_made"] != false {
-		t.Fatalf("worker claim plan should stay disabled and redacted: %#v", claimPlan)
+		t.Fatalf("worker claim plan should expose queued audit job without secrets: %#v", claimPlan)
 	}
 	if got["prerequisite_state"] == "metadata_available" && claimPlan["metadata_ready"] != true {
 		t.Fatalf("metadata-available dispatch should mark claim metadata ready: %#v", claimPlan)
@@ -13655,7 +13755,7 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 			t.Fatalf("worker claim suppressed_fields missing %q: %#v", field, claimPlan["suppressed_fields"])
 		}
 	}
-	for _, reason := range []string{"worker_claim_backend_disabled", "worker_queue_claim_not_created", "idempotency_claim_not_recorded"} {
+	for _, reason := range []string{"worker_node_not_claimed_yet", "idempotency_claim_pending"} {
 		if !containsString(stringSliceFromAny(claimPlan["blocked_reasons"]), reason) {
 			t.Fatalf("worker claim blocked reasons missing %q: %#v", reason, claimPlan["blocked_reasons"])
 		}
@@ -13697,10 +13797,11 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 
 	callbackPlan := mapFromAny(got["result_callback_plan"])
 	if callbackPlan["mode"] != "redacted_agent_result_callback_plan" ||
-		callbackPlan["callback_state"] != "blocked" ||
-		callbackPlan["callback_ready"] != false ||
-		callbackPlan["callback_ready_reason"] != "agent_result_callback_not_wired" ||
-		callbackPlan["callback_enabled"] != false ||
+		callbackPlan["callback_state"] != "planned" ||
+		callbackPlan["callback_ready"] != true ||
+		callbackPlan["callback_ready_reason"] != "sanitized_agent_audit_result_callback_wired" ||
+		callbackPlan["callback_enabled"] != true ||
+		callbackPlan["callback_scope"] != "sanitized_audit_status_only" ||
 		callbackPlan["result_written"] != false ||
 		callbackPlan["operation_log_written"] != false ||
 		callbackPlan["agent_task_status_written"] != false ||
@@ -13726,13 +13827,14 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 			t.Fatalf("result callback suppressed_fields missing %q: %#v", field, callbackPlan["suppressed_fields"])
 		}
 	}
-	for _, reason := range []string{"result_callback_not_wired", "sanitized_tool_result_not_recorded", "canonical_asset_sync_not_performed"} {
+	for _, reason := range []string{"sanitized_tool_result_not_recorded_yet", "canonical_asset_sync_pending"} {
 		if !containsString(stringSliceFromAny(callbackPlan["blocked_reasons"]), reason) {
 			t.Fatalf("result callback blocked reasons missing %q: %#v", reason, callbackPlan["blocked_reasons"])
 		}
 	}
-	if !strings.Contains(cleanPreviewString(callbackPlan["message"]), "not recorded") {
-		t.Fatalf("result callback message should not imply recorded tool output: %#v", callbackPlan["message"])
+	message := cleanPreviewString(callbackPlan["message"])
+	if !strings.Contains(message, "sanitized audit status") || !strings.Contains(message, "remain suppressed") {
+		t.Fatalf("result callback message should describe sanitized callback without raw output: %#v", callbackPlan["message"])
 	}
 }
 

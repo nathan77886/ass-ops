@@ -4120,10 +4120,13 @@ function AgentTasks() {
         <Tag color="gold">{plan.dispatch_state || 'blocked'}</Tag>
         <Tag color={plan.prerequisite_state === 'metadata_available' ? 'blue' : 'red'}>{plan.prerequisite_state || 'metadata_blocked'}</Tag>
         <Tag color="gold">claim {claimPlan.claim_state || 'blocked'}</Tag>
-        <Tag color={plan.worker_claim_enabled === true ? 'red' : 'green'}>{plan.worker_claim_enabled === true ? 'Worker claim enabled' : 'No worker claim'}</Tag>
+        <Tag color={plan.audit_worker_execution_enabled === true ? 'blue' : 'default'}>{plan.audit_worker_execution_enabled === true ? 'Audit worker queued' : 'Audit worker blocked'}</Tag>
+        <Tag color={plan.worker_claim_enabled === true ? 'blue' : 'green'}>{plan.worker_claim_enabled === true ? 'Worker claim wired' : 'No worker claim'}</Tag>
         <Tag color="gold">tools {toolPlan.invocation_state || 'blocked'}</Tag>
         <Tag color={plan.tool_invocation_enabled === true ? 'red' : 'green'}>{plan.tool_invocation_enabled === true ? 'Tools enabled' : 'Tools blocked'}</Tag>
         <Tag color="gold">callback {callbackPlan.callback_state || 'blocked'}</Tag>
+        <Tag color={plan.result_callback_enabled === true ? 'blue' : 'green'}>{plan.result_callback_enabled === true ? 'Callback wired' : 'Callback blocked'}</Tag>
+        {callbackPlan.callback_scope ? <Tag>{callbackPlan.callback_scope}</Tag> : null}
         <Typography.Text>{capabilities.length} worker capabilit{capabilities.length === 1 ? 'y' : 'ies'}</Typography.Text>
         <Typography.Text>{backends.length} disabled backend{backends.length === 1 ? '' : 's'}</Typography.Text>
         <Typography.Text type="secondary">{controls.length} required control{controls.length === 1 ? '' : 's'}</Typography.Text>
@@ -4357,6 +4360,9 @@ function ConfigPage() {
     stdout_included: sshRehearsal.data.stdout_included,
     stderr_included: sshRehearsal.data.stderr_included,
     approval_request_plan: sshRehearsal.data.approval_request_plan,
+    auth_binding_plan: sshRehearsal.data.auth_binding_plan,
+    verify_execution_plan: sshRehearsal.data.verify_execution_plan,
+    exec_execution_plan: sshRehearsal.data.exec_execution_plan,
     result_recording_plan: sshRehearsal.data.result_recording_plan,
     required_live_rehearsal: sshRehearsal.data.required_live_rehearsal,
     required_controls: sshRehearsal.data.required_controls,
@@ -4519,9 +4525,15 @@ function ConfigPage() {
                   <Tag>{sshRehearsalView.execution_enabled ? 'execution enabled' : 'execution disabled'}</Tag>
                   <Tag>{sshRehearsalView.ssh_process_started ? 'ssh started' : 'no ssh process'}</Tag>
                   {sshRehearsalView.approval_request_plan ? <Tag color="gold">approval {sshRehearsalView.approval_request_plan.request_state || 'blocked'}</Tag> : null}
+                  {sshRehearsalView.auth_binding_plan ? <Tag color={sshRehearsalView.auth_binding_plan.binding_state === 'planned' ? 'gold' : sshRehearsalView.auth_binding_plan.binding_state === 'observed' ? 'green' : 'red'}>auth {sshRehearsalView.auth_binding_plan.binding_state || 'blocked'}</Tag> : null}
+                  {sshRehearsalView.verify_execution_plan ? <Tag color={sshRehearsalView.verify_execution_plan.verify_state === 'observed' ? 'green' : sshRehearsalView.verify_execution_plan.verify_state === 'planned' ? 'gold' : 'red'}>verify {sshRehearsalView.verify_execution_plan.verify_state || 'blocked'}</Tag> : null}
+                  {sshRehearsalView.exec_execution_plan ? <Tag color={sshRehearsalView.exec_execution_plan.exec_state === 'observed' ? 'green' : sshRehearsalView.exec_execution_plan.exec_state === 'planned' ? 'gold' : 'red'}>exec {sshRehearsalView.exec_execution_plan.exec_state || 'blocked'}</Tag> : null}
                   <Tag>{sshRehearsalView.private_key_included ? 'key included' : 'no key material'}</Tag>
                   <Tag>{sshRehearsalView.stdout_included || sshRehearsalView.stderr_included ? 'output included' : 'no command output'}</Tag>
                   {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.recording_state || 'blocked'} recording</Tag> : null}
+                  {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.auth_binding_recorded ? 'auth recorded' : 'no auth record'}</Tag> : null}
+                  {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.verify_result_recorded ? 'verify recorded' : 'no verify record'}</Tag> : null}
+                  {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.exec_result_recorded ? 'exec recorded' : 'no exec record'}</Tag> : null}
                   <Tag>{sshRehearsalView.recent_evidence?.verify_runs || 0} verify runs</Tag>
                   <Tag>{sshRehearsalView.recent_evidence?.exec_runs || 0} exec runs</Tag>
                   <Tag>{sshRehearsalView.recent_evidence?.unknown_runs || 0} unknown runs</Tag>

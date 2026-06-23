@@ -15594,43 +15594,43 @@ func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
 	toolInvocationPlan := agentWorkerToolInvocationPlan(allowedToolNames)
 	resultCallbackPlan := agentWorkerResultCallbackPlan()
 	return map[string]any{
-		"mode":                          "redacted_agent_worker_dispatch_plan",
-		"dispatch_state":                "blocked",
-		"dispatch_ready":                false,
-		"dispatch_ready_reason":         "agent_worker_execution_backend_disabled",
-		"prerequisite_state":            dispatchPrerequisite,
-		"execution_enabled":             false,
-		"worker_claim_enabled":          false,
-		"worker_job_created":            false,
-		"worker_node_claimed":           false,
-		"tool_invocation_enabled":       false,
-		"tool_invoked":                  false,
-		"external_call_made":            false,
-		"repository_mutation_allowed":   false,
-		"result_callback_enabled":       false,
-		"result_written":                false,
-		"context_snapshot_materialized": true,
-		"worker_claim_plan":             claimPlan,
-		"tool_invocation_plan":          toolInvocationPlan,
-		"result_callback_plan":          resultCallbackPlan,
-		"requires_operation_run":        true,
-		"requires_approved_plan":        true,
-		"requires_worker_capability":    true,
-		"requires_runtime_verification": true,
-		"requires_tool_allowlist":       true,
-		"requires_result_callback":      true,
-		"contains_token":                false,
-		"contains_runtime_config":       false,
-		"contains_prompt_body":          false,
-		"contains_tool_input":           false,
-		"contains_tool_output":          false,
-		"contains_workspace_path":       false,
-		"dispatch_boundary_redacted":    true,
+		"mode":                           "redacted_agent_worker_dispatch_plan",
+		"dispatch_state":                 "audit_queued",
+		"dispatch_ready":                 true,
+		"dispatch_ready_reason":          "agent_worker_audit_job_enqueued",
+		"prerequisite_state":             dispatchPrerequisite,
+		"execution_enabled":              false,
+		"audit_worker_execution_enabled": true,
+		"worker_claim_enabled":           true,
+		"worker_job_created":             true,
+		"worker_node_claimed":            false,
+		"tool_invocation_enabled":        false,
+		"tool_invoked":                   false,
+		"external_call_made":             false,
+		"repository_mutation_allowed":    false,
+		"result_callback_enabled":        true,
+		"result_written":                 false,
+		"context_snapshot_materialized":  true,
+		"worker_claim_plan":              claimPlan,
+		"tool_invocation_plan":           toolInvocationPlan,
+		"result_callback_plan":           resultCallbackPlan,
+		"requires_operation_run":         true,
+		"requires_approved_plan":         true,
+		"requires_worker_capability":     true,
+		"requires_runtime_verification":  true,
+		"requires_tool_allowlist":        true,
+		"requires_result_callback":       true,
+		"contains_token":                 false,
+		"contains_runtime_config":        false,
+		"contains_prompt_body":           false,
+		"contains_tool_input":            false,
+		"contains_tool_output":           false,
+		"contains_workspace_path":        false,
+		"dispatch_boundary_redacted":     true,
 		"blocked_reasons": []string{
-			"agent_worker_execution_backend_disabled",
-			"worker_claim_not_enabled",
 			"tool_invocation_not_armed",
-			"result_callback_not_wired",
+			"codex_cli_execution_backend_disabled",
+			"repository_mutation_not_armed",
 		},
 		"required_controls": []string{
 			"agent_execute_approval",
@@ -15648,7 +15648,6 @@ func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
 		},
 		"allowed_tool_names": allowedToolNames,
 		"disabled_backends": []string{
-			"worker_claim",
 			"worker_tool_invoke",
 			"codex_cli_process",
 			"file_patch_apply",
@@ -15680,7 +15679,7 @@ func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
 			"mark_operation_complete",
 		},
 		"runtime_readiness": cliReadiness,
-		"message":           "Agent worker dispatch is a redacted audit boundary; worker claim, tool invocation, and result callback remain disabled.",
+		"message":           "Agent worker dispatch now enqueues a real audit worker job and sanitized result callback; allowlisted tool invocation, Codex CLI, patch, git, and pull request mutations remain disabled.",
 	}
 }
 
@@ -15695,18 +15694,18 @@ func agentWorkerAllowedToolNames() []string {
 
 func agentWorkerClaimPlan(prerequisiteState string) map[string]any {
 	metadataReady := prerequisiteState == "metadata_available"
-	blockedReasons := []string{"worker_claim_backend_disabled", "worker_queue_claim_not_created", "idempotency_claim_not_recorded"}
+	blockedReasons := []string{"worker_node_not_claimed_yet", "idempotency_claim_pending"}
 	if !metadataReady {
 		blockedReasons = append(blockedReasons, "runtime_metadata_not_ready")
 	}
 	return map[string]any{
 		"mode":                       "redacted_agent_worker_claim_plan",
-		"claim_state":                "blocked",
-		"claim_ready":                false,
-		"claim_ready_reason":         "agent_worker_claim_backend_disabled",
+		"claim_state":                "queued",
+		"claim_ready":                true,
+		"claim_ready_reason":         "worker_job_enqueued_for_audit_execution",
 		"metadata_ready":             metadataReady,
-		"worker_claim_enabled":       false,
-		"worker_job_created":         false,
+		"worker_claim_enabled":       true,
+		"worker_job_created":         true,
 		"worker_node_claimed":        false,
 		"operation_locked":           false,
 		"idempotency_claimed":        false,
@@ -15715,7 +15714,7 @@ func agentWorkerClaimPlan(prerequisiteState string) map[string]any {
 		"suppressed_fields":          []string{"runtime_config", "environment_variables", "worker_secret", "authorization_header", "workspace_path", "prompt_body"},
 		"blocked_reasons":            blockedReasons,
 		"required_worker_capability": "ai",
-		"message":                    "Agent worker claim is a redacted plan only; no worker row is claimed and no runtime secret is materialized.",
+		"message":                    "Agent execution creates a worker job for audit processing; runtime secrets and prompt bodies are still not materialized in the claim plan.",
 	}
 }
 
@@ -15742,10 +15741,11 @@ func agentWorkerToolInvocationPlan(allowedToolNames []string) map[string]any {
 func agentWorkerResultCallbackPlan() map[string]any {
 	return map[string]any{
 		"mode":                         "redacted_agent_result_callback_plan",
-		"callback_state":               "blocked",
-		"callback_ready":               false,
-		"callback_ready_reason":        "agent_result_callback_not_wired",
-		"callback_enabled":             false,
+		"callback_state":               "planned",
+		"callback_ready":               true,
+		"callback_ready_reason":        "sanitized_agent_audit_result_callback_wired",
+		"callback_enabled":             true,
+		"callback_scope":               "sanitized_audit_status_only",
 		"result_written":               false,
 		"operation_log_written":        false,
 		"agent_task_status_written":    false,
@@ -15761,8 +15761,8 @@ func agentWorkerResultCallbackPlan() map[string]any {
 		"requires_human_result_review": true,
 		"required_result_fields":       []string{"operation_run_id", "agent_task_id", "tool_call_id", "tool_name", "status", "sanitization_status", "started_at", "finished_at"},
 		"suppressed_fields":            []string{"runtime_config", "environment_variables", "authorization_header", "workspace_path", "repository_url", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "token"},
-		"blocked_reasons":              []string{"result_callback_not_wired", "sanitized_tool_result_not_recorded", "canonical_asset_sync_not_performed"},
-		"message":                      "Agent worker result callbacks are not recorded by this preview; future execution must persist sanitized status metadata without raw tool output.",
+		"blocked_reasons":              []string{"sanitized_tool_result_not_recorded_yet", "canonical_asset_sync_pending"},
+		"message":                      "Agent worker completion records sanitized audit status metadata; raw tool output, runtime output, patch, diff, and config material remain suppressed.",
 	}
 }
 
@@ -16996,6 +16996,9 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 	}
 	approvalPlan := sshRehearsalApprovalRequestPlan(metadataReady, hasVerified, hasExecuted)
 	resultRecordingPlan := sshRehearsalResultRecordingPlan()
+	authBindingPlan := sshRehearsalAuthBindingPlan(metadataReady, authType, hasKeyReference, hasKnownHostsReference)
+	verifyPlan := sshRehearsalVerifyExecutionPlan(metadataReady, hasVerified)
+	execPlan := sshRehearsalExecExecutionPlan(metadataReady, hasVerified, hasExecuted)
 
 	steps := []map[string]any{
 		{
@@ -17048,6 +17051,9 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 		"auth_reference_present":  hasKeyReference || authType != "",
 		"known_hosts_configured":  hasKnownHostsReference,
 		"approval_request_plan":   approvalPlan,
+		"auth_binding_plan":       authBindingPlan,
+		"verify_execution_plan":   verifyPlan,
+		"exec_execution_plan":     execPlan,
 		"result_recording_plan":   resultRecordingPlan,
 		"required_live_rehearsal": requiredLiveRehearsal,
 		"required_controls": []string{
@@ -17078,6 +17084,122 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 		},
 		"steps":           steps,
 		"recent_evidence": evidence,
+	}
+}
+
+func sshRehearsalAuthBindingPlan(metadataReady bool, authType string, hasKeyReference, hasKnownHostsReference bool) map[string]any {
+	bindingState := "blocked"
+	if metadataReady {
+		bindingState = "planned"
+	}
+	blockedReasons := []string{"runtime_auth_binding_not_performed"}
+	if !metadataReady {
+		blockedReasons = append(blockedReasons, "machine_metadata_incomplete")
+	}
+	if strings.TrimSpace(authType) == "" {
+		blockedReasons = append(blockedReasons, "auth_type_missing")
+	}
+	return map[string]any{
+		"mode":                          "ssh_rehearsal_auth_binding_plan",
+		"binding_state":                 bindingState,
+		"metadata_ready":                metadataReady,
+		"auth_type_configured":          strings.TrimSpace(authType) != "",
+		"key_reference_present":         hasKeyReference,
+		"known_hosts_reference_present": hasKnownHostsReference,
+		"runtime_auth_bound":            false,
+		"known_hosts_bound":             false,
+		"ssh_client_configured":         false,
+		"external_call_made":            false,
+		"contains_private_key":          false,
+		"contains_passphrase":           false,
+		"contains_known_hosts_body":     false,
+		"contains_runtime_secret":       false,
+		"required_controls":             []string{"runtime_secret_binding", "known_hosts_review", "strict_host_key_policy", "operator_auth_review"},
+		"disabled_backends":             []string{"runtime_auth_binding", "known_hosts_materialization", "ssh_client_configure"},
+		"suppressed_fields":             []string{"private_key", "passphrase", "known_hosts_body", "runtime_secret", "secret_env"},
+		"blocked_reasons":               blockedReasons,
+		"execution_blockers":            []string{"runtime_auth_binding_not_approved", "runtime_auth_binding_not_performed"},
+		"message":                       "SSH auth binding is planned only; no private key, passphrase, known_hosts body, runtime secret, or SSH client is materialized.",
+	}
+}
+
+func sshRehearsalVerifyExecutionPlan(metadataReady, hasVerified bool) map[string]any {
+	verifyState := "blocked"
+	if metadataReady {
+		verifyState = "planned"
+	}
+	if hasVerified {
+		verifyState = "observed"
+	}
+	blockedReasons := []string{"ssh_verify_not_performed"}
+	if !metadataReady {
+		blockedReasons = append(blockedReasons, "machine_metadata_incomplete")
+	}
+	return map[string]any{
+		"mode":                      "ssh_rehearsal_verify_execution_plan",
+		"verify_state":              verifyState,
+		"metadata_ready":            metadataReady,
+		"completed_verify_evidence": hasVerified,
+		"operation_enqueued":        false,
+		"worker_job_created":        false,
+		"ssh_process_started":       false,
+		"verify_command_executed":   false,
+		"exit_code_recorded":        false,
+		"external_call_made":        false,
+		"stdout_included":           false,
+		"stderr_included":           false,
+		"raw_error_included":        false,
+		"contains_private_key":      false,
+		"contains_runtime_secret":   false,
+		"required_controls":         []string{"operation_approval", "runtime_auth_binding", "known_hosts_review", "connectivity_timeout_policy"},
+		"disabled_backends":         []string{"worker_job_create", "ssh_process_start", "ssh_verify_execute", "ssh_result_write"},
+		"suppressed_fields":         []string{"private_key", "passphrase", "known_hosts_body", "stdout", "stderr", "raw_error", "runtime_secret"},
+		"blocked_reasons":           blockedReasons,
+		"execution_blockers":        []string{"ssh_process_backend_disabled", "ssh_verify_not_performed"},
+		"message":                   "SSH verify rehearsal is planned only; no SSH process, command execution, output, or result row is produced.",
+	}
+}
+
+func sshRehearsalExecExecutionPlan(metadataReady, hasVerified, hasExecuted bool) map[string]any {
+	execState := "blocked"
+	if metadataReady && hasVerified {
+		execState = "planned"
+	}
+	if hasExecuted {
+		execState = "observed"
+	}
+	blockedReasons := []string{"ssh_exec_not_performed"}
+	if !metadataReady {
+		blockedReasons = append(blockedReasons, "machine_metadata_incomplete")
+	}
+	if !hasVerified && !hasExecuted {
+		blockedReasons = append(blockedReasons, "ssh_verify_evidence_missing")
+	}
+	return map[string]any{
+		"mode":                      "ssh_rehearsal_exec_execution_plan",
+		"exec_state":                execState,
+		"metadata_ready":            metadataReady,
+		"completed_verify_evidence": hasVerified,
+		"completed_exec_evidence":   hasExecuted,
+		"operation_enqueued":        false,
+		"worker_job_created":        false,
+		"ssh_process_started":       false,
+		"command_reviewed":          false,
+		"command_executed":          false,
+		"exit_code_recorded":        false,
+		"external_call_made":        false,
+		"stdout_included":           false,
+		"stderr_included":           false,
+		"raw_error_included":        false,
+		"contains_command":          false,
+		"contains_private_key":      false,
+		"contains_runtime_secret":   false,
+		"required_controls":         []string{"operation_approval", "completed_verify_evidence", "operator_command_review", "output_redaction_review"},
+		"disabled_backends":         []string{"worker_job_create", "ssh_process_start", "ssh_exec_execute", "ssh_result_write"},
+		"suppressed_fields":         []string{"command", "stdout", "stderr", "raw_error", "private_key", "passphrase", "runtime_secret"},
+		"blocked_reasons":           blockedReasons,
+		"execution_blockers":        []string{"ssh_process_backend_disabled", "ssh_exec_not_performed"},
+		"message":                   "SSH exec rehearsal is planned only; no command, SSH process, stdout, stderr, raw error, or result row is produced.",
 	}
 }
 
@@ -17120,13 +17242,16 @@ func sshRehearsalResultRecordingPlan() map[string]any {
 		"operation_log_written":         false,
 		"canonical_asset_sync_queued":   false,
 		"status_snapshot_written":       false,
+		"auth_binding_recorded":         false,
+		"verify_result_recorded":        false,
+		"exec_result_recorded":          false,
 		"stdout_included":               false,
 		"stderr_included":               false,
 		"raw_error_included":            false,
 		"private_key_included":          false,
 		"known_hosts_included":          false,
 		"authorization_header_included": false,
-		"required_result_fields":        []string{"operation_run_id", "ssh_machine_id", "operation_type", "status", "exit_code", "started_at", "finished_at", "sanitization_status"},
+		"required_result_fields":        []string{"operation_run_id", "ssh_machine_id", "operation_type", "status", "exit_code", "started_at", "finished_at", "auth_binding_status", "verify_result_status", "exec_result_status", "sanitization_status"},
 		"suppressed_fields":             []string{"private_key", "passphrase", "known_hosts_body", "command", "stdout", "stderr", "raw_error", "runtime_secret"},
 		"blocked_reasons":               []string{"ssh_rehearsal_execution_not_performed", "sanitized_ssh_result_not_recorded", "canonical_asset_sync_not_performed"},
 		"message":                       "SSH rehearsal results are not recorded by this preview; future execution must persist sanitized metadata without command output or auth material.",
