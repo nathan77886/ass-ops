@@ -670,7 +670,7 @@ func TestFirstVersionReadinessReportRequiresOperationLogs(t *testing.T) {
 
 func TestFirstVersionReadinessReportRequiresContextGraphEvidence(t *testing.T) {
 	missing := firstVersionReadinessReportWithGraph(nil, nil, nil, nil)
-	if got := readinessByKey(t, missing, "context"); got.Status != "missing" || got.Evidence != "0 context assets / 0 graph nodes / 0 graph edges" {
+	if got := readinessByKey(t, missing, "context"); got.Status != "missing" || got.Evidence != "0 context assets / 0 context generations / 0 graph nodes / 0 graph edges" {
 		t.Fatalf("context readiness without context or graph evidence = %#v, want missing", got)
 	}
 
@@ -678,25 +678,49 @@ func TestFirstVersionReadinessReportRequiresContextGraphEvidence(t *testing.T) {
 		{"asset_type": "ai_runtime"},
 		{"asset_type": "agent_task"},
 	}, nil, nil, nil)
-	if got := readinessByKey(t, withoutGraph, "context"); got.Status != "partial" || got.Evidence != "2 context assets / 0 graph nodes / 0 graph edges" {
+	if got := readinessByKey(t, withoutGraph, "context"); got.Status != "partial" || got.Evidence != "2 context assets / 0 context generations / 0 graph nodes / 0 graph edges" {
 		t.Fatalf("context readiness without graph evidence = %#v, want partial with graph evidence", got)
 	}
 
 	graphOnly := firstVersionReadinessReportWithGraph(nil, nil, nil, map[string]any{
 		"nodes": []any{map[string]any{"id": "project:1"}},
 	})
-	if got := readinessByKey(t, graphOnly, "context"); got.Status != "partial" || got.Evidence != "0 context assets / 1 graph nodes / 0 graph edges" {
+	if got := readinessByKey(t, graphOnly, "context"); got.Status != "partial" || got.Evidence != "0 context assets / 0 context generations / 1 graph nodes / 0 graph edges" {
 		t.Fatalf("context readiness without context assets = %#v, want partial with graph evidence", got)
 	}
 
-	withGraph := firstVersionReadinessReportWithGraph([]map[string]any{
+	withoutGeneration := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "ai_runtime"},
 	}, nil, nil, map[string]any{
 		"nodes": []any{map[string]any{"id": "project:1"}},
 		"edges": []any{map[string]any{"from_asset_id": "project:1", "to_asset_id": "repo:1"}},
 	})
-	if got := readinessByKey(t, withGraph, "context"); got.Status != "ready" || got.Evidence != "1 context assets / 1 graph nodes / 1 graph edges" {
+	if got := readinessByKey(t, withoutGeneration, "context"); got.Status != "partial" || got.Evidence != "1 context assets / 0 context generations / 1 graph nodes / 1 graph edges" {
+		t.Fatalf("context readiness without generation evidence = %#v, want partial", got)
+	}
+
+	withGeneration := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "ai_runtime"},
+		{"asset_type": "agent_tool_call", "status": "completed", "metadata": map[string]any{"tool_name": "context.generate"}},
+	}, nil, nil, map[string]any{
+		"nodes": []any{map[string]any{"id": "project:1"}},
+		"edges": []any{map[string]any{"from_asset_id": "project:1", "to_asset_id": "repo:1"}},
+	})
+	if got := readinessByKey(t, withGeneration, "context"); got.Status != "ready" || got.Evidence != "1 context assets / 1 context generations / 1 graph nodes / 1 graph edges" {
 		t.Fatalf("context readiness with graph evidence = %#v, want ready with graph evidence", got)
+	}
+}
+
+func TestCountContextGenerationEvidence(t *testing.T) {
+	assets := []map[string]any{
+		{"asset_type": "agent_tool_call", "status": "queued", "metadata": map[string]any{"tool_name": "context.generate"}},
+		{"asset_type": "agent_tool_call", "status": "completed", "metadata": map[string]any{"tool_name": "context.generate"}},
+		{"asset_type": "agent_tool_call", "status": "running", "metadata": map[string]any{"tool_name": "context.generate"}},
+		{"asset_type": "agent_tool_call", "status": "failed", "metadata": map[string]any{"tool_name": "context.generate"}},
+		{"asset_type": "agent_tool_call", "status": "completed", "metadata": map[string]any{"tool_name": "plan.review"}},
+	}
+	if got := countContextGenerationEvidence(assets); got != 2 {
+		t.Fatalf("countContextGenerationEvidence = %d, want 2", got)
 	}
 }
 

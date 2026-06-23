@@ -1304,6 +1304,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	operationRuns := max(assetCounts["operation_run"], len(operations))
 	operationLogs := countOperationRowsWithLogs(operations)
 	contextEvidence := assetCounts["agent_task"] + assetCounts["ai_runtime"]
+	contextGenerations := countContextGenerationEvidence(assets)
 	graphNodes := len(apiItemsByKey(graph, "nodes"))
 	graphEdges := len(apiItemsByKey(graph, "edges"))
 	graphEvidence := graphNodes + graphEdges
@@ -1324,7 +1325,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["argo_app"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0 && argoGraphLinks.CompleteApps > 0, fmt.Sprintf("%d targets / %d Argo connections / %d apps / %d sync ops / %d complete app links", assetCounts["deployment_target"], assetCounts["argo_connection"], assetCounts["argo_app"], operationCounts["argo.apps.sync"], argoGraphLinks.CompleteApps), argoEvidence > 0),
 		readinessItem("operations", "View operation history and logs", "Run any controlled operation and inspect its logs.", operationRuns > 0 && operationLogs > 0, fmt.Sprintf("%d runs / %d with logs", operationRuns, operationLogs), operationRuns > 0),
 		readinessItem("approval", "Enforce approval for high-risk operations", "Queue a high-risk action that creates an approval request.", (approvalEvidence > 0 || pendingApprovalOps > 0) && activeApprovalRules > 0, fmt.Sprintf("%d approvals / %d pending ops / %d active rules", approvalEvidence, pendingApprovalOps, activeApprovalRules), approvalEvidence > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0),
-		readinessItem("context", "Generate AI-readable context from graph", "Create an agent task or AI runtime after syncing the canonical asset ledger.", contextEvidence > 0 && graphEvidence > 0, fmt.Sprintf("%d context assets / %d graph nodes / %d graph edges", contextEvidence, graphNodes, graphEdges), contextEvidence > 0 || graphEvidence > 0),
+		readinessItem("context", "Generate AI-readable context from graph", "Create an agent task or AI runtime after syncing the canonical asset ledger.", contextEvidence > 0 && contextGenerations > 0 && graphEvidence > 0, fmt.Sprintf("%d context assets / %d context generations / %d graph nodes / %d graph edges", contextEvidence, contextGenerations, graphNodes, graphEdges), contextEvidence > 0 || contextGenerations > 0 || graphEvidence > 0),
 	}
 
 	counts := map[string]int{"ready": 0, "partial": 0, "missing": 0}
@@ -1344,6 +1345,20 @@ func countOperationRowsWithLogs(rows []map[string]any) int {
 	count := 0
 	for _, row := range rows {
 		if intFromAPI(row["log_count"]) > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func countContextGenerationEvidence(assets []map[string]any) int {
+	count := 0
+	for _, row := range assets {
+		metadata := mapFromAPI(row["metadata"])
+		status := strings.ToLower(strings.TrimSpace(fmt.Sprint(row["status"])))
+		if fmt.Sprint(row["asset_type"]) == "agent_tool_call" &&
+			fmt.Sprint(metadata["tool_name"]) == "context.generate" &&
+			(status == "queued" || status == "completed") {
 			count++
 		}
 	}

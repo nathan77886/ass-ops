@@ -571,6 +571,14 @@ function countOperationRowsWithLogs(rows: AnyRow[] = []) {
   return rows.filter((row) => Number(row.log_count || 0) > 0).length;
 }
 
+function countContextGenerationEvidence(assets: AnyRow[] = []) {
+  return assets.filter((row) =>
+    String(row.asset_type || '') === 'agent_tool_call' &&
+    String(row.metadata?.tool_name || '') === 'context.generate' &&
+    ['queued', 'completed'].includes(String(row.status || '').toLowerCase())
+  ).length;
+}
+
 function countRowsByTypeStatus(rows: AnyRow[] = [], type: string, status: string) {
   return rows.filter((row) => String(row.asset_type || '') === type && String(row.status || '') === status).length;
 }
@@ -706,6 +714,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const operationRuns = Math.max(assetCounts.operation_run || 0, operations.length);
   const operationLogs = countOperationRowsWithLogs(operations);
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
+  const contextGenerations = countContextGenerationEvidence(assets);
   const repositoryGraphLinks = countRepositoryGraphLinks(graph);
   const repoSyncGraphLinks = countRepoSyncGraphLinks(graph);
   const githubActionLinks = countGitHubActionGraphLinks(graph);
@@ -774,7 +783,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'context',
       label: 'Generate AI-readable context from graph',
       next: 'Create an agent task or AI runtime after syncing the canonical asset ledger.',
-      ...readinessState(contextEvidence > 0 && graphEvidence > 0, `${contextEvidence} context assets / ${graphNodes} graph nodes / ${graphEdges} graph edges`, contextEvidence > 0 || graphEvidence > 0)
+      ...readinessState(contextEvidence > 0 && contextGenerations > 0 && graphEvidence > 0, `${contextEvidence} context assets / ${contextGenerations} context generations / ${graphNodes} graph nodes / ${graphEdges} graph edges`, contextEvidence > 0 || contextGenerations > 0 || graphEvidence > 0)
     }
   ];
 }
