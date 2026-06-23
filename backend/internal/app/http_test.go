@@ -3719,8 +3719,10 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateActivationPlan["operation_name"] != "create_branch_ref" ||
 		candidateActivationPlan["endpoint_key"] != "github.create_branch_ref" ||
 		candidateActivationPlan["operation_order"] != 10 ||
+		len(mapFromAny(candidateActivationPlan["live_adapter_plan"])) == 0 ||
 		candidateActivationPlan["activation_scope"] != "provider_review_attempt_operation" ||
 		candidateActivationPlan["activation_policy"] != "require_all_redacted_subplans_and_mutation_gate" ||
+		candidateActivationPlan["requires_live_adapter"] != true ||
 		candidateActivationPlan["requires_execution_lock"] != true ||
 		candidateActivationPlan["requires_provider_send_plan"] != true ||
 		candidateActivationPlan["claim_metadata_ready"] != true ||
@@ -3732,8 +3734,9 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateActivationPlan["provider_send_metadata_ready"] != false ||
 		candidateActivationPlan["response_recording_ready"] != false ||
 		candidateActivationPlan["transaction_metadata_ready"] != true ||
-		candidateActivationPlan["live_adapter_registered"] != false ||
+		candidateActivationPlan["live_adapter_registered"] != true ||
 		candidateActivationPlan["adapter_implemented"] != false ||
+		candidateActivationPlan["live_adapter_implemented"] != false ||
 		candidateActivationPlan["adapter_activation_approved"] != false ||
 		candidateActivationPlan["mutation_gate_armed"] != false ||
 		candidateActivationPlan["provider_api_call_made"] != false ||
@@ -3749,9 +3752,11 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		t.Fatalf("attempt execution candidate activation plan = %#v", candidateActivationPlan)
 	}
 	candidateActivationSequence := stringSliceFromAny(candidateActivationPlan["adapter_activation_sequence"])
-	if len(candidateActivationSequence) != 10 ||
-		candidateActivationSequence[0] != "verify_claim_metadata" ||
-		candidateActivationSequence[9] != "verify_mutation_arming" {
+	if len(candidateActivationSequence) != 11 ||
+		candidateActivationSequence[0] != "verify_live_adapter_registry" ||
+		candidateActivationSequence[1] != "verify_claim_metadata" ||
+		candidateActivationSequence[2] != "verify_execution_lock_metadata" ||
+		candidateActivationSequence[10] != "verify_mutation_arming" {
 		t.Fatalf("attempt execution candidate activation sequence = %#v", candidateActivationSequence)
 	}
 	candidateActivationSuppressedFields := stringSliceFromAny(candidateActivationPlan["adapter_activation_suppressed_fields"])
@@ -3765,6 +3770,45 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateActivationBlockedReasons[0] != "provider_review_adapter_activation_not_armed" ||
 		candidateActivationBlockedReasons[3] != "provider_review_mutation_not_armed" {
 		t.Fatalf("attempt execution candidate activation blocked reasons = %#v", candidateActivationBlockedReasons)
+	}
+	candidateLiveAdapterPlan := mapFromAny(candidateActivationPlan["live_adapter_plan"])
+	if candidateLiveAdapterPlan["mode"] != "redacted_attempt_live_adapter_plan" ||
+		candidateLiveAdapterPlan["live_adapter_state"] != "blocked" ||
+		candidateLiveAdapterPlan["live_adapter_ready"] != false ||
+		candidateLiveAdapterPlan["live_adapter_ready_reason"] != "provider_review_live_adapter_not_implemented" ||
+		candidateLiveAdapterPlan["provider_type"] != "github" ||
+		candidateLiveAdapterPlan["operation_name"] != "create_branch_ref" ||
+		candidateLiveAdapterPlan["endpoint_key"] != "github.create_branch_ref" ||
+		candidateLiveAdapterPlan["adapter_name"] != "github_live_provider_review_adapter" ||
+		candidateLiveAdapterPlan["adapter_interface_registered"] != true ||
+		candidateLiveAdapterPlan["live_adapter_registered"] != true ||
+		candidateLiveAdapterPlan["live_adapter_implemented"] != false ||
+		candidateLiveAdapterPlan["requires_activation_plan"] != true ||
+		candidateLiveAdapterPlan["provider_request_sent"] != false ||
+		candidateLiveAdapterPlan["external_call_made"] != false ||
+		candidateLiveAdapterPlan["provider_api_call_made"] != false ||
+		candidateLiveAdapterPlan["provider_api_mutation"] != "disabled" ||
+		candidateLiveAdapterPlan["provider_url_included"] != false ||
+		candidateLiveAdapterPlan["idempotency_key_included"] != false ||
+		candidateLiveAdapterPlan["contains_token"] != false ||
+		candidateLiveAdapterPlan["contains_provider_url"] != false ||
+		candidateLiveAdapterPlan["contains_repository_ref"] != false ||
+		candidateLiveAdapterPlan["contains_branch_name"] != false ||
+		candidateLiveAdapterPlan["contains_file_content"] != false ||
+		candidateLiveAdapterPlan["live_adapter_boundary_redacted"] != true {
+		t.Fatalf("attempt execution candidate live adapter plan = %#v", candidateLiveAdapterPlan)
+	}
+	candidateLiveAdapterMethods := stringSliceFromAny(candidateLiveAdapterPlan["live_adapter_required_methods"])
+	if len(candidateLiveAdapterMethods) != 6 ||
+		candidateLiveAdapterMethods[0] != "verify_activation" ||
+		candidateLiveAdapterMethods[5] != "record_attempt_transaction" {
+		t.Fatalf("attempt execution candidate live adapter methods = %#v", candidateLiveAdapterMethods)
+	}
+	candidateLiveAdapterSuppressedFields := stringSliceFromAny(candidateLiveAdapterPlan["live_adapter_suppressed_fields"])
+	if len(candidateLiveAdapterSuppressedFields) != 10 ||
+		candidateLiveAdapterSuppressedFields[0] != "provider_url" ||
+		candidateLiveAdapterSuppressedFields[9] != "lock_key" {
+		t.Fatalf("attempt execution candidate live adapter suppressed fields = %#v", candidateLiveAdapterSuppressedFields)
 	}
 	candidateProviderSendPlan := mapFromAny(candidateInvocationPlan["provider_send_plan"])
 	if candidateProviderSendPlan["mode"] != "redacted_attempt_adapter_provider_send_plan" ||
@@ -5050,8 +5094,10 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		activationPlan["operation_name"] != "create_branch_ref" ||
 		activationPlan["endpoint_key"] != "github.create_branch_ref" ||
 		activationPlan["operation_order"] != 10 ||
+		len(mapFromAny(activationPlan["live_adapter_plan"])) == 0 ||
 		activationPlan["activation_scope"] != "provider_review_attempt_operation" ||
 		activationPlan["activation_policy"] != "require_all_redacted_subplans_and_mutation_gate" ||
+		activationPlan["requires_live_adapter"] != true ||
 		activationPlan["requires_attempt_claim"] != true ||
 		activationPlan["requires_execution_lock"] != true ||
 		activationPlan["requires_credential_binding"] != true ||
@@ -5071,8 +5117,9 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		activationPlan["provider_send_metadata_ready"] != false ||
 		activationPlan["response_recording_ready"] != false ||
 		activationPlan["transaction_metadata_ready"] != true ||
-		activationPlan["live_adapter_registered"] != false ||
+		activationPlan["live_adapter_registered"] != true ||
 		activationPlan["adapter_implemented"] != false ||
+		activationPlan["live_adapter_implemented"] != false ||
 		activationPlan["adapter_activation_approved"] != false ||
 		activationPlan["mutation_gate_armed"] != false ||
 		activationPlan["provider_request_sent"] != false ||
@@ -5095,10 +5142,11 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		t.Fatalf("activation plan = %#v", activationPlan)
 	}
 	activationSequence := stringSliceFromAny(activationPlan["adapter_activation_sequence"])
-	if len(activationSequence) != 10 ||
-		activationSequence[0] != "verify_claim_metadata" ||
-		activationSequence[1] != "verify_execution_lock_metadata" ||
-		activationSequence[9] != "verify_mutation_arming" {
+	if len(activationSequence) != 11 ||
+		activationSequence[0] != "verify_live_adapter_registry" ||
+		activationSequence[1] != "verify_claim_metadata" ||
+		activationSequence[2] != "verify_execution_lock_metadata" ||
+		activationSequence[10] != "verify_mutation_arming" {
 		t.Fatalf("activation sequence = %#v", activationSequence)
 	}
 	activationSuppressedFields := stringSliceFromAny(activationPlan["adapter_activation_suppressed_fields"])
@@ -5114,9 +5162,10 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		t.Fatalf("activation config gates = %#v", activationConfigGates)
 	}
 	activationInterfaces := stringSliceFromAny(activationPlan["adapter_activation_required_interfaces"])
-	if len(activationInterfaces) != 5 ||
-		activationInterfaces[0] != "providerReviewAttemptAdapterRuntime" ||
-		activationInterfaces[4] != "providerReviewAttemptResponseHandler" {
+	if len(activationInterfaces) != 6 ||
+		activationInterfaces[0] != "providerReviewAttemptLiveAdapter" ||
+		activationInterfaces[1] != "providerReviewAttemptAdapterRuntime" ||
+		activationInterfaces[5] != "providerReviewAttemptResponseHandler" {
 		t.Fatalf("activation interfaces = %#v", activationInterfaces)
 	}
 	activationStatusInputs := stringSliceFromAny(activationPlan["adapter_activation_required_status_inputs"])
@@ -5136,6 +5185,69 @@ func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
 		activationBlockedReasons[2] != "provider_review_live_adapter_not_implemented" ||
 		activationBlockedReasons[3] != "provider_review_mutation_not_armed" {
 		t.Fatalf("activation blocked reasons = %#v", activationBlockedReasons)
+	}
+	liveAdapterPlan := mapFromAny(activationPlan["live_adapter_plan"])
+	if liveAdapterPlan["mode"] != "redacted_attempt_live_adapter_plan" ||
+		liveAdapterPlan["live_adapter_state"] != "blocked" ||
+		liveAdapterPlan["live_adapter_ready"] != false ||
+		liveAdapterPlan["live_adapter_ready_reason"] != "provider_review_live_adapter_not_implemented" ||
+		liveAdapterPlan["provider_type"] != "github" ||
+		liveAdapterPlan["operation_name"] != "create_branch_ref" ||
+		liveAdapterPlan["endpoint_key"] != "github.create_branch_ref" ||
+		liveAdapterPlan["adapter_name"] != "github_live_provider_review_adapter" ||
+		liveAdapterPlan["adapter_interface_registered"] != true ||
+		liveAdapterPlan["live_adapter_registered"] != true ||
+		liveAdapterPlan["live_adapter_implemented"] != false ||
+		liveAdapterPlan["requires_activation_plan"] != true ||
+		liveAdapterPlan["requires_execution_lock"] != true ||
+		liveAdapterPlan["requires_provider_client"] != true ||
+		liveAdapterPlan["requires_request_builder"] != true ||
+		liveAdapterPlan["requires_execute_method"] != true ||
+		liveAdapterPlan["requires_response_handler"] != true ||
+		liveAdapterPlan["requires_transaction_handler"] != true ||
+		liveAdapterPlan["requires_mutation_arming"] != true ||
+		liveAdapterPlan["activation_plan_verified"] != false ||
+		liveAdapterPlan["execution_lock_verified"] != false ||
+		liveAdapterPlan["provider_request_sent"] != false ||
+		liveAdapterPlan["external_call_made"] != false ||
+		liveAdapterPlan["provider_api_call_made"] != false ||
+		liveAdapterPlan["provider_api_mutation"] != "disabled" ||
+		liveAdapterPlan["request_body_included"] != false ||
+		liveAdapterPlan["response_body_included"] != false ||
+		liveAdapterPlan["headers_included"] != false ||
+		liveAdapterPlan["authorization_header_included"] != false ||
+		liveAdapterPlan["provider_url_included"] != false ||
+		liveAdapterPlan["idempotency_key_included"] != false ||
+		liveAdapterPlan["provider_request_id_included"] != false ||
+		liveAdapterPlan["contains_token"] != false ||
+		liveAdapterPlan["contains_provider_url"] != false ||
+		liveAdapterPlan["contains_repository_ref"] != false ||
+		liveAdapterPlan["contains_branch_name"] != false ||
+		liveAdapterPlan["contains_file_content"] != false ||
+		liveAdapterPlan["live_adapter_boundary_redacted"] != true {
+		t.Fatalf("live adapter plan = %#v", liveAdapterPlan)
+	}
+	liveAdapterMethods := stringSliceFromAny(liveAdapterPlan["live_adapter_required_methods"])
+	if len(liveAdapterMethods) != 6 ||
+		liveAdapterMethods[0] != "verify_activation" ||
+		liveAdapterMethods[5] != "record_attempt_transaction" {
+		t.Fatalf("live adapter methods = %#v", liveAdapterMethods)
+	}
+	liveAdapterSuppressedFields := stringSliceFromAny(liveAdapterPlan["live_adapter_suppressed_fields"])
+	if len(liveAdapterSuppressedFields) != 10 ||
+		liveAdapterSuppressedFields[0] != "provider_url" ||
+		liveAdapterSuppressedFields[9] != "lock_key" {
+		t.Fatalf("live adapter suppressed fields = %#v", liveAdapterSuppressedFields)
+	}
+	liveAdapterCapabilities := stringSliceFromAny(liveAdapterPlan["live_adapter_required_capabilities"])
+	if len(liveAdapterCapabilities) != 1 || liveAdapterCapabilities[0] != "repository_ref_write" {
+		t.Fatalf("live adapter capabilities = %#v", liveAdapterCapabilities)
+	}
+	liveAdapterBlockedReasons := stringSliceFromAny(liveAdapterPlan["blocked_reasons"])
+	if len(liveAdapterBlockedReasons) != 3 ||
+		liveAdapterBlockedReasons[0] != "provider_review_live_adapter_not_implemented" ||
+		liveAdapterBlockedReasons[2] != "provider_review_mutation_not_armed" {
+		t.Fatalf("live adapter blocked reasons = %#v", liveAdapterBlockedReasons)
 	}
 	providerSendPlan := mapFromAny(plan["provider_send_plan"])
 	if providerSendPlan["mode"] != "redacted_attempt_adapter_provider_send_plan" ||
@@ -5547,6 +5659,142 @@ func TestProviderReviewAttemptAdapterActivationMetadataReadyReason(t *testing.T)
 			)
 			if got != tt.want {
 				t.Fatalf("providerReviewAttemptAdapterActivationMetadataReadyReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProviderReviewAttemptLiveAdapterPlan(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		provider    string
+		operation   string
+		endpoint    string
+		adapterName string
+		capability  string
+		expectEmpty bool
+	}{
+		{
+			name:        "github branch ref",
+			provider:    "github",
+			operation:   "create_branch_ref",
+			endpoint:    "github.create_branch_ref",
+			adapterName: "github_live_provider_review_adapter",
+			capability:  "repository_ref_write",
+		},
+		{
+			name:        "gitea review request",
+			provider:    "gitea",
+			operation:   "open_review_request",
+			endpoint:    "gitea.open_review",
+			adapterName: "gitea_live_provider_review_adapter",
+			capability:  "review_request_write",
+		},
+		{
+			name:        "unknown provider",
+			provider:    "raw",
+			operation:   "create_branch_ref",
+			endpoint:    "github.create_branch_ref",
+			expectEmpty: true,
+		},
+		{
+			name:        "provider endpoint mismatch",
+			provider:    "github",
+			operation:   "create_branch_ref",
+			endpoint:    "gitea.create_branch_ref",
+			expectEmpty: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := providerReviewAttemptLiveAdapterPlan(tt.provider, tt.operation, tt.endpoint)
+			if tt.expectEmpty {
+				if len(plan) != 0 {
+					t.Fatalf("providerReviewAttemptLiveAdapterPlan() = %#v, want empty", plan)
+				}
+				return
+			}
+			if plan["mode"] != "redacted_attempt_live_adapter_plan" ||
+				plan["live_adapter_state"] != "blocked" ||
+				plan["live_adapter_ready"] != false ||
+				plan["live_adapter_ready_reason"] != "provider_review_live_adapter_not_implemented" ||
+				plan["provider_type"] != tt.provider ||
+				plan["operation_name"] != tt.operation ||
+				plan["endpoint_key"] != tt.endpoint ||
+				plan["adapter_name"] != tt.adapterName ||
+				plan["adapter_interface_registered"] != true ||
+				plan["live_adapter_registered"] != true ||
+				plan["live_adapter_implemented"] != false ||
+				plan["requires_activation_plan"] != true ||
+				plan["requires_attempt_claim"] != true ||
+				plan["requires_execution_lock"] != true ||
+				plan["requires_provider_client"] != true ||
+				plan["requires_request_builder"] != true ||
+				plan["requires_execute_method"] != true ||
+				plan["requires_response_handler"] != true ||
+				plan["requires_transaction_handler"] != true ||
+				plan["requires_mutation_arming"] != true ||
+				plan["activation_plan_verified"] != false ||
+				plan["attempt_claim_verified"] != false ||
+				plan["execution_lock_verified"] != false ||
+				plan["provider_client_constructed"] != false ||
+				plan["request_built"] != false ||
+				plan["execute_method_invoked"] != false ||
+				plan["response_handler_invoked"] != false ||
+				plan["transaction_recorded"] != false ||
+				plan["provider_request_sent"] != false ||
+				plan["external_call_made"] != false ||
+				plan["provider_api_call_made"] != false ||
+				plan["provider_api_mutation"] != "disabled" ||
+				plan["request_body_included"] != false ||
+				plan["response_body_included"] != false ||
+				plan["headers_included"] != false ||
+				plan["authorization_header_included"] != false ||
+				plan["provider_url_included"] != false ||
+				plan["idempotency_key_included"] != false ||
+				plan["provider_request_id_included"] != false ||
+				plan["contains_token"] != false ||
+				plan["contains_provider_url"] != false ||
+				plan["contains_repository_ref"] != false ||
+				plan["contains_branch_name"] != false ||
+				plan["contains_file_content"] != false ||
+				plan["live_adapter_boundary_redacted"] != true {
+				t.Fatalf("live adapter plan = %#v", plan)
+			}
+			methods := stringSliceFromAny(plan["live_adapter_required_methods"])
+			if len(methods) != 6 ||
+				methods[0] != "verify_activation" ||
+				methods[3] != "send_provider_request" ||
+				methods[5] != "record_attempt_transaction" {
+				t.Fatalf("live adapter methods = %#v", methods)
+			}
+			interfaces := stringSliceFromAny(plan["live_adapter_required_interfaces"])
+			if len(interfaces) != 5 ||
+				interfaces[0] != "providerReviewAttemptAdapterRuntime" ||
+				interfaces[4] != "providerReviewAttemptResponseHandler" {
+				t.Fatalf("live adapter interfaces = %#v", interfaces)
+			}
+			suppressedFields := stringSliceFromAny(plan["live_adapter_suppressed_fields"])
+			if len(suppressedFields) != 10 ||
+				suppressedFields[0] != "provider_url" ||
+				suppressedFields[9] != "lock_key" {
+				t.Fatalf("live adapter suppressed fields = %#v", suppressedFields)
+			}
+			capabilities := stringSliceFromAny(plan["live_adapter_required_capabilities"])
+			if len(capabilities) != 1 || capabilities[0] != tt.capability {
+				t.Fatalf("live adapter capabilities = %#v", capabilities)
+			}
+			blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
+			if len(blockedReasons) != 3 ||
+				blockedReasons[0] != "provider_review_live_adapter_not_implemented" ||
+				blockedReasons[1] != "provider_review_adapter_activation_not_armed" ||
+				blockedReasons[2] != "provider_review_mutation_not_armed" {
+				t.Fatalf("live adapter blocked reasons = %#v", blockedReasons)
+			}
+			encoded, _ := json.Marshal(plan)
+			for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+				if strings.Contains(string(encoded), leak) {
+					t.Fatalf("live adapter plan leaked %q: %s", leak, encoded)
+				}
 			}
 		})
 	}

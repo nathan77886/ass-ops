@@ -28,6 +28,11 @@ type providerReviewAttemptResponseHandler interface {
 	BuildPlan(providerReviewAttemptResponseHandlerInput) map[string]any
 }
 
+type providerReviewAttemptLiveAdapter interface {
+	AdapterName() string
+	BuildPlan(providerReviewAttemptLiveAdapterInput) map[string]any
+}
+
 type providerReviewAttemptAdapterRuntimeInput struct {
 	ProviderType  string
 	OperationName string
@@ -66,6 +71,12 @@ type providerReviewAttemptResponseHandlerInput struct {
 	EndpointKey   string
 }
 
+type providerReviewAttemptLiveAdapterInput struct {
+	ProviderType  string
+	OperationName string
+	EndpointKey   string
+}
+
 type disabledProviderReviewAdapterRuntime struct {
 	adapterKind string
 }
@@ -84,6 +95,10 @@ type disabledProviderReviewAttemptExecuteMethod struct {
 
 type disabledProviderReviewAttemptResponseHandler struct {
 	handlerName string
+}
+
+type disabledProviderReviewAttemptLiveAdapter struct {
+	adapterName string
 }
 
 func (a disabledProviderReviewAdapterRuntime) AdapterKind() string {
@@ -373,12 +388,92 @@ func (h disabledProviderReviewAttemptResponseHandler) BuildPlan(input providerRe
 	}
 }
 
+func (a disabledProviderReviewAttemptLiveAdapter) AdapterName() string {
+	return a.adapterName
+}
+
+func (a disabledProviderReviewAttemptLiveAdapter) BuildPlan(input providerReviewAttemptLiveAdapterInput) map[string]any {
+	providerType := safeProviderReviewProviderType(input.ProviderType)
+	operationName := safeProviderReviewAttemptOperationName(input.OperationName)
+	endpointKey := safeProviderReviewEndpointKey(input.EndpointKey)
+	if providerType == "" || operationName == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"mode":                               "redacted_attempt_live_adapter_plan",
+		"live_adapter_state":                 "blocked",
+		"live_adapter_ready":                 false,
+		"live_adapter_ready_reason":          "provider_review_live_adapter_not_implemented",
+		"provider_type":                      providerType,
+		"operation_name":                     operationName,
+		"endpoint_key":                       endpointKey,
+		"adapter_name":                       a.AdapterName(),
+		"adapter_interface_registered":       true,
+		"live_adapter_registered":            true,
+		"live_adapter_implemented":           false,
+		"requires_activation_plan":           true,
+		"requires_attempt_claim":             true,
+		"requires_execution_lock":            true,
+		"requires_provider_client":           true,
+		"requires_request_builder":           true,
+		"requires_execute_method":            true,
+		"requires_response_handler":          true,
+		"requires_transaction_handler":       true,
+		"requires_mutation_arming":           true,
+		"activation_plan_verified":           false,
+		"attempt_claim_verified":             false,
+		"execution_lock_verified":            false,
+		"provider_client_constructed":        false,
+		"request_built":                      false,
+		"execute_method_invoked":             false,
+		"response_handler_invoked":           false,
+		"transaction_recorded":               false,
+		"provider_request_sent":              false,
+		"external_call_made":                 false,
+		"provider_api_call_made":             false,
+		"provider_api_mutation":              "disabled",
+		"request_body_included":              false,
+		"response_body_included":             false,
+		"headers_included":                   false,
+		"authorization_header_included":      false,
+		"provider_url_included":              false,
+		"idempotency_key_included":           false,
+		"provider_request_id_included":       false,
+		"contains_token":                     false,
+		"contains_provider_url":              false,
+		"contains_repository_ref":            false,
+		"contains_branch_name":               false,
+		"contains_file_content":              false,
+		"live_adapter_boundary_redacted":     true,
+		"live_adapter_required_interfaces":   []string{"providerReviewAttemptAdapterRuntime", "providerReviewAttemptRequestBuilder", "providerReviewAttemptProviderClientFactory", "providerReviewAttemptExecuteMethod", "providerReviewAttemptResponseHandler"},
+		"live_adapter_required_methods":      []string{"verify_activation", "claim_execution", "build_request", "send_provider_request", "handle_response", "record_attempt_transaction"},
+		"live_adapter_suppressed_fields":     []string{"provider_url", "authorization_header", "token", "request_body", "response_body", "repository_ref", "branch_name", "file_content", "idempotency_key", "lock_key"},
+		"live_adapter_required_capabilities": providerReviewClientRequiredCapabilitiesForOperation(operationName),
+		"blocked_reasons": []string{
+			"provider_review_live_adapter_not_implemented",
+			"provider_review_adapter_activation_not_armed",
+			"provider_review_mutation_not_armed",
+		},
+	}
+}
+
 func providerReviewAttemptAdapterRuntimeForProvider(providerType string) providerReviewAttemptAdapterRuntime {
 	switch safeProviderReviewProviderType(providerType) {
 	case "github":
 		return disabledProviderReviewAdapterRuntime{adapterKind: "github_provider_review_adapter"}
 	case "gitea":
 		return disabledProviderReviewAdapterRuntime{adapterKind: "gitea_provider_review_adapter"}
+	default:
+		return nil
+	}
+}
+
+func providerReviewAttemptLiveAdapterForProvider(providerType string) providerReviewAttemptLiveAdapter {
+	switch safeProviderReviewProviderType(providerType) {
+	case "github":
+		return disabledProviderReviewAttemptLiveAdapter{adapterName: "github_live_provider_review_adapter"}
+	case "gitea":
+		return disabledProviderReviewAttemptLiveAdapter{adapterName: "gitea_live_provider_review_adapter"}
 	default:
 		return nil
 	}
@@ -432,6 +527,21 @@ func providerReviewAttemptResponseHandlerForOperation(operationName string) prov
 	default:
 		return nil
 	}
+}
+
+func providerReviewAttemptLiveAdapterPlan(providerType, operationName, endpointKey string) map[string]any {
+	providerType = safeProviderReviewProviderType(providerType)
+	operationName = safeProviderReviewAttemptOperationName(operationName)
+	endpointKey = safeProviderReviewEndpointKey(endpointKey)
+	adapter := providerReviewAttemptLiveAdapterForProvider(providerType)
+	if adapter == nil || operationName == "" || endpointKey == "" || providerReviewProviderFromEndpointKey(endpointKey) != providerType {
+		return map[string]any{}
+	}
+	return adapter.BuildPlan(providerReviewAttemptLiveAdapterInput{
+		ProviderType:  providerType,
+		OperationName: operationName,
+		EndpointKey:   endpointKey,
+	})
 }
 
 func providerReviewAttemptAdapterRuntimePlan(providerType, operationName, endpointKey string) map[string]any {

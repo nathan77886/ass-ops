@@ -11294,6 +11294,11 @@ func providerReviewAttemptAdapterActivationPlan(operation, claimPlan, executionL
 	if operationName == "" || endpointKey == "" {
 		return map[string]any{}
 	}
+	providerType := providerReviewProviderFromEndpointKey(endpointKey)
+	if providerType == "" {
+		return map[string]any{}
+	}
+	liveAdapterPlan := providerReviewAttemptLiveAdapterPlan(providerType, operationName, endpointKey)
 	claimReady := boolOnlyFromAny(claimPlan["claim_metadata_ready"])
 	executionLockReady := boolOnlyFromAny(executionLockPlan["execution_lock_metadata_ready"])
 	credentialReady := boolOnlyFromAny(credentialPlan["credential_binding_ready"])
@@ -11322,8 +11327,10 @@ func providerReviewAttemptAdapterActivationPlan(operation, claimPlan, executionL
 		"operation_name":                            operationName,
 		"endpoint_key":                              endpointKey,
 		"operation_order":                           intFromAny(operation["operation_order"], 0),
+		"live_adapter_plan":                         liveAdapterPlan,
 		"activation_scope":                          "provider_review_attempt_operation",
 		"activation_policy":                         "require_all_redacted_subplans_and_mutation_gate",
+		"requires_live_adapter":                     true,
 		"requires_attempt_claim":                    true,
 		"requires_execution_lock":                   true,
 		"requires_credential_binding":               true,
@@ -11343,8 +11350,9 @@ func providerReviewAttemptAdapterActivationPlan(operation, claimPlan, executionL
 		"provider_send_metadata_ready":              providerSendReady,
 		"response_recording_ready":                  responseReady,
 		"transaction_metadata_ready":                transactionReady,
-		"live_adapter_registered":                   false,
+		"live_adapter_registered":                   boolOnlyFromAny(liveAdapterPlan["live_adapter_registered"]),
 		"adapter_implemented":                       false,
+		"live_adapter_implemented":                  boolOnlyFromAny(liveAdapterPlan["live_adapter_implemented"]),
 		"adapter_activation_approved":               false,
 		"mutation_gate_armed":                       false,
 		"provider_request_sent":                     false,
@@ -11364,10 +11372,10 @@ func providerReviewAttemptAdapterActivationPlan(operation, claimPlan, executionL
 		"contains_branch_name":                      false,
 		"contains_file_content":                     false,
 		"adapter_activation_boundary_redacted":      true,
-		"adapter_activation_sequence":               []string{"verify_claim_metadata", "verify_execution_lock_metadata", "verify_credential_binding", "verify_runtime_contract", "verify_request_materialization", "verify_transport_contract", "verify_provider_send_contract", "verify_response_recording", "verify_transaction_boundary", "verify_mutation_arming"},
+		"adapter_activation_sequence":               []string{"verify_live_adapter_registry", "verify_claim_metadata", "verify_execution_lock_metadata", "verify_credential_binding", "verify_runtime_contract", "verify_request_materialization", "verify_transport_contract", "verify_provider_send_contract", "verify_response_recording", "verify_transaction_boundary", "verify_mutation_arming"},
 		"adapter_activation_suppressed_fields":      []string{"provider_url", "authorization_header", "token", "request_body", "response_body", "repository_ref", "branch_name", "file_content", "idempotency_key", "lock_key"},
 		"adapter_activation_required_config_gates":  []string{"ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION", "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION"},
-		"adapter_activation_required_interfaces":    []string{"providerReviewAttemptAdapterRuntime", "providerReviewAttemptRequestBuilder", "providerReviewAttemptProviderClientFactory", "providerReviewAttemptExecuteMethod", "providerReviewAttemptResponseHandler"},
+		"adapter_activation_required_interfaces":    []string{"providerReviewAttemptLiveAdapter", "providerReviewAttemptAdapterRuntime", "providerReviewAttemptRequestBuilder", "providerReviewAttemptProviderClientFactory", "providerReviewAttemptExecuteMethod", "providerReviewAttemptResponseHandler"},
 		"adapter_activation_required_capabilities":  providerReviewClientRequiredCapabilitiesForOperation(operationName),
 		"adapter_activation_required_status_inputs": []string{"claim_metadata_ready", "execution_lock_metadata_ready", "credential_binding_ready", "runtime_ready", "request_materialization_ready", "transport_ready", "provider_send_metadata_ready", "response_recording_ready", "transaction_metadata_ready"},
 		"blocked_reasons": []string{
