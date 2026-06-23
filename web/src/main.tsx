@@ -634,6 +634,30 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}) {
   ).length;
 }
 
+function countArgoGraphLinks(graph: AnyRow = {}) {
+  const byApp: Record<string, { connection?: boolean; target?: boolean }> = {};
+  const appEntry = (assetID: string) => {
+    byApp[assetID] ||= {};
+    return byApp[assetID];
+  };
+  const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
+    const relation = String(edge.relation_type || '');
+    const from = String(edge.from_asset_id || '');
+    const to = String(edge.to_asset_id || '');
+    if (relation === 'manages' && from.startsWith('argo_connection:') && to.startsWith('argo_app:')) {
+      nextCounts.connectionApps += 1;
+      appEntry(to).connection = true;
+    }
+    if (relation === 'deployed_to' && from.startsWith('argo_app:') && to.startsWith('deployment_target:')) {
+      nextCounts.appTargets += 1;
+      appEntry(from).target = true;
+    }
+    return nextCounts;
+  }, { connectionApps: 0, appTargets: 0, completeApps: 0 });
+  counts.completeApps = Object.values(byApp).filter((entry) => entry.connection && entry.target).length;
+  return counts;
+}
+
 function graphPayloadAvailable(graph: AnyRow | null) {
   if (!graph) return false;
   return Object.prototype.hasOwnProperty.call(graph, 'nodes') || Object.prototype.hasOwnProperty.call(graph, 'edges');
@@ -652,7 +676,6 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const giteaWebhooks = countRowsByTypeMetadata(assets, 'webhook_connection', 'provider', 'gitea');
   const giteaWebhookEvents = countRowsByTypeMetadata(assets, 'webhook_event', 'provider', 'gitea');
   const sshRuns = (operationCounts['ssh.exec'] || 0) + (operationCounts['ssh.command'] || 0);
-  const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0);
   const approvalEvidence = Number(approvalSummary.total || 0);
   const pendingApprovalOps = operations.filter((row) => String(row.status || '') === 'pending_approval').length;
   const activeApprovalRules = countRowsByTypeStatus(assets, 'operation_approval_rule', 'active');
@@ -662,6 +685,8 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const repositoryGraphLinks = countRepositoryGraphLinks(graph);
   const repoSyncGraphLinks = countRepoSyncGraphLinks(graph);
   const githubActionLinks = countGitHubActionGraphLinks(graph);
+  const argoGraphLinks = countArgoGraphLinks(graph);
+  const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.argo_app || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0) + argoGraphLinks.connectionApps + argoGraphLinks.appTargets;
   const graphNodes = graphItems(graph, 'nodes').length;
   const graphEdges = graphItems(graph, 'edges').length;
   const graphEvidence = graphNodes + graphEdges;
@@ -706,7 +731,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'argo',
       label: 'Sync Argo apps to deployment targets',
       next: 'Create an Argo connection, sync apps, and inspect deployment targets.',
-      ...readinessState((assetCounts.argo_connection || 0) > 0 && (assetCounts.deployment_target || 0) > 0 && (operationCounts['argo.apps.sync'] || 0) > 0, `${assetCounts.deployment_target || 0} targets / ${assetCounts.argo_connection || 0} Argo connections / ${operationCounts['argo.apps.sync'] || 0} sync ops`, argoEvidence > 0)
+      ...readinessState((assetCounts.argo_connection || 0) > 0 && (assetCounts.argo_app || 0) > 0 && (assetCounts.deployment_target || 0) > 0 && (operationCounts['argo.apps.sync'] || 0) > 0 && argoGraphLinks.completeApps > 0, `${assetCounts.deployment_target || 0} targets / ${assetCounts.argo_connection || 0} Argo connections / ${assetCounts.argo_app || 0} apps / ${operationCounts['argo.apps.sync'] || 0} sync ops / ${argoGraphLinks.completeApps} complete app links`, argoEvidence > 0)
     },
     {
       key: 'operations',

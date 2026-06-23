@@ -230,21 +230,55 @@ func TestWriteTextFileCreatesParentDirectory(t *testing.T) {
 }
 
 func TestFirstVersionReadinessReportRequiresArgoSync(t *testing.T) {
-	partial := firstVersionReadinessReport([]map[string]any{
+	partial := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "deployment_target"},
-	}, nil, nil)
-	if got := readinessByKey(t, partial, "argo"); got.Status != "partial" {
-		t.Fatalf("argo status with target only = %q, want partial", got.Status)
+	}, nil, nil, nil)
+	if got := readinessByKey(t, partial, "argo"); got.Status != "partial" || got.Evidence != "1 targets / 0 Argo connections / 0 apps / 0 sync ops / 0 complete app links" {
+		t.Fatalf("argo status with target only = %#v, want partial", got)
 	}
 
-	ready := firstVersionReadinessReport([]map[string]any{
+	withoutGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "deployment_target"},
 		{"asset_type": "argo_connection"},
+		{"asset_type": "argo_app"},
 	}, []map[string]any{
 		{"operation_type": "argo.apps.sync"},
-	}, nil)
-	if got := readinessByKey(t, ready, "argo"); got.Status != "ready" {
-		t.Fatalf("argo status with connection, target, and sync = %q, want ready", got.Status)
+	}, nil, map[string]any{"edges": []any{}})
+	if got := readinessByKey(t, withoutGraphLinks, "argo"); got.Status != "partial" || got.Evidence != "1 targets / 1 Argo connections / 1 apps / 1 sync ops / 0 complete app links" {
+		t.Fatalf("argo status without graph links = %#v, want partial with graph evidence", got)
+	}
+
+	ready := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "deployment_target"},
+		{"asset_type": "argo_connection"},
+		{"asset_type": "argo_app"},
+	}, []map[string]any{
+		{"operation_type": "argo.apps.sync"},
+	}, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "argo_app:20", "relation_type": "manages"},
+			map[string]any{"from_asset_id": "argo_app:20", "to_asset_id": "deployment_target:30", "relation_type": "deployed_to"},
+		},
+	})
+	if got := readinessByKey(t, ready, "argo"); got.Status != "ready" || got.Evidence != "1 targets / 1 Argo connections / 1 apps / 1 sync ops / 1 complete app links" {
+		t.Fatalf("argo status with complete app graph = %#v, want ready", got)
+	}
+
+	crossAppAggregation := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "deployment_target"},
+		{"asset_type": "argo_connection"},
+		{"asset_type": "argo_app"},
+		{"asset_type": "argo_app"},
+	}, []map[string]any{
+		{"operation_type": "argo.apps.sync"},
+	}, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "argo_app:20", "relation_type": "manages"},
+			map[string]any{"from_asset_id": "argo_app:21", "to_asset_id": "deployment_target:30", "relation_type": "deployed_to"},
+		},
+	})
+	if got := readinessByKey(t, crossAppAggregation, "argo"); got.Status != "partial" || got.Evidence != "1 targets / 1 Argo connections / 2 apps / 1 sync ops / 0 complete app links" {
+		t.Fatalf("argo status with cross-app aggregate links = %#v, want partial without a complete app link", got)
 	}
 }
 
@@ -472,6 +506,22 @@ func TestCountGitHubActionGraphLinks(t *testing.T) {
 	}
 	if got := countGitHubActionGraphLinks(graph); got != 1 {
 		t.Fatalf("countGitHubActionGraphLinks = %d, want 1", got)
+	}
+}
+
+func TestCountArgoGraphLinks(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "argo_app:20", "relation_type": "manages"},
+			map[string]any{"from_asset_id": "argo_app:20", "to_asset_id": "deployment_target:30", "relation_type": "deployed_to"},
+			map[string]any{"from_asset_id": "deployment_target:30", "to_asset_id": "argo_app:20", "relation_type": "hosts"},
+			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "deployment_target:30", "relation_type": "manages"},
+			map[string]any{"from_asset_id": "argo_app:21", "to_asset_id": "deployment_target:31", "relation_type": "deployed_to"},
+		},
+	}
+	got := countArgoGraphLinks(graph)
+	if got.ConnectionApps != 1 || got.AppTargets != 2 || got.CompleteApps != 1 {
+		t.Fatalf("countArgoGraphLinks = %#v, want one connection-app, two app-targets, and one complete app", got)
 	}
 }
 

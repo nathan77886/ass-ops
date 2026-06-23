@@ -1298,7 +1298,6 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	giteaWebhooks := countAPITypeMetadata(assets, "webhook_connection", "provider", "gitea")
 	giteaWebhookEvents := countAPITypeMetadata(assets, "webhook_event", "provider", "gitea")
 	sshRuns := operationCounts["ssh.exec"] + operationCounts["ssh.command"]
-	argoEvidence := assetCounts["argo_connection"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"]
 	approvalEvidence := intFromAPI(approvals["total"])
 	pendingApprovalOps := countAPIStatus(operations, "pending_approval")
 	activeApprovalRules := countAPITypeStatus(assets, "operation_approval_rule", "active")
@@ -1311,6 +1310,8 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	repositoryGraphLinks := countRepositoryGraphLinks(graph)
 	repoSyncGraphLinks := countRepoSyncGraphLinks(graph)
 	githubActionLinks := countGitHubActionGraphLinks(graph)
+	argoGraphLinks := countArgoGraphLinks(graph)
+	argoEvidence := assetCounts["argo_connection"] + assetCounts["argo_app"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"] + argoGraphLinks.ConnectionApps + argoGraphLinks.AppTargets
 
 	rows := []readinessRow{
 		readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0, assetCounts["project"], false),
@@ -1319,7 +1320,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		readinessItem("sync_trigger", "Trigger sync manually and from webhook", "Run a manual sync and receive or replay a Gitea webhook event.", syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0, fmt.Sprintf("%d sync ops / %d Gitea webhooks / %d Gitea events", syncTriggered, giteaWebhooks, giteaWebhookEvents), syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0),
 		readinessItem("github_actions", "See GitHub Actions state", "Sync GitHub Actions for the mirror remote or receive workflow_run webhooks.", assetCounts["pipeline_run"] > 0 && githubActionLinks > 0, fmt.Sprintf("%d pipeline runs / %d graph links", assetCounts["pipeline_run"], githubActionLinks), assetCounts["pipeline_run"] > 0 || githubActionLinks > 0),
 		readinessItem("ssh", "Register SSH machines and audited commands", "Register an SSH machine and run an approval-gated command.", assetCounts["host"] > 0 && sshRuns > 0, fmt.Sprintf("%d hosts / %d commands", assetCounts["host"], sshRuns), assetCounts["host"] > 0 || sshRuns > 0),
-		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0, fmt.Sprintf("%d targets / %d Argo connections / %d sync ops", assetCounts["deployment_target"], assetCounts["argo_connection"], operationCounts["argo.apps.sync"]), argoEvidence > 0),
+		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["argo_app"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0 && argoGraphLinks.CompleteApps > 0, fmt.Sprintf("%d targets / %d Argo connections / %d apps / %d sync ops / %d complete app links", assetCounts["deployment_target"], assetCounts["argo_connection"], assetCounts["argo_app"], operationCounts["argo.apps.sync"], argoGraphLinks.CompleteApps), argoEvidence > 0),
 		readinessItem("operations", "View operation history and logs", "Run any controlled operation and inspect its logs.", operationRuns > 0 && operationLogs > 0, fmt.Sprintf("%d runs / %d with logs", operationRuns, operationLogs), operationRuns > 0),
 		readinessItem("approval", "Enforce approval for high-risk operations", "Queue a high-risk action that creates an approval request.", (approvalEvidence > 0 || pendingApprovalOps > 0) && activeApprovalRules > 0, fmt.Sprintf("%d approvals / %d pending ops / %d active rules", approvalEvidence, pendingApprovalOps, activeApprovalRules), approvalEvidence > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0),
 		readinessItem("context", "Generate AI-readable context from graph", "Create an agent task or AI runtime after syncing the canonical asset ledger.", contextEvidence > 0 && graphEvidence > 0, fmt.Sprintf("%d context assets / %d graph nodes / %d graph edges", contextEvidence, graphNodes, graphEdges), contextEvidence > 0 || graphEvidence > 0),
@@ -1524,6 +1525,51 @@ func countGitHubActionGraphLinks(graph map[string]any) int {
 		}
 	}
 	return count
+}
+
+type argoGraphLinkCounts struct {
+	ConnectionApps int
+	AppTargets     int
+	CompleteApps   int
+}
+
+func countArgoGraphLinks(graph map[string]any) argoGraphLinkCounts {
+	counts := argoGraphLinkCounts{}
+	type appLinks struct {
+		connection bool
+		target     bool
+	}
+	byApp := map[string]*appLinks{}
+	appEntry := func(assetID string) *appLinks {
+		entry := byApp[assetID]
+		if entry == nil {
+			entry = &appLinks{}
+			byApp[assetID] = entry
+		}
+		return entry
+	}
+	for _, edge := range apiItemsByKey(graph, "edges") {
+		from := fmt.Sprint(edge["from_asset_id"])
+		to := fmt.Sprint(edge["to_asset_id"])
+		switch fmt.Sprint(edge["relation_type"]) {
+		case "manages":
+			if strings.HasPrefix(from, "argo_connection:") && strings.HasPrefix(to, "argo_app:") {
+				counts.ConnectionApps++
+				appEntry(to).connection = true
+			}
+		case "deployed_to":
+			if strings.HasPrefix(from, "argo_app:") && strings.HasPrefix(to, "deployment_target:") {
+				counts.AppTargets++
+				appEntry(from).target = true
+			}
+		}
+	}
+	for _, entry := range byApp {
+		if entry.connection && entry.target {
+			counts.CompleteApps++
+		}
+	}
+	return counts
 }
 
 func intFromAPI(value any) int {
