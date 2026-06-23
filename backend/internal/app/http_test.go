@@ -11858,7 +11858,13 @@ func TestGetWorkerQueueSummaryIncludesBackendSummary(t *testing.T) {
 	if !ok {
 		t.Fatalf("backend_summary missing or wrong type: %#v", body["backend_summary"])
 	}
-	if backend["backend"] != "postgres" || backend["redis_locking"] != "disabled" || backend["pubsub"] != "disabled" || backend["log_fanout"] != "sse_polling" {
+	if backend["backend"] != "postgres" ||
+		backend["redis_locking"] != "disabled" ||
+		backend["redis_enabled"] != false ||
+		backend["pubsub"] != "disabled" ||
+		backend["pubsub_enabled"] != false ||
+		backend["log_fanout"] != "sse_polling" ||
+		backend["websocket_fanout"] != "deferred" {
 		t.Fatalf("backend_summary = %#v", backend)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -11896,14 +11902,36 @@ func TestGetWorkerQueueSummaryErrorDoesNotExposeBackendSummary(t *testing.T) {
 func TestWorkerQueueBackendSummaryDocumentsPostgresOnlyMode(t *testing.T) {
 	summary := workerQueueBackendSummary()
 	for key, want := range map[string]string{
-		"backend":       "postgres",
-		"claiming":      "select_for_update_skip_locked",
-		"redis_locking": "disabled",
-		"pubsub":        "disabled",
-		"log_fanout":    "sse_polling",
+		"backend":          "postgres",
+		"claiming":         "select_for_update_skip_locked",
+		"redis_locking":    "disabled",
+		"pubsub":           "disabled",
+		"log_fanout":       "sse_polling",
+		"websocket_fanout": "deferred",
 	} {
 		if got, _ := summary[key].(string); got != want {
 			t.Fatalf("workerQueueBackendSummary[%s] = %q, want %q", key, got, want)
+		}
+	}
+	if summary["redis_enabled"] != false || summary["pubsub_enabled"] != false {
+		t.Fatalf("workerQueueBackendSummary should keep Redis/pubsub disabled: %#v", summary)
+	}
+	activeComponents := stringSliceFromAny(summary["active_components"])
+	if len(activeComponents) != 3 {
+		t.Fatalf("workerQueueBackendSummary active_components length = %d: %#v", len(activeComponents), activeComponents)
+	}
+	for _, component := range []string{"postgres_polling", "row_lock_claiming", "sse_polling_log_fanout"} {
+		if !containsString(activeComponents, component) {
+			t.Fatalf("workerQueueBackendSummary active_components missing %q: %#v", component, activeComponents)
+		}
+	}
+	deferredBackends := stringSliceFromAny(summary["deferred_backends"])
+	if len(deferredBackends) != 3 {
+		t.Fatalf("workerQueueBackendSummary deferred_backends length = %d: %#v", len(deferredBackends), deferredBackends)
+	}
+	for _, backend := range []string{"redis_locking", "redis_pubsub", "websocket_fanout"} {
+		if !containsString(deferredBackends, backend) {
+			t.Fatalf("workerQueueBackendSummary deferred_backends missing %q: %#v", backend, deferredBackends)
 		}
 	}
 	message, _ := summary["message"].(string)

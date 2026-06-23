@@ -7358,12 +7358,17 @@ func (s *Server) getWorkerQueueSummary(w http.ResponseWriter, r *http.Request) {
 
 func workerQueueBackendSummary() map[string]any {
 	return map[string]any{
-		"backend":       "postgres",
-		"claiming":      "select_for_update_skip_locked",
-		"redis_locking": "disabled",
-		"pubsub":        "disabled",
-		"log_fanout":    "sse_polling",
-		"message":       "Worker jobs use PostgreSQL polling and row locks; Redis-backed locking and pub/sub fanout are deferred.",
+		"backend":           "postgres",
+		"claiming":          "select_for_update_skip_locked",
+		"redis_locking":     "disabled",
+		"redis_enabled":     false,
+		"pubsub":            "disabled",
+		"pubsub_enabled":    false,
+		"log_fanout":        "sse_polling",
+		"websocket_fanout":  "deferred",
+		"active_components": []string{"postgres_polling", "row_lock_claiming", "sse_polling_log_fanout"},
+		"deferred_backends": []string{"redis_locking", "redis_pubsub", "websocket_fanout"},
+		"message":           "Worker jobs use PostgreSQL polling and row locks; Redis-backed locking and pub/sub fanout are deferred.",
 	}
 }
 
