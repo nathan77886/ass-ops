@@ -15115,6 +15115,10 @@ func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
 	if runtimeReady {
 		dispatchPrerequisite = "metadata_available"
 	}
+	claimPlan := agentWorkerClaimPlan(dispatchPrerequisite)
+	allowedToolNames := agentWorkerAllowedToolNames()
+	toolInvocationPlan := agentWorkerToolInvocationPlan(allowedToolNames)
+	resultCallbackPlan := agentWorkerResultCallbackPlan()
 	return map[string]any{
 		"mode":                          "redacted_agent_worker_dispatch_plan",
 		"dispatch_state":                "blocked",
@@ -15132,6 +15136,9 @@ func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
 		"result_callback_enabled":       false,
 		"result_written":                false,
 		"context_snapshot_materialized": true,
+		"worker_claim_plan":             claimPlan,
+		"tool_invocation_plan":          toolInvocationPlan,
+		"result_callback_plan":          resultCallbackPlan,
 		"requires_operation_run":        true,
 		"requires_approved_plan":        true,
 		"requires_worker_capability":    true,
@@ -15165,12 +15172,7 @@ func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
 			"context.read",
 			"agent.audit",
 		},
-		"allowed_tool_names": []string{
-			"context.generate",
-			"runtime.check",
-			"codex.execution.plan",
-			"patch.prepare",
-		},
+		"allowed_tool_names": allowedToolNames,
 		"disabled_backends": []string{
 			"worker_claim",
 			"worker_tool_invoke",
@@ -15205,6 +15207,88 @@ func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
 		},
 		"runtime_readiness": cliReadiness,
 		"message":           "Agent worker dispatch is a redacted audit boundary; worker claim, tool invocation, and result callback remain disabled.",
+	}
+}
+
+func agentWorkerAllowedToolNames() []string {
+	return []string{
+		"context.generate",
+		"runtime.check",
+		"codex.execution.plan",
+		"patch.prepare",
+	}
+}
+
+func agentWorkerClaimPlan(prerequisiteState string) map[string]any {
+	metadataReady := prerequisiteState == "metadata_available"
+	blockedReasons := []string{"worker_claim_backend_disabled", "worker_queue_claim_not_created", "idempotency_claim_not_recorded"}
+	if !metadataReady {
+		blockedReasons = append(blockedReasons, "runtime_metadata_not_ready")
+	}
+	return map[string]any{
+		"mode":                       "redacted_agent_worker_claim_plan",
+		"claim_state":                "blocked",
+		"claim_ready":                false,
+		"claim_ready_reason":         "agent_worker_claim_backend_disabled",
+		"metadata_ready":             metadataReady,
+		"worker_claim_enabled":       false,
+		"worker_job_created":         false,
+		"worker_node_claimed":        false,
+		"operation_locked":           false,
+		"idempotency_claimed":        false,
+		"external_call_made":         false,
+		"required_claim_fields":      []string{"operation_run_id", "agent_task_id", "agent_plan_id", "required_capability", "claim_attempt", "claimed_by", "claimed_at"},
+		"suppressed_fields":          []string{"runtime_config", "environment_variables", "worker_secret", "authorization_header", "workspace_path", "prompt_body"},
+		"blocked_reasons":            blockedReasons,
+		"required_worker_capability": "ai",
+		"message":                    "Agent worker claim is a redacted plan only; no worker row is claimed and no runtime secret is materialized.",
+	}
+}
+
+func agentWorkerToolInvocationPlan(allowedToolNames []string) map[string]any {
+	return map[string]any{
+		"mode":                        "redacted_agent_tool_invocation_plan",
+		"invocation_state":            "blocked",
+		"invocation_ready":            false,
+		"invocation_ready_reason":     "agent_tool_invocation_backend_disabled",
+		"tool_invocation_enabled":     false,
+		"tool_invoked":                false,
+		"external_call_made":          false,
+		"repository_mutation_allowed": false,
+		"contains_tool_input":         false,
+		"contains_tool_output":        false,
+		"allowed_tool_names":          allowedToolNames,
+		"required_invocation_fields":  []string{"operation_run_id", "agent_task_id", "tool_name", "tool_call_id", "input_schema_key", "output_schema_key", "started_at", "finished_at"},
+		"suppressed_fields":           []string{"runtime_config", "environment_variables", "authorization_header", "workspace_path", "repository_url", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "token"},
+		"blocked_reasons":             []string{"tool_invocation_not_armed", "tool_input_materialization_disabled", "tool_output_recording_disabled"},
+		"message":                     "Agent tool invocation is audit-only; allowlisted tool names are recorded without materializing tool input or output.",
+	}
+}
+
+func agentWorkerResultCallbackPlan() map[string]any {
+	return map[string]any{
+		"mode":                         "redacted_agent_result_callback_plan",
+		"callback_state":               "blocked",
+		"callback_ready":               false,
+		"callback_ready_reason":        "agent_result_callback_not_wired",
+		"callback_enabled":             false,
+		"result_written":               false,
+		"operation_log_written":        false,
+		"agent_task_status_written":    false,
+		"tool_call_status_written":     false,
+		"canonical_asset_sync_queued":  false,
+		"status_snapshot_written":      false,
+		"raw_tool_output_recorded":     false,
+		"raw_runtime_output_recorded":  false,
+		"raw_patch_recorded":           false,
+		"raw_diff_recorded":            false,
+		"contains_tool_output":         false,
+		"contains_runtime_config":      false,
+		"requires_human_result_review": true,
+		"required_result_fields":       []string{"operation_run_id", "agent_task_id", "tool_call_id", "tool_name", "status", "sanitization_status", "started_at", "finished_at"},
+		"suppressed_fields":            []string{"runtime_config", "environment_variables", "authorization_header", "workspace_path", "repository_url", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "token"},
+		"blocked_reasons":              []string{"result_callback_not_wired", "sanitized_tool_result_not_recorded", "canonical_asset_sync_not_performed"},
+		"message":                      "Agent worker result callbacks are not recorded by this preview; future execution must persist sanitized status metadata without raw tool output.",
 	}
 }
 

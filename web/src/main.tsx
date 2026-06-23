@@ -4014,11 +4014,17 @@ function AgentTasks() {
       const backends = Array.isArray(plan.disabled_backends) ? plan.disabled_backends : [];
       const controls = Array.isArray(plan.required_controls) ? plan.required_controls : [];
       const capabilities = Array.isArray(plan.required_worker_capabilities) ? plan.required_worker_capabilities : [];
+      const claimPlan = plan.worker_claim_plan || {};
+      const toolPlan = plan.tool_invocation_plan || {};
+      const callbackPlan = plan.result_callback_plan || {};
       return <Space size={4} wrap>
         <Tag color="gold">{plan.dispatch_state || 'blocked'}</Tag>
         <Tag color={plan.prerequisite_state === 'metadata_available' ? 'blue' : 'red'}>{plan.prerequisite_state || 'metadata_blocked'}</Tag>
+        <Tag color="gold">claim {claimPlan.claim_state || 'blocked'}</Tag>
         <Tag color={plan.worker_claim_enabled === true ? 'red' : 'green'}>{plan.worker_claim_enabled === true ? 'Worker claim enabled' : 'No worker claim'}</Tag>
+        <Tag color="gold">tools {toolPlan.invocation_state || 'blocked'}</Tag>
         <Tag color={plan.tool_invocation_enabled === true ? 'red' : 'green'}>{plan.tool_invocation_enabled === true ? 'Tools enabled' : 'Tools blocked'}</Tag>
+        <Tag color="gold">callback {callbackPlan.callback_state || 'blocked'}</Tag>
         <Typography.Text>{capabilities.length} worker capabilit{capabilities.length === 1 ? 'y' : 'ies'}</Typography.Text>
         <Typography.Text>{backends.length} disabled backend{backends.length === 1 ? '' : 's'}</Typography.Text>
         <Typography.Text type="secondary">{controls.length} required control{controls.length === 1 ? '' : 's'}</Typography.Text>

@@ -12846,6 +12846,7 @@ func TestAgentExecutionAuditSteps(t *testing.T) {
 		!containsString(stringSliceFromAny(workerDispatchPlan["blocked_reasons"]), "result_callback_not_wired") {
 		t.Fatalf("worker.dispatch.plan missing controls/backends/suppression: %#v", workerDispatchPlan)
 	}
+	assertAgentWorkerDispatchSubplansSafe(t, workerDispatchPlan)
 	codexPlanInput := mapFromAny(steps[4]["input"])
 	if codexPlanInput["mode"] != "redacted_execution_plan" {
 		t.Fatalf("codex.execution.plan mode = %v, want redacted_execution_plan", codexPlanInput["mode"])
@@ -13102,6 +13103,7 @@ func TestAgentWorkerDispatchPlan(t *testing.T) {
 					t.Fatalf("suppressed_fields missing %q: %#v", field, got["suppressed_fields"])
 				}
 			}
+			assertAgentWorkerDispatchSubplansSafe(t, got)
 			encoded, _ := json.Marshal(got)
 			for _, forbidden := range []string{"do-not-serialize", "ASSOPS_", "OPENAI_", "GITHUB_TOKEN", "PRIVATE KEY", "Bearer", "password"} {
 				if strings.Contains(string(encoded), forbidden) {
@@ -13109,6 +13111,118 @@ func TestAgentWorkerDispatchPlan(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
+	t.Helper()
+	claimPlan := mapFromAny(got["worker_claim_plan"])
+	if claimPlan["mode"] != "redacted_agent_worker_claim_plan" ||
+		claimPlan["claim_state"] != "blocked" ||
+		claimPlan["claim_ready"] != false ||
+		claimPlan["claim_ready_reason"] != "agent_worker_claim_backend_disabled" ||
+		claimPlan["worker_claim_enabled"] != false ||
+		claimPlan["worker_job_created"] != false ||
+		claimPlan["worker_node_claimed"] != false ||
+		claimPlan["operation_locked"] != false ||
+		claimPlan["idempotency_claimed"] != false ||
+		claimPlan["external_call_made"] != false {
+		t.Fatalf("worker claim plan should stay disabled and redacted: %#v", claimPlan)
+	}
+	if got["prerequisite_state"] == "metadata_available" && claimPlan["metadata_ready"] != true {
+		t.Fatalf("metadata-available dispatch should mark claim metadata ready: %#v", claimPlan)
+	}
+	if got["prerequisite_state"] == "metadata_blocked" && !containsString(stringSliceFromAny(claimPlan["blocked_reasons"]), "runtime_metadata_not_ready") {
+		t.Fatalf("metadata-blocked dispatch should report runtime metadata blocker: %#v", claimPlan)
+	}
+	for _, field := range []string{"operation_run_id", "agent_task_id", "agent_plan_id", "required_capability", "claim_attempt", "claimed_by", "claimed_at"} {
+		if !containsString(stringSliceFromAny(claimPlan["required_claim_fields"]), field) {
+			t.Fatalf("worker claim required fields missing %q: %#v", field, claimPlan["required_claim_fields"])
+		}
+	}
+	for _, field := range []string{"runtime_config", "environment_variables", "worker_secret", "authorization_header", "workspace_path", "prompt_body"} {
+		if !containsString(stringSliceFromAny(claimPlan["suppressed_fields"]), field) {
+			t.Fatalf("worker claim suppressed_fields missing %q: %#v", field, claimPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"worker_claim_backend_disabled", "worker_queue_claim_not_created", "idempotency_claim_not_recorded"} {
+		if !containsString(stringSliceFromAny(claimPlan["blocked_reasons"]), reason) {
+			t.Fatalf("worker claim blocked reasons missing %q: %#v", reason, claimPlan["blocked_reasons"])
+		}
+	}
+
+	toolPlan := mapFromAny(got["tool_invocation_plan"])
+	if toolPlan["mode"] != "redacted_agent_tool_invocation_plan" ||
+		toolPlan["invocation_state"] != "blocked" ||
+		toolPlan["invocation_ready"] != false ||
+		toolPlan["invocation_ready_reason"] != "agent_tool_invocation_backend_disabled" ||
+		toolPlan["tool_invocation_enabled"] != false ||
+		toolPlan["tool_invoked"] != false ||
+		toolPlan["external_call_made"] != false ||
+		toolPlan["repository_mutation_allowed"] != false ||
+		toolPlan["contains_tool_input"] != false ||
+		toolPlan["contains_tool_output"] != false {
+		t.Fatalf("tool invocation plan should stay disabled and redacted: %#v", toolPlan)
+	}
+	for _, tool := range []string{"context.generate", "runtime.check", "codex.execution.plan", "patch.prepare"} {
+		if !containsString(stringSliceFromAny(toolPlan["allowed_tool_names"]), tool) {
+			t.Fatalf("tool invocation allowed tools missing %q: %#v", tool, toolPlan["allowed_tool_names"])
+		}
+	}
+	for _, field := range []string{"operation_run_id", "agent_task_id", "tool_name", "tool_call_id", "input_schema_key", "output_schema_key", "started_at", "finished_at"} {
+		if !containsString(stringSliceFromAny(toolPlan["required_invocation_fields"]), field) {
+			t.Fatalf("tool invocation required fields missing %q: %#v", field, toolPlan["required_invocation_fields"])
+		}
+	}
+	for _, field := range []string{"runtime_config", "environment_variables", "authorization_header", "workspace_path", "repository_url", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "token"} {
+		if !containsString(stringSliceFromAny(toolPlan["suppressed_fields"]), field) {
+			t.Fatalf("tool invocation suppressed_fields missing %q: %#v", field, toolPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"tool_invocation_not_armed", "tool_input_materialization_disabled", "tool_output_recording_disabled"} {
+		if !containsString(stringSliceFromAny(toolPlan["blocked_reasons"]), reason) {
+			t.Fatalf("tool invocation blocked reasons missing %q: %#v", reason, toolPlan["blocked_reasons"])
+		}
+	}
+
+	callbackPlan := mapFromAny(got["result_callback_plan"])
+	if callbackPlan["mode"] != "redacted_agent_result_callback_plan" ||
+		callbackPlan["callback_state"] != "blocked" ||
+		callbackPlan["callback_ready"] != false ||
+		callbackPlan["callback_ready_reason"] != "agent_result_callback_not_wired" ||
+		callbackPlan["callback_enabled"] != false ||
+		callbackPlan["result_written"] != false ||
+		callbackPlan["operation_log_written"] != false ||
+		callbackPlan["agent_task_status_written"] != false ||
+		callbackPlan["tool_call_status_written"] != false ||
+		callbackPlan["canonical_asset_sync_queued"] != false ||
+		callbackPlan["status_snapshot_written"] != false ||
+		callbackPlan["raw_tool_output_recorded"] != false ||
+		callbackPlan["raw_runtime_output_recorded"] != false ||
+		callbackPlan["raw_patch_recorded"] != false ||
+		callbackPlan["raw_diff_recorded"] != false ||
+		callbackPlan["contains_tool_output"] != false ||
+		callbackPlan["contains_runtime_config"] != false ||
+		callbackPlan["requires_human_result_review"] != true {
+		t.Fatalf("result callback plan should stay disabled and redacted: %#v", callbackPlan)
+	}
+	for _, field := range []string{"operation_run_id", "agent_task_id", "tool_call_id", "tool_name", "status", "sanitization_status", "started_at", "finished_at"} {
+		if !containsString(stringSliceFromAny(callbackPlan["required_result_fields"]), field) {
+			t.Fatalf("result callback required fields missing %q: %#v", field, callbackPlan["required_result_fields"])
+		}
+	}
+	for _, field := range []string{"runtime_config", "environment_variables", "authorization_header", "workspace_path", "repository_url", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "token"} {
+		if !containsString(stringSliceFromAny(callbackPlan["suppressed_fields"]), field) {
+			t.Fatalf("result callback suppressed_fields missing %q: %#v", field, callbackPlan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"result_callback_not_wired", "sanitized_tool_result_not_recorded", "canonical_asset_sync_not_performed"} {
+		if !containsString(stringSliceFromAny(callbackPlan["blocked_reasons"]), reason) {
+			t.Fatalf("result callback blocked reasons missing %q: %#v", reason, callbackPlan["blocked_reasons"])
+		}
+	}
+	if !strings.Contains(cleanPreviewString(callbackPlan["message"]), "not recorded") {
+		t.Fatalf("result callback message should not imply recorded tool output: %#v", callbackPlan["message"])
 	}
 }
 
