@@ -11273,6 +11273,10 @@ func providerReviewAttemptInvocationReadyReason(ready bool, blockedReason string
 	return blockedReason
 }
 
+const (
+	providerReviewAttemptAdapterResponsePlanMode = "redacted_attempt_adapter_response_plan"
+)
+
 func providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, responsePlan map[string]any) map[string]any {
 	if len(operation) == 0 {
 		return map[string]any{}
@@ -11282,12 +11286,13 @@ func providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, responseP
 	if operationName == "" || endpointKey == "" {
 		return map[string]any{}
 	}
+	providerCallBoundaryPlan := providerReviewAttemptAdapterProviderCallBoundaryPlan(operation, claimPlan, responsePlan)
 	return map[string]any{
 		"mode":                               "redacted_attempt_adapter_transaction_plan",
 		"transaction_state":                  "blocked",
 		"transaction_ready":                  false,
 		"transaction_ready_reason":           "provider_review_transaction_not_armed",
-		"transaction_metadata_ready":         boolOnlyFromAny(claimPlan["claim_metadata_ready"]) && stringFromMap(responsePlan, "mode") == "redacted_attempt_adapter_response_plan",
+		"transaction_metadata_ready":         boolOnlyFromAny(claimPlan["claim_metadata_ready"]) && stringFromMap(responsePlan, "mode") == providerReviewAttemptAdapterResponsePlanMode,
 		"operation_name":                     operationName,
 		"endpoint_key":                       endpointKey,
 		"operation_order":                    intFromAny(operation["operation_order"], 0),
@@ -11308,6 +11313,7 @@ func providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, responseP
 		"requires_response_diagnostics":      true,
 		"requires_dependency_update":         boolOnlyFromAny(responsePlan["requires_dependency_update"]),
 		"requires_mutation_arming":           true,
+		"provider_call_boundary_plan":        providerCallBoundaryPlan,
 		"transaction_opened":                 false,
 		"attempt_claim_verified":             false,
 		"idempotency_claim_verified":         false,
@@ -11339,6 +11345,78 @@ func providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, responseP
 		"blocked_reasons": []string{
 			"provider_review_attempt_claim_not_recorded",
 			"provider_review_transaction_not_armed",
+			"provider_api_call_not_made",
+			"provider_review_adapter_not_implemented",
+			"provider_review_mutation_not_armed",
+		},
+	}
+}
+
+func providerReviewAttemptAdapterProviderCallBoundaryPlan(operation, claimPlan, responsePlan map[string]any) map[string]any {
+	if len(operation) == 0 {
+		return map[string]any{}
+	}
+	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+	if operationName == "" || endpointKey == "" {
+		return map[string]any{}
+	}
+	metadataReady := boolOnlyFromAny(claimPlan["claim_metadata_ready"]) && stringFromMap(responsePlan, "mode") == providerReviewAttemptAdapterResponsePlanMode
+	return map[string]any{
+		"mode":                                  "redacted_attempt_adapter_provider_call_boundary_plan",
+		"provider_call_boundary_state":          "blocked",
+		"provider_call_boundary_ready":          false,
+		"provider_call_boundary_ready_reason":   "provider_review_provider_call_boundary_not_armed",
+		"provider_call_boundary_metadata_ready": metadataReady,
+		"operation_name":                        operationName,
+		"endpoint_key":                          endpointKey,
+		"operation_order":                       intFromAny(operation["operation_order"], 0),
+		"idempotency_key_kind":                  "operation_scope_hash",
+		"requires_database_transaction":         true,
+		"requires_attempt_claim":                true,
+		"requires_idempotency_claim":            true,
+		"requires_response_diagnostics":         true,
+		"requires_mutation_arming":              true,
+		"transaction_opened":                    false,
+		"attempt_claim_verified":                false,
+		"idempotency_claim_verified":            false,
+		"provider_call_boundary_opened":         false,
+		"provider_call_boundary_recorded":       false,
+		"provider_call_started_recorded":        false,
+		"provider_call_finished_recorded":       false,
+		"provider_request_sent":                 false,
+		"provider_response_received":            false,
+		"provider_request_id_recorded":          false,
+		"provider_response_status_recorded":     false,
+		"provider_response_body_recorded":       false,
+		"provider_response_headers_recorded":    false,
+		"provider_call_boundary_redacted":       true,
+		"external_call_made":                    false,
+		"provider_api_call_made":                false,
+		"provider_api_mutation":                 "disabled",
+		"request_body_included":                 false,
+		"response_body_included":                false,
+		"headers_included":                      false,
+		"authorization_header_included":         false,
+		"provider_url_included":                 false,
+		"idempotency_key_included":              false,
+		"provider_request_id_included":          false,
+		"contains_token":                        false,
+		"contains_provider_url":                 false,
+		"contains_repository_ref":               false,
+		"contains_branch_name":                  false,
+		"contains_file_content":                 false,
+		"boundary_sequence": []string{
+			"verify_attempt_claim",
+			"verify_idempotency_claim",
+			"open_database_transaction",
+			"record_provider_call_started",
+			"stage_provider_request_send",
+			"record_provider_call_finished",
+			"commit_database_transaction",
+		},
+		"blocked_reasons": []string{
+			"provider_review_provider_call_boundary_not_armed",
 			"provider_api_call_not_made",
 			"provider_review_adapter_not_implemented",
 			"provider_review_mutation_not_armed",
@@ -11462,7 +11540,7 @@ func providerReviewAttemptAdapterResponsePlan(operation, requestSummary, respons
 	}
 	unlockOperation := providerReviewAttemptDependencyUnlockOperation(operationName)
 	return map[string]any{
-		"mode":                            "redacted_attempt_adapter_response_plan",
+		"mode":                            providerReviewAttemptAdapterResponsePlanMode,
 		"response_recording_state":        "blocked",
 		"response_recording_ready":        false,
 		"response_recording_ready_reason": "provider_api_adapter_response_not_recorded",

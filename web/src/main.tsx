@@ -1115,6 +1115,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptRuntimeResponseHandlerPlan = attemptRuntimePlan.response_handler_plan || {};
   const attemptTransactionPlan = attemptDispatchPlan.transaction_plan || {};
   const attemptTransactionPlanMode = typeof attemptTransactionPlan.mode === 'string' ? attemptTransactionPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter transaction plan';
+  const attemptTransactionProviderCallBoundaryPlan = attemptTransactionPlan.provider_call_boundary_plan || {};
   const attemptInvocationPlan = attemptDispatchPlan.invocation_plan || {};
   const attemptInvocationPlanMode = typeof attemptInvocationPlan.mode === 'string' ? attemptInvocationPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter invocation plan';
   const attemptInvocationSequence = Array.isArray(attemptInvocationPlan.invocation_sequence) ? attemptInvocationPlan.invocation_sequence : [];
@@ -1514,6 +1515,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>
             {String(attemptTransactionPlan.success_attempt_status ?? 'completed')} / {String(attemptTransactionPlan.retry_attempt_status ?? 'planned')} / {String(attemptTransactionPlan.failure_attempt_status ?? 'failed')}
           </Tag>
+          <Tag>call boundary {String(attemptTransactionProviderCallBoundaryPlan.provider_call_boundary_state ?? 'blocked')}</Tag>
           <Tag>{attemptTransactionPlan.provider_api_call_made === true ? 'api called' : 'no api call'}</Tag>
           <Tag>{String(attemptTransactionPlan.provider_api_mutation ?? 'disabled')}</Tag>
         </Space>

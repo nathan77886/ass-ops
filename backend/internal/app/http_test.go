@@ -3453,6 +3453,7 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateTransactionPlan["requires_provider_call_boundary"] != true ||
 		candidateTransactionPlan["requires_response_diagnostics"] != true ||
 		candidateTransactionPlan["requires_dependency_update"] != true ||
+		len(mapFromAny(candidateTransactionPlan["provider_call_boundary_plan"])) == 0 ||
 		candidateTransactionPlan["transaction_opened"] != false ||
 		candidateTransactionPlan["provider_call_boundary_recorded"] != false ||
 		candidateTransactionPlan["provider_response_classified"] != false ||
@@ -5559,6 +5560,7 @@ func TestProviderReviewAttemptAdapterTransactionPlan(t *testing.T) {
 		plan["requires_response_diagnostics"] != true ||
 		plan["requires_dependency_update"] != true ||
 		plan["requires_mutation_arming"] != true ||
+		len(mapFromAny(plan["provider_call_boundary_plan"])) == 0 ||
 		plan["transaction_opened"] != false ||
 		plan["attempt_claim_verified"] != false ||
 		plan["idempotency_claim_verified"] != false ||
@@ -5598,6 +5600,67 @@ func TestProviderReviewAttemptAdapterTransactionPlan(t *testing.T) {
 		sequence[4] != "update_attempt_status" ||
 		sequence[5] != "update_dependency_status" {
 		t.Fatalf("transaction sequence = %#v", sequence)
+	}
+	boundaryPlan := mapFromAny(plan["provider_call_boundary_plan"])
+	if boundaryPlan["mode"] != "redacted_attempt_adapter_provider_call_boundary_plan" ||
+		boundaryPlan["provider_call_boundary_state"] != "blocked" ||
+		boundaryPlan["provider_call_boundary_ready"] != false ||
+		boundaryPlan["provider_call_boundary_ready_reason"] != "provider_review_provider_call_boundary_not_armed" ||
+		boundaryPlan["provider_call_boundary_metadata_ready"] != true ||
+		boundaryPlan["operation_name"] != "create_branch_ref" ||
+		boundaryPlan["endpoint_key"] != "github.create_branch_ref" ||
+		boundaryPlan["operation_order"] != 10 ||
+		boundaryPlan["idempotency_key_kind"] != "operation_scope_hash" ||
+		boundaryPlan["requires_database_transaction"] != true ||
+		boundaryPlan["requires_attempt_claim"] != true ||
+		boundaryPlan["requires_idempotency_claim"] != true ||
+		boundaryPlan["requires_response_diagnostics"] != true ||
+		boundaryPlan["requires_mutation_arming"] != true ||
+		boundaryPlan["transaction_opened"] != false ||
+		boundaryPlan["attempt_claim_verified"] != false ||
+		boundaryPlan["idempotency_claim_verified"] != false ||
+		boundaryPlan["provider_call_boundary_opened"] != false ||
+		boundaryPlan["provider_call_boundary_recorded"] != false ||
+		boundaryPlan["provider_call_started_recorded"] != false ||
+		boundaryPlan["provider_call_finished_recorded"] != false ||
+		boundaryPlan["provider_request_sent"] != false ||
+		boundaryPlan["provider_response_received"] != false ||
+		boundaryPlan["provider_request_id_recorded"] != false ||
+		boundaryPlan["provider_response_status_recorded"] != false ||
+		boundaryPlan["provider_response_body_recorded"] != false ||
+		boundaryPlan["provider_response_headers_recorded"] != false ||
+		boundaryPlan["provider_call_boundary_redacted"] != true ||
+		boundaryPlan["external_call_made"] != false ||
+		boundaryPlan["provider_api_call_made"] != false ||
+		boundaryPlan["provider_api_mutation"] != "disabled" ||
+		boundaryPlan["request_body_included"] != false ||
+		boundaryPlan["response_body_included"] != false ||
+		boundaryPlan["headers_included"] != false ||
+		boundaryPlan["authorization_header_included"] != false ||
+		boundaryPlan["provider_url_included"] != false ||
+		boundaryPlan["idempotency_key_included"] != false ||
+		boundaryPlan["provider_request_id_included"] != false ||
+		boundaryPlan["contains_token"] != false ||
+		boundaryPlan["contains_provider_url"] != false ||
+		boundaryPlan["contains_repository_ref"] != false ||
+		boundaryPlan["contains_branch_name"] != false ||
+		boundaryPlan["contains_file_content"] != false {
+		t.Fatalf("provider call boundary plan = %#v", boundaryPlan)
+	}
+	boundarySequence := stringSliceFromAny(boundaryPlan["boundary_sequence"])
+	if len(boundarySequence) != 7 ||
+		boundarySequence[0] != "verify_attempt_claim" ||
+		boundarySequence[4] != "stage_provider_request_send" ||
+		boundarySequence[6] != "commit_database_transaction" {
+		t.Fatalf("provider call boundary sequence = %#v", boundarySequence)
+	}
+	boundaryBlockedReasons := stringSliceFromAny(boundaryPlan["blocked_reasons"])
+	if len(boundaryBlockedReasons) != 4 ||
+		boundaryBlockedReasons[0] != "provider_review_provider_call_boundary_not_armed" ||
+		boundaryBlockedReasons[1] != "provider_api_call_not_made" ||
+		boundaryBlockedReasons[2] != "provider_review_adapter_not_implemented" ||
+		boundaryBlockedReasons[3] != "provider_review_mutation_not_armed" {
+		t.Fatalf("provider call boundary blocked reasons = %#v", boundaryBlockedReasons)
 	}
 	blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
 	if len(blockedReasons) != 5 ||
@@ -5640,6 +5703,14 @@ func TestProviderReviewAttemptAdapterTransactionPlan(t *testing.T) {
 	nilClaimPlan := providerReviewAttemptAdapterTransactionPlan(operation, nil, responsePlan)
 	if nilClaimPlan["transaction_metadata_ready"] != false {
 		t.Fatalf("nil claim transaction plan = %#v", nilClaimPlan)
+	}
+	mismatchedResponseModePlan := providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, map[string]any{"mode": "raw_response_plan"})
+	if mismatchedResponseModePlan["transaction_metadata_ready"] != false {
+		t.Fatalf("mismatched response mode transaction plan = %#v", mismatchedResponseModePlan)
+	}
+	mismatchedResponseModeBoundaryPlan := mapFromAny(mismatchedResponseModePlan["provider_call_boundary_plan"])
+	if mismatchedResponseModeBoundaryPlan["provider_call_boundary_metadata_ready"] != false {
+		t.Fatalf("mismatched response mode boundary plan = %#v", mismatchedResponseModeBoundaryPlan)
 	}
 	redactedPlan := providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, map[string]any{
 		"mode":                         "redacted_attempt_adapter_response_plan",
