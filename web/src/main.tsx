@@ -1105,6 +1105,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptTransportPlanMode = typeof attemptTransportPlan.mode === 'string' ? attemptTransportPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter transport plan';
   const attemptResponsePlan = attemptDispatchPlan.response_plan || {};
   const attemptResponsePlanMode = typeof attemptResponsePlan.mode === 'string' ? attemptResponsePlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter response plan';
+  const attemptResultRecordingPlan = attemptResponsePlan.result_recording_plan || {};
   const attemptCredentialPlan = attemptDispatchPlan.credential_binding_plan || {};
   const attemptCredentialPlanMode = typeof attemptCredentialPlan.mode === 'string' ? attemptCredentialPlan.mode.replaceAll('_', ' ') : 'redacted attempt adapter credential binding plan';
   const attemptRuntimePlan = attemptDispatchPlan.adapter_runtime_plan || {};
@@ -1465,6 +1466,7 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>
             {String(attemptResponsePlan.success_attempt_status || 'completed')} / {String(attemptResponsePlan.retry_attempt_status || 'planned')} / {String(attemptResponsePlan.failure_attempt_status || 'failed')}
           </Tag>
+          <Tag>result {String(attemptResultRecordingPlan.result_recording_state ?? 'blocked')}</Tag>
           <Tag>{String(attemptResponsePlan.dependency_unlocks_operation || 'no dependency unlock')}</Tag>
           <Tag>{String(attemptResponsePlan.provider_api_mutation || 'disabled')}</Tag>
           <Tag>body redacted</Tag>

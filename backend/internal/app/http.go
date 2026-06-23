@@ -11539,7 +11539,7 @@ func providerReviewAttemptAdapterResponsePlan(operation, requestSummary, respons
 		return map[string]any{}
 	}
 	unlockOperation := providerReviewAttemptDependencyUnlockOperation(operationName)
-	return map[string]any{
+	plan := map[string]any{
 		"mode":                            providerReviewAttemptAdapterResponsePlanMode,
 		"response_recording_state":        "blocked",
 		"response_recording_ready":        false,
@@ -11582,6 +11582,79 @@ func providerReviewAttemptAdapterResponsePlan(operation, requestSummary, respons
 			"provider_review_mutation_not_armed",
 		},
 		"response_boundary_redacted": true,
+	}
+	plan["result_recording_plan"] = providerReviewAttemptAdapterResultRecordingPlan(operation, plan)
+	return plan
+}
+
+func providerReviewAttemptAdapterResultRecordingPlan(operation, responsePlan map[string]any) map[string]any {
+	if len(operation) == 0 {
+		return map[string]any{}
+	}
+	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+	if operationName == "" || endpointKey == "" || stringFromMap(responsePlan, "mode") != providerReviewAttemptAdapterResponsePlanMode {
+		return map[string]any{}
+	}
+	dependencyUnlockOperation := safeProviderReviewAttemptOperationName(stringFromMap(responsePlan, "dependency_unlocks_operation"))
+	dependencyUpdateStatus := ""
+	if dependencyUnlockOperation != "" {
+		dependencyUpdateStatus = safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(responsePlan, "dependency_update_status"))
+	}
+	return map[string]any{
+		"mode":                               "redacted_attempt_adapter_result_recording_plan",
+		"result_recording_state":             "blocked",
+		"result_recording_ready":             false,
+		"result_recording_ready_reason":      "provider_review_result_recording_not_armed",
+		"result_recording_metadata_ready":    true,
+		"operation_name":                     operationName,
+		"endpoint_key":                       endpointKey,
+		"operation_order":                    intFromAny(operation["operation_order"], 0),
+		"response_status":                    safeProviderReviewAttemptResponseStatus(stringFromMap(responsePlan, "response_status")),
+		"success_attempt_status":             safeProviderReviewAttemptStatus(stringFromMap(responsePlan, "success_attempt_status")),
+		"retry_attempt_status":               safeProviderReviewAttemptStatus(stringFromMap(responsePlan, "retry_attempt_status")),
+		"failure_attempt_status":             safeProviderReviewAttemptStatus(stringFromMap(responsePlan, "failure_attempt_status")),
+		"dependency_unlocks_operation":       dependencyUnlockOperation,
+		"dependency_update_status":           dependencyUpdateStatus,
+		"requires_response_handler":          true,
+		"requires_response_diagnostics":      true,
+		"requires_transaction_boundary":      true,
+		"requires_dependency_update":         boolOnlyFromAny(responsePlan["requires_dependency_update"]),
+		"requires_mutation_arming":           true,
+		"result_recorded":                    false,
+		"response_classified":                false,
+		"attempt_status_mapped":              false,
+		"attempt_result_persisted":           false,
+		"dependency_update_staged":           false,
+		"provider_request_id_recorded":       false,
+		"provider_response_status_recorded":  false,
+		"provider_response_body_recorded":    false,
+		"provider_response_headers_recorded": false,
+		"external_call_made":                 false,
+		"provider_api_call_made":             false,
+		"provider_api_mutation":              "disabled",
+		"response_body_included":             false,
+		"headers_included":                   false,
+		"provider_request_id_included":       false,
+		"provider_response_status_included":  false,
+		"provider_url_included":              false,
+		"idempotency_key_included":           false,
+		"contains_token":                     false,
+		"contains_provider_url":              false,
+		"contains_repository_ref":            false,
+		"contains_branch_name":               false,
+		"contains_file_content":              false,
+		"result_recording_boundary_redacted": true,
+		"result_recording_sequence":          []string{"classify_provider_response", "map_attempt_status", "stage_dependency_update", "record_redacted_result", "persist_attempt_result"},
+		"result_recording_diagnostic_fields": []string{"status_class", "retry_class", "dependency_update_required", "provider_request_id_present"},
+		"result_recording_persisted_fields":  []string{"attempt_status", "dependency_status", "response_status_class", "retry_class"},
+		"result_recording_suppressed_fields": []string{"provider_request_id", "response_body", "response_headers", "provider_url", "authorization_header", "token", "repository_ref", "branch_name", "file_content"},
+		"blocked_reasons": []string{
+			"provider_review_result_recording_not_armed",
+			"provider_api_call_not_made",
+			"provider_review_adapter_not_implemented",
+			"provider_review_mutation_not_armed",
+		},
 	}
 }
 

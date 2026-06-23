@@ -3307,6 +3307,7 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateResponsePlan["dependency_unlocks_operation"] != "commit_starter_files" ||
 		candidateResponsePlan["dependency_update_status"] != "dependency_satisfied" ||
 		candidateResponsePlan["requires_dependency_update"] != true ||
+		len(mapFromAny(candidateResponsePlan["result_recording_plan"])) == 0 ||
 		candidateResponsePlan["response_recorded"] != false ||
 		candidateResponsePlan["dependency_update_recorded"] != false ||
 		candidateResponsePlan["provider_api_call_made"] != false ||
@@ -3340,6 +3341,84 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateResponseBlockedReasons[1] != "provider_review_adapter_not_implemented" ||
 		candidateResponseBlockedReasons[2] != "provider_review_mutation_not_armed" {
 		t.Fatalf("attempt execution candidate response blocked reasons = %#v", candidateResponseBlockedReasons)
+	}
+	candidateResultPlan := mapFromAny(candidateResponsePlan["result_recording_plan"])
+	if candidateResultPlan["mode"] != "redacted_attempt_adapter_result_recording_plan" ||
+		candidateResultPlan["result_recording_state"] != "blocked" ||
+		candidateResultPlan["result_recording_ready"] != false ||
+		candidateResultPlan["result_recording_ready_reason"] != "provider_review_result_recording_not_armed" ||
+		candidateResultPlan["result_recording_metadata_ready"] != true ||
+		candidateResultPlan["operation_name"] != "create_branch_ref" ||
+		candidateResultPlan["endpoint_key"] != "github.create_branch_ref" ||
+		candidateResultPlan["operation_order"] != 10 ||
+		candidateResultPlan["response_status"] != "pending" ||
+		candidateResultPlan["success_attempt_status"] != "completed" ||
+		candidateResultPlan["retry_attempt_status"] != "planned" ||
+		candidateResultPlan["failure_attempt_status"] != "failed" ||
+		candidateResultPlan["dependency_unlocks_operation"] != "commit_starter_files" ||
+		candidateResultPlan["dependency_update_status"] != "dependency_satisfied" ||
+		candidateResultPlan["requires_response_handler"] != true ||
+		candidateResultPlan["requires_response_diagnostics"] != true ||
+		candidateResultPlan["requires_transaction_boundary"] != true ||
+		candidateResultPlan["requires_dependency_update"] != true ||
+		candidateResultPlan["requires_mutation_arming"] != true ||
+		candidateResultPlan["result_recorded"] != false ||
+		candidateResultPlan["response_classified"] != false ||
+		candidateResultPlan["attempt_status_mapped"] != false ||
+		candidateResultPlan["attempt_result_persisted"] != false ||
+		candidateResultPlan["dependency_update_staged"] != false ||
+		candidateResultPlan["provider_request_id_recorded"] != false ||
+		candidateResultPlan["provider_response_status_recorded"] != false ||
+		candidateResultPlan["provider_response_body_recorded"] != false ||
+		candidateResultPlan["provider_response_headers_recorded"] != false ||
+		candidateResultPlan["external_call_made"] != false ||
+		candidateResultPlan["provider_api_call_made"] != false ||
+		candidateResultPlan["provider_api_mutation"] != "disabled" ||
+		candidateResultPlan["response_body_included"] != false ||
+		candidateResultPlan["headers_included"] != false ||
+		candidateResultPlan["provider_request_id_included"] != false ||
+		candidateResultPlan["provider_response_status_included"] != false ||
+		candidateResultPlan["provider_url_included"] != false ||
+		candidateResultPlan["idempotency_key_included"] != false ||
+		candidateResultPlan["contains_token"] != false ||
+		candidateResultPlan["contains_provider_url"] != false ||
+		candidateResultPlan["contains_repository_ref"] != false ||
+		candidateResultPlan["contains_branch_name"] != false ||
+		candidateResultPlan["contains_file_content"] != false ||
+		candidateResultPlan["result_recording_boundary_redacted"] != true {
+		t.Fatalf("attempt execution candidate result plan = %#v", candidateResultPlan)
+	}
+	candidateResultSequence := stringSliceFromAny(candidateResultPlan["result_recording_sequence"])
+	if len(candidateResultSequence) != 5 ||
+		candidateResultSequence[0] != "classify_provider_response" ||
+		candidateResultSequence[4] != "persist_attempt_result" {
+		t.Fatalf("attempt execution candidate result sequence = %#v", candidateResultSequence)
+	}
+	candidateResultDiagnosticFields := stringSliceFromAny(candidateResultPlan["result_recording_diagnostic_fields"])
+	if len(candidateResultDiagnosticFields) != 4 ||
+		candidateResultDiagnosticFields[0] != "status_class" ||
+		candidateResultDiagnosticFields[3] != "provider_request_id_present" {
+		t.Fatalf("attempt execution candidate result diagnostic fields = %#v", candidateResultDiagnosticFields)
+	}
+	candidateResultPersistedFields := stringSliceFromAny(candidateResultPlan["result_recording_persisted_fields"])
+	if len(candidateResultPersistedFields) != 4 ||
+		candidateResultPersistedFields[0] != "attempt_status" ||
+		candidateResultPersistedFields[3] != "retry_class" {
+		t.Fatalf("attempt execution candidate result persisted fields = %#v", candidateResultPersistedFields)
+	}
+	candidateResultSuppressedFields := stringSliceFromAny(candidateResultPlan["result_recording_suppressed_fields"])
+	if len(candidateResultSuppressedFields) != 9 ||
+		candidateResultSuppressedFields[0] != "provider_request_id" ||
+		candidateResultSuppressedFields[8] != "file_content" {
+		t.Fatalf("attempt execution candidate result suppressed fields = %#v", candidateResultSuppressedFields)
+	}
+	candidateResultBlockedReasons := stringSliceFromAny(candidateResultPlan["blocked_reasons"])
+	if len(candidateResultBlockedReasons) != 4 ||
+		candidateResultBlockedReasons[0] != "provider_review_result_recording_not_armed" ||
+		candidateResultBlockedReasons[1] != "provider_api_call_not_made" ||
+		candidateResultBlockedReasons[2] != "provider_review_adapter_not_implemented" ||
+		candidateResultBlockedReasons[3] != "provider_review_mutation_not_armed" {
+		t.Fatalf("attempt execution candidate result blocked reasons = %#v", candidateResultBlockedReasons)
 	}
 	candidateCredentialPlan := mapFromAny(candidateDispatchPlan["credential_binding_plan"])
 	if candidateCredentialPlan["mode"] != "redacted_attempt_adapter_credential_binding_plan" ||
@@ -4218,6 +4297,7 @@ func TestProviderReviewAttemptAdapterResponsePlan(t *testing.T) {
 				responsePlan["dependency_unlocks_operation"] != item.unlockOperation ||
 				responsePlan["dependency_update_status"] != item.dependencyStatus ||
 				responsePlan["requires_dependency_update"] != item.requiresDependency ||
+				len(mapFromAny(responsePlan["result_recording_plan"])) == 0 ||
 				responsePlan["provider_api_call_made"] != false ||
 				responsePlan["provider_api_mutation"] != "disabled" ||
 				responsePlan["response_body_included"] != false ||
@@ -4239,6 +4319,95 @@ func TestProviderReviewAttemptAdapterResponsePlan(t *testing.T) {
 			}
 			if got := stringSliceFromAny(responsePlan["terminal_failure_status_classes"]); !reflect.DeepEqual(got, []string{"4xx"}) {
 				t.Fatalf("response plan failure classes = %#v", got)
+			}
+			resultPlan := mapFromAny(responsePlan["result_recording_plan"])
+			if resultPlan["mode"] != "redacted_attempt_adapter_result_recording_plan" ||
+				resultPlan["result_recording_state"] != "blocked" ||
+				resultPlan["result_recording_ready"] != false ||
+				resultPlan["result_recording_ready_reason"] != "provider_review_result_recording_not_armed" ||
+				resultPlan["result_recording_metadata_ready"] != true ||
+				resultPlan["operation_name"] != item.operationName ||
+				resultPlan["endpoint_key"] != item.endpointKey ||
+				resultPlan["operation_order"] != item.order ||
+				resultPlan["response_status"] != item.status ||
+				resultPlan["success_attempt_status"] != "completed" ||
+				resultPlan["retry_attempt_status"] != "planned" ||
+				resultPlan["failure_attempt_status"] != "failed" ||
+				resultPlan["dependency_unlocks_operation"] != item.unlockOperation ||
+				resultPlan["dependency_update_status"] != item.dependencyStatus ||
+				resultPlan["requires_response_handler"] != true ||
+				resultPlan["requires_response_diagnostics"] != true ||
+				resultPlan["requires_transaction_boundary"] != true ||
+				resultPlan["requires_dependency_update"] != item.requiresDependency ||
+				resultPlan["requires_mutation_arming"] != true ||
+				resultPlan["result_recorded"] != false ||
+				resultPlan["response_classified"] != false ||
+				resultPlan["attempt_status_mapped"] != false ||
+				resultPlan["attempt_result_persisted"] != false ||
+				resultPlan["dependency_update_staged"] != false ||
+				resultPlan["provider_request_id_recorded"] != false ||
+				resultPlan["provider_response_status_recorded"] != false ||
+				resultPlan["provider_response_body_recorded"] != false ||
+				resultPlan["provider_response_headers_recorded"] != false ||
+				resultPlan["external_call_made"] != false ||
+				resultPlan["provider_api_call_made"] != false ||
+				resultPlan["provider_api_mutation"] != "disabled" ||
+				resultPlan["response_body_included"] != false ||
+				resultPlan["headers_included"] != false ||
+				resultPlan["provider_request_id_included"] != false ||
+				resultPlan["provider_response_status_included"] != false ||
+				resultPlan["provider_url_included"] != false ||
+				resultPlan["idempotency_key_included"] != false ||
+				resultPlan["contains_token"] != false ||
+				resultPlan["contains_provider_url"] != false ||
+				resultPlan["contains_repository_ref"] != false ||
+				resultPlan["contains_branch_name"] != false ||
+				resultPlan["contains_file_content"] != false ||
+				resultPlan["result_recording_boundary_redacted"] != true {
+				t.Fatalf("result recording plan = %#v", resultPlan)
+			}
+			resultSequence := stringSliceFromAny(resultPlan["result_recording_sequence"])
+			if len(resultSequence) != 5 ||
+				resultSequence[0] != "classify_provider_response" ||
+				resultSequence[1] != "map_attempt_status" ||
+				resultSequence[2] != "stage_dependency_update" ||
+				resultSequence[3] != "record_redacted_result" ||
+				resultSequence[4] != "persist_attempt_result" {
+				t.Fatalf("result recording sequence = %#v", resultSequence)
+			}
+			resultDiagnosticFields := stringSliceFromAny(resultPlan["result_recording_diagnostic_fields"])
+			if len(resultDiagnosticFields) != 4 ||
+				resultDiagnosticFields[0] != "status_class" ||
+				resultDiagnosticFields[1] != "retry_class" ||
+				resultDiagnosticFields[2] != "dependency_update_required" ||
+				resultDiagnosticFields[3] != "provider_request_id_present" {
+				t.Fatalf("result recording diagnostic fields = %#v", resultDiagnosticFields)
+			}
+			resultPersistedFields := stringSliceFromAny(resultPlan["result_recording_persisted_fields"])
+			if len(resultPersistedFields) != 4 ||
+				resultPersistedFields[0] != "attempt_status" ||
+				resultPersistedFields[3] != "retry_class" {
+				t.Fatalf("result recording persisted fields = %#v", resultPersistedFields)
+			}
+			resultSuppressedFields := stringSliceFromAny(resultPlan["result_recording_suppressed_fields"])
+			if len(resultSuppressedFields) != 9 ||
+				resultSuppressedFields[0] != "provider_request_id" ||
+				resultSuppressedFields[8] != "file_content" {
+				t.Fatalf("result recording suppressed fields = %#v", resultSuppressedFields)
+			}
+			resultBlockedReasons := stringSliceFromAny(resultPlan["blocked_reasons"])
+			if len(resultBlockedReasons) != 4 ||
+				resultBlockedReasons[0] != "provider_review_result_recording_not_armed" ||
+				resultBlockedReasons[1] != "provider_api_call_not_made" ||
+				resultBlockedReasons[2] != "provider_review_adapter_not_implemented" ||
+				resultBlockedReasons[3] != "provider_review_mutation_not_armed" {
+				t.Fatalf("result recording blocked reasons = %#v", resultBlockedReasons)
+			}
+			encoded, _ := json.Marshal(responsePlan)
+			for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+				if strings.Contains(string(encoded), leak) {
+					t.Fatalf("response plan leaked %q: %s", leak, encoded)
+				}
 			}
 		})
 	}
@@ -4262,6 +4431,20 @@ func TestProviderReviewAttemptAdapterResponsePlan(t *testing.T) {
 		)
 		if len(got) != 0 {
 			t.Fatalf("invalid operation response plan should be empty: %#v", got)
+		}
+	})
+	t.Run("result recording plan rejects mismatched response mode", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResultRecordingPlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.create_branch_ref",
+			},
+			map[string]any{
+				"mode": "raw_response_plan",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("mismatched response mode result plan should be empty: %#v", got)
 		}
 	})
 }
