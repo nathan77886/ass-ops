@@ -11116,6 +11116,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
 	providerType := providerReviewProviderFromEndpointKey(endpointKey)
 	claimMetadataReady := providerReviewAttemptClaimPlanReadyForOperation(claimPlan, operationName, endpointKey)
+	idempotencyMetadataReady := providerReviewAttemptClaimPlanIdempotencyReadyForOperation(claimPlan, operationName, endpointKey)
 	adapterContractReady := providerReviewAttemptPlanMatchesOperation(adapterContract, "redacted_attempt_adapter_contract", operationName, endpointKey)
 	metadataReady := claimMetadataReady &&
 		adapterContractReady &&
@@ -11153,7 +11154,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 			"provider_type":                       providerType,
 			"dispatch_metadata_ready":             metadataReady,
 			"attempt_claim_metadata_ready":        claimMetadataReady,
-			"idempotency_metadata_ready":          boolOnlyFromAny(claimPlan["idempotency_metadata_ready"]),
+			"idempotency_metadata_ready":          idempotencyMetadataReady,
 			"request_materialization_ready":       boolOnlyFromAny(requestPlan["request_materialization_ready"]),
 			"branch_policy_metadata_ready":        boolOnlyFromAny(branchPolicyPlan["branch_policy_metadata_ready"]),
 			"credential_binding_ready":            boolOnlyFromAny(credentialPlan["credential_binding_ready"]),
@@ -12371,6 +12372,11 @@ func providerReviewAttemptPlanMatchesOperation(plan map[string]any, mode, operat
 
 func providerReviewAttemptClaimPlanReadyForOperation(plan map[string]any, operationName, endpointKey string) bool {
 	return boolOnlyFromAny(plan["claim_metadata_ready"]) &&
+		providerReviewAttemptPlanMatchesOperation(plan, "redacted_attempt_execution_claim_plan", operationName, endpointKey)
+}
+
+func providerReviewAttemptClaimPlanIdempotencyReadyForOperation(plan map[string]any, operationName, endpointKey string) bool {
+	return boolOnlyFromAny(plan["idempotency_metadata_ready"]) &&
 		providerReviewAttemptPlanMatchesOperation(plan, "redacted_attempt_execution_claim_plan", operationName, endpointKey)
 }
 

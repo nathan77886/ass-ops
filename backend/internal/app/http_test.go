@@ -8808,10 +8808,11 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 		}
 		adapterContract := providerReviewAttemptCandidateAdapterContract(operation, requestSummary, responseDiagnostics)
 		claimPlan := map[string]any{
-			"mode":                 "redacted_attempt_execution_claim_plan",
-			"operation_name":       "commit_starter_files",
-			"endpoint_key":         "github.commit_files",
-			"claim_metadata_ready": true,
+			"mode":                       "redacted_attempt_execution_claim_plan",
+			"operation_name":             "commit_starter_files",
+			"endpoint_key":               "github.commit_files",
+			"claim_metadata_ready":       true,
+			"idempotency_metadata_ready": true,
 		}
 		dispatchPlan := providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, responseDiagnostics, adapterContract, claimPlan)
 		if dispatchPlan["dispatch_metadata_ready"] != false ||
@@ -8821,7 +8822,8 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 		}
 		preflight := mapFromAny(dispatchPlan["request_validation_preflight"])
 		if preflight["dispatch_metadata_ready"] != false ||
-			preflight["attempt_claim_metadata_ready"] != false {
+			preflight["attempt_claim_metadata_ready"] != false ||
+			preflight["idempotency_metadata_ready"] != false {
 			t.Fatalf("mismatched claim identity preflight = %#v", preflight)
 		}
 	})
@@ -8865,7 +8867,8 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 		}
 		preflight := mapFromAny(dispatchPlan["request_validation_preflight"])
 		if preflight["dispatch_metadata_ready"] != false ||
-			preflight["attempt_claim_metadata_ready"] != true {
+			preflight["attempt_claim_metadata_ready"] != true ||
+			preflight["idempotency_metadata_ready"] != true {
 			t.Fatalf("mismatched adapter contract identity preflight = %#v", preflight)
 		}
 	})
@@ -8891,10 +8894,11 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 			"retryable_status_classes": []string{"5xx"},
 		}
 		claimPlan := map[string]any{
-			"mode":                 "redacted_attempt_execution_claim_plan",
-			"operation_name":       "commit_starter_files",
-			"endpoint_key":         "github.commit_files",
-			"claim_metadata_ready": true,
+			"mode":                       "redacted_attempt_execution_claim_plan",
+			"operation_name":             "commit_starter_files",
+			"endpoint_key":               "github.commit_files",
+			"claim_metadata_ready":       true,
+			"idempotency_metadata_ready": true,
 		}
 		adapterContract := map[string]any{
 			"mode":           "redacted_attempt_adapter_contract",
@@ -8909,7 +8913,8 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 		}
 		preflight := mapFromAny(dispatchPlan["request_validation_preflight"])
 		if preflight["dispatch_metadata_ready"] != false ||
-			preflight["attempt_claim_metadata_ready"] != false {
+			preflight["attempt_claim_metadata_ready"] != false ||
+			preflight["idempotency_metadata_ready"] != false {
 			t.Fatalf("mismatched claim and adapter contract identities preflight = %#v", preflight)
 		}
 	})
