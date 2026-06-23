@@ -10264,7 +10264,37 @@ func (s *Server) postApprovalWebhook(ctx context.Context, approval map[string]an
 	if !validPublicHTTPURL(ctx, endpoint) {
 		return fmt.Errorf("approval webhook url must be a public http or https URL")
 	}
-	payload := map[string]any{
+	payload := approvalWebhookPayload(approval, event)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshaling approval webhook payload: %w", err)
+	}
+	notifyCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(notifyCtx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("creating approval webhook request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token := strings.TrimSpace(s.cfg.ApprovalWebhookToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := approvalWebhookHTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("posting approval webhook: %w", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("approval webhook returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func approvalWebhookPayload(approval map[string]any, event string) map[string]any {
+	// Approval notifications intentionally use an allowlist so external
+	// destinations never receive raw request payloads, secrets, or rule metadata.
+	return map[string]any{
 		"event": event,
 		"approval": map[string]any{
 			"id":                       approval["id"],
@@ -10291,30 +10321,6 @@ func (s *Server) postApprovalWebhook(ctx context.Context, approval map[string]an
 			"updated_at":               approval["updated_at"],
 		},
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshaling approval webhook payload: %w", err)
-	}
-	notifyCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(notifyCtx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("creating approval webhook request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if token := strings.TrimSpace(s.cfg.ApprovalWebhookToken); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := approvalWebhookHTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("posting approval webhook: %w", err)
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("approval webhook returned status %d", resp.StatusCode)
-	}
-	return nil
 }
 
 func truncateText(value string, limit int) string {

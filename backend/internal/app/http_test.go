@@ -1575,6 +1575,69 @@ func TestPostApprovalWebhookSendsSafePayload(t *testing.T) {
 	}
 }
 
+func TestApprovalWebhookPayloadUsesMetadataAllowlist(t *testing.T) {
+	payload := approvalWebhookPayload(map[string]any{
+		"id":                      "approval-1",
+		"project_id":              "project-1",
+		"operation_run_id":        "run-1",
+		"resource_type":           "agent_task",
+		"resource_id":             "task-1",
+		"action":                  "agent.execute",
+		"title":                   "Execute agent task",
+		"status":                  "pending",
+		"approved_count":          1,
+		"rejected_count":          0,
+		"request_payload":         map[string]any{"prompt": "secret prompt", "token": "secret-token"},
+		"result_payload":          map[string]any{"diff": "secret diff"},
+		"decision_reason":         "contains private operational detail",
+		"notification_last_error": "Bearer secret-token",
+		"metadata":                map[string]any{"kubeconfig": "secret kubeconfig"},
+	}, "escalation")
+	if payload["event"] != "escalation" {
+		t.Fatalf("event = %#v", payload["event"])
+	}
+	approval := mapFromAny(payload["approval"])
+	for _, field := range []string{
+		"id",
+		"project_id",
+		"operation_run_id",
+		"resource_type",
+		"resource_id",
+		"action",
+		"title",
+		"status",
+		"approved_count",
+		"rejected_count",
+	} {
+		if _, ok := approval[field]; !ok {
+			t.Fatalf("approval payload missing allowlisted field %q: %#v", field, approval)
+		}
+	}
+	for _, field := range []string{
+		"request_payload",
+		"result_payload",
+		"decision_reason",
+		"notification_last_error",
+		"metadata",
+		"token",
+		"kubeconfig",
+		"secret",
+	} {
+		if _, ok := approval[field]; ok {
+			t.Fatalf("approval payload included suppressed field %q: %#v", field, approval)
+		}
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal approval webhook payload: %v", err)
+	}
+	for _, leaked := range []string{"secret prompt", "secret-token", "secret diff", "private operational detail", "secret kubeconfig"} {
+		if strings.Contains(string(encoded), leaked) {
+			t.Fatalf("approval webhook payload leaked %q: %s", leaked, encoded)
+		}
+	}
+}
+
 func TestPostApprovalWebhookReminderUsesSafePayload(t *testing.T) {
 	var gotPayload map[string]any
 	previousClient := approvalWebhookHTTPClient
