@@ -1226,10 +1226,11 @@ func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
 				},
 			}},
 		},
-		[]map[string]any{{"id": "remote-1", "latest_sha": "abc123"}},
+		[]map[string]any{{"id": "remote-1", "provider_type": "github", "latest_sha": "abc123"}},
 		[]map[string]any{{"target_remote_id": "remote-1", "tag_name": "v0.1.0", "target_sha": "abc123"}},
 		[]map[string]any{{"id": "run-1", "git_remote_id": "remote-1", "commit_sha": "abc123"}},
 		[]map[string]any{{"metadata": map[string]any{"revision": "abc123"}}},
+		[]map[string]any{{"id": "argo-1", "name": "staging"}},
 	)
 	if preview["validation_state"] != "ready" ||
 		preview["external_call_made"] != false ||
@@ -1253,6 +1254,16 @@ func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
 	for _, required := range []string{"git_ref_fetch", "github_actions_api_refresh", "argocd_app_refresh"} {
 		if !containsString(rehearsal, required) {
 			t.Fatalf("required_live_rehearsal missing %q: %#v", required, rehearsal)
+		}
+	}
+	refreshPlan := mapFromAny(preview["provider_refresh_plan"])
+	if refreshPlan["plan_state"] != "planned" || refreshPlan["external_call_made"] != false || refreshPlan["planned_count"] != 3 || refreshPlan["blocked_count"] != 0 {
+		t.Fatalf("refresh plan = %#v", refreshPlan)
+	}
+	steps := sliceOfMapsFromAny(refreshPlan["steps"])
+	for _, kind := range []string{"git_ref_fetch", "github_actions_api_refresh", "argocd_app_refresh"} {
+		if statusByKind(steps, kind) != "planned" {
+			t.Fatalf("refresh step %s not planned in %#v", kind, steps)
 		}
 	}
 }
@@ -1290,6 +1301,10 @@ func TestProjectVersionValidationPreviewReportsPartialAndBlockedChecks(t *testin
 		statusByName(checks, "github_action_run_observed") != "partial" {
 		t.Fatalf("partial item checks = %#v", checks)
 	}
+	refreshPlan := mapFromAny(preview["provider_refresh_plan"])
+	if refreshPlan["plan_state"] != "partial" || refreshPlan["planned_count"] != 1 || refreshPlan["blocked_count"] != 2 {
+		t.Fatalf("refresh plan should show planned refresh plus blocked steps: %#v", refreshPlan)
+	}
 }
 
 func TestProjectVersionValidationPreviewAvoidsArgoMetadataSubstringFalsePositive(t *testing.T) {
@@ -1319,6 +1334,10 @@ func TestProjectVersionValidationPreviewAvoidsArgoMetadataSubstringFalsePositive
 	if statusByName(remoteOnlyChecks, "version_refs_configured") != "partial" {
 		t.Fatalf("remote-only item should remain partial: %#v", remoteOnlyChecks)
 	}
+	refreshPlan := mapFromAny(preview["provider_refresh_plan"])
+	if refreshPlan["step_count"] != 1 || refreshPlan["blocked_count"] != 1 {
+		t.Fatalf("empty-ref manifest items should not create refresh steps, only Argo item should: %#v", refreshPlan)
+	}
 }
 
 func TestGetProjectVersionValidationHandlerScopesQueries(t *testing.T) {
@@ -1335,9 +1354,9 @@ func TestGetProjectVersionValidationHandlerScopesQueries(t *testing.T) {
 		WithArgs("version-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
 			AddRow("version-1", "project-1", "v0.1.0", "manual", []byte(`{"repositories":[{"repo_key":"service","remote_id":"remote-1","commit_sha":"abc123"}]}`), time.Now()))
-	mock.ExpectQuery(`(?s)SELECT gr\.id, gr\.latest_sha, r\.repo_key, r\.repo_role, r\.name AS repository_name\s+FROM git_remotes gr\s+JOIN project_git_repositories r ON r\.id=gr\.project_git_repository_id\s+WHERE r\.project_id=\$1`).
+	mock.ExpectQuery(`(?s)SELECT gr\.id, gr\.remote_key, gr\.provider_type, gr\.latest_sha, r\.repo_key, r\.repo_role, r\.name AS repository_name\s+FROM git_remotes gr\s+JOIN project_git_repositories r ON r\.id=gr\.project_git_repository_id\s+WHERE r\.project_id=\$1`).
 		WithArgs("project-1").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "latest_sha", "repo_key", "repo_role", "repository_name"}).AddRow("remote-1", "abc123", "service", "service", "Service"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "remote_key", "provider_type", "latest_sha", "repo_key", "repo_role", "repository_name"}).AddRow("remote-1", "github", "github", "abc123", "service", "service", "Service"))
 	mock.ExpectQuery(`(?s)SELECT id, project_git_repository_id, target_remote_id, git_remote_id, tag_name, target_sha, status, created_at, finished_at\s+FROM repo_tag_runs\s+WHERE project_id=\$1`).
 		WithArgs("project-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "created_at", "finished_at"}))
@@ -1347,6 +1366,9 @@ func TestGetProjectVersionValidationHandlerScopesQueries(t *testing.T) {
 	mock.ExpectQuery(`(?s)SELECT id, name, namespace, status, metadata, synced_at, updated_at\s+FROM argo_apps\s+WHERE project_id=\$1`).
 		WithArgs("project-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "namespace", "status", "metadata", "synced_at", "updated_at"}))
+	mock.ExpectQuery(`(?s)SELECT id, name, last_sync_status\s+FROM argo_connections\s+WHERE project_id=\$1\s+ORDER BY updated_at DESC\s+LIMIT 100`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "last_sync_status"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/project-versions/version-1/validation", nil)
 	req = withRouteParam(req, "id", "version-1")
@@ -12188,6 +12210,15 @@ func statusByGate(gates []map[string]any, gate string) string {
 func statusByName(items []map[string]any, name string) string {
 	for _, item := range items {
 		if fmt.Sprint(item["name"]) == name {
+			return fmt.Sprint(item["status"])
+		}
+	}
+	return ""
+}
+
+func statusByKind(items []map[string]any, kind string) string {
+	for _, item := range items {
+		if fmt.Sprint(item["kind"]) == kind {
 			return fmt.Sprint(item["status"])
 		}
 	}

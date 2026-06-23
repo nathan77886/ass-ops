@@ -2263,7 +2263,7 @@ func (s *Server) getProjectVersionValidation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	remotes, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT gr.id, gr.latest_sha, r.repo_key, r.repo_role, r.name AS repository_name
+		SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, r.repo_key, r.repo_role, r.name AS repository_name
 		FROM git_remotes gr
 		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
 		WHERE r.project_id=$1`, projectID)
@@ -2306,7 +2306,17 @@ func (s *Server) getProjectVersionValidation(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "could not load Argo apps")
 		return
 	}
-	writeJSON(w, http.StatusOK, projectVersionValidationPreview(version, remotes, tagRuns, actionRuns, argoApps))
+	argoConnections, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT id, name, last_sync_status
+		FROM argo_connections
+		WHERE project_id=$1
+		ORDER BY updated_at DESC
+		LIMIT 100`, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load Argo connections")
+		return
+	}
+	writeJSON(w, http.StatusOK, projectVersionValidationPreview(version, remotes, tagRuns, actionRuns, argoApps, argoConnections))
 }
 
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -5955,7 +5965,7 @@ func projectIDForProjectVersion(ctx context.Context, db sqlx.ExtContext, version
 	return projectID, nil
 }
 
-func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, actionRuns, argoApps []map[string]any) map[string]any {
+func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, actionRuns, argoApps []map[string]any, argoConnections ...[]map[string]any) map[string]any {
 	metadata := mapFromAny(version["metadata"])
 	repositories := mapSliceFromAny(metadata["repositories"])
 	items := make([]map[string]any, 0, len(repositories))
@@ -5972,6 +5982,11 @@ func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, a
 		}
 		items = append(items, item)
 	}
+	var argoConnectionRows []map[string]any
+	if len(argoConnections) > 0 {
+		argoConnectionRows = argoConnections[0]
+	}
+	refreshPlan := projectVersionProviderRefreshPlan(repositories, remotes, argoConnectionRows)
 	overall := "blocked"
 	switch {
 	case len(items) > 0 && blocked == 0 && partial == 0:
@@ -5994,8 +6009,125 @@ func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, a
 		"partial_count":           partial,
 		"blocked_count":           blocked,
 		"items":                   items,
-		"required_live_rehearsal": []string{"git_ref_fetch", "github_actions_api_refresh", "argocd_app_refresh"},
+		"provider_refresh_plan":   refreshPlan,
+		"required_live_rehearsal": stringSliceFromAny(refreshPlan["required_live_rehearsal"]),
 	}
+}
+
+func projectVersionProviderRefreshPlan(repositories, remotes, argoConnections []map[string]any) map[string]any {
+	steps := []map[string]any{}
+	addStep := func(step map[string]any) {
+		step["external_call_made"] = false
+		step["secret_included"] = false
+		steps = append(steps, step)
+	}
+	for index, manifest := range repositories {
+		remoteID := strings.TrimSpace(stringFromMap(manifest, "remote_id"))
+		remote := findRowByID(remotes, remoteID)
+		stepBase := map[string]any{
+			"index":      index,
+			"repo_key":   manifest["repo_key"],
+			"repo_role":  manifest["repo_role"],
+			"remote_id":  remoteID,
+			"remote_key": manifest["remote_key"],
+		}
+		if remote == nil {
+			if remoteID != "" {
+				step := cloneMap(stepBase)
+				step["kind"] = "remote_missing"
+				step["status"] = "blocked"
+				step["reason"] = "manifest remote must exist before provider refresh can be planned"
+				addStep(step)
+			}
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(stepBase["remote_key"])) == "" {
+			stepBase["remote_key"] = stringFromMap(remote, "remote_key")
+		}
+		commitSHA := strings.TrimSpace(firstNonEmptyString(stringFromMap(manifest, "commit_sha"), stringFromMap(manifest, "config_commit_sha")))
+		tagName := strings.TrimSpace(stringFromMap(manifest, "tag"))
+		actionRunID := strings.TrimSpace(stringFromMap(manifest, "github_action_run_id"))
+		argoRevision := strings.TrimSpace(stringFromMap(manifest, "argo_revision"))
+		if commitSHA != "" || tagName != "" {
+			step := cloneMap(stepBase)
+			step["kind"] = "git_ref_fetch"
+			step["status"] = "planned"
+			step["reason"] = "refresh remote refs before comparing manifest commit or tag"
+			step["refresh_endpoint"] = "/api/git-remotes/" + remoteID + "/sync"
+			step["commit_sha_configured"] = commitSHA != ""
+			step["tag_configured"] = tagName != ""
+			addStep(step)
+		}
+		if actionRunID != "" {
+			step := cloneMap(stepBase)
+			step["kind"] = "github_actions_api_refresh"
+			if strings.EqualFold(strings.TrimSpace(stringFromMap(remote, "provider_type")), "github") {
+				step["status"] = "planned"
+				step["refresh_endpoint"] = "/api/git-remotes/" + remoteID + "/github-actions/sync"
+				step["reason"] = "refresh GitHub Actions runs before validating the manifest run id"
+			} else {
+				step["status"] = "blocked"
+				step["reason"] = "GitHub Actions refresh requires a GitHub remote"
+			}
+			addStep(step)
+		}
+		if argoRevision != "" {
+			step := cloneMap(stepBase)
+			step["kind"] = "argocd_app_refresh"
+			step["candidate_connection_count"] = len(argoConnections)
+			if len(argoConnections) > 0 {
+				step["status"] = "planned"
+				step["reason"] = "refresh Argo apps before validating the manifest revision"
+			} else {
+				step["status"] = "blocked"
+				step["reason"] = "Argo revision validation requires at least one project Argo connection"
+			}
+			addStep(step)
+		}
+	}
+	required := []string{}
+	planned, blocked := 0, 0
+	for _, step := range steps {
+		kind := strings.TrimSpace(fmt.Sprint(step["kind"]))
+		if kind != "" && kind != "remote_missing" && !stringInSlice(required, kind) {
+			required = append(required, kind)
+		}
+		if step["status"] == "planned" {
+			planned++
+		} else {
+			blocked++
+		}
+	}
+	state := "blocked"
+	switch {
+	case len(steps) > 0 && blocked == 0:
+		state = "planned"
+	case planned > 0:
+		state = "partial"
+	}
+	return map[string]any{
+		"mode":                     "provider_refresh_plan_preview",
+		"plan_state":               state,
+		"external_call_made":       false,
+		"provider_api_called":      false,
+		"git_fetch_performed":      false,
+		"argocd_api_called":        false,
+		"planned_count":            planned,
+		"blocked_count":            blocked,
+		"step_count":               len(steps),
+		"steps":                    steps,
+		"required_live_rehearsal":  required,
+		"required_operator_action": "Run the planned refresh operations, then re-open this validation preview.",
+	}
+}
+
+func stringInSlice(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func projectVersionValidationItem(index int, manifest map[string]any, remotes, tagRuns, actionRuns, argoApps []map[string]any) map[string]any {

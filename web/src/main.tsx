@@ -2653,6 +2653,8 @@ function ProjectDetail() {
                   <Tag>{versionValidation.external_call_made ? 'external call' : 'no external call'}</Tag>
                   <Tag>{versionValidation.git_fetch_performed ? 'git fetch' : 'no git fetch'}</Tag>
                   <Tag>{versionValidation.provider_api_called ? 'provider API called' : 'local synced state'}</Tag>
+                  {versionValidation.provider_refresh_plan ? <Tag color={versionValidation.provider_refresh_plan.plan_state === 'planned' ? 'blue' : versionValidation.provider_refresh_plan.plan_state === 'partial' ? 'gold' : 'red'}>refresh {versionValidation.provider_refresh_plan.plan_state}</Tag> : null}
+                  {versionValidation.provider_refresh_plan ? <Tag>{versionValidation.provider_refresh_plan.step_count || 0} refresh steps</Tag> : null}
                 </Space>
                 <JSONBlock value={versionValidation} />
               </Space>
