@@ -4402,6 +4402,9 @@ function ConfigPage() {
     external_call_made: sshRehearsal.data.external_call_made,
     ssh_process_started: sshRehearsal.data.ssh_process_started,
     command_executed: sshRehearsal.data.command_executed,
+    live_evidence_recorded: sshRehearsal.data.live_evidence_recorded,
+    sanitized_result_recorded: sshRehearsal.data.sanitized_result_recorded,
+    result_recording_state: sshRehearsal.data.result_recording_state,
     private_key_included: sshRehearsal.data.private_key_included,
     stdout_included: sshRehearsal.data.stdout_included,
     stderr_included: sshRehearsal.data.stderr_included,
@@ -4596,6 +4599,8 @@ function ConfigPage() {
                   <Tag color={sshRehearsalView.rehearsal_state === 'ready' ? 'green' : sshRehearsalView.rehearsal_state === 'blocked' ? 'red' : 'gold'}>{sshRehearsalView.rehearsal_state}</Tag>
                   <Tag>{sshRehearsalView.execution_enabled ? 'execution enabled' : 'execution disabled'}</Tag>
                   <Tag>{sshRehearsalView.ssh_process_started ? 'ssh started' : 'no ssh process'}</Tag>
+                  <Tag color={sshRehearsalView.live_evidence_recorded ? 'green' : 'default'}>{sshRehearsalView.live_evidence_recorded ? 'live evidence recorded' : 'no live evidence'}</Tag>
+                  <Tag color={sshRehearsalView.sanitized_result_recorded ? 'green' : 'default'}>{sshRehearsalView.sanitized_result_recorded ? 'sanitized result recorded' : 'no sanitized result'}</Tag>
                   {sshRehearsalView.approval_request_plan ? <Tag color="gold">approval {sshRehearsalView.approval_request_plan.request_state || 'blocked'}</Tag> : null}
                   {sshRehearsalView.auth_binding_plan ? <Tag color={sshRehearsalView.auth_binding_plan.binding_state === 'planned' ? 'gold' : sshRehearsalView.auth_binding_plan.binding_state === 'observed' ? 'green' : 'red'}>auth {sshRehearsalView.auth_binding_plan.binding_state || 'blocked'}</Tag> : null}
                   {sshRehearsalView.verify_execution_plan ? <Tag color={sshRehearsalView.verify_execution_plan.verify_state === 'observed' ? 'green' : sshRehearsalView.verify_execution_plan.verify_state === 'planned' ? 'gold' : 'red'}>verify {sshRehearsalView.verify_execution_plan.verify_state || 'blocked'}</Tag> : null}
@@ -4606,9 +4611,13 @@ function ConfigPage() {
                   {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.auth_binding_recorded ? 'auth recorded' : 'no auth record'}</Tag> : null}
                   {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.verify_result_recorded ? 'verify recorded' : 'no verify record'}</Tag> : null}
                   {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.exec_result_recorded ? 'exec recorded' : 'no exec record'}</Tag> : null}
+                  {sshRehearsalView.recent_evidence?.evidence_state ? <Tag color={sshRehearsalView.recent_evidence.evidence_state === 'recorded' ? 'green' : sshRehearsalView.recent_evidence.evidence_state === 'failed' ? 'red' : 'gold'}>evidence {sshRehearsalView.recent_evidence.evidence_state}</Tag> : null}
                   <Tag>{sshRehearsalView.recent_evidence?.verify_runs || 0} verify runs</Tag>
                   <Tag>{sshRehearsalView.recent_evidence?.exec_runs || 0} exec runs</Tag>
                   <Tag>{sshRehearsalView.recent_evidence?.unknown_runs || 0} unknown runs</Tag>
+                  <Tag>{sshRehearsalView.recent_evidence?.active_runs || 0} active runs</Tag>
+                  <Tag>{sshRehearsalView.recent_evidence?.failed_runs || 0} failed runs</Tag>
+                  <Tag>{sshRehearsalView.recent_evidence?.canceled_runs || 0} canceled runs</Tag>
                 </Space>
                 <JSONBlock value={sshRehearsalView} />
               </Space>

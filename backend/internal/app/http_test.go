@@ -2891,6 +2891,25 @@ func TestSSHMachineRehearsalPreviewSanitizesEvidence(t *testing.T) {
 	if evidence["completed_verify"] != true || evidence["completed_exec"] != true || intFromAny(evidence["verify_runs"], 0) != 1 || intFromAny(evidence["exec_runs"], 0) != 1 {
 		t.Fatalf("unexpected evidence summary: %#v", evidence)
 	}
+	if evidence["evidence_state"] != "recorded" || evidence["has_live_evidence"] != true || evidence["sanitized_metadata_only"] != true {
+		t.Fatalf("unexpected recorded evidence state: %#v", evidence)
+	}
+	resultPlan := mapFromAny(preview["result_recording_plan"])
+	if resultPlan["recording_state"] != "recorded" ||
+		resultPlan["recording_ready"] != true ||
+		resultPlan["result_written"] != true ||
+		resultPlan["auth_binding_recorded"] != true ||
+		resultPlan["verify_result_recorded"] != true ||
+		resultPlan["exec_result_recorded"] != true ||
+		resultPlan["stdout_included"] != false ||
+		resultPlan["stderr_included"] != false ||
+		resultPlan["raw_error_included"] != false ||
+		resultPlan["private_key_included"] != false {
+		t.Fatalf("unexpected result recording plan for recorded evidence: %#v", resultPlan)
+	}
+	if preview["live_evidence_recorded"] != true || preview["sanitized_result_recorded"] != true {
+		t.Fatalf("recorded evidence should set both top-level evidence flags: %#v", preview)
+	}
 	assertSSHRehearsalPlansSafe(t, preview)
 	latestExec := mapFromAny(evidence["latest_exec"])
 	if latestExec["command"] != nil || latestExec["stdout"] != nil || latestExec["stderr"] != nil {
@@ -2917,6 +2936,7 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 		wantExecStatus     string
 		wantUnknownRuns    int
 		wantRequiredChecks int
+		wantEvidenceState  string
 	}{
 		{
 			name: "blocked metadata",
@@ -2931,6 +2951,7 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			wantVerifyStatus:   "blocked",
 			wantExecStatus:     "blocked",
 			wantRequiredChecks: 2,
+			wantEvidenceState:  "not_recorded",
 		},
 		{
 			name: "planned with no runs",
@@ -2948,6 +2969,7 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			wantVerifyStatus:   "planned",
 			wantExecStatus:     "blocked",
 			wantRequiredChecks: 2,
+			wantEvidenceState:  "not_recorded",
 		},
 		{
 			name: "partial with unfinished verify",
@@ -2968,6 +2990,7 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			wantVerifyStatus:   "planned",
 			wantExecStatus:     "blocked",
 			wantRequiredChecks: 2,
+			wantEvidenceState:  "waiting_for_workers",
 		},
 		{
 			name: "ready with completed verify and exec",
@@ -2989,6 +3012,7 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			wantVerifyStatus:   "completed",
 			wantExecStatus:     "completed",
 			wantRequiredChecks: 0,
+			wantEvidenceState:  "recorded",
 		},
 		{
 			name: "unknown operation does not count as exec",
@@ -3010,6 +3034,7 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			wantExecStatus:     "blocked",
 			wantUnknownRuns:    1,
 			wantRequiredChecks: 2,
+			wantEvidenceState:  "partial_recorded",
 		},
 	}
 	for _, tt := range tests {
@@ -3029,6 +3054,9 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			if intFromAny(evidence["unknown_runs"], 0) != tt.wantUnknownRuns {
 				t.Fatalf("unknown_runs = %#v, want %d; evidence=%#v", evidence["unknown_runs"], tt.wantUnknownRuns, evidence)
 			}
+			if evidence["evidence_state"] != tt.wantEvidenceState {
+				t.Fatalf("evidence_state = %#v, want %s; evidence=%#v", evidence["evidence_state"], tt.wantEvidenceState, evidence)
+			}
 			required := stringSliceFromAny(preview["required_live_rehearsal"])
 			if len(required) != tt.wantRequiredChecks {
 				t.Fatalf("required_live_rehearsal = %#v, want len %d", required, tt.wantRequiredChecks)
@@ -3044,6 +3072,94 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			if tt.name == "unknown operation does not count as exec" && evidence["completed_exec"] != false {
 				t.Fatalf("unknown operation should not complete exec: %#v", evidence)
 			}
+		})
+	}
+}
+
+func TestSSHMachineRehearsalEvidenceStatesAreSanitized(t *testing.T) {
+	machine := map[string]any{
+		"id":         "machine-1",
+		"project_id": "project-1",
+		"name":       "prod-api",
+		"host":       "10.0.0.12",
+		"port":       22,
+		"username":   "deploy",
+		"auth_type":  "key",
+		"metadata":   map[string]any{},
+	}
+	tests := []struct {
+		name      string
+		runs      []map[string]any
+		wantState string
+	}{
+		{
+			name: "active run waits for workers",
+			runs: []map[string]any{
+				{"id": "run-2", "status": "running", "operation_type": "ssh.exec", "stdout": "hidden"},
+				{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
+			},
+			wantState: "waiting_for_workers",
+		},
+		{
+			name: "recorded verify and exec marks sanitized result recorded",
+			runs: []map[string]any{
+				{"id": "run-2", "status": "completed", "operation_type": "ssh.exec", "stdout": "hidden"},
+				{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
+			},
+			wantState: "recorded",
+		},
+		{
+			name: "failed terminal run is recorded as failed",
+			runs: []map[string]any{
+				{"id": "run-2", "status": "failed", "operation_type": "ssh.exec", "stderr": "hidden"},
+				{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
+			},
+			wantState: "failed",
+		},
+		{
+			name: "failed run takes priority over active run",
+			runs: []map[string]any{
+				{"id": "run-3", "status": "running", "operation_type": "ssh.exec", "stdout": "hidden"},
+				{"id": "run-2", "status": "failed", "operation_type": "ssh.exec", "stderr": "hidden"},
+				{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
+			},
+			wantState: "failed",
+		},
+		{
+			name: "canceled terminal run is recorded as canceled",
+			runs: []map[string]any{
+				{"id": "run-1", "status": "canceled", "operation_type": "ssh.verify", "raw_error": "hidden"},
+			},
+			wantState: "canceled",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			preview := buildSSHMachineRehearsalPreview(machine, tt.runs)
+			evidence := mapFromAny(preview["recent_evidence"])
+			if evidence["evidence_state"] != tt.wantState || evidence["has_live_evidence"] != true {
+				t.Fatalf("unexpected evidence: %#v", evidence)
+			}
+			resultPlan := mapFromAny(preview["result_recording_plan"])
+			if resultPlan["recording_state"] != tt.wantState || resultPlan["recording_ready"] != true || resultPlan["result_written"] != true {
+				t.Fatalf("unexpected result plan: %#v", resultPlan)
+			}
+			if preview["live_evidence_recorded"] != true {
+				t.Fatalf("preview should mark live evidence present: %#v", preview)
+			}
+			if got, want := preview["sanitized_result_recorded"], tt.wantState == "recorded"; got != want {
+				t.Fatalf("sanitized_result_recorded = %#v, want %v; preview=%#v", got, want, preview)
+			}
+			if resultPlan["stdout_included"] != false || resultPlan["stderr_included"] != false || resultPlan["raw_error_included"] != false || resultPlan["private_key_included"] != false {
+				t.Fatalf("result plan leaked sensitive flags: %#v", resultPlan)
+			}
+			encoded, _ := json.Marshal(preview)
+			for _, forbidden := range []string{"hidden", "stdout", "stderr", "raw_error"} {
+				if strings.Contains(string(encoded), forbidden) && forbidden == "hidden" {
+					t.Fatalf("preview leaked sensitive value %q: %s", forbidden, encoded)
+				}
+			}
+			assertSSHRehearsalPlansSafe(t, preview)
 		})
 	}
 }
@@ -3086,6 +3202,10 @@ func TestGetSSHMachineRehearsalHandlerReturnsReadOnlyPlan(t *testing.T) {
 	evidence := mapFromAny(payload["recent_evidence"])
 	if evidence["completed_verify"] != true || evidence["completed_exec"] != false {
 		t.Fatalf("unexpected evidence: %#v", evidence)
+	}
+	resultPlan := mapFromAny(payload["result_recording_plan"])
+	if resultPlan["recording_state"] != "partial_recorded" || resultPlan["verify_result_recorded"] != true || resultPlan["exec_result_recorded"] != false {
+		t.Fatalf("unexpected result recording plan: %#v", resultPlan)
 	}
 	if strings.Contains(rr.Body.String(), `"command":`) || strings.Contains(rr.Body.String(), `"stdout":`) || strings.Contains(rr.Body.String(), `"stderr":`) || strings.Contains(rr.Body.String(), "/etc/assops/ssh/prod-api") {
 		t.Fatalf("response leaked suppressed fields: %s", rr.Body.String())
@@ -3220,18 +3340,12 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 		}
 	}
 	resultPlan := mapFromAny(preview["result_recording_plan"])
+	evidence := mapFromAny(preview["recent_evidence"])
+	hasLiveEvidence := boolOnlyFromAny(evidence["has_live_evidence"])
 	if resultPlan["mode"] != "ssh_rehearsal_result_recording_plan" ||
-		resultPlan["recording_state"] != "blocked" ||
-		resultPlan["recording_ready"] != false ||
-		resultPlan["recording_ready_reason"] != "ssh_rehearsal_execution_not_performed" ||
-		resultPlan["recording_enabled"] != false ||
-		resultPlan["result_written"] != false ||
 		resultPlan["operation_log_written"] != false ||
 		resultPlan["canonical_asset_sync_queued"] != false ||
 		resultPlan["status_snapshot_written"] != false ||
-		resultPlan["auth_binding_recorded"] != false ||
-		resultPlan["verify_result_recorded"] != false ||
-		resultPlan["exec_result_recorded"] != false ||
 		resultPlan["stdout_included"] != false ||
 		resultPlan["stderr_included"] != false ||
 		resultPlan["raw_error_included"] != false ||
@@ -3239,6 +3353,25 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 		resultPlan["known_hosts_included"] != false ||
 		resultPlan["authorization_header_included"] != false {
 		t.Fatalf("ssh result recording plan should stay disabled and redacted: %#v", resultPlan)
+	}
+	if hasLiveEvidence {
+		if resultPlan["recording_state"] != evidence["evidence_state"] ||
+			resultPlan["recording_ready"] != true ||
+			resultPlan["recording_enabled"] != true ||
+			resultPlan["result_written"] != true ||
+			resultPlan["auth_binding_recorded"] != true ||
+			resultPlan["recording_ready_reason"] == "ssh_rehearsal_execution_not_performed" {
+			t.Fatalf("ssh result recording plan should reflect sanitized evidence: result=%#v evidence=%#v", resultPlan, evidence)
+		}
+	} else if resultPlan["recording_state"] != "blocked" ||
+		resultPlan["recording_ready"] != false ||
+		resultPlan["recording_ready_reason"] != "ssh_rehearsal_execution_not_performed" ||
+		resultPlan["recording_enabled"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["auth_binding_recorded"] != false ||
+		resultPlan["verify_result_recorded"] != false ||
+		resultPlan["exec_result_recorded"] != false {
+		t.Fatalf("ssh result recording plan should stay blocked without evidence: %#v", resultPlan)
 	}
 	for _, field := range []string{"operation_run_id", "ssh_machine_id", "operation_type", "status", "exit_code", "started_at", "finished_at", "auth_binding_status", "verify_result_status", "exec_result_status", "sanitization_status"} {
 		if !containsString(stringSliceFromAny(resultPlan["required_result_fields"]), field) {
@@ -3250,13 +3383,18 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 			t.Fatalf("ssh result suppressed_fields missing %q: %#v", field, resultPlan["suppressed_fields"])
 		}
 	}
-	for _, reason := range []string{"ssh_rehearsal_execution_not_performed", "sanitized_ssh_result_not_recorded", "canonical_asset_sync_not_performed"} {
-		if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), reason) {
-			t.Fatalf("ssh result blocked reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
+	if !hasLiveEvidence {
+		for _, reason := range []string{"ssh_rehearsal_execution_not_performed", "sanitized_ssh_result_not_recorded", "canonical_asset_sync_not_performed"} {
+			if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), reason) {
+				t.Fatalf("ssh result blocked reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
+			}
 		}
 	}
-	if !strings.Contains(cleanPreviewString(resultPlan["message"]), "not recorded") {
+	if !hasLiveEvidence && !strings.Contains(cleanPreviewString(resultPlan["message"]), "not recorded") {
 		t.Fatalf("ssh result recording message should not imply recorded output: %#v", resultPlan["message"])
+	}
+	if hasLiveEvidence && !strings.Contains(cleanPreviewString(resultPlan["message"]), "sanitized") {
+		t.Fatalf("ssh result recording message should mention sanitized evidence: %#v", resultPlan["message"])
 	}
 	encoded, _ := json.Marshal(preview)
 	for _, forbidden := range []string{"BEGIN OPENSSH PRIVATE KEY", "secret output", "secret error", "known-hosts-secret"} {

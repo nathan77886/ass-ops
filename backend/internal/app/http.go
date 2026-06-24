@@ -17581,7 +17581,7 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 		requiredLiveRehearsal = append(requiredLiveRehearsal, "ssh.exec")
 	}
 	approvalPlan := sshRehearsalApprovalRequestPlan(metadataReady, hasVerified, hasExecuted)
-	resultRecordingPlan := sshRehearsalResultRecordingPlan()
+	resultRecordingPlan := sshRehearsalResultRecordingPlan(evidence)
 	authBindingPlan := sshRehearsalAuthBindingPlan(metadataReady, authType, hasKeyReference, hasKnownHostsReference)
 	verifyPlan := sshRehearsalVerifyExecutionPlan(metadataReady, hasVerified)
 	execPlan := sshRehearsalExecExecutionPlan(metadataReady, hasVerified, hasExecuted)
@@ -17623,25 +17623,28 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 	}
 
 	return map[string]any{
-		"mode":                    "ssh_rehearsal_plan_preview",
-		"rehearsal_state":         state,
-		"execution_enabled":       false,
-		"external_call_made":      false,
-		"ssh_process_started":     false,
-		"command_executed":        false,
-		"stdout_included":         false,
-		"stderr_included":         false,
-		"private_key_included":    false,
-		"known_hosts_included":    false,
-		"secret_included":         false,
-		"auth_reference_present":  hasKeyReference || authType != "",
-		"known_hosts_configured":  hasKnownHostsReference,
-		"approval_request_plan":   approvalPlan,
-		"auth_binding_plan":       authBindingPlan,
-		"verify_execution_plan":   verifyPlan,
-		"exec_execution_plan":     execPlan,
-		"result_recording_plan":   resultRecordingPlan,
-		"required_live_rehearsal": requiredLiveRehearsal,
+		"mode":                      "ssh_rehearsal_plan_preview",
+		"rehearsal_state":           state,
+		"execution_enabled":         false,
+		"external_call_made":        false,
+		"ssh_process_started":       false,
+		"command_executed":          false,
+		"stdout_included":           false,
+		"stderr_included":           false,
+		"private_key_included":      false,
+		"known_hosts_included":      false,
+		"secret_included":           false,
+		"live_evidence_recorded":    boolOnlyFromAny(evidence["has_live_evidence"]),
+		"sanitized_result_recorded": cleanPreviewString(evidence["evidence_state"]) == "recorded",
+		"result_recording_state":    resultRecordingPlan["recording_state"],
+		"auth_reference_present":    hasKeyReference || authType != "",
+		"known_hosts_configured":    hasKnownHostsReference,
+		"approval_request_plan":     approvalPlan,
+		"auth_binding_plan":         authBindingPlan,
+		"verify_execution_plan":     verifyPlan,
+		"exec_execution_plan":       execPlan,
+		"result_recording_plan":     resultRecordingPlan,
+		"required_live_rehearsal":   requiredLiveRehearsal,
 		"required_controls": []string{
 			"machine_metadata_review",
 			"ssh_auth_material_binding",
@@ -17817,57 +17820,133 @@ func sshRehearsalApprovalRequestPlan(metadataReady, hasVerified, hasExecuted boo
 	}
 }
 
-func sshRehearsalResultRecordingPlan() map[string]any {
+func sshRehearsalResultRecordingPlan(evidence map[string]any) map[string]any {
+	totalRuns := intFromAny(evidence["total_runs"], 0)
+	verifyRuns := intFromAny(evidence["verify_runs"], 0)
+	execRuns := intFromAny(evidence["exec_runs"], 0)
+	recordingState := cleanPreviewString(evidence["evidence_state"])
+	if recordingState == "" {
+		recordingState = "blocked"
+	}
+	recordingReady := totalRuns > 0
+	recordingReason := "sanitized_ssh_result_recorded"
+	blockedReasons := []string{}
+	message := "SSH rehearsal has recorded sanitized command-run metadata only; command output, raw errors, and auth material remain suppressed."
+	if !recordingReady {
+		recordingState = "blocked"
+		recordingReason = "ssh_rehearsal_execution_not_performed"
+		blockedReasons = []string{"ssh_rehearsal_execution_not_performed", "sanitized_ssh_result_not_recorded", "canonical_asset_sync_not_performed"}
+		message = "SSH rehearsal results are not recorded by this preview; future execution must persist sanitized metadata without command output or auth material."
+	} else {
+		switch recordingState {
+		case "waiting_for_workers":
+			blockedReasons = append(blockedReasons, "ssh_rehearsal_worker_result_pending")
+			recordingReason = "ssh_rehearsal_worker_result_pending"
+		case "failed":
+			blockedReasons = append(blockedReasons, "ssh_rehearsal_failed_result_recorded")
+			recordingReason = "ssh_rehearsal_failed_result_recorded"
+		case "canceled":
+			blockedReasons = append(blockedReasons, "ssh_rehearsal_canceled_result_recorded")
+			recordingReason = "ssh_rehearsal_canceled_result_recorded"
+		case "partial_recorded":
+			blockedReasons = append(blockedReasons, "ssh_rehearsal_partial_result_recorded")
+			recordingReason = "ssh_rehearsal_partial_result_recorded"
+		}
+	}
 	return map[string]any{
 		"mode":                          "ssh_rehearsal_result_recording_plan",
-		"recording_state":               "blocked",
-		"recording_ready":               false,
-		"recording_ready_reason":        "ssh_rehearsal_execution_not_performed",
-		"recording_enabled":             false,
-		"result_written":                false,
+		"recording_state":               recordingState,
+		"recording_ready":               recordingReady,
+		"recording_ready_reason":        recordingReason,
+		"recording_enabled":             recordingReady,
+		"result_written":                recordingReady,
 		"operation_log_written":         false,
 		"canonical_asset_sync_queued":   false,
 		"status_snapshot_written":       false,
-		"auth_binding_recorded":         false,
-		"verify_result_recorded":        false,
-		"exec_result_recorded":          false,
+		"auth_binding_recorded":         recordingReady,
+		"verify_result_recorded":        verifyRuns > 0,
+		"exec_result_recorded":          execRuns > 0,
 		"stdout_included":               false,
 		"stderr_included":               false,
 		"raw_error_included":            false,
 		"private_key_included":          false,
 		"known_hosts_included":          false,
 		"authorization_header_included": false,
+		"sanitized_metadata_only":       true,
+		"has_failures":                  boolOnlyFromAny(evidence["has_failures"]),
+		"has_cancellations":             boolOnlyFromAny(evidence["has_cancellations"]),
+		"active_runs":                   intFromAny(evidence["active_runs"], 0),
+		"terminal_runs":                 intFromAny(evidence["terminal_runs"], 0),
 		"required_result_fields":        []string{"operation_run_id", "ssh_machine_id", "operation_type", "status", "exit_code", "started_at", "finished_at", "auth_binding_status", "verify_result_status", "exec_result_status", "sanitization_status"},
 		"suppressed_fields":             []string{"private_key", "passphrase", "known_hosts_body", "command", "stdout", "stderr", "raw_error", "runtime_secret"},
-		"blocked_reasons":               []string{"ssh_rehearsal_execution_not_performed", "sanitized_ssh_result_not_recorded", "canonical_asset_sync_not_performed"},
-		"message":                       "SSH rehearsal results are not recorded by this preview; future execution must persist sanitized metadata without command output or auth material.",
+		"blocked_reasons":               blockedReasons,
+		"message":                       message,
 	}
 }
 
 func summarizeSSHRehearsalEvidence(runs []map[string]any) map[string]any {
 	evidence := map[string]any{
-		"total_runs":       len(runs),
-		"verify_runs":      0,
-		"exec_runs":        0,
-		"unknown_runs":     0,
-		"completed_verify": false,
-		"completed_exec":   false,
-		"latest_verify":    nil,
-		"latest_exec":      nil,
-		"latest_unknown":   nil,
+		"total_runs":              len(runs),
+		"verify_runs":             0,
+		"exec_runs":               0,
+		"unknown_runs":            0,
+		"completed_runs":          0,
+		"failed_runs":             0,
+		"running_runs":            0,
+		"queued_runs":             0,
+		"canceled_runs":           0,
+		"terminal_runs":           0,
+		"active_runs":             0,
+		"completed_verify":        false,
+		"completed_exec":          false,
+		"has_live_evidence":       len(runs) > 0,
+		"has_failures":            false,
+		"has_cancellations":       false,
+		"evidence_state":          "not_recorded",
+		"sanitized_metadata_only": true,
+		"stdout_included":         false,
+		"stderr_included":         false,
+		"raw_error_included":      false,
+		"private_key_included":    false,
+		"known_hosts_included":    false,
+		"secret_included":         false,
+		"suppressed_fields":       []string{"command", "stdout", "stderr", "raw_error", "private_key", "passphrase", "known_hosts_body", "runtime_secret"},
+		"latest_verify":           nil,
+		"latest_exec":             nil,
+		"latest_unknown":          nil,
 	}
 	for _, run := range runs {
 		operationType := cleanPreviewString(run["operation_type"])
 		if operationType == "" {
 			operationType = "unknown"
 		}
+		status := cleanPreviewString(run["status"])
 		item := map[string]any{
 			"id":             run["id"],
-			"status":         run["status"],
+			"status":         status,
 			"exit_code":      run["exit_code"],
 			"created_at":     run["created_at"],
 			"finished_at":    run["finished_at"],
 			"operation_type": operationType,
+		}
+		switch status {
+		case "completed":
+			evidence["completed_runs"] = intFromAny(evidence["completed_runs"], 0) + 1
+			evidence["terminal_runs"] = intFromAny(evidence["terminal_runs"], 0) + 1
+		case "failed":
+			evidence["failed_runs"] = intFromAny(evidence["failed_runs"], 0) + 1
+			evidence["terminal_runs"] = intFromAny(evidence["terminal_runs"], 0) + 1
+			evidence["has_failures"] = true
+		case "canceled", "cancelled":
+			evidence["canceled_runs"] = intFromAny(evidence["canceled_runs"], 0) + 1
+			evidence["terminal_runs"] = intFromAny(evidence["terminal_runs"], 0) + 1
+			evidence["has_cancellations"] = true
+		case "running":
+			evidence["running_runs"] = intFromAny(evidence["running_runs"], 0) + 1
+			evidence["active_runs"] = intFromAny(evidence["active_runs"], 0) + 1
+		case "queued", "pending":
+			evidence["queued_runs"] = intFromAny(evidence["queued_runs"], 0) + 1
+			evidence["active_runs"] = intFromAny(evidence["active_runs"], 0) + 1
 		}
 		switch operationType {
 		case "ssh.verify":
@@ -17875,7 +17954,7 @@ func summarizeSSHRehearsalEvidence(runs []map[string]any) map[string]any {
 			if evidence["latest_verify"] == nil {
 				evidence["latest_verify"] = item
 			}
-			if cleanPreviewString(run["status"]) == "completed" {
+			if status == "completed" {
 				evidence["completed_verify"] = true
 			}
 		case "ssh.exec":
@@ -17883,7 +17962,7 @@ func summarizeSSHRehearsalEvidence(runs []map[string]any) map[string]any {
 			if evidence["latest_exec"] == nil {
 				evidence["latest_exec"] = item
 			}
-			if cleanPreviewString(run["status"]) == "completed" {
+			if status == "completed" {
 				evidence["completed_exec"] = true
 			}
 		default:
@@ -17892,6 +17971,21 @@ func summarizeSSHRehearsalEvidence(runs []map[string]any) map[string]any {
 				evidence["latest_unknown"] = item
 			}
 		}
+	}
+	if len(runs) == 0 {
+		return evidence
+	}
+	switch {
+	case boolOnlyFromAny(evidence["has_failures"]):
+		evidence["evidence_state"] = "failed"
+	case intFromAny(evidence["active_runs"], 0) > 0:
+		evidence["evidence_state"] = "waiting_for_workers"
+	case boolOnlyFromAny(evidence["has_cancellations"]):
+		evidence["evidence_state"] = "canceled"
+	case boolOnlyFromAny(evidence["completed_verify"]) && boolOnlyFromAny(evidence["completed_exec"]):
+		evidence["evidence_state"] = "recorded"
+	default:
+		evidence["evidence_state"] = "partial_recorded"
 	}
 	return evidence
 }
