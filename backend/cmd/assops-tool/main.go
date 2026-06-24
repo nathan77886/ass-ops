@@ -1945,14 +1945,14 @@ func countRepoSyncGraphLinks(graph map[string]any) repoSyncGraphLinkCounts {
 	counts := repoSyncGraphLinkCounts{}
 	type syncLinks struct {
 		repository bool
-		source     bool
-		target     bool
+		sources    map[string]bool
+		targets    map[string]bool
 	}
 	bySync := map[string]*syncLinks{}
 	syncEntry := func(assetID string) *syncLinks {
 		entry := bySync[assetID]
 		if entry == nil {
-			entry = &syncLinks{}
+			entry = &syncLinks{sources: map[string]bool{}, targets: map[string]bool{}}
 			bySync[assetID] = entry
 		}
 		return entry
@@ -1969,21 +1969,32 @@ func countRepoSyncGraphLinks(graph map[string]any) repoSyncGraphLinkCounts {
 		case "synced_from":
 			if strings.HasPrefix(from, "repo_sync:") && strings.HasPrefix(to, "git_remote:") {
 				counts.SourceRemotes++
-				syncEntry(from).source = true
+				syncEntry(from).sources[to] = true
 			}
 		case "mirrors_to":
 			if strings.HasPrefix(from, "repo_sync:") && strings.HasPrefix(to, "git_remote:") {
 				counts.TargetRemotes++
-				syncEntry(from).target = true
+				syncEntry(from).targets[to] = true
 			}
 		}
 	}
 	for _, entry := range bySync {
-		if entry.repository && entry.source && entry.target {
+		if entry.repository && hasDistinctSourceTarget(entry.sources, entry.targets) {
 			counts.CompleteSyncs++
 		}
 	}
 	return counts
+}
+
+func hasDistinctSourceTarget(sources, targets map[string]bool) bool {
+	for source := range sources {
+		for target := range targets {
+			if source != target {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type githubActionGraphLinkCounts struct {

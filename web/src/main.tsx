@@ -717,9 +717,9 @@ function countRepositoryGraphLinks(graph: AnyRow = {}) {
 }
 
 function countRepoSyncGraphLinks(graph: AnyRow = {}) {
-  const bySync: Record<string, { repository?: boolean; source?: boolean; target?: boolean }> = {};
+  const bySync: Record<string, { repository?: boolean; sources: Record<string, boolean>; targets: Record<string, boolean> }> = {};
   const syncEntry = (assetID: string) => {
-    bySync[assetID] ||= {};
+    bySync[assetID] ||= { sources: {}, targets: {} };
     return bySync[assetID];
   };
   const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
@@ -732,15 +732,18 @@ function countRepoSyncGraphLinks(graph: AnyRow = {}) {
     }
     if (relation === 'synced_from' && from.startsWith('repo_sync:') && to.startsWith('git_remote:')) {
       nextCounts.sourceRemotes += 1;
-      syncEntry(from).source = true;
+      syncEntry(from).sources[to] = true;
     }
     if (relation === 'mirrors_to' && from.startsWith('repo_sync:') && to.startsWith('git_remote:')) {
       nextCounts.targetRemotes += 1;
-      syncEntry(from).target = true;
+      syncEntry(from).targets[to] = true;
     }
     return nextCounts;
   }, { repositorySync: 0, sourceRemotes: 0, targetRemotes: 0, completeSyncs: 0 });
-  counts.completeSyncs = Object.values(bySync).filter((entry) => entry.repository && entry.source && entry.target).length;
+  counts.completeSyncs = Object.values(bySync).filter((entry) => (
+    entry.repository &&
+    Object.keys(entry.sources).some((source) => Object.keys(entry.targets).some((target) => source !== target))
+  )).length;
   return counts;
 }
 

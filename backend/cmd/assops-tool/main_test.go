@@ -696,6 +696,19 @@ func TestFirstVersionReadinessReportRequiresRepoSyncGraphLinks(t *testing.T) {
 		t.Fatalf("repo sync readiness with unrelated target link = %#v, want partial without target evidence", got)
 	}
 
+	sameRemoteSourceAndTarget := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "repo_sync"},
+	}, nil, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "repo_sync:20", "relation_type": "has_sync"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:100", "relation_type": "synced_from"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:100", "relation_type": "mirrors_to"},
+		},
+	})
+	if got := readinessByKey(t, sameRemoteSourceAndTarget, "repo_sync"); got.Status != "partial" || got.Evidence != "1 repo syncs / 0 complete syncs / 1 repository links / 1 source links / 1 target links" {
+		t.Fatalf("repo sync readiness with same source and target remote = %#v, want partial without distinct mirror evidence", got)
+	}
+
 	crossSyncAggregation := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "repo_sync"},
 		{"asset_type": "repo_sync"},
@@ -724,6 +737,35 @@ func TestCountRepoSyncGraphLinks(t *testing.T) {
 	got := countRepoSyncGraphLinks(graph)
 	if got.RepositorySync != 1 || got.SourceRemotes != 1 || got.TargetRemotes != 1 || got.CompleteSyncs != 1 {
 		t.Fatalf("countRepoSyncGraphLinks = %#v, want repository/source/target/complete counts of 1", got)
+	}
+}
+
+func TestCountRepoSyncGraphLinksRequiresDistinctSourceAndTarget(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "repo_sync:20", "relation_type": "has_sync"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:100", "relation_type": "synced_from"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:100", "relation_type": "mirrors_to"},
+		},
+	}
+	got := countRepoSyncGraphLinks(graph)
+	if got.RepositorySync != 1 || got.SourceRemotes != 1 || got.TargetRemotes != 1 || got.CompleteSyncs != 0 {
+		t.Fatalf("countRepoSyncGraphLinks with same source and target = %#v, want no complete sync", got)
+	}
+}
+
+func TestCountRepoSyncGraphLinksAllowsMixedDistinctMirror(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "repo_sync:20", "relation_type": "has_sync"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:100", "relation_type": "synced_from"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:101", "relation_type": "synced_from"},
+			map[string]any{"from_asset_id": "repo_sync:20", "to_asset_id": "git_remote:100", "relation_type": "mirrors_to"},
+		},
+	}
+	got := countRepoSyncGraphLinks(graph)
+	if got.RepositorySync != 1 || got.SourceRemotes != 2 || got.TargetRemotes != 1 || got.CompleteSyncs != 1 {
+		t.Fatalf("countRepoSyncGraphLinks with mixed distinct mirror = %#v, want one complete sync", got)
 	}
 }
 
