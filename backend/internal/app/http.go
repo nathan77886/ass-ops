@@ -200,6 +200,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/projects/{id}/webhook-events", s.listWebhookEvents)
 		r.Post("/api/webhook-connections/{id}/threshold-decision-audit", s.recordWebhookThresholdDecisionAudit)
 		r.Post("/api/webhook-connections/{id}/threshold-configuration", s.applyWebhookThresholdConfiguration)
+		r.Post("/api/webhook-connections/{id}/provider-callback-rehearsal-snapshot", s.recordWebhookProviderCallbackRehearsalSnapshot)
 		r.Post("/api/webhook-connections/{id}/rotate-secret", s.rotateWebhookConnectionSecret)
 		r.Post("/api/webhook-events/{id}/replay", s.replayWebhookEvent)
 		r.Post("/api/projects/{id}/ssh-machines", s.createSSHMachine)
@@ -7441,6 +7442,38 @@ func (s *Server) applyWebhookThresholdConfiguration(w http.ResponseWriter, r *ht
 		"raw_provider_response_recorded":       false,
 		"raw_request_or_payload_body_recorded": false,
 	})
+}
+
+func (s *Server) recordWebhookProviderCallbackRehearsalSnapshot(w http.ResponseWriter, r *http.Request) {
+	connectionID := chi.URLParam(r, "id")
+	var req struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	connection, err := webhookConnectionWithCallbackReadiness(r.Context(), s.store.DB, connectionID, s.publicBaseURL())
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	projectID := strings.TrimSpace(fmt.Sprint(connection["project_id"]))
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "webhook_connection", ID: connectionID, ProjectID: projectID}, "update") {
+		return
+	}
+	result, err := RecordWebhookProviderCallbackRehearsalSnapshot(r.Context(), s.store, WebhookProviderCallbackRehearsalSnapshotOptions{
+		ConnectionID: connectionID,
+		DryRun:       req.DryRun,
+		Connection:   connection,
+	})
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("webhook provider callback rehearsal snapshot failed", "webhook_connection_id", connectionID, "project_id", projectID, "error", err)
+		}
+		writeError(w, http.StatusInternalServerError, "record webhook provider callback rehearsal snapshot failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func validWebhookEvidenceWindow(value string) bool {

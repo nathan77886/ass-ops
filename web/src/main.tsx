@@ -3621,6 +3621,8 @@ function GitRemotes() {
   const [webhookOpen, setWebhookOpen] = useState(false);
   const [recordingThresholdAuditID, setRecordingThresholdAuditID] = useState<string>();
   const [applyingThresholdConfigID, setApplyingThresholdConfigID] = useState<string>();
+  const [recordingCallbackSnapshotID, setRecordingCallbackSnapshotID] = useState<string>();
+  const [callbackSnapshotResults, setCallbackSnapshotResults] = useState<Record<string, AnyRow>>({});
   const [recordingTagSnapshotID, setRecordingTagSnapshotID] = useState<string>();
   const [recordingTagActionsSnapshotID, setRecordingTagActionsSnapshotID] = useState<string>();
   const [tagSnapshotResults, setTagSnapshotResults] = useState<Record<string, AnyRow>>({});
@@ -3743,6 +3745,26 @@ function GitRemotes() {
       syncAssetDetail.reload();
     } finally {
       setApplyingThresholdConfigID(undefined);
+    }
+  }
+  async function recordWebhookProviderCallbackRehearsalSnapshot(id: string) {
+    setRecordingCallbackSnapshotID(id);
+    try {
+      const result = await api(`/api/webhook-connections/${id}/provider-callback-rehearsal-snapshot`, {
+        method: 'POST',
+        body: JSON.stringify({ dry_run: false })
+      });
+      setCallbackSnapshotResults((current) => ({ ...current, [id]: result }));
+      if (result.recording_state === 'asset_missing') {
+        message.warning('Callback asset missing; run db sync-assets before recording');
+      } else {
+        message.success(result.provider_callback_rehearsal_snapshot_written ? 'Callback rehearsal snapshot recorded' : result.recording_ready ? 'Callback rehearsal snapshot already current' : 'Callback rehearsal snapshot not ready');
+      }
+      webhookConnections.reload();
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setRecordingCallbackSnapshotID(undefined);
     }
   }
   async function runRepoSyncAsset(id: string) {
@@ -3950,6 +3972,7 @@ function GitRemotes() {
               const thresholdAudit = thresholdConfig.threshold_decision_audit_plan || {};
               const metricsComparison = thresholdPlan.provider_metrics_comparison_plan || thresholdConfig.provider_metrics_comparison_plan || {};
               const resultPlan = providerPlan.result_recording_plan || {};
+              const snapshotResult = callbackSnapshotResults[row.id];
               const callbackEvidence = readiness.callback_evidence || {};
               const replayProof = callbackEvidence.operator_replay_proof || providerPlan.operator_replay_proof || {};
               const status = readiness.status || 'unknown';
@@ -3970,6 +3993,7 @@ function GitRemotes() {
                 {thresholdAudit.threshold_decision_audit_count ? <Tag color="green">{thresholdAudit.threshold_decision_audit_count} audit rows</Tag> : null}
                 <Tag>{providerPlan.external_call_made ? 'provider call' : 'no provider call'}</Tag>
                 <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
+                {snapshotResult ? <Tag color={snapshotResult.provider_callback_rehearsal_snapshot_written ? 'green' : snapshotResult.recording_state === 'asset_missing' ? 'red' : snapshotResult.recording_ready ? 'gold' : 'default'}>snapshot {snapshotResult.recording_state || 'unknown'}</Tag> : null}
                 <Tag color={replayProof.proof_state === 'recorded' ? 'green' : replayProof.proof_state === 'failed' ? 'red' : replayProof.operator_replay_observed ? 'gold' : 'default'}>{replayProof.operator_replay_observed ? `replay proof ${replayProof.proof_state || 'observed'}` : 'replay proof pending'}</Tag>
                 {callbackEvidence.delivery_count_7d ? <Tag color={callbackEvidenceColor(callbackEvidence.evidence_state)}>callback {callbackEvidence.evidence_state || 'observed'}</Tag> : null}
                 {callbackEvidence.delivery_count_7d ? <Tag>{callbackEvidence.delivery_count_7d} deliveries</Tag> : null}
@@ -3982,8 +4006,17 @@ function GitRemotes() {
               const thresholdPlan = row.callback_rehearsal?.provider_rehearsal_plan?.threshold_tuning_plan || {};
               const thresholdConfig = thresholdPlan.threshold_configuration_plan || {};
               const thresholdAudit = thresholdConfig.threshold_decision_audit_plan || {};
+              const resultPlan = row.callback_rehearsal?.provider_rehearsal_plan?.result_recording_plan || {};
               return <Space size={4} wrap>
                 <Button size="small" onClick={() => rotateWebhookSecret(row.id)}>Rotate secret</Button>
+                <Button
+                  size="small"
+                  onClick={() => recordWebhookProviderCallbackRehearsalSnapshot(row.id)}
+                  disabled={!resultPlan.result_recording_ready}
+                  loading={recordingCallbackSnapshotID === row.id}
+                >
+                  Record callback snapshot
+                </Button>
                 <Button
                   size="small"
                   onClick={() => recordWebhookThresholdDecisionAudit(row.id)}

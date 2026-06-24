@@ -19359,6 +19359,352 @@ func TestRecordWebhookThresholdDecisionAuditHandlerBlocksWithoutReadyEvidence(t 
 	}
 }
 
+func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerWritesSanitizedSnapshot(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 6, 24, 11, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
+		WithArgs("conn-1", "https://assops.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "project_id", "provider", "name", "source_remote_id", "enabled", "event_types", "last_delivery_status", "metadata", "created_at", "updated_at", "source_remote_name",
+			"deliveries_7d", "failures_7d", "processed_7d", "ignored_7d", "replayed_7d", "signature_valid_7d", "matched_repo_sync_asset_7d", "operation_run_7d",
+			"last_event_at", "last_event_status", "last_event_type", "last_event_signature_valid", "threshold_decision_audit_count", "last_threshold_decision_audit_at", "threshold_configuration_count", "last_threshold_configuration_at", "webhook_path", "webhook_url",
+		}).AddRow(
+			"conn-1", "project-1", "gitea", "main webhook", "remote-1", true, []byte(`["push"]`), "processed", []byte(`{"provider_url":"https://provider.example.com/hook","token":"secret-token"}`), now, now, "source",
+			2, 0, 1, 0, 1, 2, 1, 1,
+			now, "processed", "push", true, 1, now, 0, nil, "/api/webhooks/gitea/conn-1", "https://assops.example.com/api/webhooks/gitea/conn-1",
+		))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='webhook_connection'`).
+		WithArgs("conn-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-webhook-1"))
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-webhook-1", "provider_callback_rehearsal_recorded").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-webhook-1", "provider_callback_rehearsal_recorded", "normal", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := httptest.NewRequest(http.MethodPost, "/api/webhook-connections/conn-1/provider-callback-rehearsal-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "conn-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+	server.recordWebhookProviderCallbackRehearsalSnapshot(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["recording_state"] != "recorded" ||
+		body["recording_ready"] != true ||
+		body["provider_callback_rehearsal_snapshot_written"] != true ||
+		body["asset_status_snapshot_written"] != true ||
+		body["external_call_made"] != false ||
+		body["provider_api_called"] != false ||
+		body["provider_test_delivery_sent"] != false ||
+		body["provider_metrics_fetched"] != false ||
+		body["contains_secret"] != false ||
+		body["contains_payload"] != false ||
+		body["contains_provider_url"] != false {
+		t.Fatalf("unexpected provider callback snapshot response: %#v", body)
+	}
+	snapshot := mapFromAny(body["snapshot"])
+	if snapshot["mode"] != "provider_callback_rehearsal_snapshot" ||
+		snapshot["result_recording_state"] != "recorded" ||
+		snapshot["sanitized_result_recorded"] != true ||
+		snapshot["webhook_event_recorded"] != true ||
+		snapshot["operator_replay_proof_recorded"] != true ||
+		snapshot["repo_sync_result_recorded"] != true ||
+		intFromAny(snapshot["delivery_count_7d"], 0) != 2 ||
+		intFromAny(snapshot["operation_run_count_7d"], 0) != 1 ||
+		snapshot["external_call_made"] != false ||
+		snapshot["raw_provider_response_recorded"] != false ||
+		snapshot["contains_secret"] != false ||
+		snapshot["contains_payload"] != false ||
+		snapshot["contains_provider_url"] != false {
+		t.Fatalf("unexpected sanitized provider callback snapshot: %#v", snapshot)
+	}
+	encoded := rr.Body.String()
+	for _, forbidden := range []string{"secret-token", "payload-body", "provider-response", "Bearer", "provider.example.com", "delivery-secret"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("provider callback snapshot response leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerBlocksWithoutEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 6, 24, 11, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
+		WithArgs("conn-1", "https://assops.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "project_id", "provider", "name", "source_remote_id", "enabled", "event_types", "last_delivery_status", "metadata", "created_at", "updated_at", "source_remote_name",
+			"deliveries_7d", "failures_7d", "processed_7d", "ignored_7d", "replayed_7d", "signature_valid_7d", "matched_repo_sync_asset_7d", "operation_run_7d",
+			"last_event_at", "last_event_status", "last_event_type", "last_event_signature_valid", "threshold_decision_audit_count", "last_threshold_decision_audit_at", "threshold_configuration_count", "last_threshold_configuration_at", "webhook_path", "webhook_url",
+		}).AddRow(
+			"conn-1", "project-1", "gitea", "main webhook", "remote-1", true, []byte(`["push"]`), "never", []byte(`{}`), now, now, "source",
+			0, 0, 0, 0, 0, 0, 0, 0,
+			nil, "", "", false, 0, nil, 0, nil, "/api/webhooks/gitea/conn-1", "https://assops.example.com/api/webhooks/gitea/conn-1",
+		))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='webhook_connection'`).
+		WithArgs("conn-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-webhook-1"))
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := httptest.NewRequest(http.MethodPost, "/api/webhook-connections/conn-1/provider-callback-rehearsal-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "conn-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+	server.recordWebhookProviderCallbackRehearsalSnapshot(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["recording_state"] != "waiting_for_evidence" ||
+		body["recording_ready"] != false ||
+		body["provider_callback_rehearsal_snapshot_written"] != false ||
+		body["asset_status_snapshot_written"] != false ||
+		body["external_call_made"] != false {
+		t.Fatalf("unexpected blocked provider callback snapshot response: %#v", body)
+	}
+	if !containsString(stringSliceFromAny(body["missing_evidence"]), "sanitized_callback_result_not_ready") ||
+		!containsString(stringSliceFromAny(body["missing_evidence"]), "webhook_event_not_observed") {
+		t.Fatalf("blocked provider callback snapshot missing expected evidence: %#v", body["missing_evidence"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerDryRunDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	expectProviderCallbackSnapshotConnection(mock, 2, 0)
+	expectProviderCallbackSnapshotAsset(mock, true)
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := newProviderCallbackSnapshotRequest(`{"dry_run":true}`)
+	rr := httptest.NewRecorder()
+	server.recordWebhookProviderCallbackRehearsalSnapshot(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["recording_state"] != "ready_to_record" ||
+		body["recording_ready"] != true ||
+		body["recording_enabled"] != false ||
+		body["dry_run"] != true ||
+		body["provider_callback_rehearsal_snapshot_written"] != false ||
+		body["asset_status_snapshot_written"] != false ||
+		body["snapshot_commit_attempted"] != false {
+		t.Fatalf("unexpected dry-run provider callback snapshot response: %#v", body)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerSkipsDuplicate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	expectProviderCallbackSnapshotConnection(mock, 2, 0)
+	expectProviderCallbackSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-webhook-1", "provider_callback_rehearsal_recorded").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-webhook-1", "provider_callback_rehearsal_recorded", "normal", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := newProviderCallbackSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordWebhookProviderCallbackRehearsalSnapshot(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["recording_state"] != "recorded" ||
+		body["provider_callback_rehearsal_snapshot_written"] != false ||
+		body["asset_status_snapshot_written"] != false ||
+		intFromAny(body["snapshots_written"], -1) != 0 ||
+		intFromAny(body["snapshots_skipped_as_duplicate"], -1) != 1 {
+		t.Fatalf("unexpected duplicate provider callback snapshot response: %#v", body)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerReportsAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	expectProviderCallbackSnapshotConnection(mock, 2, 0)
+	expectProviderCallbackSnapshotAsset(mock, false)
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := newProviderCallbackSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordWebhookProviderCallbackRehearsalSnapshot(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["recording_state"] != "asset_missing" ||
+		body["recording_ready"] != false ||
+		body["webhook_connection_asset_observed"] != false ||
+		body["provider_callback_rehearsal_snapshot_written"] != false ||
+		body["asset_status_snapshot_written"] != false ||
+		!containsString(stringSliceFromAny(body["missing_evidence"]), "webhook_connection_asset_missing") {
+		t.Fatalf("unexpected asset-missing provider callback snapshot response: %#v", body)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerHandlesRowsAffectedWarning(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	expectProviderCallbackSnapshotConnection(mock, 2, 0)
+	expectProviderCallbackSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-webhook-1", "provider_callback_rehearsal_recorded").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-webhook-1", "provider_callback_rehearsal_recorded", "normal", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := newProviderCallbackSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordWebhookProviderCallbackRehearsalSnapshot(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["recording_state"] != "recorded" ||
+		body["rows_affected_unknown"] != true ||
+		body["provider_callback_rehearsal_snapshot_written"] != true ||
+		body["asset_status_snapshot_written"] != true ||
+		intFromAny(body["snapshots_written"], 0) != -1 {
+		t.Fatalf("unexpected rows-affected warning provider callback snapshot response: %#v", body)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerReturnsServerErrorWhenConnectionLoadFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
+		WithArgs("conn-1", "https://assops.example.com").
+		WillReturnError(fmt.Errorf("db unavailable"))
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := newProviderCallbackSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordWebhookProviderCallbackRehearsalSnapshot(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func newProviderCallbackSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/webhook-connections/conn-1/provider-callback-rehearsal-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "conn-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func expectProviderCallbackSnapshotConnection(mock sqlmock.Sqlmock, deliveries, failures int) {
+	now := time.Date(2026, 6, 24, 11, 0, 0, 0, time.UTC)
+	status := "processed"
+	processed := 1
+	matchedAsset := 1
+	operationRuns := 1
+	signatureValid := deliveries
+	if failures > 0 {
+		status = "failed"
+		processed = 0
+		matchedAsset = 0
+		operationRuns = 0
+		signatureValid = 0
+	}
+	mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
+		WithArgs("conn-1", "https://assops.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "project_id", "provider", "name", "source_remote_id", "enabled", "event_types", "last_delivery_status", "metadata", "created_at", "updated_at", "source_remote_name",
+			"deliveries_7d", "failures_7d", "processed_7d", "ignored_7d", "replayed_7d", "signature_valid_7d", "matched_repo_sync_asset_7d", "operation_run_7d",
+			"last_event_at", "last_event_status", "last_event_type", "last_event_signature_valid", "threshold_decision_audit_count", "last_threshold_decision_audit_at", "threshold_configuration_count", "last_threshold_configuration_at", "webhook_path", "webhook_url",
+		}).AddRow(
+			"conn-1", "project-1", "gitea", "main webhook", "remote-1", true, []byte(`["push"]`), status, []byte(`{}`), now, now, "source",
+			deliveries, failures, processed, 0, 1, signatureValid, matchedAsset, operationRuns,
+			now, status, "push", failures == 0, 1, now, 0, nil, "/api/webhooks/gitea/conn-1", "https://assops.example.com/api/webhooks/gitea/conn-1",
+		))
+}
+
+func expectProviderCallbackSnapshotAsset(mock sqlmock.Sqlmock, exists bool) {
+	query := mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='webhook_connection'`).
+		WithArgs("conn-1")
+	if exists {
+		query.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-webhook-1"))
+		return
+	}
+	query.WillReturnRows(sqlmock.NewRows([]string{"id"}))
+}
+
 func TestApplyWebhookThresholdConfigurationHandlerWritesSanitizedConfigurations(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
