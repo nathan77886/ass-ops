@@ -330,6 +330,7 @@ func repoTagRunActionsRefreshEvidence(ctx context.Context, db sqlx.ExtContext, r
 		"github_actions_failure":                0,
 		"github_actions_active":                 0,
 		"github_actions_synced":                 0,
+		"github_action_run_link_count":          0,
 		"latest_synced_at":                      nil,
 		"latest_updated_at":                     nil,
 		"provider_api_called":                   false,
@@ -362,11 +363,18 @@ func repoTagRunActionsRefreshEvidence(ctx context.Context, db sqlx.ExtContext, r
 		return nil, err
 	}
 	total := intFromAny(row["total"], 0)
+	status := strings.ToLower(cleanPreviewString(run["status"]))
+	tagObserved := status == "completed" || status == "succeeded" || status == "success"
+	linkCount := 0
+	if tagObserved && targetSHA != "" {
+		linkCount = total
+	}
 	evidence["github_actions_total"] = total
 	evidence["github_actions_success"] = intFromAny(row["success_count"], 0)
 	evidence["github_actions_failure"] = intFromAny(row["failure_count"], 0)
 	evidence["github_actions_active"] = intFromAny(row["active_count"], 0)
 	evidence["github_actions_synced"] = intFromAny(row["synced_count"], 0)
+	evidence["github_action_run_link_count"] = linkCount
 	evidence["latest_synced_at"] = row["latest_synced_at"]
 	evidence["latest_updated_at"] = row["latest_updated_at"]
 	evidence["github_actions_refresh_evidence_found"] = total > 0 && intFromAny(row["synced_count"], 0) > 0
@@ -471,6 +479,7 @@ func repoTagRunActionsRefreshSnapshotPayload(run, evidence map[string]any, asset
 		"github_actions_failure":                intFromAny(evidence["github_actions_failure"], 0),
 		"github_actions_active":                 intFromAny(evidence["github_actions_active"], 0),
 		"github_actions_synced":                 intFromAny(evidence["github_actions_synced"], 0),
+		"github_action_run_link_count":          intFromAny(evidence["github_action_run_link_count"], 0),
 		"latest_synced_at":                      evidence["latest_synced_at"],
 		"latest_updated_at":                     evidence["latest_updated_at"],
 		"missing_evidence":                      missing,
@@ -478,7 +487,8 @@ func repoTagRunActionsRefreshSnapshotPayload(run, evidence map[string]any, asset
 		"provider_api_called":                   false,
 		"external_call_made":                    false,
 		"operation_log_written":                 false,
-		"repo_tag_run_link_written":             false,
+		"repo_tag_run_link_written":             tagObserved && evidenceFound && intFromAny(evidence["github_action_run_link_count"], 0) > 0,
+		"repo_tag_run_link_source":              "canonical_asset_relation",
 		"raw_provider_response_recorded":        false,
 		"contains_token":                        false,
 		"contains_remote_url":                   false,

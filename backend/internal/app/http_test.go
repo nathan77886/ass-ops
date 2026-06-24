@@ -3785,6 +3785,34 @@ func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
 	}
 }
 
+func TestRepoTagActionsRefreshPlanMarksCanonicalActionLink(t *testing.T) {
+	lookupPreflight := map[string]any{"lookup_state": "observed"}
+	plan := repoTagActionsRefreshPlan("observed", true, false, lookupPreflight, "completed", map[string]any{"count": 2})
+	if plan["refresh_state"] != "recorded" ||
+		plan["github_actions_refresh_performed"] != true ||
+		plan["github_action_runs_synced"] != true ||
+		intFromAny(plan["github_action_runs_synced_count"], 0) != 2 ||
+		plan["repo_tag_run_link_written"] != true ||
+		plan["repo_tag_run_link_source"] != "canonical_asset_relation" ||
+		plan["repo_tag_run_link_write_mode"] != "derived_canonical_relation" ||
+		plan["external_call_made"] != true {
+		t.Fatalf("completed actions refresh plan should mark canonical action links: %#v", plan)
+	}
+	if !containsString(stringSliceFromAny(plan["disabled_backends"]), "github_action_run_link_write") {
+		t.Fatalf("direct action-link write should remain disabled while graph link is derived: %#v", plan["disabled_backends"])
+	}
+	if !containsString(stringSliceFromAny(plan["disabled_backends"]), "provider_response_recording") ||
+		!containsString(stringSliceFromAny(plan["blocked_reasons"]), "provider_response_recording_not_performed") {
+		t.Fatalf("plan should keep only provider response recording disabled: %#v", plan)
+	}
+	encoded, _ := json.Marshal(plan)
+	for _, forbidden := range []string{"abc123", "v1.0.0", "deploy.yml", "https://github.com/example/actions"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("actions refresh plan leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 	t.Helper()
 	if plan["execution_enabled"] != false ||
@@ -3968,7 +3996,11 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 	if mapFromAny(actionsRefreshPlan["live_remote_lookup_preflight"])["lookup_state"] != wantLookupState {
 		t.Fatalf("actions refresh should carry lookup preflight: %#v", actionsRefreshPlan["live_remote_lookup_preflight"])
 	}
-	for _, backend := range []string{"github_actions_api_sync", "github_action_run_link_write", "provider_response_recording"} {
+	wantDisabledBackends := []string{"github_actions_api_sync", "github_action_run_link_write", "provider_response_recording"}
+	if actionsRefreshPlan["github_actions_refresh_performed"] == true && intFromAny(actionsRefreshPlan["github_action_runs_synced_count"], 0) > 0 {
+		wantDisabledBackends = []string{"provider_response_recording"}
+	}
+	for _, backend := range wantDisabledBackends {
 		if !containsString(stringSliceFromAny(actionsRefreshPlan["disabled_backends"]), backend) {
 			t.Fatalf("actions refresh disabled backends missing %q: %#v", backend, actionsRefreshPlan["disabled_backends"])
 		}
@@ -4688,6 +4720,9 @@ func TestRecordRepoTagRunActionsRefreshSnapshotWritesSanitizedSnapshot(t *testin
 				intFromAny(payload["github_actions_total"], 0) == 2 &&
 				intFromAny(payload["github_actions_success"], 0) == 1 &&
 				intFromAny(payload["github_actions_failure"], 0) == 1 &&
+				intFromAny(payload["github_action_run_link_count"], 0) == 2 &&
+				payload["repo_tag_run_link_written"] == true &&
+				payload["repo_tag_run_link_source"] == "canonical_asset_relation" &&
 				payload["provider_api_called"] == false &&
 				payload["external_call_made"] == false &&
 				payload["contains_commit_sha"] == false &&
@@ -4890,8 +4925,10 @@ func TestRecordRepoTagRunActionsRefreshSnapshotTagNotCompleted(t *testing.T) {
 		t.Fatalf("unexpected running tag actions refresh snapshot result: %#v", got)
 	}
 	snapshot := mapFromAny(got["snapshot"])
-	if !containsString(stringSliceFromAny(snapshot["missing_evidence"]), "live_remote_tag_success_not_observed") {
-		t.Fatalf("running tag snapshot missing tag success evidence: %#v", snapshot)
+	if !containsString(stringSliceFromAny(snapshot["missing_evidence"]), "live_remote_tag_success_not_observed") ||
+		intFromAny(snapshot["github_action_run_link_count"], 0) != 0 ||
+		snapshot["repo_tag_run_link_written"] != false {
+		t.Fatalf("running tag snapshot should not claim canonical action link: %#v", snapshot)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
@@ -4905,7 +4942,7 @@ func TestRecordRepoTagRunActionsRefreshEvidenceDoesNotTreatCompletedStatusAsSucc
 	}
 	defer db.Close()
 	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
-	run := map[string]any{"target_remote_id": "remote-1", "target_sha": "abc123"}
+	run := map[string]any{"target_remote_id": "remote-1", "target_sha": "abc123", "status": "completed"}
 	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
 	mock.ExpectQuery(`(?s)COUNT\(\*\) FILTER \(WHERE lower\(conclusion\)='success'\)::int AS success_count`).
 		WithArgs("remote-1", "abc123").
@@ -4918,6 +4955,7 @@ func TestRecordRepoTagRunActionsRefreshEvidenceDoesNotTreatCompletedStatusAsSucc
 	}
 	if got["github_actions_success"] != 0 ||
 		got["github_actions_refresh_evidence_found"] != true ||
+		intFromAny(got["github_action_run_link_count"], 0) != 1 ||
 		got["evidence_scope"] != "commit" {
 		t.Fatalf("unexpected actions refresh evidence: %#v", got)
 	}
@@ -4992,6 +5030,37 @@ func TestAssetInventoryIncludesRepoTagRunAsset(t *testing.T) {
 	} {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("asset inventory missing repo tag run token %q", token)
+		}
+	}
+}
+
+func TestAssetRelationInventoryLinksRepoTagRunToMatchingGitHubActionRun(t *testing.T) {
+	sql := assetRelationInventorySQL()
+	for _, token := range []string{
+		"'repo_tag_run:' || rtr.id::text || ':matched_action_run:github_action_run:' || gh.id::text",
+		"'repo_tag_run:' || rtr.id::text",
+		"'github_action_run:' || gh.id::text",
+		"'matched_action_run'",
+		"gh.git_remote_id=gr.id",
+		"gh.commit_sha=rtr.target_sha",
+		"rtr.status IN ('completed', 'succeeded', 'success')",
+		"'sanitized_metadata_only', true",
+	} {
+		if !strings.Contains(sql, token) {
+			t.Fatalf("asset relation inventory missing repo tag action-link token %q", token)
+		}
+	}
+	start := strings.Index(sql, "'repo_tag_run:' || rtr.id::text || ':matched_action_run")
+	if start < 0 {
+		t.Fatalf("repo tag action-link relation block not found")
+	}
+	snippet := sql[start:]
+	if end := strings.Index(snippet, "UNION ALL"); end >= 0 {
+		snippet = snippet[:end]
+	}
+	for _, forbidden := range []string{"'tag_name'", "'target_sha'", "'commit_sha'", "'html_url'", "'workflow_name'"} {
+		if strings.Contains(snippet, forbidden) {
+			t.Fatalf("repo tag action-link relation should not expose forbidden metadata token %q in %s", forbidden, snippet)
 		}
 	}
 }

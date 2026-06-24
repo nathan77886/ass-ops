@@ -9610,6 +9610,7 @@ func repoTagActionsRefreshPlan(rehearsalState string, tagObserved, tagFailed boo
 	refreshRunning := refreshStatus == "queued" || refreshStatus == "running"
 	refreshFailed := refreshStatus == "failed" || refreshStatus == "timeout" || refreshStatus == "canceled" || refreshStatus == "cancelled"
 	syncedCount := intFromAny(refreshResult["count"], 0)
+	linkWritten := refreshPerformed && syncedCount > 0
 	refreshState := "blocked"
 	if rehearsalState == "observed" {
 		refreshState = "planned"
@@ -9633,8 +9634,9 @@ func repoTagActionsRefreshPlan(rehearsalState string, tagObserved, tagFailed boo
 	blockedReasons := repoTagActionsRefreshBlockedReasons(tagObserved, tagFailed)
 	if refreshRunning {
 		blockedReasons = []string{"github_actions_refresh_running"}
-	}
-	if refreshPerformed {
+	} else if linkWritten {
+		blockedReasons = []string{"provider_response_recording_not_performed"}
+	} else if refreshPerformed {
 		blockedReasons = []string{"github_action_run_link_write_not_performed"}
 	}
 	if refreshFailed {
@@ -9651,7 +9653,9 @@ func repoTagActionsRefreshPlan(rehearsalState string, tagObserved, tagFailed boo
 		"github_actions_refresh_performed":   refreshPerformed,
 		"github_action_runs_synced":          refreshPerformed,
 		"github_action_runs_synced_count":    syncedCount,
-		"repo_tag_run_link_written":          false,
+		"repo_tag_run_link_written":          linkWritten,
+		"repo_tag_run_link_source":           "canonical_asset_relation",
+		"repo_tag_run_link_write_mode":       "derived_canonical_relation",
 		"external_call_made":                 refreshPerformed,
 		"contains_token":                     false,
 		"contains_remote_url":                false,
@@ -9672,13 +9676,16 @@ func repoTagActionsRefreshPlan(rehearsalState string, tagObserved, tagFailed boo
 			"provider_response_headers",
 		},
 		"blocked_reasons":              blockedReasons,
-		"execution_blockers":           repoTagActionsRefreshExecutionBlockers(refreshPerformed),
+		"execution_blockers":           repoTagActionsRefreshExecutionBlockers(refreshPerformed, linkWritten),
 		"live_remote_lookup_preflight": lookupPreflight,
-		"message":                      "GitHub Actions refresh after live tag success can enqueue the provider-backed sync worker; raw provider responses, remote URLs, tokens, workflow logs, and action-run link writes stay suppressed.",
+		"message":                      "GitHub Actions refresh after live tag success can enqueue the provider-backed sync worker; raw provider responses, remote URLs, tokens, and workflow logs stay suppressed while matched action-run links are derived through the canonical asset graph.",
 	}
 }
 
-func repoTagActionsRefreshExecutionBlockers(refreshPerformed bool) []string {
+func repoTagActionsRefreshExecutionBlockers(refreshPerformed, linkWritten bool) []string {
+	if linkWritten {
+		return []string{"provider_response_recording_not_performed"}
+	}
 	if refreshPerformed {
 		return []string{"github_action_run_link_write_not_performed"}
 	}
@@ -11987,6 +11994,30 @@ func assetRelationInventorySQL() string {
 		JOIN operation_runs op ON op.id=rtr.operation_run_id
 		JOIN git_remotes target ON target.id=rtr.target_remote_id
 		JOIN project_git_repositories r ON r.id=target.project_git_repository_id
+		UNION ALL
+		SELECT
+			'repo_tag_run:' || rtr.id::text || ':matched_action_run:github_action_run:' || gh.id::text,
+			COALESCE(rtr.project_id::text, r.project_id::text, ''),
+			'repo_tag_run:' || rtr.id::text,
+			'github_action_run:' || gh.id::text,
+			'matched_action_run',
+			jsonb_build_object(
+				'tag_run_status', rtr.status,
+				'action_run_status', gh.status,
+				'action_run_conclusion', gh.conclusion,
+				'target_remote_matched', true,
+				'commit_sha_matched', true,
+				'sanitized_metadata_only', true
+			),
+			GREATEST(rtr.created_at, gh.created_at)
+		FROM repo_tag_runs rtr
+		JOIN git_remotes gr ON gr.id=COALESCE(rtr.target_remote_id, rtr.git_remote_id)
+		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
+		JOIN github_action_runs gh ON gh.git_remote_id=gr.id
+			AND rtr.target_sha <> ''
+			AND gh.commit_sha <> ''
+			AND gh.commit_sha=rtr.target_sha
+		WHERE rtr.status IN ('completed', 'succeeded', 'success')
 		UNION ALL
 		SELECT
 			'operation_run:' || op.id::text || ':executed_on:ssh_machine:' || sm.id::text,
