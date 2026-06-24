@@ -1403,11 +1403,17 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	githubActionLinks := countGitHubActionGraphLinks(graph)
 	repoTagRuns := operationCounts["repo.tag"] + operationCounts["repo.create_tag"]
 	sshGraphLinks := countSSHGraphLinks(graph, assetIDsByType(assets, "ssh_command_run"))
-	argoGraphLinks := countArgoGraphLinks(graph)
+	argoGraphLinks := countArgoGraphLinks(
+		graph,
+		assetIDsByType(assets, "argo_connection"),
+		assetIDsByType(assets, "argo_app"),
+		assetIDsByType(assets, "deployment_target"),
+		operationIDsByType(operations, "argo.apps.sync"),
+	)
 	activeApprovalRuleIDs := activeAssetIDsByTypeStatus(assets, "operation_approval_rule", "active")
 	approvalGraphLinks := countApprovalGraphLinks(graph, activeApprovalRuleIDs)
 	contextGraphLinks := countContextGraphLinks(assets, graph)
-	argoEvidence := assetCounts["argo_connection"] + assetCounts["argo_app"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"] + argoGraphLinks.ConnectionApps + argoGraphLinks.AppTargets
+	argoEvidence := assetCounts["argo_connection"] + assetCounts["argo_app"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"] + argoGraphLinks.ConnectionApps + argoGraphLinks.AppTargets + argoGraphLinks.CompleteAppAssets
 
 	projectRow := readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0 && projectGraphNodes > 0, fmt.Sprintf("%d project assets / %d project graph nodes", assetCounts["project"], projectGraphNodes), assetCounts["project"] > 0 || projectGraphNodes > 0)
 	projectRow.DemoDataRehearsalPlan = projectDemoDataRehearsalPlan(projectRow.Status, map[string]int{
@@ -1422,6 +1428,10 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		"project_repository_links":  repositoryGraphLinks.ProjectRepository,
 		"repository_remote_links":   repositoryGraphLinks.RepositoryRemotes,
 	}, []string{"repository_asset", "two_git_remote_assets", "project_to_repository_graph_link", "repository_to_two_remotes_graph_path"})
+	argoEvidenceText := fmt.Sprintf("%d targets / %d Argo connections / %d apps / %d sync ops / %d complete app links / %d app asset chains", assetCounts["deployment_target"], assetCounts["argo_connection"], assetCounts["argo_app"], operationCounts["argo.apps.sync"], argoGraphLinks.CompleteApps, argoGraphLinks.CompleteAppAssets)
+	if argoGraphLinks.CompleteApps > 0 && argoGraphLinks.CompleteAppAssets == 0 {
+		argoEvidenceText += " / canonical evidence missing"
+	}
 	rows := []readinessRow{
 		projectRow,
 		repositoriesRow,
@@ -1429,7 +1439,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		readinessItem("sync_trigger", "Trigger sync manually and from webhook", "Run a manual sync and receive or replay a Gitea webhook event.", syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0 && webhookSyncGraphLinks.CompleteChains > 0, fmt.Sprintf("%d sync ops / %d Gitea webhooks / %d Gitea events / %d complete webhook chains", syncTriggered, giteaWebhooks, giteaWebhookEvents, webhookSyncGraphLinks.CompleteChains), syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0 || webhookSyncGraphLinks.ConnectionEvents > 0 || webhookSyncGraphLinks.EventRepoSyncs > 0 || webhookSyncGraphLinks.EventOperations > 0),
 		readinessItem("github_actions", "See GitHub tags and Actions state", "Create a repository tag and sync GitHub Actions for the mirror remote or receive workflow_run webhooks.", assetCounts["pipeline_run"] > 0 && githubActionLinks.CompleteActionRuns > 0 && repoTagRuns > 0 && githubActionLinks.CompleteTaggedRemotes > 0 && githubActionLinks.LinkedTagRuns > 0, fmt.Sprintf("%d pipeline runs / %d complete action chains / %d tag ops / %d complete tag links / %d linked tag runs / %d project links / %d remote links / %d action links / %d tag links / %d tag-action links", assetCounts["pipeline_run"], githubActionLinks.CompleteActionRuns, repoTagRuns, githubActionLinks.CompleteTaggedRemotes, githubActionLinks.LinkedTagRuns, githubActionLinks.ProjectRepositories, githubActionLinks.RepositoryRemotes, githubActionLinks.RemoteActionRuns, githubActionLinks.TaggedRemotes, githubActionLinks.TagActionRunLinks), assetCounts["pipeline_run"] > 0 || repoTagRuns > 0 || githubActionLinks.ProjectRepositories > 0 || githubActionLinks.RepositoryRemotes > 0 || githubActionLinks.RemoteActionRuns > 0 || githubActionLinks.TaggedRemotes > 0 || githubActionLinks.TagActionRunLinks > 0),
 		readinessItem("ssh", "Register SSH machines and audited commands", "Verify an SSH machine, then run an approval-gated command.", assetCounts["host"] > 0 && sshVerifyRuns > 0 && sshCommandRuns > 0 && sshGraphLinks.CompleteCommandAssets >= 2, fmt.Sprintf("%d hosts / %d verify ops / %d command ops / %d command assets / %d complete audit chains / %d command asset chains", assetCounts["host"], sshVerifyRuns, sshCommandRuns, assetCounts["ssh_command_run"], sshGraphLinks.CompleteCommands, sshGraphLinks.CompleteCommandAssets), assetCounts["host"] > 0 || sshVerifyRuns > 0 || sshCommandRuns > 0 || assetCounts["ssh_command_run"] > 0 || sshGraphLinks.OperationCommands > 0 || sshGraphLinks.CommandMachines > 0 || sshGraphLinks.CompleteCommandAssets > 0),
-		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["argo_app"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0 && argoGraphLinks.CompleteApps > 0, fmt.Sprintf("%d targets / %d Argo connections / %d apps / %d sync ops / %d complete app links", assetCounts["deployment_target"], assetCounts["argo_connection"], assetCounts["argo_app"], operationCounts["argo.apps.sync"], argoGraphLinks.CompleteApps), argoEvidence > 0),
+		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["argo_app"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0 && argoGraphLinks.CompleteAppAssets > 0, argoEvidenceText, argoEvidence > 0),
 		readinessItem("operations", "View operation history and logs", "Run any controlled operation and inspect its logs.", operationAssets > 0 && operationLogs > 0, fmt.Sprintf("%d operation assets / %d listed runs / %d with logs", operationAssets, listedOperationRuns, operationLogs), operationAssets > 0 || listedOperationRuns > 0 || operationLogs > 0),
 		readinessItem("approval", "Enforce approval for high-risk operations", "Queue a high-risk action that creates an approval request.", approvalAssets > 0 && activeApprovalRules > 0 && approvalGraphLinks.RuleApprovals > 0, fmt.Sprintf("%d approvals / %d approval assets / %d pending ops / %d active rules / %d governed approvals", approvalEvidence, approvalAssets, pendingApprovalOps, activeApprovalRules, approvalGraphLinks.RuleApprovals), approvalEvidence > 0 || approvalAssets > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0 || approvalGraphLinks.RuleApprovals > 0),
 		readinessItem("context", "Generate AI-readable context from graph", "Create an agent task or AI runtime after syncing the canonical asset ledger.", contextEvidence > 0 && contextGenerations > 0 && graphEvidence > 0 && contextGraphLinks.CompleteContextTasks > 0, fmt.Sprintf("%d context assets / %d context generations / %d complete context tasks / %d runtime links / %d context tool links / %d graph nodes / %d graph edges", contextEvidence, contextGenerations, contextGraphLinks.CompleteContextTasks, contextGraphLinks.TaskRuntimes, contextGraphLinks.TaskContextToolCalls, graphNodes, graphEdges), contextEvidence > 0 || contextGenerations > 0 || graphEvidence > 0 || contextGraphLinks.TaskRuntimes > 0 || contextGraphLinks.TaskContextToolCalls > 0),
@@ -1496,7 +1506,7 @@ func canonicalAssetGraphID(row map[string]any, typ string) string {
 }
 
 func operationRowAssetID(row map[string]any) string {
-	for _, key := range []string{"asset_id", "id"} {
+	for _, key := range []string{"id", "asset_id"} {
 		value := strings.TrimSpace(fmt.Sprint(row[key]))
 		if value == "" || value == "<nil>" {
 			continue
@@ -1507,6 +1517,19 @@ func operationRowAssetID(row map[string]any) string {
 		return "operation_run:" + value
 	}
 	return ""
+}
+
+func operationIDsByType(rows []map[string]any, typ string) map[string]bool {
+	ids := map[string]bool{}
+	for _, row := range rows {
+		if fmt.Sprint(row["operation_type"]) != typ {
+			continue
+		}
+		if assetID := operationRowAssetID(row); assetID != "" {
+			ids[assetID] = true
+		}
+	}
+	return ids
 }
 
 func countContextGenerationEvidence(assets []map[string]any) int {
@@ -2301,26 +2324,33 @@ func countSSHGraphLinks(graph map[string]any, commandAssetIDs map[string]bool) s
 }
 
 type argoGraphLinkCounts struct {
-	ConnectionApps int
-	AppTargets     int
-	CompleteApps   int
+	ConnectionApps    int
+	AppTargets        int
+	CompleteApps      int
+	CompleteAppAssets int
 }
 
-func countArgoGraphLinks(graph map[string]any) argoGraphLinkCounts {
+func countArgoGraphLinks(graph map[string]any, connectionAssetIDs, appAssetIDs, targetAssetIDs, syncOperationIDs map[string]bool) argoGraphLinkCounts {
 	counts := argoGraphLinkCounts{}
 	type appLinks struct {
 		connections map[string]bool
-		target      bool
+		targets     map[string]bool
 	}
-	syncedConnections := map[string]bool{}
+	syncedConnections := map[string]map[string]bool{}
 	byApp := map[string]*appLinks{}
 	appEntry := func(assetID string) *appLinks {
 		entry := byApp[assetID]
 		if entry == nil {
-			entry = &appLinks{connections: map[string]bool{}}
+			entry = &appLinks{connections: map[string]bool{}, targets: map[string]bool{}}
 			byApp[assetID] = entry
 		}
 		return entry
+	}
+	addSyncedConnection := func(connectionID, operationID string) {
+		if syncedConnections[connectionID] == nil {
+			syncedConnections[connectionID] = map[string]bool{}
+		}
+		syncedConnections[connectionID][operationID] = true
 	}
 	for _, edge := range apiItemsByKey(graph, "edges") {
 		from := fmt.Sprint(edge["from_asset_id"])
@@ -2334,25 +2364,57 @@ func countArgoGraphLinks(graph map[string]any) argoGraphLinkCounts {
 		case "deployed_to":
 			if strings.HasPrefix(from, "argo_app:") && strings.HasPrefix(to, "deployment_target:") {
 				counts.AppTargets++
-				appEntry(from).target = true
+				appEntry(from).targets[to] = true
 			}
 		case "synced_argo_connection":
 			if strings.HasPrefix(from, "operation_run:") && strings.HasPrefix(to, "argo_connection:") {
-				syncedConnections[to] = true
+				addSyncedConnection(to, from)
 			}
 		}
 	}
-	for _, entry := range byApp {
-		if entry.target && hasSyncedConnection(entry.connections, syncedConnections) {
+	for appID, entry := range byApp {
+		if len(entry.targets) > 0 && hasSyncedConnection(entry.connections, syncedConnections) {
 			counts.CompleteApps++
+			if hasCanonicalArgoAppChain(appID, entry.connections, entry.targets, syncedConnections, connectionAssetIDs, appAssetIDs, targetAssetIDs, syncOperationIDs) {
+				counts.CompleteAppAssets++
+			}
 		}
 	}
 	return counts
 }
 
-func hasSyncedConnection(connections, syncedConnections map[string]bool) bool {
+func hasSyncedConnection(connections map[string]bool, syncedConnections map[string]map[string]bool) bool {
 	for connectionID := range connections {
-		if syncedConnections[connectionID] {
+		if len(syncedConnections[connectionID]) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCanonicalArgoAppChain(appID string, connections, targets map[string]bool, syncedConnections map[string]map[string]bool, connectionAssetIDs, appAssetIDs, targetAssetIDs, syncOperationIDs map[string]bool) bool {
+	if !appAssetIDs[appID] {
+		return false
+	}
+	for connectionID := range connections {
+		if !connectionAssetIDs[connectionID] {
+			continue
+		}
+		if !hasCanonicalSyncedOperation(syncedConnections[connectionID], syncOperationIDs) {
+			continue
+		}
+		for targetID := range targets {
+			if targetAssetIDs[targetID] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasCanonicalSyncedOperation(operationIDs, syncOperationIDs map[string]bool) bool {
+	for operationID := range operationIDs {
+		if syncOperationIDs[operationID] {
 			return true
 		}
 	}

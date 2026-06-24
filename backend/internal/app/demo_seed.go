@@ -407,6 +407,9 @@ func upsertDemoOperationalHistory(ctx context.Context, tx *sqlx.Tx, projectID, r
 	if err := upsertDemoWebhookEvents(ctx, tx, webhookConnectionID, projectID, repoSyncAssetID, completedOpID); err != nil {
 		return err
 	}
+	if _, err := upsertDemoOperationRun(ctx, tx, projectID, "", "argo.apps.sync", "Demo Argo app sync", "completed", "", map[string]any{"argo_connection_id": argoID}, map[string]any{"synced_apps": 1, "deployment_targets": 1}, -69); err != nil {
+		return err
+	}
 	if err := upsertDemoDeploymentReadModel(ctx, tx, projectID, argoID); err != nil {
 		return err
 	}
@@ -436,7 +439,7 @@ func upsertDemoOperationRun(ctx context.Context, tx *sqlx.Tx, projectID, remoteI
 	if err == nil {
 		if err := tx.GetContext(ctx, &id, `
 			UPDATE operation_runs
-			SET git_remote_id=$4,
+			SET git_remote_id=NULLIF($4,'')::uuid,
 				status=$5,
 				input=$6,
 				result=$7,
@@ -465,7 +468,7 @@ func upsertDemoOperationRun(ctx context.Context, tx *sqlx.Tx, projectID, remoteI
 	}
 	if err := tx.GetContext(ctx, &id, `
 		INSERT INTO operation_runs(project_id, git_remote_id, operation_type, status, title, input, result, error, started_at, finished_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() + ($9::int * interval '1 hour'), now() + (($9::int * interval '1 hour') + interval '4 minutes'), now() + ($9::int * interval '1 hour'), now())
+		VALUES ($1, NULLIF($2,'')::uuid, $3, $4, $5, $6, $7, $8, now() + ($9::int * interval '1 hour'), now() + (($9::int * interval '1 hour') + interval '4 minutes'), now() + ($9::int * interval '1 hour'), now())
 		RETURNING id`,
 		projectID,
 		remoteID,

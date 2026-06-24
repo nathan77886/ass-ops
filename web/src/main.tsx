@@ -620,7 +620,7 @@ function countByField(rows: AnyRow[] = [], field: string) {
 }
 
 function operationRowAssetID(row: AnyRow = {}) {
-  for (const key of ['asset_id', 'id']) {
+  for (const key of ['id', 'asset_id']) {
     const value = String(row[key] || '').trim();
     if (!value || value === '<nil>') continue;
     return value.startsWith('operation_run:') ? value : `operation_run:${value}`;
@@ -650,6 +650,13 @@ function assetIDsByType(rows: AnyRow[] = [], type: string) {
 
 function countOperationRowsWithLogs(rows: AnyRow[] = [], operationAssetIDs = new Set<string>()) {
   return rows.filter((row) => Number(row.log_count || 0) > 0 && operationAssetIDs.has(operationRowAssetID(row))).length;
+}
+
+function operationIDsByType(rows: AnyRow[] = [], type: string) {
+  return new Set(rows
+    .filter((row) => String(row.operation_type || '') === type)
+    .map(operationRowAssetID)
+    .filter(Boolean));
 }
 
 function countContextGenerationEvidence(assets: AnyRow[] = []) {
@@ -918,12 +925,16 @@ function countSSHGraphLinks(graph: AnyRow = {}, commandAssetIDs = new Set<string
   return counts;
 }
 
-function countArgoGraphLinks(graph: AnyRow = {}) {
-  const byApp: Record<string, { connections: Record<string, boolean>; target?: boolean }> = {};
-  const syncedConnections: Record<string, boolean> = {};
+function countArgoGraphLinks(graph: AnyRow = {}, connectionAssetIDs = new Set<string>(), appAssetIDs = new Set<string>(), targetAssetIDs = new Set<string>(), syncOperationIDs = new Set<string>()) {
+  const byApp: Record<string, { connections: Record<string, boolean>; targets: Record<string, boolean> }> = {};
+  const syncedConnections: Record<string, Record<string, boolean>> = {};
   const appEntry = (assetID: string) => {
-    byApp[assetID] ||= { connections: {} };
+    byApp[assetID] ||= { connections: {}, targets: {} };
     return byApp[assetID];
+  };
+  const addSyncedConnection = (connectionID: string, operationID: string) => {
+    syncedConnections[connectionID] ??= {};
+    syncedConnections[connectionID][operationID] = true;
   };
   const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
     const relation = String(edge.relation_type || '');
@@ -935,15 +946,23 @@ function countArgoGraphLinks(graph: AnyRow = {}) {
     }
     if (relation === 'deployed_to' && from.startsWith('argo_app:') && to.startsWith('deployment_target:')) {
       nextCounts.appTargets += 1;
-      appEntry(from).target = true;
+      appEntry(from).targets[to] = true;
     }
     if (relation === 'synced_argo_connection' && from.startsWith('operation_run:') && to.startsWith('argo_connection:')) {
-      syncedConnections[to] = true;
+      addSyncedConnection(to, from);
     }
     return nextCounts;
-  }, { connectionApps: 0, appTargets: 0, completeApps: 0 });
+  }, { connectionApps: 0, appTargets: 0, completeApps: 0, completeAppAssets: 0 });
   counts.completeApps = Object.values(byApp).filter((entry) => (
-    entry.target && Object.keys(entry.connections).some((connectionID) => syncedConnections[connectionID])
+    Object.keys(entry.targets).length > 0 && Object.keys(entry.connections).some((connectionID) => Object.keys(syncedConnections[connectionID] || {}).length > 0)
+  )).length;
+  counts.completeAppAssets = Object.entries(byApp).filter(([appID, entry]) => (
+    appAssetIDs.has(appID) &&
+    Object.keys(entry.connections).some((connectionID) => (
+      connectionAssetIDs.has(connectionID) &&
+      Object.keys(syncedConnections[connectionID] || {}).some((operationID) => syncOperationIDs.has(operationID)) &&
+      Object.keys(entry.targets).some((targetID) => targetAssetIDs.has(targetID))
+    ))
   )).length;
   return counts;
 }
@@ -1178,11 +1197,18 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const githubActionLinks = countGitHubActionGraphLinks(graph);
   const repoTagRuns = (operationCounts['repo.tag'] || 0) + (operationCounts['repo.create_tag'] || 0);
   const sshGraphLinks = countSSHGraphLinks(graph, assetIDsByType(assets, 'ssh_command_run'));
-  const argoGraphLinks = countArgoGraphLinks(graph);
+  const argoGraphLinks = countArgoGraphLinks(
+    graph,
+    assetIDsByType(assets, 'argo_connection'),
+    assetIDsByType(assets, 'argo_app'),
+    assetIDsByType(assets, 'deployment_target'),
+    operationIDsByType(operations, 'argo.apps.sync')
+  );
   const activeApprovalRuleIDs = activeAssetIDsByTypeStatus(assets, 'operation_approval_rule', 'active');
   const approvalGraphLinks = countApprovalGraphLinks(graph, activeApprovalRuleIDs);
   const contextGraphLinks = countContextGraphLinks(assets, graph);
-  const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.argo_app || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0) + argoGraphLinks.connectionApps + argoGraphLinks.appTargets;
+  const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.argo_app || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0) + argoGraphLinks.connectionApps + argoGraphLinks.appTargets + argoGraphLinks.completeAppAssets;
+  const argoEvidenceText = `${assetCounts.deployment_target || 0} targets / ${assetCounts.argo_connection || 0} Argo connections / ${assetCounts.argo_app || 0} apps / ${operationCounts['argo.apps.sync'] || 0} sync ops / ${argoGraphLinks.completeApps} complete app links / ${argoGraphLinks.completeAppAssets} app asset chains${argoGraphLinks.completeApps > 0 && argoGraphLinks.completeAppAssets === 0 ? ' / canonical evidence missing' : ''}`;
   const graphNodes = graphItems(graph, 'nodes').length;
   const graphEdges = graphItems(graph, 'edges').length;
   const graphEvidence = graphNodes + graphEdges;
@@ -1232,7 +1258,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'argo',
       label: 'Sync Argo apps to deployment targets',
       next: 'Create an Argo connection, sync apps, and inspect deployment targets.',
-      ...readinessState((assetCounts.argo_connection || 0) > 0 && (assetCounts.argo_app || 0) > 0 && (assetCounts.deployment_target || 0) > 0 && (operationCounts['argo.apps.sync'] || 0) > 0 && argoGraphLinks.completeApps > 0, `${assetCounts.deployment_target || 0} targets / ${assetCounts.argo_connection || 0} Argo connections / ${assetCounts.argo_app || 0} apps / ${operationCounts['argo.apps.sync'] || 0} sync ops / ${argoGraphLinks.completeApps} complete app links`, argoEvidence > 0)
+      ...readinessState((assetCounts.argo_connection || 0) > 0 && (assetCounts.argo_app || 0) > 0 && (assetCounts.deployment_target || 0) > 0 && (operationCounts['argo.apps.sync'] || 0) > 0 && argoGraphLinks.completeAppAssets > 0, argoEvidenceText, argoEvidence > 0)
     },
     {
       key: 'operations',
