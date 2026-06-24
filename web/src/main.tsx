@@ -4646,7 +4646,12 @@ function AgentTasks() {
   const tasks = useLoad(() => project ? api(`/api/projects/${project.id}/agent/tasks`) : Promise.resolve({ items: [] }), [project?.id]);
   const [open, setOpen] = useState(false);
   const [taskID, setTaskID] = useState<string>();
+  const [toolAuditSnapshotLoading, setToolAuditSnapshotLoading] = useState(false);
+  const [toolAuditSnapshotResult, setToolAuditSnapshotResult] = useState<AnyRow>();
   const taskDetail = useLoad(() => taskID ? api(`/api/agent/tasks/${taskID}`) : Promise.resolve(null), [taskID]);
+  useEffect(() => {
+    setToolAuditSnapshotResult(undefined);
+  }, [taskID]);
   async function createTask(values: AnyRow) {
     if (!project) {
       message.error('Select a project first');
@@ -4673,6 +4678,24 @@ function AgentTasks() {
     message.success(result.approval ? 'Approval requested' : 'Agent execution queued');
     tasks.reload();
     taskDetail.reload();
+  }
+  async function recordToolAuditSnapshot(id: string) {
+    setToolAuditSnapshotLoading(true);
+    try {
+      const result = await api(`/api/agent/tasks/${id}/tool-audit-snapshot`, { method: 'POST', body: JSON.stringify({}) });
+      setToolAuditSnapshotResult(result);
+      taskDetail.reload();
+      if (result.recording_ready === false) {
+        message.warning(result.message || 'Agent audit snapshot is not ready yet');
+      } else {
+        message.success(result.agent_tool_audit_snapshot_written ? 'Agent audit snapshot recorded' : 'Agent audit snapshot already current');
+      }
+    } catch (error: any) {
+      setToolAuditSnapshotResult(undefined);
+      message.error(error.message || 'Request failed');
+    } finally {
+      setToolAuditSnapshotLoading(false);
+    }
   }
   function latestPlanApproved(row: AnyRow) {
     return row.latest_plan_status === 'approved' || row.plans?.[0]?.status === 'approved';
@@ -4791,6 +4814,14 @@ function AgentTasks() {
             <Button size="small" type="primary" onClick={() => generateAgentPlan(taskDetail.data.id)}>Generate plan</Button>
             <Button size="small" onClick={() => approveAgentPlan(taskDetail.data.id)} disabled={!taskDetail.data.plans?.length}>Approve latest</Button>
             <Button size="small" onClick={() => executeAgentTask(taskDetail.data.id)} disabled={!latestPlanApproved(taskDetail.data)}>Execute</Button>
+            <Button
+              size="small"
+              onClick={() => recordToolAuditSnapshot(taskDetail.data.id)}
+              loading={toolAuditSnapshotLoading}
+              disabled={!taskDetail.data.tool_call_audit_evidence?.sanitized_result_recorded}
+            >
+              Record audit snapshot
+            </Button>
           </Space>
           <Table<AnyRow> rowKey="id" size="small" dataSource={taskDetail.data.plans || []} pagination={{ pageSize: 4 }} columns={[
             { title: 'Status', render: (_, row) => <Tag color={row.status === 'approved' ? 'green' : 'blue'}>{row.status}</Tag> },
@@ -4805,6 +4836,15 @@ function AgentTasks() {
               {taskDetail.data.tool_call_audit_evidence.active_count ? <Tag color="blue">{taskDetail.data.tool_call_audit_evidence.active_count} active</Tag> : null}
               {taskDetail.data.tool_call_audit_evidence.failed_count ? <Tag color="red">{taskDetail.data.tool_call_audit_evidence.failed_count} failed</Tag> : null}
               <Tag>{taskDetail.data.tool_call_audit_evidence.sanitized_result_recorded ? 'sanitized result recorded' : 'sanitized result pending'}</Tag>
+            </Space>
+          ) : null}
+          {toolAuditSnapshotResult ? (
+            <Space wrap>
+              <Tag color={toolAuditSnapshotResult.recording_state === 'recorded' ? 'green' : toolAuditSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'gold'}>snapshot {toolAuditSnapshotResult.recording_state || 'pending'}</Tag>
+              <Tag>{toolAuditSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
+              <Tag>{toolAuditSnapshotResult.agent_task_asset_observed ? 'agent task asset observed' : 'agent task asset missing'}</Tag>
+              <Tag>{toolAuditSnapshotResult.raw_tool_output_recorded ? 'raw output recorded' : 'no raw output'}</Tag>
+              <Tag>{toolAuditSnapshotResult.secret_included ? 'secret included' : 'no secrets'}</Tag>
             </Space>
           ) : null}
           {taskDetail.data.code_modification_evidence ? (

@@ -173,6 +173,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/projects/{id}/agent/tasks", s.listAgentTasks)
 		r.Get("/api/agent/tasks/{id}", s.getAgentTask)
 		r.Get("/api/agent/tasks/{id}/tool-calls", s.listAgentTaskToolCalls)
+		r.Post("/api/agent/tasks/{id}/tool-audit-snapshot", s.recordAgentToolAuditSnapshot)
 		r.Post("/api/agent/tasks/{id}/generate-plan", s.generatePlan)
 		r.Post("/api/agent/tasks/{id}/approve-plan", s.approvePlan)
 		r.Post("/api/agent/tasks/{id}/execute", s.executePlan)
@@ -17379,6 +17380,42 @@ func (s *Server) listAgentTaskToolCalls(w http.ResponseWriter, r *http.Request) 
 		ORDER BY created_at DESC, id DESC
 		LIMIT 100`, taskID)
 	writeQueryResult(w, items, err)
+}
+
+func (s *Server) recordAgentToolAuditSnapshot(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "id")
+	var req struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	task, err := agentTaskForToolAuditSnapshot(r.Context(), s.store.DB, taskID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	projectID := strings.TrimSpace(fmt.Sprint(task["project_id"]))
+	if projectID == "" {
+		writeError(w, http.StatusInternalServerError, "agent task has no project")
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "agent_task", ID: taskID, ProjectID: projectID}, "update") {
+		return
+	}
+	result, err := RecordAgentToolAuditSnapshot(r.Context(), s.store, AgentToolAuditSnapshotOptions{
+		AgentTaskID: taskID,
+		DryRun:      req.DryRun,
+		Task:        task,
+	})
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("agent tool-call audit snapshot failed", "agent_task_id", taskID, "project_id", projectID, "error", err)
+		}
+		writeError(w, http.StatusBadRequest, "record agent tool-call audit snapshot failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) generatePlan(w http.ResponseWriter, r *http.Request) {

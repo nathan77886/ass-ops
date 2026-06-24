@@ -18603,6 +18603,328 @@ func TestGetAgentTaskIncludesToolCallAuditEvidence(t *testing.T) {
 	}
 }
 
+func TestAgentToolAuditSnapshotPayloadSanitizesEvidence(t *testing.T) {
+	task := map[string]any{
+		"id":         "task-1",
+		"project_id": "project-1",
+		"title":      "do not serialize title",
+		"prompt":     "prompt with secret",
+		"status":     "completed",
+	}
+	evidence := agentToolCallAuditEvidence([]map[string]any{
+		{
+			"id":               "call-1",
+			"operation_run_id": "op-1",
+			"tool_name":        "runtime.check",
+			"status":           "completed",
+			"input":            map[string]any{"token": "do-not-serialize"},
+			"output":           map[string]any{"raw": "actual tool output"},
+		},
+	})
+	callbackPlan := agentWorkerResultCallbackPlan(evidence)
+	snapshot := agentToolAuditSnapshotPayload(task, evidence, callbackPlan, true)
+	ready, state, missing := agentToolAuditSnapshotReadiness(snapshot)
+	if !ready || state != "recorded" || len(missing) != 0 {
+		t.Fatalf("readiness = %v/%s/%#v; snapshot=%#v", ready, state, missing, snapshot)
+	}
+	if snapshot["has_tool_call_audit"] != true ||
+		snapshot["sanitized_result_recorded"] != true ||
+		snapshot["status_snapshot_written"] != true ||
+		snapshot["external_call_made"] != false ||
+		snapshot["tool_invoked"] != false ||
+		snapshot["raw_tool_output_recorded"] != false ||
+		snapshot["input_included"] != false ||
+		snapshot["output_included"] != false ||
+		snapshot["prompt_body_included"] != false ||
+		snapshot["runtime_config_materialized"] != false ||
+		snapshot["secret_included"] != false {
+		t.Fatalf("unexpected sanitized agent tool audit snapshot: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, forbidden := range []string{"do-not-serialize", "actual tool output", "prompt with secret", "runtime.check"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("agent tool audit snapshot leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestRecordAgentToolAuditSnapshotHandlerBlockedByActiveAudit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "running", toolName: "runtime.check"},
+	})
+	expectAgentToolAuditSnapshotAsset(mock, true)
+
+	req := newAgentToolAuditSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_ready"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["agent_tool_audit_snapshot_written"] != false ||
+		got["raw_tool_output_recorded"] != false ||
+		got["tool_invoked"] != false {
+		t.Fatalf("unexpected blocked agent tool audit snapshot response: %#v", got)
+	}
+	if !containsString(stringSliceFromAny(got["missing_evidence"]), "agent_tool_call_audit_active") ||
+		!containsString(stringSliceFromAny(got["missing_evidence"]), "sanitized_agent_tool_result_not_recorded") {
+		t.Fatalf("blocked agent audit snapshot missing expected evidence: %#v", got["missing_evidence"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentToolAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "runtime.check"},
+	})
+	expectAgentToolAuditSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-agent-task-1", "agent_tool_audit_recorded").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-agent-task-1", "agent_tool_audit_recorded", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	req := newAgentToolAuditSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["recording_ready"] != true ||
+		got["agent_tool_audit_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["snapshot_commit_attempted"] != true ||
+		got["external_call_made"] != false ||
+		got["tool_invoked"] != false ||
+		got["raw_tool_output_recorded"] != false ||
+		got["secret_included"] != false {
+		t.Fatalf("unexpected ready agent audit snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["sanitized_result_recorded"] != true ||
+		snapshot["status_snapshot_written"] != true ||
+		snapshot["raw_tool_output_recorded"] != false ||
+		snapshot["input_included"] != false ||
+		snapshot["output_included"] != false ||
+		snapshot["secret_included"] != false {
+		t.Fatalf("unexpected ready agent audit snapshot payload: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentToolAuditSnapshotHandlerDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "runtime.check"},
+	})
+	expectAgentToolAuditSnapshotAsset(mock, true)
+
+	req := newAgentToolAuditSnapshotRequest(`{"dry_run":true}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["agent_tool_audit_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run agent audit snapshot response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentToolAuditSnapshotHandlerAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "runtime.check"},
+	})
+	expectAgentToolAuditSnapshotAsset(mock, false)
+
+	req := newAgentToolAuditSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["agent_task_asset_observed"] != false ||
+		got["agent_tool_audit_snapshot_written"] != false {
+		t.Fatalf("unexpected asset missing response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentToolAuditSnapshotHandlerSkipsDuplicate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "runtime.check"},
+	})
+	expectAgentToolAuditSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-agent-task-1", "agent_tool_audit_recorded").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-agent-task-1", "agent_tool_audit_recorded", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+
+	req := newAgentToolAuditSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["snapshots_written"] != float64(0) ||
+		got["snapshots_skipped_as_duplicate"] != float64(1) ||
+		got["agent_tool_audit_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected duplicate agent audit snapshot response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestAgentToolAuditSnapshotStatusHealthForTerminalStates(t *testing.T) {
+	tests := []struct {
+		state      string
+		wantStatus string
+		wantHealth string
+	}{
+		{state: "recorded", wantStatus: "agent_tool_audit_recorded", wantHealth: "low"},
+		{state: "failed", wantStatus: "agent_tool_audit_failed", wantHealth: "high"},
+		{state: "mixed_failed", wantStatus: "agent_tool_audit_mixed_failed", wantHealth: "high"},
+		{state: "canceled", wantStatus: "agent_tool_audit_canceled", wantHealth: "high"},
+		{state: "unknown", wantStatus: "agent_tool_audit_unknown", wantHealth: "high"},
+		{state: "absent", wantStatus: "agent_tool_audit_absent", wantHealth: "high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.state, func(t *testing.T) {
+			status, health := agentToolAuditSnapshotStatusHealth(tt.state)
+			if status != tt.wantStatus || health != tt.wantHealth {
+				t.Fatalf("status/health = %s/%s, want %s/%s", status, health, tt.wantStatus, tt.wantHealth)
+			}
+		})
+	}
+}
+
+type agentToolAuditSnapshotCall struct {
+	id       string
+	status   string
+	toolName string
+}
+
+func expectAgentToolAuditSnapshotTask(mock sqlmock.Sqlmock) {
+	now := time.Now()
+	mock.ExpectQuery(`(?s)SELECT id, project_id, status, created_at, updated_at\s+FROM agent_tasks\s+WHERE id=\$1`).
+		WithArgs("task-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "status", "created_at", "updated_at"}).
+			AddRow("task-1", "project-1", "completed", now, now))
+}
+
+func expectAgentToolAuditSnapshotCalls(mock sqlmock.Sqlmock, calls []agentToolAuditSnapshotCall) {
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "agent_task_id", "operation_run_id", "project_id", "tool_name", "status", "started_at", "finished_at", "created_at", "updated_at"})
+	for _, call := range calls {
+		rows.AddRow(call.id, "task-1", "op-1", "project-1", call.toolName, call.status, now, now, now, now)
+	}
+	mock.ExpectQuery(`(?s)SELECT id, agent_task_id, operation_run_id, project_id, tool_name, status, started_at, finished_at, created_at, updated_at\s+FROM agent_tool_calls\s+WHERE agent_task_id=\$1`).
+		WithArgs("task-1").
+		WillReturnRows(rows)
+}
+
+func expectAgentToolAuditSnapshotAsset(mock sqlmock.Sqlmock, found bool) {
+	query := mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='agent_task'\s+AND source_table='agent_tasks'`).
+		WithArgs("task-1")
+	if found {
+		query.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-agent-task-1"))
+	} else {
+		query.WillReturnError(sql.ErrNoRows)
+	}
+}
+
+func newAgentToolAuditSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/agent/tasks/task-1/tool-audit-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "task-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
 func TestAgentExecutionAuditSteps(t *testing.T) {
 	steps := agentExecutionAuditSteps(
 		map[string]any{"id": "task-1"},
