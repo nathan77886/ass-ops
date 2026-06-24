@@ -3612,10 +3612,13 @@ function GitRemotes() {
             const liveResultPlan = plan.live_result_plan || {};
             const actionsRefreshPlan = plan.actions_refresh_plan || {};
             const resultPlan = plan.result_recording_plan || {};
+            const lookupPreflight = plan.live_remote_lookup_preflight || liveResultPlan.live_remote_lookup_preflight || {};
             const tagResultEvidence = plan.tag_result_evidence || resultPlan.tag_result_evidence || {};
             return <Space size={4} wrap>
               <Tag color={plan.rehearsal_state === 'observed' ? 'green' : plan.rehearsal_state === 'blocked' || plan.rehearsal_state === 'failed' ? 'red' : 'gold'}>{plan.rehearsal_state || 'planned'}</Tag>
               <Tag>{plan.live_remote_tag_success_observed ? 'remote success' : 'no remote success'}</Tag>
+              {lookupPreflight.mode ? <Tag color={lookupPreflight.lookup_state === 'observed' ? 'green' : lookupPreflight.lookup_state === 'failed' || lookupPreflight.lookup_state === 'blocked' ? 'red' : 'gold'}>lookup {lookupPreflight.lookup_state || 'blocked'}</Tag> : null}
+              {lookupPreflight.mode ? <Tag>{lookupPreflight.remote_tag_lookup_performed ? 'remote lookup' : 'no remote lookup'}</Tag> : null}
               <Tag color={liveResultPlan.live_result_state === 'planned' ? 'gold' : 'red'}>{liveResultPlan.repo_tag_run_result_written ? 'tag result saved' : liveResultPlan.live_result_state === 'failed' ? 'tag result failed' : 'tag result pending'}</Tag>
               <Tag color={actionsRefreshPlan.refresh_state === 'planned' ? 'gold' : 'red'}>{actionsRefreshPlan.github_actions_refresh_performed ? 'actions refreshed' : actionsRefreshPlan.refresh_state === 'failed' ? 'actions refresh failed' : 'actions refresh pending'}</Tag>
               <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>

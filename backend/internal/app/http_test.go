@@ -2694,6 +2694,9 @@ func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
 		!containsString(stringSliceFromAny(plannedPlan["blocked_reasons"]), "live_remote_tag_success_not_observed") {
 		t.Fatalf("planned tag rehearsal plan = %#v", plannedPlan)
 	}
+	if lookup := mapFromAny(plannedPlan["live_remote_lookup_preflight"]); lookup["lookup_state"] != "blocked" || lookup["lookup_ready_for_review"] != false {
+		t.Fatalf("planned tag with missing SHA should block lookup review: %#v", lookup)
+	}
 	assertRepoTagRemoteRehearsalPlanSafe(t, plannedPlan)
 	blockedPlan := mapFromAny(items[2]["remote_rehearsal_plan"])
 	if blockedPlan["rehearsal_state"] != "blocked" ||
@@ -2725,12 +2728,18 @@ func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
 		failedEvidence["live_remote_tag_failed_observed"] != true {
 		t.Fatalf("failed tag result evidence = %#v", failedEvidence)
 	}
+	if lookup := mapFromAny(failedPlan["live_remote_lookup_preflight"]); lookup["lookup_state"] != "failed" || lookup["lookup_ready_for_review"] != false {
+		t.Fatalf("failed tag should keep lookup failed and not review-ready: %#v", lookup)
+	}
 	assertRepoTagRemoteRehearsalPlanSafe(t, failedPlan)
 	unknownPlan := mapFromAny(items[5]["remote_rehearsal_plan"])
 	if unknownPlan["rehearsal_state"] != "planned" ||
 		unknownPlan["tag_run_status"] != "unknown" ||
 		unknownPlan["live_remote_tag_success_observed"] != false {
 		t.Fatalf("unknown status tag rehearsal plan = %#v", unknownPlan)
+	}
+	if lookup := mapFromAny(unknownPlan["live_remote_lookup_preflight"]); lookup["lookup_state"] != "planned" || lookup["lookup_ready_for_review"] != true {
+		t.Fatalf("unknown tag with complete metadata should plan lookup review: %#v", lookup)
 	}
 	assertRepoTagRemoteRehearsalPlanSafe(t, unknownPlan)
 	for _, plan := range []map[string]any{observedPlan, failedPlan} {
@@ -2797,6 +2806,55 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 	if plan["result_written"] != wantResultReady {
 		t.Fatalf("tag rehearsal result_written = %v, want %v: %#v", plan["result_written"], wantResultReady, plan)
 	}
+	wantLookupState := "blocked"
+	if plan["tag_name_configured"] == true && plan["target_sha_configured"] == true && plan["target_remote_bound"] == true {
+		wantLookupState = "planned"
+	}
+	if tagObserved {
+		wantLookupState = "observed"
+	}
+	if tagFailed {
+		wantLookupState = "failed"
+	}
+	lookupPreflight := mapFromAny(plan["live_remote_lookup_preflight"])
+	if lookupPreflight["mode"] != "repo_tag_live_remote_lookup_preflight" ||
+		lookupPreflight["lookup_state"] != wantLookupState ||
+		lookupPreflight["remote_tag_lookup_performed"] != false ||
+		lookupPreflight["git_ls_remote_performed"] != false ||
+		lookupPreflight["provider_api_called"] != false ||
+		lookupPreflight["github_actions_refresh_performed"] != false ||
+		lookupPreflight["repo_tag_run_update_performed"] != false ||
+		lookupPreflight["operation_log_written"] != false ||
+		lookupPreflight["external_call_made"] != false ||
+		lookupPreflight["contains_token"] != false ||
+		lookupPreflight["contains_remote_url"] != false ||
+		lookupPreflight["contains_ref_name"] != false ||
+		lookupPreflight["contains_target_sha"] != false ||
+		lookupPreflight["contains_tag_message"] != false {
+		t.Fatalf("tag lookup preflight should stay disabled and redacted: %#v", lookupPreflight)
+	}
+	wantLookupReady := plan["tag_name_configured"] == true && plan["target_sha_configured"] == true && plan["target_remote_bound"] == true && !tagFailed
+	if lookupPreflight["lookup_ready_for_review"] != wantLookupReady {
+		t.Fatalf("lookup review readiness = %v, want %v: %#v", lookupPreflight["lookup_ready_for_review"], wantLookupReady, lookupPreflight)
+	}
+	for _, field := range []string{"target_remote_id", "tag_name", "target_sha", "tag_run_status", "repository_binding", "provider_type"} {
+		if !containsString(stringSliceFromAny(lookupPreflight["required_lookup_fields"]), field) {
+			t.Fatalf("lookup preflight required field missing %q: %#v", field, lookupPreflight["required_lookup_fields"])
+		}
+	}
+	for _, backend := range []string{"remote_tag_lookup", "git_ls_remote", "provider_tag_lookup", "github_actions_api_sync", "repo_tag_run_update", "operation_log_write"} {
+		if !containsString(stringSliceFromAny(lookupPreflight["disabled_backends"]), backend) {
+			t.Fatalf("lookup preflight disabled backend missing %q: %#v", backend, lookupPreflight["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"tag_name", "target_sha", "tag_message", "remote_url", "git_credentials", "provider_token", "authorization_header", "git_output", "github_actions_response", "provider_response_body", "provider_response_headers"} {
+		if !containsString(stringSliceFromAny(lookupPreflight["suppressed_fields"]), field) {
+			t.Fatalf("lookup preflight suppressed field missing %q: %#v", field, lookupPreflight["suppressed_fields"])
+		}
+	}
+	if !containsString(stringSliceFromAny(lookupPreflight["blocked_reasons"]), "remote_tag_lookup_backend_disabled") {
+		t.Fatalf("lookup preflight should keep backend disabled blocker: %#v", lookupPreflight["blocked_reasons"])
+	}
 	wantLiveResultReason := "live_remote_tag_success_not_observed"
 	if tagObserved {
 		wantLiveResultReason = "repo_tag_run_result_update_not_wired"
@@ -2831,6 +2889,9 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 		!containsString(stringSliceFromAny(liveResultPlan["execution_blockers"]), "live_remote_tag_result_write_not_performed") {
 		t.Fatalf("live result reasons/blockers = %#v", liveResultPlan)
 	}
+	if mapFromAny(liveResultPlan["live_remote_lookup_preflight"])["lookup_state"] != wantLookupState {
+		t.Fatalf("live result should carry lookup preflight: %#v", liveResultPlan["live_remote_lookup_preflight"])
+	}
 	for _, backend := range []string{"remote_tag_lookup", "repo_tag_run_update", "operation_log_write"} {
 		if !containsString(stringSliceFromAny(liveResultPlan["disabled_backends"]), backend) {
 			t.Fatalf("live result disabled backends missing %q: %#v", backend, liveResultPlan["disabled_backends"])
@@ -2852,6 +2913,9 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 	if !containsString(stringSliceFromAny(actionsRefreshPlan["blocked_reasons"]), wantActionsRefreshReason) ||
 		!containsString(stringSliceFromAny(actionsRefreshPlan["execution_blockers"]), "github_actions_refresh_not_performed") {
 		t.Fatalf("actions refresh reasons/blockers = %#v", actionsRefreshPlan)
+	}
+	if mapFromAny(actionsRefreshPlan["live_remote_lookup_preflight"])["lookup_state"] != wantLookupState {
+		t.Fatalf("actions refresh should carry lookup preflight: %#v", actionsRefreshPlan["live_remote_lookup_preflight"])
 	}
 	for _, backend := range []string{"github_actions_api_sync", "github_action_run_link_write", "provider_response_recording"} {
 		if !containsString(stringSliceFromAny(actionsRefreshPlan["disabled_backends"]), backend) {
@@ -2888,6 +2952,9 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 		resultEvidence["contains_ref_name"] != false ||
 		resultEvidence["contains_tag_message"] != false {
 		t.Fatalf("tag result evidence should stay redacted: %#v", resultEvidence)
+	}
+	if mapFromAny(resultPlan["live_remote_lookup_preflight"])["lookup_state"] != wantLookupState {
+		t.Fatalf("result recording should carry lookup preflight: %#v", resultPlan["live_remote_lookup_preflight"])
 	}
 	for _, field := range []string{"tag_run_status", "tag_name_configured", "target_sha_configured", "target_remote_bound", "live_remote_tag_success_observed", "live_remote_tag_failed_observed", "live_result_state", "github_actions_refresh_status", "github_actions_refresh_state"} {
 		if !containsString(stringSliceFromAny(resultPlan["result_diagnostic_fields"]), field) {
