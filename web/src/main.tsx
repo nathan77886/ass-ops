@@ -4695,6 +4695,8 @@ function ConfigPage() {
     result_recording_plan: sshRehearsal.data.result_recording_plan,
     live_rehearsal_control_evidence: sshRehearsal.data.live_rehearsal_control_evidence,
     live_rehearsal_controls_ready: sshRehearsal.data.live_rehearsal_controls_ready,
+    environment_proof_plan: sshRehearsal.data.environment_proof_plan,
+    environment_proof_ready: sshRehearsal.data.environment_proof_ready,
     operator_approved_proof_recorded: sshRehearsal.data.operator_approved_proof_recorded,
     required_live_rehearsal: sshRehearsal.data.required_live_rehearsal,
     required_controls: sshRehearsal.data.required_controls,
@@ -4898,6 +4900,8 @@ function ConfigPage() {
                   {sshRehearsalView.live_rehearsal_control_evidence ? <Tag>{sshRehearsalView.live_rehearsal_control_evidence.runbook_reference_recorded ? 'runbook recorded' : 'no runbook'}</Tag> : null}
                   {sshRehearsalView.live_rehearsal_control_evidence ? <Tag>{sshRehearsalView.live_rehearsal_control_evidence.fixture_reference_recorded ? 'fixture recorded' : 'no fixture'}</Tag> : null}
                   {sshRehearsalView.operator_approved_proof_recorded ? <Tag color="green">operator proof recorded</Tag> : <Tag>no operator proof</Tag>}
+                  {sshRehearsalView.environment_proof_plan ? <Tag color={sshRehearsalView.environment_proof_plan.environment_proof_state === 'ready' ? 'green' : sshRehearsalView.environment_proof_plan.environment_proof_state === 'blocked' ? 'red' : 'gold'}>env proof {sshRehearsalView.environment_proof_plan.environment_proof_state || 'blocked'}</Tag> : null}
+                  {sshRehearsalView.environment_proof_plan ? <Tag>{sshRehearsalView.environment_proof_plan.environment_proof_ready ? 'env proof ready' : 'env proof pending'}</Tag> : null}
                   {sshRehearsalView.recent_evidence?.evidence_state ? <Tag color={sshRehearsalView.recent_evidence.evidence_state === 'recorded' ? 'green' : sshRehearsalView.recent_evidence.evidence_state === 'failed' ? 'red' : 'gold'}>evidence {sshRehearsalView.recent_evidence.evidence_state}</Tag> : null}
                   <Tag>{sshRehearsalView.recent_evidence?.verify_runs || 0} verify runs</Tag>
                   <Tag>{sshRehearsalView.recent_evidence?.exec_runs || 0} exec runs</Tag>

@@ -3832,14 +3832,16 @@ func TestSSHMachineRehearsalPreviewSanitizesEvidence(t *testing.T) {
 			"username":   "deploy",
 			"auth_type":  "key",
 			"metadata": map[string]any{
-				"key_path":                    "/etc/assops/ssh/prod-api",
-				"known_hosts_path":            "/etc/assops/ssh/known_hosts",
-				"strict_host_key_checking":    "yes",
-				"runbook_url":                 "https://runbooks.example.com/ssh/prod-api",
-				"authorized_fixture_id":       "fixture-prod-api-1",
-				"operator_approved_by":        "alice@example.com",
-				"operator_approval_note":      "approved for production rehearsal",
-				"private_key_should_not_leak": "SECRET",
+				"key_path":                      "/etc/assops/ssh/prod-api",
+				"known_hosts_path":              "/etc/assops/ssh/known_hosts",
+				"strict_host_key_checking":      "yes",
+				"runbook_url":                   "https://runbooks.example.com/ssh/prod-api",
+				"authorized_fixture_id":         "fixture-prod-api-1",
+				"operator_approved_by":          "alice@example.com",
+				"operator_approval_note":        "approved for production rehearsal",
+				"live_rehearsal_environment":    "prod",
+				"operator_environment_proof_id": "env-proof-1",
+				"private_key_should_not_leak":   "SECRET",
 			},
 		},
 		[]map[string]any{
@@ -3909,13 +3911,33 @@ func TestSSHMachineRehearsalPreviewSanitizesEvidence(t *testing.T) {
 	if preview["live_rehearsal_controls_ready"] != true || preview["operator_approved_proof_recorded"] != true {
 		t.Fatalf("preview should expose ready live controls as booleans only: %#v", preview)
 	}
+	environmentProofPlan := mapFromAny(preview["environment_proof_plan"])
+	if preview["environment_proof_ready"] != true ||
+		environmentProofPlan["mode"] != "ssh_rehearsal_environment_proof_plan" ||
+		environmentProofPlan["environment_proof_state"] != "ready" ||
+		environmentProofPlan["environment_proof_ready"] != true ||
+		environmentProofPlan["target_environment_reference_recorded"] != true ||
+		environmentProofPlan["operator_environment_proof_recorded"] != true ||
+		environmentProofPlan["completed_verify_evidence"] != true ||
+		environmentProofPlan["completed_exec_evidence"] != true ||
+		environmentProofPlan["sanitized_result_recorded"] != true ||
+		environmentProofPlan["environment_probe_performed"] != false ||
+		environmentProofPlan["ssh_process_started"] != false ||
+		environmentProofPlan["command_executed"] != false ||
+		environmentProofPlan["environment_identifier_included"] != false ||
+		environmentProofPlan["operator_identity_included"] != false ||
+		environmentProofPlan["fixture_identifier_included"] != false ||
+		environmentProofPlan["stdout_included"] != false ||
+		environmentProofPlan["private_key_included"] != false {
+		t.Fatalf("unexpected environment proof plan: %#v", environmentProofPlan)
+	}
 	assertSSHRehearsalPlansSafe(t, preview)
 	latestExec := mapFromAny(evidence["latest_exec"])
 	if latestExec["command"] != nil || latestExec["stdout"] != nil || latestExec["stderr"] != nil {
 		t.Fatalf("latest exec leaked sensitive fields: %#v", latestExec)
 	}
 	encoded, _ := json.Marshal(preview)
-	for _, forbidden := range []string{"/etc/assops/ssh/prod-api", "secret output", "secret error", "SECRET", "runbooks.example.com", "fixture-prod-api-1", "alice@example.com", "approved for production rehearsal"} {
+	for _, forbidden := range []string{"/etc/assops/ssh/prod-api", "secret output", "secret error", "SECRET", "runbooks.example.com", "fixture-prod-api-1", "alice@example.com", "approved for production rehearsal", "env-proof-1"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("preview leaked %q: %s", forbidden, encoded)
 		}
@@ -4447,6 +4469,56 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 		if !containsString(stringSliceFromAny(controlEvidence["suppressed_fields"]), field) {
 			t.Fatalf("ssh control suppressed field missing %q: %#v", field, controlEvidence["suppressed_fields"])
 		}
+	}
+	environmentProofPlan := mapFromAny(preview["environment_proof_plan"])
+	if environmentProofPlan["mode"] != "ssh_rehearsal_environment_proof_plan" ||
+		environmentProofPlan["external_call_made"] != false ||
+		environmentProofPlan["ssh_process_started"] != false ||
+		environmentProofPlan["command_executed"] != false ||
+		environmentProofPlan["environment_probe_performed"] != false ||
+		environmentProofPlan["operator_identity_included"] != false ||
+		environmentProofPlan["operator_note_included"] != false ||
+		environmentProofPlan["fixture_identifier_included"] != false ||
+		environmentProofPlan["environment_identifier_included"] != false ||
+		environmentProofPlan["stdout_included"] != false ||
+		environmentProofPlan["stderr_included"] != false ||
+		environmentProofPlan["private_key_included"] != false ||
+		environmentProofPlan["known_hosts_included"] != false ||
+		environmentProofPlan["runtime_secret_included"] != false {
+		t.Fatalf("ssh environment proof plan should stay disabled and redacted: %#v", environmentProofPlan)
+	}
+	if preview["environment_proof_ready"] != environmentProofPlan["environment_proof_ready"] {
+		t.Fatalf("ssh preview environment proof flag should mirror plan: preview=%#v plan=%#v", preview["environment_proof_ready"], environmentProofPlan)
+	}
+	for _, field := range []string{"target_environment_reference", "authorized_machine_fixture", "operator_approval_proof", "operator_environment_proof", "completed_ssh_verify", "completed_ssh_exec", "sanitized_ssh_result_recorded"} {
+		if !containsString(stringSliceFromAny(environmentProofPlan["required_evidence"]), field) {
+			t.Fatalf("ssh environment proof required evidence missing %q: %#v", field, environmentProofPlan["required_evidence"])
+		}
+	}
+	for _, backend := range []string{"environment_probe", "ssh_process_start", "ssh_verify_execute", "ssh_exec_execute", "raw_output_recording", "operator_identity_recording"} {
+		if !containsString(stringSliceFromAny(environmentProofPlan["disabled_backends"]), backend) {
+			t.Fatalf("ssh environment proof disabled backend missing %q: %#v", backend, environmentProofPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"live_rehearsal_environment", "rehearsal_environment", "authorized_environment", "target_environment", "environment_id", "authorized_machine_fixture", "authorized_fixture_id", "fixture_id", "fixture_name", "operator_approved_by", "operator_approval_note", "operator_environment_approval_id", "operator_environment_approved_at", "operator_environment_proof_id", "environment_proof_id", "environment_proof_recorded_at", "private_key", "passphrase", "known_hosts_body", "stdout", "stderr", "raw_error", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(environmentProofPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh environment proof suppressed field missing %q: %#v", field, environmentProofPlan["suppressed_fields"])
+		}
+	}
+	if boolOnlyFromAny(environmentProofPlan["environment_proof_ready"]) {
+		if environmentProofPlan["environment_proof_state"] != "ready" ||
+			environmentProofPlan["target_environment_reference_recorded"] != true ||
+			environmentProofPlan["authorized_fixture_recorded"] != true ||
+			environmentProofPlan["operator_approval_recorded"] != true ||
+			environmentProofPlan["operator_environment_proof_recorded"] != true ||
+			environmentProofPlan["completed_verify_evidence"] != true ||
+			environmentProofPlan["completed_exec_evidence"] != true ||
+			environmentProofPlan["sanitized_result_recorded"] != true ||
+			len(stringSliceFromAny(environmentProofPlan["missing_evidence"])) != 0 {
+			t.Fatalf("ready ssh environment proof should include all boolean evidence: %#v", environmentProofPlan)
+		}
+	} else if environmentProofPlan["environment_proof_state"] == "ready" {
+		t.Fatalf("ssh environment proof cannot be ready without environment_proof_ready: %#v", environmentProofPlan)
 	}
 	if boolOnlyFromAny(controlEvidence["controls_ready"]) {
 		if controlEvidence["control_state"] != "ready" ||

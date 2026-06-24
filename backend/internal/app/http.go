@@ -19084,6 +19084,7 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 	verifyPlan := sshRehearsalVerifyExecutionPlan(metadataReady, hasVerified)
 	execPlan := sshRehearsalExecExecutionPlan(metadataReady, hasVerified, hasExecuted)
 	liveControlEvidence := sshRehearsalLiveControlEvidence(metadata, metadataReady, hasVerified, hasExecuted)
+	environmentProofPlan := sshRehearsalEnvironmentProofPlan(metadata, metadataReady, hasVerified, hasExecuted, liveControlEvidence, evidence)
 
 	steps := []map[string]any{
 		{
@@ -19151,6 +19152,8 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 		"result_recording_plan":            resultRecordingPlan,
 		"live_rehearsal_control_evidence":  liveControlEvidence,
 		"live_rehearsal_controls_ready":    liveControlEvidence["controls_ready"],
+		"environment_proof_plan":           environmentProofPlan,
+		"environment_proof_ready":          environmentProofPlan["environment_proof_ready"],
 		"operator_approved_proof_recorded": liveControlEvidence["operator_approval_recorded"],
 		"required_live_rehearsal":          requiredLiveRehearsal,
 		"required_controls": []string{
@@ -19189,6 +19192,98 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 		},
 		"steps":           steps,
 		"recent_evidence": evidence,
+	}
+}
+
+func sshRehearsalEnvironmentProofPlan(metadata map[string]any, metadataReady, hasVerified, hasExecuted bool, controlEvidence, evidence map[string]any) map[string]any {
+	environmentReferenceRecorded := firstNonEmptyString(
+		stringFromMap(metadata, "live_rehearsal_environment"),
+		stringFromMap(metadata, "rehearsal_environment"),
+		stringFromMap(metadata, "authorized_environment"),
+		stringFromMap(metadata, "target_environment"),
+		stringFromMap(metadata, "environment_id"),
+	) != ""
+	operatorEnvironmentProofRecorded := boolOnlyFromAny(metadata["operator_environment_approved"]) ||
+		boolOnlyFromAny(metadata["environment_proof_recorded"]) ||
+		firstNonEmptyString(
+			stringFromMap(metadata, "operator_environment_approval_id"),
+			stringFromMap(metadata, "operator_environment_approved_at"),
+			stringFromMap(metadata, "operator_environment_proof_id"),
+			stringFromMap(metadata, "environment_proof_id"),
+			stringFromMap(metadata, "environment_proof_recorded_at"),
+		) != ""
+	controlsReady := boolOnlyFromAny(controlEvidence["controls_ready"])
+	sanitizedResultRecorded := cleanPreviewString(evidence["evidence_state"]) == "recorded"
+	environmentProofReady := metadataReady && controlsReady && environmentReferenceRecorded && operatorEnvironmentProofRecorded && hasVerified && hasExecuted && sanitizedResultRecorded
+	proofState := "blocked"
+	proofReason := "ssh_environment_proof_machine_metadata_incomplete"
+	switch {
+	case environmentProofReady:
+		proofState = "ready"
+		proofReason = "authorized_machine_environment_proof_ready"
+	case metadataReady && (environmentReferenceRecorded || operatorEnvironmentProofRecorded || controlsReady || hasVerified || hasExecuted):
+		proofState = "partial"
+		proofReason = "authorized_machine_environment_proof_incomplete"
+	case metadataReady:
+		proofState = "planned"
+		proofReason = "authorized_machine_environment_proof_not_recorded"
+	}
+	missing := []string{}
+	if !metadataReady {
+		missing = append(missing, "machine_metadata")
+	}
+	if !environmentReferenceRecorded {
+		missing = append(missing, "target_environment_reference")
+	}
+	if !boolOnlyFromAny(controlEvidence["fixture_reference_recorded"]) {
+		missing = append(missing, "authorized_machine_fixture")
+	}
+	if !boolOnlyFromAny(controlEvidence["operator_approval_recorded"]) {
+		missing = append(missing, "operator_approval_proof")
+	}
+	if !operatorEnvironmentProofRecorded {
+		missing = append(missing, "operator_environment_proof")
+	}
+	if !hasVerified {
+		missing = append(missing, "completed_ssh_verify")
+	}
+	if !hasExecuted {
+		missing = append(missing, "completed_ssh_exec")
+	}
+	if !sanitizedResultRecorded {
+		missing = append(missing, "sanitized_ssh_result_recorded")
+	}
+	return map[string]any{
+		"mode":                                  "ssh_rehearsal_environment_proof_plan",
+		"environment_proof_state":               proofState,
+		"environment_proof_ready":               environmentProofReady,
+		"environment_proof_ready_reason":        proofReason,
+		"machine_metadata_ready":                metadataReady,
+		"target_environment_reference_recorded": environmentReferenceRecorded,
+		"authorized_fixture_recorded":           boolOnlyFromAny(controlEvidence["fixture_reference_recorded"]),
+		"operator_approval_recorded":            boolOnlyFromAny(controlEvidence["operator_approval_recorded"]),
+		"operator_environment_proof_recorded":   operatorEnvironmentProofRecorded,
+		"completed_verify_evidence":             hasVerified,
+		"completed_exec_evidence":               hasExecuted,
+		"sanitized_result_recorded":             sanitizedResultRecorded,
+		"external_call_made":                    false,
+		"ssh_process_started":                   false,
+		"command_executed":                      false,
+		"environment_probe_performed":           false,
+		"operator_identity_included":            false,
+		"operator_note_included":                false,
+		"fixture_identifier_included":           false,
+		"environment_identifier_included":       false,
+		"stdout_included":                       false,
+		"stderr_included":                       false,
+		"private_key_included":                  false,
+		"known_hosts_included":                  false,
+		"runtime_secret_included":               false,
+		"required_evidence":                     []string{"target_environment_reference", "authorized_machine_fixture", "operator_approval_proof", "operator_environment_proof", "completed_ssh_verify", "completed_ssh_exec", "sanitized_ssh_result_recorded"},
+		"missing_evidence":                      missing,
+		"disabled_backends":                     []string{"environment_probe", "ssh_process_start", "ssh_verify_execute", "ssh_exec_execute", "raw_output_recording", "operator_identity_recording"},
+		"suppressed_fields":                     []string{"live_rehearsal_environment", "rehearsal_environment", "authorized_environment", "target_environment", "environment_id", "authorized_machine_fixture", "authorized_fixture_id", "fixture_id", "fixture_name", "operator_approved_by", "operator_approval_note", "operator_environment_approval_id", "operator_environment_approved_at", "operator_environment_proof_id", "environment_proof_id", "environment_proof_recorded_at", "private_key", "passphrase", "known_hosts_body", "stdout", "stderr", "raw_error", "runtime_secret"},
+		"message":                               "SSH environment proof is reconciled as booleans only; target environment identifiers, fixture identifiers, operator identity, auth material, and command output remain suppressed.",
 	}
 }
 
