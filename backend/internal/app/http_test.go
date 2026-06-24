@@ -16354,6 +16354,20 @@ func TestAgentCodeModificationPlan(t *testing.T) {
 		arming["contains_file_content"] != false {
 		t.Fatalf("code modification arming should stay blocked and redacted: %#v", arming)
 	}
+	sourceReview := mapFromAny(got["source_checkout_branch_review_plan"])
+	if sourceReview["mode"] != "redacted_agent_source_checkout_branch_review_plan" ||
+		sourceReview["review_state"] != "blocked" ||
+		sourceReview["review_ready"] != false ||
+		sourceReview["source_checkout_performed"] != false ||
+		sourceReview["workspace_bound"] != false ||
+		sourceReview["branch_created"] != false ||
+		sourceReview["default_branch_direct_write_blocked"] != true ||
+		sourceReview["repository_mutation_allowed"] != false ||
+		sourceReview["contains_source_remote_url"] != false ||
+		sourceReview["contains_workspace_path"] != false ||
+		sourceReview["contains_branch_name"] != false {
+		t.Fatalf("source checkout branch review should stay blocked and redacted: %#v", sourceReview)
+	}
 	encoded, _ := json.Marshal(got)
 	encodedText := string(encoded)
 	lowerEncodedText := strings.ToLower(encodedText)
@@ -16422,11 +16436,90 @@ func TestAgentCodeModificationPlanReconcilesAuditEvidence(t *testing.T) {
 		arming["repository_mutation_allowed"] != false {
 		t.Fatalf("code modification arming should reconcile audit only for operator review: %#v", arming)
 	}
+	sourceReview := mapFromAny(got["source_checkout_branch_review_plan"])
+	if sourceReview["review_state"] != "ready_for_operator_review" ||
+		sourceReview["review_ready"] != true ||
+		sourceReview["review_evidence_scope"] != "shared_code_modification_audit" ||
+		sourceReview["worker_dispatch_audit_recorded"] != true ||
+		sourceReview["codex_execution_plan_recorded"] != true ||
+		sourceReview["patch_prepare_audit_recorded"] != true ||
+		sourceReview["terminal_audit_recorded"] != true ||
+		sourceReview["source_remote_review_ready"] != true ||
+		sourceReview["workspace_binding_review_ready"] != true ||
+		sourceReview["branch_policy_review_ready"] != true ||
+		sourceReview["source_remote_review_scope"] != "shared_code_modification_audit" ||
+		sourceReview["workspace_binding_review_scope"] != "shared_code_modification_audit" ||
+		sourceReview["branch_policy_review_scope"] != "shared_code_modification_audit" ||
+		sourceReview["review_branch_required"] != true ||
+		sourceReview["default_branch_direct_write_blocked"] != true ||
+		sourceReview["source_checkout_performed"] != false ||
+		sourceReview["workspace_bound"] != false ||
+		sourceReview["branch_created"] != false ||
+		sourceReview["git_fetch_performed"] != false ||
+		sourceReview["git_checkout_performed"] != false ||
+		sourceReview["git_branch_created"] != false ||
+		sourceReview["contains_source_remote_url"] != false ||
+		sourceReview["contains_branch_name"] != false ||
+		len(stringSliceFromAny(sourceReview["missing_evidence"])) != 0 {
+		t.Fatalf("source checkout branch review should reconcile audit only for operator review: %#v", sourceReview)
+	}
 	encoded, _ := json.Marshal(got)
 	for _, forbidden := range []string{"do-not-serialize", "actual tool output", "/tmp/secret-workspace", "secret diff", "secret patch", "secret test"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("code modification evidence leaked %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestAgentCodeModificationSourceCheckoutBranchReviewIntermediateStates(t *testing.T) {
+	tests := []struct {
+		name        string
+		rows        []map[string]any
+		wantState   string
+		wantReady   bool
+		wantMissing string
+	}{
+		{
+			name:        "active audit waits for worker",
+			rows:        []map[string]any{{"id": "call-worker", "tool_name": "worker.dispatch.plan", "status": "running"}},
+			wantState:   "waiting_for_worker",
+			wantReady:   false,
+			wantMissing: "terminal_tool_call_audit",
+		},
+		{
+			name: "terminal partial audit stays partial",
+			rows: []map[string]any{
+				{"id": "call-codex", "tool_name": "codex.execution.plan", "status": "completed"},
+				{"id": "call-patch", "tool_name": "patch.prepare", "status": "completed"},
+			},
+			wantState:   "partial_audit",
+			wantReady:   false,
+			wantMissing: "worker_dispatch_plan_audit",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := agentCodeModificationPlan(agentToolCallAuditEvidence(tt.rows))
+			sourceReview := mapFromAny(got["source_checkout_branch_review_plan"])
+			if sourceReview["review_state"] != tt.wantState ||
+				sourceReview["review_ready"] != tt.wantReady ||
+				sourceReview["review_evidence_scope"] != "shared_code_modification_audit" ||
+				sourceReview["source_remote_review_ready"] != false ||
+				sourceReview["workspace_binding_review_ready"] != false ||
+				sourceReview["branch_policy_review_ready"] != false ||
+				sourceReview["source_checkout_performed"] != false ||
+				sourceReview["branch_created"] != false ||
+				sourceReview["repository_mutation_allowed"] != false ||
+				!containsString(stringSliceFromAny(sourceReview["missing_evidence"]), tt.wantMissing) ||
+				!containsString(stringSliceFromAny(sourceReview["missing_evidence"]), "operator_source_checkout_branch_review") {
+				t.Fatalf("unexpected intermediate source checkout branch review: %#v", sourceReview)
+			}
+			message := cleanPreviewString(sourceReview["message"])
+			if !strings.Contains(message, "shared code-modification audit") || !strings.Contains(message, "no repository is cloned") {
+				t.Fatalf("source review message should disclose shared audit scope and no checkout: %#v", message)
+			}
+			assertAgentCodeModificationPlanSafe(t, got)
+		})
 	}
 }
 
@@ -17191,6 +17284,53 @@ func assertAgentCodeModificationPlanSafe(t *testing.T, got map[string]any) {
 	if got["execution_arming_ready"] != arming["arming_ready"] {
 		t.Fatalf("top-level arming flag should mirror arming plan: got=%#v arming=%#v", got["execution_arming_ready"], arming)
 	}
+	sourceReview := mapFromAny(got["source_checkout_branch_review_plan"])
+	if sourceReview["mode"] != "redacted_agent_source_checkout_branch_review_plan" ||
+		sourceReview["review_evidence_scope"] != "shared_code_modification_audit" ||
+		sourceReview["source_checkout_performed"] != false ||
+		sourceReview["workspace_bound"] != false ||
+		sourceReview["branch_created"] != false ||
+		sourceReview["default_branch_checked_out"] != false ||
+		sourceReview["repository_mutation_allowed"] != false ||
+		sourceReview["external_call_made"] != false ||
+		sourceReview["git_fetch_performed"] != false ||
+		sourceReview["git_checkout_performed"] != false ||
+		sourceReview["git_branch_created"] != false ||
+		sourceReview["contains_source_remote_url"] != false ||
+		sourceReview["contains_workspace_path"] != false ||
+		sourceReview["contains_branch_name"] != false ||
+		sourceReview["contains_default_branch_name"] != false ||
+		sourceReview["contains_token"] != false {
+		t.Fatalf("source checkout branch review should stay disabled and redacted: %#v", sourceReview)
+	}
+	if got["source_checkout_branch_review_ready"] != sourceReview["review_ready"] {
+		t.Fatalf("top-level source checkout branch review flag should mirror plan: got=%#v plan=%#v", got["source_checkout_branch_review_ready"], sourceReview)
+	}
+	for _, field := range []string{"source_remote_review_scope", "workspace_binding_review_scope", "branch_policy_review_scope"} {
+		if sourceReview[field] != "shared_code_modification_audit" {
+			t.Fatalf("source checkout branch review %s should disclose shared audit scope: %#v", field, sourceReview)
+		}
+	}
+	for _, field := range []string{"operation_run_id", "agent_task_id", "source_remote_review", "workspace_binding_review", "branch_policy_review", "review_branch_policy", "operator_review_status"} {
+		if !containsString(stringSliceFromAny(sourceReview["required_review_fields"]), field) {
+			t.Fatalf("source checkout branch review required field missing %q: %#v", field, sourceReview["required_review_fields"])
+		}
+	}
+	for _, control := range []string{"source_remote_review", "workspace_binding_review", "branch_policy_review", "default_branch_protection_review", "operator_source_checkout_branch_review"} {
+		if !containsString(stringSliceFromAny(sourceReview["required_operator_controls"]), control) {
+			t.Fatalf("source checkout branch review operator control missing %q: %#v", control, sourceReview["required_operator_controls"])
+		}
+	}
+	for _, backend := range []string{"source_checkout", "workspace_bind", "git_fetch", "git_checkout", "branch_create", "default_branch_write", "repository_mutation"} {
+		if !containsString(stringSliceFromAny(sourceReview["disabled_backends"]), backend) {
+			t.Fatalf("source checkout branch review disabled backend missing %q: %#v", backend, sourceReview["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"source_remote_url", "repository_url", "workspace_path", "branch_name", "default_branch", "review_branch_name", "authorization_header", "runtime_config", "environment_variables", "token", "api_key"} {
+		if !containsString(stringSliceFromAny(sourceReview["suppressed_fields"]), field) {
+			t.Fatalf("source checkout branch review suppressed field missing %q: %#v", field, sourceReview["suppressed_fields"])
+		}
+	}
 	for _, control := range []string{"agent_execute_approval", "runtime_verification", "source_remote_review", "workspace_binding_review", "branch_policy_review", "structured_patch_review", "test_plan_review", "commit_push_agent_review", "provider_review_reconciliation"} {
 		if !containsString(stringSliceFromAny(arming["required_controls"]), control) {
 			t.Fatalf("code modification arming required control missing %q: %#v", control, arming["required_controls"])
@@ -17221,6 +17361,19 @@ func assertAgentCodeModificationPlanSafe(t *testing.T, got map[string]any) {
 		}
 	} else if arming["arming_state"] == "ready_for_operator_review" {
 		t.Fatalf("code modification arming cannot be ready state without arming_ready: %#v", arming)
+	}
+	if boolOnlyFromAny(sourceReview["review_ready"]) {
+		if sourceReview["review_state"] != "ready_for_operator_review" ||
+			sourceReview["review_evidence_scope"] != "shared_code_modification_audit" ||
+			sourceReview["worker_dispatch_audit_recorded"] != true ||
+			sourceReview["codex_execution_plan_recorded"] != true ||
+			sourceReview["patch_prepare_audit_recorded"] != true ||
+			sourceReview["terminal_audit_recorded"] != true ||
+			sourceReview["default_branch_direct_write_blocked"] != true {
+			t.Fatalf("ready source checkout branch review should only reflect complete audit evidence: %#v", sourceReview)
+		}
+	} else if sourceReview["review_state"] == "ready_for_operator_review" {
+		t.Fatalf("source checkout branch review cannot be ready state without review_ready: %#v", sourceReview)
 	}
 }
 

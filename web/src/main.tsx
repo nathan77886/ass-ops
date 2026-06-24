@@ -4450,6 +4450,7 @@ function AgentTasks() {
       const codePlan = guardrail.code_modification_plan || {};
       const codeEvidence = codePlan.code_modification_evidence || {};
       const executionArming = codePlan.execution_arming_plan || {};
+      const sourceReview = codePlan.source_checkout_branch_review_plan || {};
       const reasons = Array.isArray(guardrail.blocked_reasons) ? guardrail.blocked_reasons : [];
       const readiness = agentReadinessGateTags(guardrail.execution_readiness);
       return <Space size={4} wrap>
@@ -4461,6 +4462,9 @@ function AgentTasks() {
         <Tag color={codePlan.commit_push_agent_invoked === true ? 'blue' : 'gold'}>{codePlan.commit_push_agent_invoked === true ? 'Commit agent invoked' : 'No commit agent'}</Tag>
         {codePlan.execution_arming_plan ? <Tag color={executionArming.arming_ready === true ? 'gold' : 'red'}>arming {executionArming.arming_state || 'blocked'}</Tag> : null}
         {codePlan.execution_arming_plan ? <Tag>{executionArming.arming_ready === true ? 'operator review ready' : 'execution blocked'}</Tag> : null}
+        {codePlan.source_checkout_branch_review_plan ? <Tag color={sourceReview.review_ready === true ? 'gold' : 'red'}>source review {sourceReview.review_state || 'blocked'}</Tag> : null}
+        {codePlan.source_checkout_branch_review_plan ? <Tag color={sourceReview.default_branch_direct_write_blocked === true ? 'green' : 'red'}>{sourceReview.default_branch_direct_write_blocked === true ? 'default branch blocked' : 'default branch writable'}</Tag> : null}
+        {codePlan.source_checkout_branch_review_plan ? <Tag>{sourceReview.review_branch_required === true ? 'review branch required' : 'no review branch policy'}</Tag> : null}
         {codeEvidence.has_code_modification_audit ? <Tag color={agentAuditEvidenceColor(codeEvidence.evidence_state)}>code audit {codeEvidence.evidence_state}</Tag> : null}
         {codeEvidence.codex_execution_plan_recorded ? <Tag color="blue">codex plan audit</Tag> : null}
         {codeEvidence.patch_prepare_audit_recorded ? <Tag color="blue">patch audit</Tag> : null}
