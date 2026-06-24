@@ -868,6 +868,23 @@ func TestFirstVersionReadinessReportRequiresGitHubActionGraphLink(t *testing.T) 
 		t.Fatalf("github actions with complete project chain and tag but no action match = %#v, want partial", got)
 	}
 
+	withOrphanActionMatch := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "pipeline_run"},
+	}, []map[string]any{
+		{"operation_type": "repo.create_tag"},
+	}, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "project:1", "to_asset_id": "repository:10", "relation_type": "owns"},
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "git_remote:42", "relation_type": "has_remote"},
+			map[string]any{"from_asset_id": "git_remote:42", "to_asset_id": "github_action_run:101", "relation_type": "triggered_by"},
+			map[string]any{"from_asset_id": "operation_run:201", "to_asset_id": "git_remote:42", "relation_type": "tagged_remote", "metadata": map[string]any{"status": "completed", "tag_name": "v1.0.0"}},
+			map[string]any{"from_asset_id": "repo_tag_run:201", "to_asset_id": "github_action_run:202", "relation_type": "matched_action_run"},
+		},
+	})
+	if got := readinessByKey(t, withOrphanActionMatch, "github_actions"); got.Status != "partial" || got.Evidence != "1 pipeline runs / 1 complete action chains / 1 tag ops / 1 complete tag links / 0 linked tag runs / 1 project links / 1 remote links / 1 action links / 1 tag links / 1 tag-action links" {
+		t.Fatalf("github actions with tag matched to orphan action = %#v, want partial without project-linked tag run", got)
+	}
+
 	withCompleteChainTagAndActionMatch := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "pipeline_run"},
 	}, []map[string]any{
@@ -933,6 +950,22 @@ func TestCountGitHubActionGraphLinksIgnoresInvalidTagActionTarget(t *testing.T) 
 	got := countGitHubActionGraphLinks(graph)
 	if got.TagActionRunLinks != 0 || got.LinkedTagRuns != 0 {
 		t.Fatalf("countGitHubActionGraphLinks with invalid tag-action targets = %#v, want no tag-action evidence", got)
+	}
+}
+
+func TestCountGitHubActionGraphLinksRequiresProjectLinkedTagActionRun(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "project:1", "to_asset_id": "repository:1", "relation_type": "owns"},
+			map[string]any{"from_asset_id": "repository:1", "to_asset_id": "git_remote:1", "relation_type": "has_remote"},
+			map[string]any{"from_asset_id": "git_remote:1", "to_asset_id": "github_action_run:1", "relation_type": "triggered_by"},
+			map[string]any{"from_asset_id": "operation_run:1", "to_asset_id": "git_remote:1", "relation_type": "tagged_remote", "metadata": map[string]any{"status": "completed"}},
+			map[string]any{"from_asset_id": "repo_tag_run:1", "to_asset_id": "github_action_run:2", "relation_type": "matched_action_run"},
+		},
+	}
+	got := countGitHubActionGraphLinks(graph)
+	if got.CompleteActionRuns != 1 || got.CompleteTaggedRemotes != 1 || got.TagActionRunLinks != 1 || got.LinkedTagRuns != 0 {
+		t.Fatalf("countGitHubActionGraphLinks with orphan matched action = %#v, want action link but no linked tag run", got)
 	}
 }
 

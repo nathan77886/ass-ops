@@ -796,15 +796,20 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}) {
     }
     return nextCounts;
   }, { projectRepositories: 0, repositoryRemotes: 0, remoteActionRuns: 0, taggedRemotes: 0, tagActionRunLinks: 0, completeActionRuns: 0, completeTaggedRemotes: 0, linkedTagRuns: 0 });
+  const projectLinkedActionRuns: Record<string, boolean> = {};
   counts.completeActionRuns = Object.entries(remoteActionRuns).reduce((total, [remoteID, actionRuns]) => {
     const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
-    return hasProjectRepository ? total + Object.keys(actionRuns).length : total;
+    if (!hasProjectRepository) return total;
+    Object.keys(actionRuns).forEach((actionID) => { projectLinkedActionRuns[actionID] = true; });
+    return total + Object.keys(actionRuns).length;
   }, 0);
   counts.completeTaggedRemotes = Object.entries(taggedRemoteOps).reduce((total, [remoteID, operations]) => {
     const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
     return hasProjectRepository ? total + Object.keys(operations).length : total;
   }, 0);
-  counts.linkedTagRuns = Object.keys(tagActionRuns).length;
+  counts.linkedTagRuns = Object.values(tagActionRuns).filter((actionRuns) => (
+    Object.keys(actionRuns).some((actionID) => projectLinkedActionRuns[actionID])
+  )).length;
   return counts;
 }
 

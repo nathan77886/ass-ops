@@ -2072,6 +2072,7 @@ func countGitHubActionGraphLinks(graph map[string]any) githubActionGraphLinkCoun
 			}
 		}
 	}
+	projectLinkedActionRuns := map[string]bool{}
 	for remoteID, actionRuns := range remoteActionRuns {
 		hasProjectRepository := false
 		for repositoryID := range remoteRepositories[remoteID] {
@@ -2082,6 +2083,9 @@ func countGitHubActionGraphLinks(graph map[string]any) githubActionGraphLinkCoun
 		}
 		if hasProjectRepository {
 			counts.CompleteActionRuns += len(actionRuns)
+			for actionID := range actionRuns {
+				projectLinkedActionRuns[actionID] = true
+			}
 		}
 	}
 	for remoteID, operations := range taggedRemoteOps {
@@ -2096,7 +2100,14 @@ func countGitHubActionGraphLinks(graph map[string]any) githubActionGraphLinkCoun
 			counts.CompleteTaggedRemotes += len(operations)
 		}
 	}
-	counts.LinkedTagRuns = len(tagActionRuns)
+	for _, actionRuns := range tagActionRuns {
+		for actionID := range actionRuns {
+			if projectLinkedActionRuns[actionID] {
+				counts.LinkedTagRuns++
+				break
+			}
+		}
+	}
 	return counts
 }
 
