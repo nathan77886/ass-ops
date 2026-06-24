@@ -115,6 +115,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/git-repositories/{id}", s.getGitRepository)
 		r.Patch("/api/git-repositories/{id}", s.updateGitRepository)
 		r.Get("/api/git-repositories/{id}/config-scaffold", s.getConfigRepositoryScaffold)
+		r.Post("/api/git-repositories/{id}/config-scaffold/request-git-workflow", s.requestConfigRepositoryGitWorkflow)
 		r.Post("/api/git-repositories/{id}/sync", s.createRepositorySync)
 		r.Post("/api/git-repositories/{id}/tags", s.createRepositoryTag)
 		r.Get("/api/git-repositories/{id}/repo-sync-assets", s.listRepoSyncAssets)
@@ -3249,6 +3250,117 @@ func (s *Server) getConfigRepositoryScaffold(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, configRepositoryScaffoldPreview(repo, remotes, versions))
 }
 
+func (s *Server) requestConfigRepositoryGitWorkflow(w http.ResponseWriter, r *http.Request) {
+	repoID := chi.URLParam(r, "id")
+	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	resource := PolicyResource{Type: "git_repository", ID: repoID, ProjectID: projectID}
+	if !s.requireProjectMembershipForPolicy(w, r, resource) {
+		return
+	}
+	decision := NewPolicyChecker().Check(currentUser(r), resource, "config.git_commit")
+	if decision.Effect == PolicyDeny {
+		writeJSON(w, http.StatusForbidden, decision)
+		return
+	}
+	repo, remotes, versions, preview, err := s.configRepositoryScaffoldPreviewForRequest(r.Context(), repoID, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load config scaffold preview")
+		return
+	}
+	commitPlan := mapFromAny(preview["git_commit_plan"])
+	if commitPlan["plan_state"] != "planned" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":               "config git workflow is not ready",
+			"blocked_reasons":     commitPlan["blocked_reasons"],
+			"git_commit_plan":     commitPlan,
+			"scaffold_preview":    preview,
+			"external_call_made":  false,
+			"git_write_performed": false,
+		})
+		return
+	}
+	input := configRepositoryGitWorkflowInput(repo, remotes, preview)
+	payload := map[string]any{
+		"kind":                  "config_git_commit",
+		"project_id":            projectID,
+		"repo_id":               repoID,
+		"input":                 input,
+		"scaffold_file_count":   preview["file_count"],
+		"project_version_count": len(versions),
+		"file_content_included": false,
+		"secret_included":       false,
+		"external_call_made":    false,
+		"git_write_performed":   false,
+	}
+	if decision.Effect == PolicyRequireConfirm {
+		approval, err := s.createOperationApproval(r.Context(), resource, "config.git_commit", "config git workflow "+fmt.Sprint(repo["name"]), payload, currentUser(r).ID)
+		if err != nil {
+			if isUniqueViolation(err, "idx_operation_approvals_pending_once") {
+				writeError(w, http.StatusConflict, "approval request is already pending")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "could not create approval request")
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"approval": approval, "decision": decision})
+		return
+	}
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start config git workflow transaction")
+		return
+	}
+	defer tx.Rollback()
+	op, err := enqueueConfigRepositoryGitWorkflowTx(r.Context(), tx, projectID, repo, remotes, preview, currentUser(r).ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not enqueue config git workflow")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "config_git_commit.enqueue") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit config git workflow request")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"operation":                op,
+		"git_commit_plan":          commitPlan,
+		"scaffold_preview":         preview,
+		"operation_request_state":  "queued",
+		"operation_request_result": configRepositoryGitWorkflowRequestResult(op),
+	})
+}
+
+func (s *Server) configRepositoryScaffoldPreviewForRequest(ctx context.Context, repoID, projectID string) (map[string]any, []map[string]any, []map[string]any, map[string]any, error) {
+	repo, err := queryOne(ctx, s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	remotes, err := queryMaps(ctx, s.store.DB, `
+		SELECT id, name, remote_key, provider_type, remote_role, default_branch, latest_sha, last_sync_status
+		FROM git_remotes
+		WHERE project_git_repository_id=$1
+		ORDER BY created_at DESC`, repoID)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	versions, err := queryMaps(ctx, s.store.DB, `
+		SELECT id, version, metadata, created_at
+		FROM project_versions
+		WHERE project_id=$1
+		ORDER BY created_at DESC
+		LIMIT 100`, projectID)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return repo, remotes, versions, configRepositoryScaffoldPreview(repo, remotes, versions), nil
+}
+
 func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
 	repoID := chi.URLParam(r, "id")
 	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
@@ -3478,7 +3590,9 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 	return map[string]any{
 		"mode":                              "config_repository_git_commit_plan_preview",
 		"plan_state":                        planState,
-		"execution_enabled":                 false,
+		"execution_enabled":                 planState == "planned",
+		"execution_mode":                    "approval_gated_audit_only",
+		"operation_request_enabled":         planState == "planned",
 		"external_call_made":                false,
 		"git_clone_performed":               false,
 		"git_fetch_performed":               false,
@@ -3497,6 +3611,7 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		"default_branch_configured":         defaultBranch != "",
 		"required_controls":                 []string{"config_remote_review", "branch_policy_review", "human_file_review", "secret_scan", "commit_author_policy", "provider_review_workflow", "project_version_config_commit_pin", "live_remote_commit_validation"},
 		"disabled_backends":                 []string{"git_clone", "git_fetch", "file_write", "git_commit", "git_push", "pull_request_create", "project_version_update", "live_commit_validation"},
+		"enabled_backends":                  []string{"operation_run_enqueue", "worker_job_enqueue", "sanitized_audit_result_recording"},
 		"blocked_reasons":                   blockedReasons,
 		"suppressed_fields":                 []string{"file_content", "secret_values", "git_credentials", "provider_token", "author_email", "remote_url", "branch_name", "commit_message"},
 		"steps":                             steps,
@@ -3507,18 +3622,22 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		"remote_review_plan":                remoteReviewPlan,
 		"project_version_pin_plan":          pinValidationPlan,
 		"result_recording_plan":             configRepositoryGitCommitResultRecordingPlan(pinEvidence),
-		"message":                           "Config repository Git commit and live validation are planned only; no files, Git refs, provider requests, or ProjectVersion pins are written.",
+		"message":                           "Config repository Git workflow can now enqueue an approval-gated audit job; file materialization, Git commit/push, provider requests, ProjectVersion pin writes, and live validation remain disabled.",
 	}
 }
 
 func configRepositoryGitCommitApprovalPlan(planState string, blockedReasons []string) map[string]any {
 	metadataReady := planState == "planned"
 	metadataBlockedReasons := append([]string{}, blockedReasons...)
+	requestReadyReason := "config_git_commit_metadata_ready"
+	if !metadataReady {
+		requestReadyReason = "config_git_commit_metadata_blocked"
+	}
 	return map[string]any{
 		"mode":                     "config_repository_git_commit_approval_plan",
 		"request_state":            planState,
-		"request_ready":            false,
-		"request_ready_reason":     "config_git_commit_execution_disabled",
+		"request_ready":            metadataReady,
+		"request_ready_reason":     requestReadyReason,
 		"metadata_ready":           metadataReady,
 		"operation_created":        false,
 		"approval_request_created": false,
@@ -3527,8 +3646,68 @@ func configRepositoryGitCommitApprovalPlan(planState string, blockedReasons []st
 		"required_approval_fields": []string{"operation_run_id", "repository_id", "remote_id", "default_branch", "scaffold_file_count", "requested_by", "reason"},
 		"suppressed_fields":        []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "author_email"},
 		"blocked_reasons":          metadataBlockedReasons,
-		"execution_blockers":       []string{"config_git_commit_operation_not_created", "approval_policy_not_applied", "git_workspace_binding_not_approved", "provider_review_workflow_not_wired"},
-		"required_operator_action": "Request approval for the config Git workflow before checkout, file materialization, commit, push, ProjectVersion pin, or live validation.",
+		"execution_blockers":       []string{"git_workspace_backend_disabled", "git_commit_not_created", "provider_review_workflow_not_wired", "project_version_pin_write_disabled"},
+		"required_operator_action": "Request approval for a config Git workflow audit job before any future checkout, file materialization, commit, push, ProjectVersion pin, or live validation backend is armed.",
+	}
+}
+
+func configRepositoryGitWorkflowInput(repo map[string]any, remotes []map[string]any, preview map[string]any) map[string]any {
+	defaultBranch := cleanOptionalText(stringFromMap(repo, "default_branch"))
+	remoteID := ""
+	remoteProvider := ""
+	if len(remotes) > 0 {
+		remoteID = cleanOptionalID(fmt.Sprint(remotes[0]["id"]))
+		remoteProvider = cleanOptionalText(stringFromMap(remotes[0], "provider_type"))
+		if defaultBranch == "" {
+			defaultBranch = cleanOptionalText(stringFromMap(remotes[0], "default_branch"))
+		}
+	}
+	return map[string]any{
+		"project_git_repository_id": cleanOptionalID(fmt.Sprint(repo["id"])),
+		"config_remote_id":          remoteID,
+		"provider_type":             remoteProvider,
+		"default_branch_configured": defaultBranch != "",
+		"scaffold_file_count":       preview["file_count"],
+		"remote_count":              preview["remote_count"],
+		"mode":                      "approval_gated_audit_only",
+		"file_content_included":     false,
+		"secret_included":           false,
+		"external_call_made":        false,
+		"git_write_performed":       false,
+	}
+}
+
+func enqueueConfigRepositoryGitWorkflowTx(ctx context.Context, tx *sqlx.Tx, projectID string, repo map[string]any, remotes []map[string]any, preview map[string]any, actorID string) (map[string]any, error) {
+	input := configRepositoryGitWorkflowInput(repo, remotes, preview)
+	input["actor_user_id"] = cleanOptionalID(actorID)
+	title := "config git workflow " + cleanOptionalText(stringFromMap(repo, "name"))
+	if strings.TrimSpace(title) == "config git workflow" {
+		title = "config git workflow"
+	}
+	op, err := enqueueOperationTx(ctx, tx, projectID, cleanOptionalID(stringFromMap(input, "config_remote_id")), "config.git_commit", title, input, []string{"git", "config"}, "control-worker")
+	if err != nil {
+		return nil, err
+	}
+	return op, nil
+}
+
+func configRepositoryGitWorkflowRequestResult(op map[string]any) map[string]any {
+	return map[string]any{
+		"mode":                         "config_repository_git_workflow_request_result",
+		"operation_run_id":             op["id"],
+		"operation_type":               "config.git_commit",
+		"operation_created":            true,
+		"worker_job_created":           true,
+		"approval_gated":               true,
+		"git_write_performed":          false,
+		"external_call_made":           false,
+		"file_content_included":        false,
+		"secret_included":              false,
+		"project_version_pin_written":  false,
+		"live_commit_validation":       "disabled",
+		"sanitized_result_expected":    true,
+		"required_worker_capabilities": []string{"git", "config"},
+		"suppressed_fields":            []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "commit_sha"},
 	}
 }
 
@@ -11007,6 +11186,45 @@ func (s *Server) getOperationApproval(w http.ResponseWriter, r *http.Request) {
 func operationApprovalPayloadAudit(approval map[string]any) map[string]any {
 	payload := mapFromAny(approval["request_payload"])
 	switch stringFromMap(payload, "kind") {
+	case "config_git_commit":
+		out := map[string]any{
+			"kind":                  "config_git_commit",
+			"project_id":            cleanOptionalID(stringFromMap(payload, "project_id")),
+			"repo_id":               cleanOptionalID(stringFromMap(payload, "repo_id")),
+			"scaffold_file_count":   intFromAny(payload["scaffold_file_count"], 0),
+			"project_version_count": intFromAny(payload["project_version_count"], 0),
+			"payload_redacted":      true,
+			"external_call_made":    false,
+			"git_write_performed":   false,
+			"file_content_included": false,
+			"secret_included":       false,
+		}
+		input := mapFromAny(payload["input"])
+		if len(input) > 0 {
+			out["input"] = map[string]any{
+				"project_git_repository_id": cleanOptionalID(fmt.Sprint(input["project_git_repository_id"])),
+				"config_remote_id":          cleanOptionalID(fmt.Sprint(input["config_remote_id"])),
+				"provider_type":             cleanOptionalText(fmt.Sprint(input["provider_type"])),
+				"default_branch_configured": boolOnlyFromAny(input["default_branch_configured"]),
+				"scaffold_file_count":       intFromAny(input["scaffold_file_count"], 0),
+				"remote_count":              intFromAny(input["remote_count"], 0),
+				"mode":                      cleanOptionalText(fmt.Sprint(input["mode"])),
+				"file_content_included":     false,
+				"secret_included":           false,
+				"external_call_made":        false,
+				"git_write_performed":       false,
+			}
+		}
+		if result := mapFromAny(payload["approval_result"]); len(result) > 0 {
+			out["approval_result"] = map[string]any{
+				"operation_request_result": mapFromAny(result["operation_request_result"]),
+				"external_call_made":       false,
+				"git_write_performed":      false,
+				"file_content_included":    false,
+				"secret_included":          false,
+			}
+		}
+		return out
 	case "project_template_provider_review_execute":
 		out := map[string]any{
 			"kind":                    "project_template_provider_review_execute",
@@ -12821,6 +13039,33 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			return nil, "", err
 		}
 		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
+	case "config_git_commit":
+		repoID := cleanOptionalID(stringFromMap(payload, "repo_id"))
+		projectID := cleanOptionalID(stringFromMap(payload, "project_id"))
+		if repoID == "" || projectID == "" {
+			return nil, "", fmt.Errorf("config git workflow approval is missing repository metadata")
+		}
+		repo, remotes, _, preview, err := s.configRepositoryScaffoldPreviewForRequest(ctx, repoID, projectID)
+		if err != nil {
+			return nil, "", err
+		}
+		commitPlan := mapFromAny(preview["git_commit_plan"])
+		if commitPlan["plan_state"] != "planned" {
+			return nil, "", fmt.Errorf("config git workflow is not ready")
+		}
+		op, err := enqueueConfigRepositoryGitWorkflowTx(ctx, tx, projectID, repo, remotes, preview, actorID)
+		if err != nil {
+			return nil, "", err
+		}
+		return map[string]any{
+			"operation":                op,
+			"operation_request_result": configRepositoryGitWorkflowRequestResult(op),
+			"git_commit_plan":          commitPlan,
+			"external_call_made":       false,
+			"git_write_performed":      false,
+			"file_content_included":    false,
+			"secret_included":          false,
+		}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "operation_cancel":
 		op, err := s.cancelOperationRun(ctx, tx, stringFromMap(payload, "operation_id"))
 		if err != nil {

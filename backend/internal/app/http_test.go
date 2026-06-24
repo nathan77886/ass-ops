@@ -1695,7 +1695,9 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 	commitPlan := mapFromAny(preview["git_commit_plan"])
 	if commitPlan["mode"] != "config_repository_git_commit_plan_preview" ||
 		commitPlan["plan_state"] != "planned" ||
-		commitPlan["execution_enabled"] != false ||
+		commitPlan["execution_enabled"] != true ||
+		commitPlan["execution_mode"] != "approval_gated_audit_only" ||
+		commitPlan["operation_request_enabled"] != true ||
 		commitPlan["git_clone_performed"] != false ||
 		commitPlan["git_commit_created"] != false ||
 		commitPlan["git_push_performed"] != false ||
@@ -1709,6 +1711,8 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 	if !containsString(stringSliceFromAny(commitPlan["required_controls"]), "project_version_config_commit_pin") ||
 		!containsString(stringSliceFromAny(commitPlan["disabled_backends"]), "git_commit") ||
 		!containsString(stringSliceFromAny(commitPlan["disabled_backends"]), "live_commit_validation") ||
+		!containsString(stringSliceFromAny(commitPlan["enabled_backends"]), "operation_run_enqueue") ||
+		!containsString(stringSliceFromAny(commitPlan["enabled_backends"]), "sanitized_audit_result_recording") ||
 		!containsString(stringSliceFromAny(commitPlan["suppressed_fields"]), "remote_url") ||
 		statusByKind(sliceOfMapsFromAny(commitPlan["steps"]), "workspace_checkout") != "blocked" ||
 		statusByKind(sliceOfMapsFromAny(commitPlan["steps"]), "remote_binding") != "planned" {
@@ -1986,13 +1990,18 @@ func assertConfigRepositoryGitCommitSubplansSafe(t *testing.T, commitPlan map[st
 		}
 	}
 	if approvalPlan["mode"] != "config_repository_git_commit_approval_plan" ||
-		approvalPlan["request_ready"] != false ||
-		approvalPlan["request_ready_reason"] != "config_git_commit_execution_disabled" ||
 		approvalPlan["operation_created"] != false ||
 		approvalPlan["approval_request_created"] != false ||
 		approvalPlan["worker_job_created"] != false ||
 		approvalPlan["external_call_made"] != false {
-		t.Fatalf("config git approval plan should stay disabled and redacted: %#v", approvalPlan)
+		t.Fatalf("config git approval plan should stay redacted: %#v", approvalPlan)
+	}
+	if commitPlan["plan_state"] == "planned" {
+		if approvalPlan["request_ready"] != true || approvalPlan["request_ready_reason"] != "config_git_commit_metadata_ready" {
+			t.Fatalf("planned config commit should allow approval request metadata: %#v", approvalPlan)
+		}
+	} else if approvalPlan["request_ready"] != false || approvalPlan["request_ready_reason"] != "config_git_commit_metadata_blocked" {
+		t.Fatalf("blocked config commit should block approval request metadata: %#v", approvalPlan)
 	}
 	if commitPlan["plan_state"] == "planned" && approvalPlan["metadata_ready"] != true {
 		t.Fatalf("planned config commit should mark approval metadata ready: %#v", approvalPlan)
@@ -2010,7 +2019,7 @@ func assertConfigRepositoryGitCommitSubplansSafe(t *testing.T, commitPlan map[st
 			t.Fatalf("config approval suppressed_fields missing %q: %#v", field, approvalPlan["suppressed_fields"])
 		}
 	}
-	for _, reason := range []string{"config_git_commit_operation_not_created", "approval_policy_not_applied", "git_workspace_binding_not_approved", "provider_review_workflow_not_wired"} {
+	for _, reason := range []string{"git_workspace_backend_disabled", "git_commit_not_created", "provider_review_workflow_not_wired", "project_version_pin_write_disabled"} {
 		if !containsString(stringSliceFromAny(approvalPlan["execution_blockers"]), reason) {
 			t.Fatalf("config approval execution blockers missing %q: %#v", reason, approvalPlan["execution_blockers"])
 		}
@@ -2199,12 +2208,120 @@ func TestGetConfigRepositoryScaffoldHandler(t *testing.T) {
 	commitPlan := mapFromAny(payload["git_commit_plan"])
 	if commitPlan["mode"] != "config_repository_git_commit_plan_preview" ||
 		commitPlan["plan_state"] != "planned" ||
+		commitPlan["execution_enabled"] != true ||
+		commitPlan["operation_request_enabled"] != true ||
 		commitPlan["git_commit_created"] != false ||
 		commitPlan["git_push_performed"] != false ||
 		commitPlan["live_commit_validation_performed"] != false ||
 		commitPlan["project_version_pin_observed"] != true ||
 		commitPlan["live_commit_validation_observed"] != true {
 		t.Fatalf("payload git_commit_plan = %#v", commitPlan)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestConfigRepositoryGitWorkflowRequestAndApprovalAuditAreRedacted(t *testing.T) {
+	repo := map[string]any{
+		"id":             "repo-1",
+		"name":           "Config Repository",
+		"repo_key":       "config",
+		"repo_role":      "config",
+		"default_branch": "main",
+	}
+	remotes := []map[string]any{{
+		"id":             "remote-1",
+		"provider_type":  "github",
+		"default_branch": "main",
+		"remote_url":     "https://token@example.com/repo.git",
+	}}
+	preview := configRepositoryScaffoldPreview(repo, remotes)
+	input := configRepositoryGitWorkflowInput(repo, remotes, preview)
+	if input["project_git_repository_id"] != "repo-1" ||
+		input["config_remote_id"] != "remote-1" ||
+		input["default_branch_configured"] != true ||
+		input["git_write_performed"] != false ||
+		input["external_call_made"] != false ||
+		input["file_content_included"] != false ||
+		input["secret_included"] != false {
+		t.Fatalf("config workflow input = %#v", input)
+	}
+	op := map[string]any{"id": "op-1"}
+	result := configRepositoryGitWorkflowRequestResult(op)
+	if result["operation_created"] != true ||
+		result["worker_job_created"] != true ||
+		result["git_write_performed"] != false ||
+		result["external_call_made"] != false ||
+		result["project_version_pin_written"] != false ||
+		result["sanitized_result_expected"] != true {
+		t.Fatalf("config workflow request result = %#v", result)
+	}
+	audit := operationApprovalPayloadAudit(map[string]any{"request_payload": map[string]any{
+		"kind":                  "config_git_commit",
+		"project_id":            "project-1",
+		"repo_id":               "repo-1",
+		"input":                 input,
+		"scaffold_file_count":   10,
+		"project_version_count": 1,
+		"approval_result": map[string]any{
+			"operation_request_result": result,
+		},
+		"file_content":    "secret_values_here",
+		"remote_url":      "https://token@example.com/repo.git",
+		"provider_token":  "Bearer secret",
+		"git_credentials": "PRIVATE KEY",
+	}})
+	if audit["kind"] != "config_git_commit" ||
+		audit["payload_redacted"] != true ||
+		audit["git_write_performed"] != false ||
+		audit["external_call_made"] != false ||
+		audit["file_content_included"] != false ||
+		audit["secret_included"] != false {
+		t.Fatalf("config workflow approval audit = %#v", audit)
+	}
+	encoded, _ := json.Marshal(audit)
+	for _, forbidden := range []string{"secret_values_here", "https://token@", "Bearer secret", "PRIVATE KEY", "main"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("config workflow approval audit leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestExecuteConfigGitWorkflowAuditRecordsSanitizedIntent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	worker := &ControlWorker{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`SELECT \* FROM operation_runs WHERE id=\$1`).
+		WithArgs("op-config").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "input"}).
+			AddRow("op-config", []byte(`{"project_git_repository_id":"repo-1","config_remote_id":"remote-1","provider_type":"github","default_branch_configured":true,"scaffold_file_count":10,"remote_count":1,"remote_url":"https://token@example.com/repo.git","file_content":"secret_values_here"}`)))
+	result, err := worker.executeConfigGitWorkflowAudit(context.Background(), "op-config", map[string]any{"adapter": true, "tool": "config.git_commit"})
+	if err != nil {
+		t.Fatalf("executeConfigGitWorkflowAudit: %v", err)
+	}
+	if result["result_scope"] != "sanitized_config_git_workflow_intent" ||
+		result["workflow_intent_recorded"] != true ||
+		result["git_write_performed"] != false ||
+		result["git_commit_created"] != false ||
+		result["git_push_performed"] != false ||
+		result["provider_review_created"] != false ||
+		result["project_version_pin_written"] != false ||
+		result["external_call_made"] != false ||
+		result["file_content_included"] != false ||
+		result["secret_included"] != false ||
+		result["raw_git_output_recorded"] != false ||
+		result["raw_provider_response_recorded"] != false {
+		t.Fatalf("config git workflow audit result = %#v", result)
+	}
+	encoded, _ := json.Marshal(result)
+	for _, forbidden := range []string{"secret_values_here", "https://token@", "main"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("config git workflow audit result leaked %q: %s", forbidden, encoded)
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -14208,6 +14325,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "project.update")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "git_repository.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "git_repository.update")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "config_git_commit.enqueue")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "git_remote.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "git_remote.update")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "project_template.create_operation")`,

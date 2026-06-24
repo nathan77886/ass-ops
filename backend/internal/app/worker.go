@@ -198,7 +198,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "ssh.exec", "ssh.verify", "argo.apps.sync", "argo.pod_logs", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute":
+	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "ssh.exec", "ssh.verify", "argo.apps.sync", "argo.pod_logs", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute", "config.git_commit":
 		return true
 	default:
 		return false
@@ -542,7 +542,7 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 		return nil
 	case "argo.pod_logs":
 		if _, err := db.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, data)
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
 			VALUES ($1, $2, 'info', 'pod log audit worker started', jsonb_build_object(
 				'live_log_backend', 'disabled',
 				'kubeconfig_bound', false,
@@ -552,6 +552,21 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for running Argo pod log audit: %w", err)
+		}
+		return nil
+	case "config.git_commit":
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
+			VALUES ($1, $2, 'info', 'config git workflow audit worker started', jsonb_build_object(
+				'git_write_performed', false,
+				'external_call_made', false,
+				'file_content_included', false,
+				'secret_included', false
+			))`, opID, job["id"]); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+			return fmt.Errorf("syncing canonical assets for running config Git workflow audit: %w", err)
 		}
 		return nil
 	case "project.create_from_template":
@@ -631,6 +646,8 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 		return result, err
 	case "argo.pod_logs":
 		return w.executeArgoPodLogAudit(ctx, opID, result)
+	case "config.git_commit":
+		return w.executeConfigGitWorkflowAudit(ctx, opID, result)
 	case "ssh.exec", "ssh.verify":
 		execution, err := NewSSHExecutor().Execute(ctx, w.store.DB, opID)
 		mergeSSHExecutionResult(result, execution)
@@ -769,7 +786,7 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 	case "argo.pod_logs":
 		safeError := "pod log audit worker failed; details are withheld from operation logs"
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, data)
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
 			VALUES ($1, $2, 'error', 'pod log audit worker failed', jsonb_build_object(
 				'error', $3,
 				'live_log_backend', 'disabled',
@@ -779,6 +796,23 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed Argo pod log audit: %w", err)
+		}
+		return nil
+	case "config.git_commit":
+		safeError := "config git workflow audit worker failed; details are withheld from operation logs"
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
+			VALUES ($1, $2, 'error', 'config git workflow audit worker failed', jsonb_build_object(
+				'error', $3,
+				'git_write_performed', false,
+				'external_call_made', false,
+				'file_content_included', false,
+				'secret_included', false
+			))`, opID, job["id"], safeError); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed config Git workflow audit: %w", err)
 		}
 		return nil
 	case "ssh.exec", "ssh.verify":
@@ -995,12 +1029,41 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, data)
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
 			VALUES ($1, $2, 'info', 'pod log audit completed without live log retrieval', $3::jsonb)`, opID, job["id"], data); err != nil {
 			return err
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed Argo pod log audit: %w", err)
+		}
+		return nil
+	case "config.git_commit":
+		data, err := jsonParam(map[string]any{
+			"result_scope":                   result["result_scope"],
+			"project_git_repository_id":      result["project_git_repository_id"],
+			"config_remote_id":               result["config_remote_id"],
+			"provider_type":                  result["provider_type"],
+			"scaffold_file_count":            result["scaffold_file_count"],
+			"remote_count":                   result["remote_count"],
+			"git_write_performed":            false,
+			"external_call_made":             false,
+			"file_content_included":          false,
+			"secret_included":                false,
+			"project_version_pin_written":    false,
+			"live_commit_validation":         "disabled",
+			"raw_git_output_recorded":        false,
+			"raw_provider_response_recorded": false,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
+			VALUES ($1, $2, 'info', 'config git workflow audit completed without Git mutation', $3::jsonb)`, opID, job["id"], data); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed config Git workflow audit: %w", err)
 		}
 		return nil
 	case "ssh.exec", "ssh.verify":
@@ -1144,6 +1207,46 @@ func (w *ControlWorker) executeArgoPodLogAudit(ctx context.Context, opID string,
 	result["line_count"] = 0
 	result["truncated"] = false
 	result["message"] = "pod log audit completed; live Kubernetes/Argo log retrieval remains disabled and no log body was returned"
+	return result, nil
+}
+
+func (w *ControlWorker) executeConfigGitWorkflowAudit(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
+	op, err := queryOne(ctx, w.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	if err != nil {
+		return result, fmt.Errorf("loading config git workflow operation: %w", err)
+	}
+	input := mapFromAny(op["input"])
+	repoID := cleanOptionalID(fmt.Sprint(input["project_git_repository_id"]))
+	remoteID := cleanOptionalID(fmt.Sprint(input["config_remote_id"]))
+	if repoID == "" {
+		return result, fmt.Errorf("config git workflow operation is missing repository metadata")
+	}
+	result["result_scope"] = "sanitized_config_git_workflow_intent"
+	result["project_git_repository_id"] = repoID
+	result["config_remote_id"] = remoteID
+	result["provider_type"] = cleanOptionalText(fmt.Sprint(input["provider_type"]))
+	result["scaffold_file_count"] = intFromAny(input["scaffold_file_count"], 0)
+	result["remote_count"] = intFromAny(input["remote_count"], 0)
+	result["default_branch_configured"] = boolOnlyFromAny(input["default_branch_configured"])
+	result["workflow_intent_recorded"] = true
+	result["git_write_performed"] = false
+	result["git_clone_performed"] = false
+	result["git_fetch_performed"] = false
+	result["file_content_materialized"] = false
+	result["secret_scan_performed"] = false
+	result["git_commit_created"] = false
+	result["git_push_performed"] = false
+	result["provider_review_created"] = false
+	result["project_version_pin_written"] = false
+	result["live_commit_validation"] = "disabled"
+	result["external_call_made"] = false
+	result["file_content_included"] = false
+	result["secret_included"] = false
+	result["raw_git_output_recorded"] = false
+	result["raw_provider_response_recorded"] = false
+	result["suppressed_fields"] = []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "commit_sha", "provider_response_body", "provider_response_headers"}
+	result["disabled_backends"] = []string{"git_clone", "git_fetch", "file_write", "git_commit", "git_push", "pull_request_create", "project_version_update", "live_commit_validation"}
+	result["message"] = "config git workflow audit completed without Git mutation"
 	return result, nil
 }
 

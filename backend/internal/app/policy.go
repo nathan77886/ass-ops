@@ -68,7 +68,7 @@ func developerPolicy(action string) PolicyDecision {
 	switch action {
 	case "read", "create", "update", "context.generate", "repo.sync", "git.refs.refresh", "github.actions.sync", "argo.apps.sync", "project_version.refresh", "ssh.verify", "node.echo", "agent.generate_plan", "agent.approve_plan":
 		return PolicyDecision{Effect: PolicyAllow, Reason: "developer can perform standard first-version operation"}
-	case "repo.tag", "ssh.exec", "operation.cancel", "agent.execute", "argo.pod_logs":
+	case "repo.tag", "ssh.exec", "operation.cancel", "agent.execute", "argo.pod_logs", "config.git_commit":
 		return PolicyDecision{Effect: PolicyRequireConfirm, Reason: "operation requires explicit confirmation"}
 	default:
 		return PolicyDecision{Effect: PolicyDeny, Reason: "developer role cannot perform this operation"}

@@ -2658,6 +2658,8 @@ function ProjectDetail() {
   const [validatingVersionID, setValidatingVersionID] = useState<string>();
   const [refreshingVersionID, setRefreshingVersionID] = useState<string>();
   const [configInitializing, setConfigInitializing] = useState(false);
+  const [configWorkflowRequesting, setConfigWorkflowRequesting] = useState(false);
+  const [configWorkflowResult, setConfigWorkflowResult] = useState<AnyRow>();
   const configRepo = repoRows.find((row: AnyRow) => row.repo_role === 'config');
   const configScaffold = useLoad(() => configRepo ? api(`/api/git-repositories/${configRepo.id}/config-scaffold`) : Promise.resolve(undefined), [configRepo?.id]);
   async function initializeConfigRepo() {
@@ -2681,6 +2683,20 @@ function ProjectDetail() {
       message.error(error.message || 'Request failed');
     } finally {
       setConfigInitializing(false);
+    }
+  }
+  async function requestConfigGitWorkflow() {
+    if (!configRepo || configWorkflowRequesting) return;
+    setConfigWorkflowRequesting(true);
+    try {
+      const result = await api(`/api/git-repositories/${configRepo.id}/config-scaffold/request-git-workflow`, { method: 'POST', body: '{}' });
+      setConfigWorkflowResult(result);
+      configScaffold.reload();
+      message.success(result.approval ? 'Config workflow approval requested' : 'Config workflow audit queued');
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setConfigWorkflowRequesting(false);
     }
   }
   async function createVersion(values: AnyRow) {
@@ -2849,6 +2865,7 @@ function ProjectDetail() {
                   <Tag>{configScaffold.data.external_call_made ? 'external call' : 'no external call'}</Tag>
                   <Tag>{configScaffold.data.file_content_included ? 'content included' : 'paths only'}</Tag>
                   {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.plan_state === 'planned' ? 'blue' : 'red'}>commit {configScaffold.data.git_commit_plan.plan_state}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.operation_request_enabled ? 'blue' : 'default'}>{configScaffold.data.git_commit_plan.operation_request_enabled ? 'request enabled' : 'request blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag color="gold">approval {configScaffold.data.git_commit_plan.approval_request_plan.request_state || 'blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag>{configScaffold.data.git_commit_plan.approval_request_plan.metadata_ready ? 'approval metadata ready' : 'approval metadata missing'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag>{configScaffold.data.git_commit_plan.approval_request_plan.request_ready ? 'request ready' : 'request disabled'}</Tag> : null}
@@ -2867,6 +2884,13 @@ function ProjectDetail() {
                   {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.pinned_version_count || 0} pinned versions</Tag> : null}
                   {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.validated_version_count || 0} validated versions</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.steps?.length || 0} commit steps</Tag> : null}
+                </Space>
+                <Space wrap>
+                  <Button size="small" type="primary" loading={configWorkflowRequesting} disabled={!configScaffold.data.git_commit_plan?.operation_request_enabled} onClick={requestConfigGitWorkflow}>Request config workflow audit</Button>
+                  {configWorkflowResult?.approval ? <Tag color="gold">approval requested</Tag> : null}
+                  {configWorkflowResult?.operation ? <Tag color="blue">operation queued</Tag> : null}
+                  {configWorkflowResult?.operation_request_result ? <Tag>{configWorkflowResult.operation_request_result.git_write_performed ? 'git write' : 'no git write'}</Tag> : null}
+                  {configWorkflowResult?.operation_request_result ? <Tag>{configWorkflowResult.operation_request_result.sanitized_result_expected ? 'sanitized result expected' : 'result blocked'}</Tag> : null}
                 </Space>
                 {Array.isArray(configScaffold.data.blocked_reasons) && configScaffold.data.blocked_reasons.length > 0 && (
                   <Alert showIcon type="warning" message={configScaffold.data.blocked_reasons.join(', ')} />
