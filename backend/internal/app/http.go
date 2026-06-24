@@ -18636,6 +18636,7 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 	authBindingPlan := sshRehearsalAuthBindingPlan(metadataReady, authType, hasKeyReference, hasKnownHostsReference)
 	verifyPlan := sshRehearsalVerifyExecutionPlan(metadataReady, hasVerified)
 	execPlan := sshRehearsalExecExecutionPlan(metadataReady, hasVerified, hasExecuted)
+	liveControlEvidence := sshRehearsalLiveControlEvidence(metadata, metadataReady, hasVerified, hasExecuted)
 
 	steps := []map[string]any{
 		{
@@ -18671,37 +18672,48 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 			"checks": []string{"POST /api/ssh-machines/{id}/commands", "ssh.exec operation evidence", "operator command review"},
 			"reason": reasonWhen(hasVerified || hasExecuted, "exec rehearsal can follow a successful verify rehearsal", "complete ssh.verify evidence first"),
 		},
+		{
+			"kind":   "live_rehearsal_controls",
+			"status": liveControlEvidence["control_state"],
+			"checks": []string{"authorized_machine_fixture", "live_rehearsal_runbook", "operator_approval_proof"},
+			"reason": liveControlEvidence["control_ready_reason"],
+		},
 	}
 
 	return map[string]any{
-		"mode":                      "ssh_rehearsal_plan_preview",
-		"rehearsal_state":           state,
-		"execution_enabled":         false,
-		"external_call_made":        false,
-		"ssh_process_started":       false,
-		"command_executed":          false,
-		"stdout_included":           false,
-		"stderr_included":           false,
-		"private_key_included":      false,
-		"known_hosts_included":      false,
-		"secret_included":           false,
-		"live_evidence_recorded":    boolOnlyFromAny(evidence["has_live_evidence"]),
-		"sanitized_result_recorded": cleanPreviewString(evidence["evidence_state"]) == "recorded",
-		"result_recording_state":    resultRecordingPlan["recording_state"],
-		"auth_reference_present":    hasKeyReference || authType != "",
-		"known_hosts_configured":    hasKnownHostsReference,
-		"approval_request_plan":     approvalPlan,
-		"auth_binding_plan":         authBindingPlan,
-		"verify_execution_plan":     verifyPlan,
-		"exec_execution_plan":       execPlan,
-		"result_recording_plan":     resultRecordingPlan,
-		"required_live_rehearsal":   requiredLiveRehearsal,
+		"mode":                             "ssh_rehearsal_plan_preview",
+		"rehearsal_state":                  state,
+		"execution_enabled":                false,
+		"external_call_made":               false,
+		"ssh_process_started":              false,
+		"command_executed":                 false,
+		"stdout_included":                  false,
+		"stderr_included":                  false,
+		"private_key_included":             false,
+		"known_hosts_included":             false,
+		"secret_included":                  false,
+		"live_evidence_recorded":           boolOnlyFromAny(evidence["has_live_evidence"]),
+		"sanitized_result_recorded":        cleanPreviewString(evidence["evidence_state"]) == "recorded",
+		"result_recording_state":           resultRecordingPlan["recording_state"],
+		"auth_reference_present":           hasKeyReference || authType != "",
+		"known_hosts_configured":           hasKnownHostsReference,
+		"approval_request_plan":            approvalPlan,
+		"auth_binding_plan":                authBindingPlan,
+		"verify_execution_plan":            verifyPlan,
+		"exec_execution_plan":              execPlan,
+		"result_recording_plan":            resultRecordingPlan,
+		"live_rehearsal_control_evidence":  liveControlEvidence,
+		"live_rehearsal_controls_ready":    liveControlEvidence["controls_ready"],
+		"operator_approved_proof_recorded": liveControlEvidence["operator_approval_recorded"],
+		"required_live_rehearsal":          requiredLiveRehearsal,
 		"required_controls": []string{
 			"machine_metadata_review",
 			"ssh_auth_material_binding",
 			"known_hosts_review",
 			"operation_approval",
 			"operator_command_review",
+			"live_rehearsal_runbook",
+			"authorized_machine_fixture",
 		},
 		"suppressed_fields": []string{
 			"private_key",
@@ -18711,6 +18723,12 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 			"stderr",
 			"raw_error",
 			"command_output",
+			"runbook_url",
+			"runbook_path",
+			"fixture_id",
+			"fixture_name",
+			"operator_approved_by",
+			"operator_approval_note",
 		},
 		"execution_blockers": approvalPlan["execution_blockers"],
 		"machine": map[string]any{
@@ -18724,6 +18742,87 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 		},
 		"steps":           steps,
 		"recent_evidence": evidence,
+	}
+}
+
+func sshRehearsalLiveControlEvidence(metadata map[string]any, metadataReady, hasVerified, hasExecuted bool) map[string]any {
+	runbookRecorded := firstNonEmptyString(
+		stringFromMap(metadata, "live_rehearsal_runbook"),
+		stringFromMap(metadata, "rehearsal_runbook"),
+		stringFromMap(metadata, "runbook_url"),
+		stringFromMap(metadata, "runbook_path"),
+	) != ""
+	fixtureRecorded := firstNonEmptyString(
+		stringFromMap(metadata, "authorized_machine_fixture"),
+		stringFromMap(metadata, "authorized_fixture_id"),
+		stringFromMap(metadata, "fixture_id"),
+		stringFromMap(metadata, "fixture_name"),
+	) != ""
+	operatorApprovalRecorded := boolOnlyFromAny(metadata["operator_approved"]) ||
+		firstNonEmptyString(
+			stringFromMap(metadata, "operator_approval_id"),
+			stringFromMap(metadata, "operator_approved_at"),
+			stringFromMap(metadata, "operator_approved_by"),
+		) != ""
+	controlsReady := metadataReady && hasVerified && hasExecuted && runbookRecorded && fixtureRecorded && operatorApprovalRecorded
+	controlState := "blocked"
+	controlReadyReason := "ssh_live_rehearsal_machine_metadata_incomplete"
+	switch {
+	case controlsReady:
+		controlState = "ready"
+		controlReadyReason = "authorized_machine_live_rehearsal_controls_recorded"
+	case metadataReady && (runbookRecorded || fixtureRecorded || operatorApprovalRecorded || hasVerified || hasExecuted):
+		controlState = "partial"
+		controlReadyReason = "authorized_machine_live_rehearsal_controls_incomplete"
+	case metadataReady:
+		controlState = "planned"
+		controlReadyReason = "authorized_machine_live_rehearsal_controls_not_recorded"
+	}
+	missing := []string{}
+	if !metadataReady {
+		missing = append(missing, "machine_metadata")
+	}
+	if !runbookRecorded {
+		missing = append(missing, "live_rehearsal_runbook")
+	}
+	if !fixtureRecorded {
+		missing = append(missing, "authorized_machine_fixture")
+	}
+	if !operatorApprovalRecorded {
+		missing = append(missing, "operator_approval_proof")
+	}
+	if !hasVerified {
+		missing = append(missing, "completed_ssh_verify")
+	}
+	if !hasExecuted {
+		missing = append(missing, "completed_ssh_exec")
+	}
+	return map[string]any{
+		"mode":                        "ssh_live_rehearsal_control_evidence",
+		"control_state":               controlState,
+		"controls_ready":              controlsReady,
+		"control_ready_reason":        controlReadyReason,
+		"machine_metadata_ready":      metadataReady,
+		"runbook_reference_recorded":  runbookRecorded,
+		"fixture_reference_recorded":  fixtureRecorded,
+		"operator_approval_recorded":  operatorApprovalRecorded,
+		"completed_verify_evidence":   hasVerified,
+		"completed_exec_evidence":     hasExecuted,
+		"external_call_made":          false,
+		"ssh_process_started":         false,
+		"command_executed":            false,
+		"contains_runbook_body":       false,
+		"contains_fixture_identifier": false,
+		"contains_operator_identity":  false,
+		"contains_operator_note":      false,
+		"contains_private_key":        false,
+		"contains_known_hosts_body":   false,
+		"contains_stdout":             false,
+		"contains_stderr":             false,
+		"required_evidence":           []string{"live_rehearsal_runbook", "authorized_machine_fixture", "operator_approval_proof", "completed_ssh_verify", "completed_ssh_exec"},
+		"missing_evidence":            missing,
+		"suppressed_fields":           []string{"live_rehearsal_runbook", "rehearsal_runbook", "runbook_url", "runbook_path", "runbook_body", "authorized_machine_fixture", "authorized_fixture_id", "fixture_id", "fixture_name", "operator_approved", "operator_approval_id", "operator_approved_by", "operator_approved_at", "operator_approval_note", "private_key", "passphrase", "known_hosts_body", "stdout", "stderr", "raw_error", "runtime_secret"},
+		"message":                     "SSH live rehearsal controls are reconciled from metadata as booleans only; runbook, fixture, operator identity, auth material, and command output remain suppressed.",
 	}
 }
 

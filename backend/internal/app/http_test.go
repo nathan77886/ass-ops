@@ -3641,6 +3641,10 @@ func TestSSHMachineRehearsalPreviewSanitizesEvidence(t *testing.T) {
 				"key_path":                    "/etc/assops/ssh/prod-api",
 				"known_hosts_path":            "/etc/assops/ssh/known_hosts",
 				"strict_host_key_checking":    "yes",
+				"runbook_url":                 "https://runbooks.example.com/ssh/prod-api",
+				"authorized_fixture_id":       "fixture-prod-api-1",
+				"operator_approved_by":        "alice@example.com",
+				"operator_approval_note":      "approved for production rehearsal",
 				"private_key_should_not_leak": "SECRET",
 			},
 		},
@@ -3695,18 +3699,36 @@ func TestSSHMachineRehearsalPreviewSanitizesEvidence(t *testing.T) {
 	if preview["live_evidence_recorded"] != true || preview["sanitized_result_recorded"] != true {
 		t.Fatalf("recorded evidence should set both top-level evidence flags: %#v", preview)
 	}
+	controlEvidence := mapFromAny(preview["live_rehearsal_control_evidence"])
+	if controlEvidence["mode"] != "ssh_live_rehearsal_control_evidence" ||
+		controlEvidence["control_state"] != "ready" ||
+		controlEvidence["controls_ready"] != true ||
+		controlEvidence["runbook_reference_recorded"] != true ||
+		controlEvidence["fixture_reference_recorded"] != true ||
+		controlEvidence["operator_approval_recorded"] != true ||
+		controlEvidence["contains_runbook_body"] != false ||
+		controlEvidence["contains_fixture_identifier"] != false ||
+		controlEvidence["contains_operator_identity"] != false ||
+		controlEvidence["contains_operator_note"] != false {
+		t.Fatalf("unexpected live control evidence: %#v", controlEvidence)
+	}
+	if preview["live_rehearsal_controls_ready"] != true || preview["operator_approved_proof_recorded"] != true {
+		t.Fatalf("preview should expose ready live controls as booleans only: %#v", preview)
+	}
 	assertSSHRehearsalPlansSafe(t, preview)
 	latestExec := mapFromAny(evidence["latest_exec"])
 	if latestExec["command"] != nil || latestExec["stdout"] != nil || latestExec["stderr"] != nil {
 		t.Fatalf("latest exec leaked sensitive fields: %#v", latestExec)
 	}
 	encoded, _ := json.Marshal(preview)
-	for _, forbidden := range []string{"/etc/assops/ssh/prod-api", "secret output", "secret error", "SECRET"} {
+	for _, forbidden := range []string{"/etc/assops/ssh/prod-api", "secret output", "secret error", "SECRET", "runbooks.example.com", "fixture-prod-api-1", "alice@example.com", "approved for production rehearsal"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("preview leaked %q: %s", forbidden, encoded)
 		}
 	}
-	if statusByKind(sliceOfMapsFromAny(preview["steps"]), "verify_rehearsal") != "completed" || statusByKind(sliceOfMapsFromAny(preview["steps"]), "exec_rehearsal") != "completed" {
+	if statusByKind(sliceOfMapsFromAny(preview["steps"]), "verify_rehearsal") != "completed" ||
+		statusByKind(sliceOfMapsFromAny(preview["steps"]), "exec_rehearsal") != "completed" ||
+		statusByKind(sliceOfMapsFromAny(preview["steps"]), "live_rehearsal_controls") != "ready" {
 		t.Fatalf("expected completed rehearsal steps: %#v", preview["steps"])
 	}
 }
@@ -3722,6 +3744,7 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 		wantUnknownRuns    int
 		wantRequiredChecks int
 		wantEvidenceState  string
+		wantControlState   string
 	}{
 		{
 			name: "blocked metadata",
@@ -3737,6 +3760,7 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			wantExecStatus:     "blocked",
 			wantRequiredChecks: 2,
 			wantEvidenceState:  "not_recorded",
+			wantControlState:   "blocked",
 		},
 		{
 			name: "planned with no runs",
@@ -3755,6 +3779,28 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			wantExecStatus:     "blocked",
 			wantRequiredChecks: 2,
 			wantEvidenceState:  "not_recorded",
+			wantControlState:   "planned",
+		},
+		{
+			name: "partial live controls without completed rehearsal",
+			machine: map[string]any{
+				"id":         "machine-1",
+				"project_id": "project-1",
+				"name":       "prod-api",
+				"host":       "10.0.0.12",
+				"port":       22,
+				"username":   "deploy",
+				"auth_type":  "key",
+				"metadata": map[string]any{
+					"live_rehearsal_runbook": "https://runbooks.example.com/ssh/prod-api",
+				},
+			},
+			wantState:          "planned",
+			wantVerifyStatus:   "planned",
+			wantExecStatus:     "blocked",
+			wantRequiredChecks: 2,
+			wantEvidenceState:  "not_recorded",
+			wantControlState:   "partial",
 		},
 		{
 			name: "partial with unfinished verify",
@@ -3776,6 +3822,7 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			wantExecStatus:     "blocked",
 			wantRequiredChecks: 2,
 			wantEvidenceState:  "waiting_for_workers",
+			wantControlState:   "planned",
 		},
 		{
 			name: "ready with completed verify and exec",
@@ -3798,6 +3845,7 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			wantExecStatus:     "completed",
 			wantRequiredChecks: 0,
 			wantEvidenceState:  "recorded",
+			wantControlState:   "partial",
 		},
 		{
 			name: "unknown operation does not count as exec",
@@ -3820,6 +3868,7 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			wantUnknownRuns:    1,
 			wantRequiredChecks: 2,
 			wantEvidenceState:  "partial_recorded",
+			wantControlState:   "planned",
 		},
 	}
 	for _, tt := range tests {
@@ -3841,6 +3890,18 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			}
 			if evidence["evidence_state"] != tt.wantEvidenceState {
 				t.Fatalf("evidence_state = %#v, want %s; evidence=%#v", evidence["evidence_state"], tt.wantEvidenceState, evidence)
+			}
+			controlEvidence := mapFromAny(preview["live_rehearsal_control_evidence"])
+			if controlEvidence["control_state"] != tt.wantControlState {
+				t.Fatalf("control_state = %#v, want %s; control=%#v", controlEvidence["control_state"], tt.wantControlState, controlEvidence)
+			}
+			if tt.name == "partial live controls without completed rehearsal" {
+				missing := stringSliceFromAny(controlEvidence["missing_evidence"])
+				for _, field := range []string{"authorized_machine_fixture", "operator_approval_proof", "completed_ssh_verify", "completed_ssh_exec"} {
+					if !containsString(missing, field) {
+						t.Fatalf("partial live controls missing evidence %q: %#v", field, controlEvidence)
+					}
+				}
 			}
 			required := stringSliceFromAny(preview["required_live_rehearsal"])
 			if len(required) != tt.wantRequiredChecks {
@@ -4167,6 +4228,44 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 		if !containsString(stringSliceFromAny(resultPlan["suppressed_fields"]), field) {
 			t.Fatalf("ssh result suppressed_fields missing %q: %#v", field, resultPlan["suppressed_fields"])
 		}
+	}
+	controlEvidence := mapFromAny(preview["live_rehearsal_control_evidence"])
+	if controlEvidence["mode"] != "ssh_live_rehearsal_control_evidence" ||
+		controlEvidence["external_call_made"] != false ||
+		controlEvidence["ssh_process_started"] != false ||
+		controlEvidence["command_executed"] != false ||
+		controlEvidence["contains_runbook_body"] != false ||
+		controlEvidence["contains_fixture_identifier"] != false ||
+		controlEvidence["contains_operator_identity"] != false ||
+		controlEvidence["contains_operator_note"] != false ||
+		controlEvidence["contains_private_key"] != false ||
+		controlEvidence["contains_known_hosts_body"] != false ||
+		controlEvidence["contains_stdout"] != false ||
+		controlEvidence["contains_stderr"] != false {
+		t.Fatalf("ssh live control evidence should stay disabled and redacted: %#v", controlEvidence)
+	}
+	for _, field := range []string{"live_rehearsal_runbook", "authorized_machine_fixture", "operator_approval_proof", "completed_ssh_verify", "completed_ssh_exec"} {
+		if !containsString(stringSliceFromAny(controlEvidence["required_evidence"]), field) {
+			t.Fatalf("ssh control required evidence missing %q: %#v", field, controlEvidence["required_evidence"])
+		}
+	}
+	for _, field := range []string{"live_rehearsal_runbook", "rehearsal_runbook", "runbook_url", "runbook_path", "runbook_body", "authorized_machine_fixture", "authorized_fixture_id", "fixture_id", "fixture_name", "operator_approved", "operator_approval_id", "operator_approved_by", "operator_approved_at", "operator_approval_note", "private_key", "passphrase", "known_hosts_body", "stdout", "stderr", "raw_error", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(controlEvidence["suppressed_fields"]), field) {
+			t.Fatalf("ssh control suppressed field missing %q: %#v", field, controlEvidence["suppressed_fields"])
+		}
+	}
+	if boolOnlyFromAny(controlEvidence["controls_ready"]) {
+		if controlEvidence["control_state"] != "ready" ||
+			controlEvidence["runbook_reference_recorded"] != true ||
+			controlEvidence["fixture_reference_recorded"] != true ||
+			controlEvidence["operator_approval_recorded"] != true ||
+			controlEvidence["completed_verify_evidence"] != true ||
+			controlEvidence["completed_exec_evidence"] != true ||
+			len(stringSliceFromAny(controlEvidence["missing_evidence"])) != 0 {
+			t.Fatalf("ready ssh live controls should include all boolean evidence: %#v", controlEvidence)
+		}
+	} else if controlEvidence["control_state"] == "ready" {
+		t.Fatalf("ssh live controls cannot be ready without controls_ready: %#v", controlEvidence)
 	}
 	if !hasLiveEvidence {
 		for _, reason := range []string{"ssh_rehearsal_execution_not_performed", "sanitized_ssh_result_not_recorded", "canonical_asset_sync_not_performed"} {
