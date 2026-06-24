@@ -14217,6 +14217,35 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 			if !containsString(stringSliceFromAny(thresholdPlan["execution_blockers"]), "provider_pair_thresholds_need_live_volume_tuning") {
 				t.Fatalf("provider callback threshold execution blockers should wait for volume: %#v", thresholdPlan["execution_blockers"])
 			}
+			configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
+			if configurationPlan["mode"] != "provider_callback_threshold_configuration_plan" ||
+				configurationPlan["configuration_state"] != "waiting_for_volume" ||
+				configurationPlan["configuration_review_ready"] != false ||
+				configurationPlan["threshold_configuration_written"] != false ||
+				configurationPlan["configuration_write_enabled"] != false ||
+				configurationPlan["operator_threshold_review_recorded"] != false ||
+				configurationPlan["provider_metrics_fetched"] != false ||
+				configurationPlan["provider_pair_limits_compared"] != false ||
+				configurationPlan["external_call_made"] != false ||
+				configurationPlan["contains_token"] != false ||
+				configurationPlan["contains_secret"] != false ||
+				configurationPlan["contains_payload"] != false ||
+				configurationPlan["contains_provider_url"] != false {
+				t.Fatalf("provider callback threshold configuration plan should stay disabled: %#v", configurationPlan)
+			}
+			if len(sliceOfMapsFromAny(configurationPlan["current_thresholds"])) != 6 {
+				t.Fatalf("provider callback threshold configuration should expose current non-secret thresholds: %#v", configurationPlan["current_thresholds"])
+			}
+			for _, field := range []string{"provider_pair", "threshold_key", "warning_at", "danger_at", "unit", "reviewed_by", "reviewed_at", "evidence_window"} {
+				if !containsString(stringSliceFromAny(configurationPlan["required_persisted_fields"]), field) {
+					t.Fatalf("provider callback threshold persisted fields missing %q: %#v", field, configurationPlan["required_persisted_fields"])
+				}
+			}
+			for _, backend := range []string{"provider_metrics_fetch", "threshold_configuration_write", "threshold_configuration_audit_insert", "sync_capacity_signal_recompute"} {
+				if !containsString(stringSliceFromAny(configurationPlan["disabled_backends"]), backend) {
+					t.Fatalf("provider callback threshold configuration disabled backend missing %q: %#v", backend, configurationPlan["disabled_backends"])
+				}
+			}
 			volumeEvidence := mapFromAny(thresholdPlan["volume_evidence"])
 			if volumeEvidence["mode"] != "provider_callback_threshold_volume_evidence" ||
 				volumeEvidence["local_volume_observed"] != false ||
@@ -14394,6 +14423,19 @@ func TestWebhookCallbackRehearsalReadinessReconcilesObservedEvidence(t *testing.
 	if !containsString(stringSliceFromAny(thresholdPlan["execution_blockers"]), "operator_threshold_review_not_recorded") {
 		t.Fatalf("ready threshold volume should wait for operator threshold review: %#v", thresholdPlan["execution_blockers"])
 	}
+	configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
+	if configurationPlan["configuration_state"] != "ready_for_operator_review" ||
+		configurationPlan["configuration_review_ready"] != true ||
+		configurationPlan["threshold_configuration_written"] != false ||
+		configurationPlan["configuration_write_enabled"] != false ||
+		configurationPlan["provider_metrics_fetched"] != false ||
+		configurationPlan["provider_pair_limits_compared"] != false ||
+		configurationPlan["external_call_made"] != false {
+		t.Fatalf("ready threshold configuration should wait for operator review without writes: %#v", configurationPlan)
+	}
+	if !containsString(stringSliceFromAny(configurationPlan["blocked_reasons"]), "threshold_configuration_write_disabled") {
+		t.Fatalf("ready threshold configuration should keep write disabled: %#v", configurationPlan["blocked_reasons"])
+	}
 	encoded, _ := json.Marshal(got)
 	for _, forbidden := range []string{"secret-token", "payload-body", "provider-response", "password", "Bearer secret", "delivery-secret", "provider.example.com", "asset-secret"} {
 		if strings.Contains(string(encoded), forbidden) {
@@ -14456,6 +14498,17 @@ func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T)
 	}
 	if !containsString(stringSliceFromAny(thresholdPlan["execution_blockers"]), "webhook_failures_need_operator_threshold_review") {
 		t.Fatalf("failed threshold volume should expose failure review blocker: %#v", thresholdPlan["execution_blockers"])
+	}
+	configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
+	if configurationPlan["configuration_state"] != "needs_failure_review" ||
+		configurationPlan["configuration_review_ready"] != false ||
+		configurationPlan["threshold_configuration_written"] != false ||
+		configurationPlan["configuration_write_enabled"] != false ||
+		configurationPlan["external_call_made"] != false {
+		t.Fatalf("failed threshold configuration should require failure review without writes: %#v", configurationPlan)
+	}
+	if !containsString(stringSliceFromAny(configurationPlan["blocked_reasons"]), "webhook_failures_need_operator_threshold_review") {
+		t.Fatalf("failed threshold configuration blocked reasons missing failure indicator: %#v", configurationPlan["blocked_reasons"])
 	}
 	resultPlan := mapFromAny(plan["result_recording_plan"])
 	if resultPlan["result_recording_state"] != "failed" ||
@@ -14631,6 +14684,23 @@ func TestWebhookProviderCallbackThresholdVolumeEvidenceBoundaries(t *testing.T) 
 				got["contains_payload"] != false ||
 				got["contains_provider_url"] != false {
 				t.Fatalf("threshold volume evidence must stay no-call and redacted: %#v", got)
+			}
+			configurationPlan := webhookProviderCallbackThresholdConfigurationPlan(got)
+			wantConfigState := "blocked"
+			if tt.wantState == "waiting_for_volume" {
+				wantConfigState = "waiting_for_volume"
+			} else if tt.wantState == "review_failed_volume" {
+				wantConfigState = "needs_failure_review"
+			} else if tt.wantReady {
+				wantConfigState = "ready_for_operator_review"
+			}
+			if configurationPlan["configuration_state"] != wantConfigState ||
+				configurationPlan["configuration_review_ready"] != tt.wantReady ||
+				configurationPlan["threshold_configuration_written"] != false ||
+				configurationPlan["configuration_write_enabled"] != false ||
+				configurationPlan["provider_metrics_fetched"] != false ||
+				configurationPlan["external_call_made"] != false {
+				t.Fatalf("threshold configuration plan = %#v, want state=%s ready=%v", configurationPlan, wantConfigState, tt.wantReady)
 			}
 		})
 	}

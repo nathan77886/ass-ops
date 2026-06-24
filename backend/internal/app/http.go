@@ -5803,6 +5803,7 @@ func webhookProviderCallbackThresholdTuningPlan(planState string, evidence map[s
 		"threshold_configuration_written":   false,
 		"external_call_made":                false,
 		"volume_evidence":                   volumeEvidence,
+		"threshold_configuration_plan":      webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence),
 		"required_observations":             []string{"provider_pair_active_runs", "provider_pair_recent_failures", "webhook_delivery_failures", "github_actions_run_volume"},
 		"threshold_review_sequence":         []string{"collect_live_sync_volume", "compare_provider_limits", "adjust_warning_thresholds", "adjust_danger_thresholds", "record_threshold_review"},
 		"disabled_backends":                 []string{"provider_metrics_fetch", "threshold_configuration_write", "sync_capacity_backfill"},
@@ -5810,6 +5811,79 @@ func webhookProviderCallbackThresholdTuningPlan(planState string, evidence map[s
 		"blocked_reasons":                   stringSliceFromAny(volumeEvidence["blocked_reasons"]),
 		"execution_blockers":                executionBlockers,
 		"message":                           "Provider-pair threshold tuning is planned only; local webhook volume evidence is redacted and current thresholds stay unchanged until an operator reviews real rehearsal volume.",
+	}
+}
+
+func webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence map[string]any) map[string]any {
+	reviewState := cleanPreviewString(volumeEvidence["threshold_review_state"])
+	reviewReady := boolOnlyFromAny(volumeEvidence["threshold_review_ready"])
+	configurationState := "blocked"
+	blockedReasons := append([]string{}, stringSliceFromAny(volumeEvidence["blocked_reasons"])...)
+	switch {
+	case reviewState == "waiting_for_volume":
+		configurationState = "waiting_for_volume"
+	case reviewState == "review_failed_volume":
+		configurationState = "needs_failure_review"
+	case reviewReady:
+		configurationState = "ready_for_operator_review"
+		blockedReasons = []string{"operator_threshold_review_not_recorded", "threshold_configuration_write_disabled"}
+	}
+	return map[string]any{
+		"mode":                               "provider_callback_threshold_configuration_plan",
+		"configuration_state":                configurationState,
+		"configuration_review_ready":         reviewReady,
+		"threshold_review_state":             reviewState,
+		"threshold_configuration_written":    false,
+		"configuration_write_enabled":        false,
+		"operator_threshold_review_recorded": false,
+		"provider_metrics_fetched":           false,
+		"provider_pair_limits_compared":      false,
+		"external_call_made":                 false,
+		"contains_token":                     false,
+		"contains_secret":                    false,
+		"contains_payload":                   false,
+		"contains_provider_url":              false,
+		"current_thresholds": []map[string]any{
+			{"key": "sync_capacity_active", "warning_at": repoSyncCapacityActiveWarningThreshold, "danger_at": repoSyncCapacityActiveDangerThreshold, "unit": "active_runs"},
+			{"key": "sync_failure_7d", "warning_at": repoSyncCapacityFailure7dWarningThreshold, "danger_at": repoSyncCapacityFailure7dDangerThreshold, "unit": "failures"},
+			{"key": "webhook_delivery_failure_7d", "warning_at": repoSyncCapacityWebhookWarningThreshold, "danger_at": repoSyncCapacityWebhookDangerThreshold, "unit": "failed_events"},
+			{"key": "github_actions_volume_24h", "warning_at": repoSyncCapacityGitHubVolumeWarningThreshold, "danger_at": repoSyncCapacityGitHubVolumeDangerThreshold, "unit": "runs"},
+			{"key": "provider_pair_active_24h", "warning_at": repoSyncCapacityPairActiveWarningThreshold, "danger_at": repoSyncCapacityPairActiveDangerThreshold, "unit": "active_runs"},
+			{"key": "provider_pair_failure_24h", "warning_at": repoSyncCapacityPairFailureWarningThreshold, "danger_at": repoSyncCapacityPairFailureDangerThreshold, "unit": "failures"},
+		},
+		"required_persisted_fields": []string{
+			"provider_pair",
+			"threshold_key",
+			"warning_at",
+			"danger_at",
+			"unit",
+			"reviewed_by",
+			"reviewed_at",
+			"evidence_window",
+		},
+		"configuration_sequence": []string{
+			"collect_live_volume_evidence",
+			"compare_current_thresholds",
+			"record_operator_threshold_review",
+			"persist_threshold_configuration",
+			"recompute_repo_sync_capacity_signals",
+		},
+		"disabled_backends": []string{
+			"provider_metrics_fetch",
+			"threshold_configuration_write",
+			"threshold_configuration_audit_insert",
+			"sync_capacity_signal_recompute",
+		},
+		"suppressed_fields": []string{
+			"provider_token",
+			"provider_url",
+			"request_headers",
+			"provider_response_body",
+			"operator_identity",
+			"operator_notes",
+		},
+		"blocked_reasons": blockedReasons,
+		"message":         "Threshold configuration persistence is review-only; current thresholds are exposed as non-secret constants and no provider metrics or configuration writes are performed.",
 	}
 }
 
