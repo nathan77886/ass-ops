@@ -628,13 +628,13 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 
 func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 	withoutGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
-		{"asset_type": "repository"},
-		{"asset_type": "git_remote"},
-		{"asset_type": "git_remote"},
+		{"asset_type": "repository", "source_id": "10"},
+		{"asset_type": "git_remote", "source_id": "100"},
+		{"asset_type": "git_remote", "source_id": "101"},
 	}, nil, nil, map[string]any{
 		"edges": []any{},
 	})
-	if got := readinessByKey(t, withoutGraphLinks, "repositories"); got.Status != "partial" || got.Evidence != "1 repos / 2 remotes / 0 complete repos / 0 project links / 0 remote links" {
+	if got := readinessByKey(t, withoutGraphLinks, "repositories"); got.Status != "partial" || got.Evidence != "1 repos / 2 remotes / 0 complete repos / 0 repo asset paths / 0 project links / 0 remote links" {
 		t.Fatalf("repository readiness without graph links = %#v, want partial with graph evidence", got)
 	} else {
 		plan := mapFromAny(got.DemoDataRehearsalPlan)
@@ -657,9 +657,9 @@ func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 	}
 
 	withGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
-		{"asset_type": "repository"},
-		{"asset_type": "git_remote"},
-		{"asset_type": "git_remote"},
+		{"asset_type": "repository", "source_id": "10"},
+		{"asset_type": "git_remote", "source_id": "100"},
+		{"asset_type": "git_remote", "source_id": "101"},
 	}, nil, nil, map[string]any{
 		"edges": []any{
 			map[string]any{"from_asset_id": "project:1", "to_asset_id": "repository:10", "relation_type": "owns"},
@@ -667,7 +667,7 @@ func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "git_remote:101", "relation_type": "has_remote"},
 		},
 	})
-	if got := readinessByKey(t, withGraphLinks, "repositories"); got.Status != "ready" || got.Evidence != "1 repos / 2 remotes / 1 complete repos / 1 project links / 2 remote links" {
+	if got := readinessByKey(t, withGraphLinks, "repositories"); got.Status != "ready" || got.Evidence != "1 repos / 2 remotes / 1 complete repos / 1 repo asset paths / 1 project links / 2 remote links" {
 		t.Fatalf("repository readiness with graph links = %#v, want ready", got)
 	} else {
 		plan := mapFromAny(got.DemoDataRehearsalPlan)
@@ -689,11 +689,32 @@ func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 		assertDemoDataRehearsalPlanSafe(t, plan)
 	}
 
+	withUnmatchedAssets := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "repository", "source_id": "11"},
+		{"asset_type": "git_remote", "source_id": "102"},
+		{"asset_type": "git_remote", "source_id": "103"},
+	}, nil, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "project:1", "to_asset_id": "repository:10", "relation_type": "owns"},
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "git_remote:100", "relation_type": "has_remote"},
+			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "git_remote:101", "relation_type": "has_remote"},
+		},
+	})
+	if got := readinessByKey(t, withUnmatchedAssets, "repositories"); got.Status != "partial" || got.Evidence != "1 repos / 2 remotes / 1 complete repos / 0 repo asset paths / 1 project links / 2 remote links" {
+		t.Fatalf("repository readiness with unmatched canonical assets = %#v, want partial without repo asset path", got)
+	} else {
+		proof := mapFromAny(mapFromAny(got.DemoDataRehearsalPlan)["environment_demo_proof"])
+		if proof["complete_repository_multi_remote_path_observed"] != false ||
+			!containsString(stringSliceFromAny(proof["missing_evidence"]), "repository_to_two_remotes_graph_path") {
+			t.Fatalf("unmatched repository asset proof should not report complete multi-remote path: %#v", proof)
+		}
+	}
+
 	crossRepositoryAggregation := firstVersionReadinessReportWithGraph([]map[string]any{
-		{"asset_type": "repository"},
-		{"asset_type": "repository"},
-		{"asset_type": "git_remote"},
-		{"asset_type": "git_remote"},
+		{"asset_type": "repository", "source_id": "10"},
+		{"asset_type": "repository", "source_id": "11"},
+		{"asset_type": "git_remote", "source_id": "100"},
+		{"asset_type": "git_remote", "source_id": "101"},
 	}, nil, nil, map[string]any{
 		"edges": []any{
 			map[string]any{"from_asset_id": "project:1", "to_asset_id": "repository:10", "relation_type": "owns"},
@@ -701,7 +722,7 @@ func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 			map[string]any{"from_asset_id": "repository:11", "to_asset_id": "git_remote:101", "relation_type": "has_remote"},
 		},
 	})
-	if got := readinessByKey(t, crossRepositoryAggregation, "repositories"); got.Status != "partial" || got.Evidence != "2 repos / 2 remotes / 0 complete repos / 1 project links / 2 remote links" {
+	if got := readinessByKey(t, crossRepositoryAggregation, "repositories"); got.Status != "partial" || got.Evidence != "2 repos / 2 remotes / 0 complete repos / 0 repo asset paths / 1 project links / 2 remote links" {
 		t.Fatalf("repository readiness with cross-repository aggregate links = %#v, want partial without a complete repository", got)
 	} else {
 		proof := mapFromAny(mapFromAny(got.DemoDataRehearsalPlan)["environment_demo_proof"])
@@ -712,16 +733,16 @@ func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 	}
 
 	unrelatedGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
-		{"asset_type": "repository"},
-		{"asset_type": "git_remote"},
-		{"asset_type": "git_remote"},
+		{"asset_type": "repository", "source_id": "10"},
+		{"asset_type": "git_remote", "source_id": "100"},
+		{"asset_type": "git_remote", "source_id": "101"},
 	}, nil, nil, map[string]any{
 		"edges": []any{
 			map[string]any{"from_asset_id": "project:1", "to_asset_id": "git_remote:100", "relation_type": "owns"},
 			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "webhook_connection:1", "relation_type": "has_remote"},
 		},
 	})
-	if got := readinessByKey(t, unrelatedGraphLinks, "repositories"); got.Status != "partial" || got.Evidence != "1 repos / 2 remotes / 0 complete repos / 0 project links / 0 remote links" {
+	if got := readinessByKey(t, unrelatedGraphLinks, "repositories"); got.Status != "partial" || got.Evidence != "1 repos / 2 remotes / 0 complete repos / 0 repo asset paths / 0 project links / 0 remote links" {
 		t.Fatalf("repository readiness with unrelated graph links = %#v, want partial without repository graph evidence", got)
 	}
 }
@@ -736,9 +757,9 @@ func TestCountRepositoryGraphLinks(t *testing.T) {
 			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "webhook_connection:1", "relation_type": "has_remote"},
 		},
 	}
-	got := countRepositoryGraphLinks(graph)
-	if got.ProjectRepository != 1 || got.RepositoryRemotes != 2 || got.CompleteRepos != 1 {
-		t.Fatalf("countRepositoryGraphLinks = %#v, want 1 project link, 2 remote links, and 1 complete repo", got)
+	got := countRepositoryGraphLinks(graph, map[string]bool{"repository:10": true}, map[string]bool{"git_remote:100": true, "git_remote:101": true})
+	if got.ProjectRepository != 1 || got.RepositoryRemotes != 2 || got.CompleteRepos != 1 || got.CompleteRepoAssets != 1 {
+		t.Fatalf("countRepositoryGraphLinks = %#v, want 1 project link, 2 remote links, 1 complete repo, and 1 repo asset path", got)
 	}
 }
 

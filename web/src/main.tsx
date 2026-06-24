@@ -735,7 +735,7 @@ function countGraphNodesByPrefix(graph: AnyRow = {}, prefix: string) {
   return graphItems(graph, 'nodes').filter((node: AnyRow) => String(node.id ?? '').startsWith(prefix)).length;
 }
 
-function countRepositoryGraphLinks(graph: AnyRow = {}) {
+function countRepositoryGraphLinks(graph: AnyRow = {}, repositoryAssetIDs = new Set<string>(), remoteAssetIDs = new Set<string>()) {
   const byRepository: Record<string, { project?: boolean; remotes: Record<string, boolean> }> = {};
   const repositoryEntry = (assetID: string) => {
     byRepository[assetID] ??= { remotes: {} };
@@ -754,8 +754,13 @@ function countRepositoryGraphLinks(graph: AnyRow = {}) {
       repositoryEntry(from).remotes[to] = true;
     }
     return nextCounts;
-  }, { projectRepository: 0, repositoryRemotes: 0, completeRepos: 0 });
+  }, { projectRepository: 0, repositoryRemotes: 0, completeRepos: 0, completeRepoAssets: 0 });
   counts.completeRepos = Object.values(byRepository).filter((entry) => entry.project && Object.keys(entry.remotes).length >= 2).length;
+  counts.completeRepoAssets = Object.entries(byRepository).filter(([repositoryID, entry]) => (
+    entry.project &&
+    repositoryAssetIDs.has(repositoryID) &&
+    Object.keys(entry.remotes).filter((remoteID) => remoteAssetIDs.has(remoteID)).length >= 2
+  )).length;
   return counts;
 }
 
@@ -1191,7 +1196,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const operationLogs = countOperationRowsWithLogs(operations, assetIDsByType(assets, 'operation_run'));
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
   const contextGenerations = countContextGenerationEvidence(assets);
-  const repositoryGraphLinks = countRepositoryGraphLinks(graph);
+  const repositoryGraphLinks = countRepositoryGraphLinks(graph, assetIDsByType(assets, 'repository'), assetIDsByType(assets, 'git_remote'));
   const repoSyncGraphLinks = countRepoSyncGraphLinks(graph);
   const webhookSyncGraphLinks = countWebhookSyncGraphLinks(graph);
   const githubActionLinks = countGitHubActionGraphLinks(graph);
@@ -1214,7 +1219,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const graphEvidence = graphNodes + graphEdges;
   const projectGraphNodes = countGraphNodesByPrefix(graph, 'project:');
   const projectState = readinessState((assetCounts.project || 0) > 0 && projectGraphNodes > 0, `${assetCounts.project || 0} project assets / ${projectGraphNodes} project graph nodes`, (assetCounts.project || 0) > 0 || projectGraphNodes > 0);
-  const repositoryState = readinessState((assetCounts.repository || 0) > 0 && (assetCounts.git_remote || 0) >= 2 && repositoryGraphLinks.completeRepos > 0, `${assetCounts.repository || 0} repos / ${assetCounts.git_remote || 0} remotes / ${repositoryGraphLinks.completeRepos} complete repos / ${repositoryGraphLinks.projectRepository} project links / ${repositoryGraphLinks.repositoryRemotes} remote links`, (assetCounts.repository || 0) > 0 || (assetCounts.git_remote || 0) > 0 || repositoryGraphLinks.projectRepository > 0 || repositoryGraphLinks.repositoryRemotes > 0);
+  const repositoryState = readinessState((assetCounts.repository || 0) > 0 && (assetCounts.git_remote || 0) >= 2 && repositoryGraphLinks.completeRepoAssets > 0, `${assetCounts.repository || 0} repos / ${assetCounts.git_remote || 0} remotes / ${repositoryGraphLinks.completeRepos} complete repos / ${repositoryGraphLinks.completeRepoAssets} repo asset paths / ${repositoryGraphLinks.projectRepository} project links / ${repositoryGraphLinks.repositoryRemotes} remote links`, (assetCounts.repository || 0) > 0 || (assetCounts.git_remote || 0) > 0 || repositoryGraphLinks.projectRepository > 0 || repositoryGraphLinks.repositoryRemotes > 0 || repositoryGraphLinks.completeRepoAssets > 0);
   return [
     {
       key: 'project',
@@ -1228,7 +1233,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       label: 'Attach source and mirror repositories',
       next: 'Add repository metadata and at least two Git remotes.',
       ...repositoryState,
-      demo_data_rehearsal_plan: demoDataRehearsalPlan(repositoryState.status, { repository_assets: assetCounts.repository || 0, git_remote_assets: assetCounts.git_remote || 0, complete_repository_paths: repositoryGraphLinks.completeRepos, project_repository_links: repositoryGraphLinks.projectRepository, repository_remote_links: repositoryGraphLinks.repositoryRemotes }, ['repository_asset', 'two_git_remote_assets', 'project_to_repository_graph_link', 'repository_to_two_remotes_graph_path'])
+      demo_data_rehearsal_plan: demoDataRehearsalPlan(repositoryState.status, { repository_assets: assetCounts.repository || 0, git_remote_assets: assetCounts.git_remote || 0, complete_repository_paths: repositoryGraphLinks.completeRepoAssets, project_repository_links: repositoryGraphLinks.projectRepository, repository_remote_links: repositoryGraphLinks.repositoryRemotes }, ['repository_asset', 'two_git_remote_assets', 'project_to_repository_graph_link', 'repository_to_two_remotes_graph_path'])
     },
     {
       key: 'repo_sync',

@@ -1397,7 +1397,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	graphEdges := len(apiItemsByKey(graph, "edges"))
 	graphEvidence := graphNodes + graphEdges
 	projectGraphNodes := countGraphNodesByPrefix(graph, "project:")
-	repositoryGraphLinks := countRepositoryGraphLinks(graph)
+	repositoryGraphLinks := countRepositoryGraphLinks(graph, assetIDsByType(assets, "repository"), assetIDsByType(assets, "git_remote"))
 	repoSyncGraphLinks := countRepoSyncGraphLinks(graph)
 	webhookSyncGraphLinks := countWebhookSyncGraphLinks(graph)
 	githubActionLinks := countGitHubActionGraphLinks(graph)
@@ -1420,11 +1420,11 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		"project_assets":      assetCounts["project"],
 		"project_graph_nodes": projectGraphNodes,
 	}, []string{"project_asset", "project_graph_node"})
-	repositoriesRow := readinessItem("repositories", "Attach source and mirror repositories", "Add repository metadata and at least two Git remotes.", assetCounts["repository"] > 0 && assetCounts["git_remote"] >= 2 && repositoryGraphLinks.CompleteRepos > 0, fmt.Sprintf("%d repos / %d remotes / %d complete repos / %d project links / %d remote links", assetCounts["repository"], assetCounts["git_remote"], repositoryGraphLinks.CompleteRepos, repositoryGraphLinks.ProjectRepository, repositoryGraphLinks.RepositoryRemotes), assetCounts["repository"] > 0 || assetCounts["git_remote"] > 0 || repositoryGraphLinks.ProjectRepository > 0 || repositoryGraphLinks.RepositoryRemotes > 0)
+	repositoriesRow := readinessItem("repositories", "Attach source and mirror repositories", "Add repository metadata and at least two Git remotes.", assetCounts["repository"] > 0 && assetCounts["git_remote"] >= 2 && repositoryGraphLinks.CompleteRepoAssets > 0, fmt.Sprintf("%d repos / %d remotes / %d complete repos / %d repo asset paths / %d project links / %d remote links", assetCounts["repository"], assetCounts["git_remote"], repositoryGraphLinks.CompleteRepos, repositoryGraphLinks.CompleteRepoAssets, repositoryGraphLinks.ProjectRepository, repositoryGraphLinks.RepositoryRemotes), assetCounts["repository"] > 0 || assetCounts["git_remote"] > 0 || repositoryGraphLinks.ProjectRepository > 0 || repositoryGraphLinks.RepositoryRemotes > 0 || repositoryGraphLinks.CompleteRepoAssets > 0)
 	repositoriesRow.DemoDataRehearsalPlan = projectDemoDataRehearsalPlan(repositoriesRow.Status, map[string]int{
 		"repository_assets":         assetCounts["repository"],
 		"git_remote_assets":         assetCounts["git_remote"],
-		"complete_repository_paths": repositoryGraphLinks.CompleteRepos,
+		"complete_repository_paths": repositoryGraphLinks.CompleteRepoAssets,
 		"project_repository_links":  repositoryGraphLinks.ProjectRepository,
 		"repository_remote_links":   repositoryGraphLinks.RepositoryRemotes,
 	}, []string{"repository_asset", "two_git_remote_assets", "project_to_repository_graph_link", "repository_to_two_remotes_graph_path"})
@@ -1978,12 +1978,13 @@ func countAPITypeMetadata(rows []map[string]any, typ, key, value string) int {
 }
 
 type repositoryGraphLinkCounts struct {
-	ProjectRepository int
-	RepositoryRemotes int
-	CompleteRepos     int
+	ProjectRepository  int
+	RepositoryRemotes  int
+	CompleteRepos      int
+	CompleteRepoAssets int
 }
 
-func countRepositoryGraphLinks(graph map[string]any) repositoryGraphLinkCounts {
+func countRepositoryGraphLinks(graph map[string]any, repositoryAssetIDs, remoteAssetIDs map[string]bool) repositoryGraphLinkCounts {
 	counts := repositoryGraphLinkCounts{}
 	type repositoryLinks struct {
 		project bool
@@ -2014,12 +2015,25 @@ func countRepositoryGraphLinks(graph map[string]any) repositoryGraphLinkCounts {
 			}
 		}
 	}
-	for _, entry := range byRepository {
+	for repositoryID, entry := range byRepository {
 		if entry.project && len(entry.remotes) >= 2 {
 			counts.CompleteRepos++
+			if repositoryAssetIDs[repositoryID] && countMatchingAssets(entry.remotes, remoteAssetIDs) >= 2 {
+				counts.CompleteRepoAssets++
+			}
 		}
 	}
 	return counts
+}
+
+func countMatchingAssets(ids, knownIDs map[string]bool) int {
+	count := 0
+	for id := range ids {
+		if knownIDs[id] {
+			count++
+		}
+	}
+	return count
 }
 
 type repoSyncGraphLinkCounts struct {
