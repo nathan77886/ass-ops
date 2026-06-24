@@ -2986,6 +2986,7 @@ function ProjectDetail() {
   const [recordingValidationSnapshotID, setRecordingValidationSnapshotID] = useState<string>();
   const [configPinningVersionID, setConfigPinningVersionID] = useState<string>();
   const [configInitializing, setConfigInitializing] = useState(false);
+  const [configRefsRefreshing, setConfigRefsRefreshing] = useState(false);
   const [configWorkflowRequesting, setConfigWorkflowRequesting] = useState(false);
   const [configPromotionSnapshotRecording, setConfigPromotionSnapshotRecording] = useState(false);
   const [configWorkflowResult, setConfigWorkflowResult] = useState<AnyRow>();
@@ -3029,6 +3030,20 @@ function ProjectDetail() {
       message.error(error.message || 'Request failed');
     } finally {
       setConfigWorkflowRequesting(false);
+    }
+  }
+  async function refreshConfigRefs() {
+    if (!configRepo || configRefsRefreshing) return;
+    setConfigRefsRefreshing(true);
+    try {
+      const result = await api(`/api/git-repositories/${configRepo.id}/config-scaffold/refresh-refs`, { method: 'POST', body: '{}' });
+      configScaffold.reload();
+      projectRemotes.reload();
+      message.success(result.idempotent ? 'Config refs refresh already queued' : 'Config refs refresh queued');
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setConfigRefsRefreshing(false);
     }
   }
   async function recordConfigPromotionSnapshot() {
@@ -3315,6 +3330,8 @@ function ProjectDetail() {
                   {configScaffold.data.git_commit_plan?.remote_review_plan ? <Tag color={configScaffold.data.git_commit_plan.remote_review_plan.review_state === 'planned' ? 'gold' : 'red'}>review {configScaffold.data.git_commit_plan.remote_review_plan.review_state || 'blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.remote_review_plan ? <Tag>{configScaffold.data.git_commit_plan.remote_review_plan.provider_review_created ? 'review created' : 'no review'}</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.live_commit_validation_performed ? 'live validation' : 'no live validation'}</Tag> : null}
+                  {configScaffold.data.config_ref_refresh_evidence ? <Tag color={configScaffold.data.config_ref_refresh_evidence.refresh_state === 'recorded' ? 'green' : configScaffold.data.config_ref_refresh_evidence.refresh_state === 'waiting_for_worker' ? 'blue' : 'default'}>refs {configScaffold.data.config_ref_refresh_evidence.refresh_state || 'not_requested'}</Tag> : null}
+                  {configScaffold.data.config_ref_refresh_evidence ? <Tag>{configScaffold.data.config_ref_refresh_evidence.git_fetch_performed ? 'fetch observed' : 'no fetch evidence'}</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.project_version_pin_observed ? 'green' : 'orange'}>{configScaffold.data.git_commit_plan.project_version_pin_observed ? 'pin observed' : 'no pin evidence'}</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.live_commit_validation_observed ? 'green' : 'orange'}>{configScaffold.data.git_commit_plan.live_commit_validation_observed ? 'validation observed' : 'no validation evidence'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.project_version_pin_plan ? <Tag color="gold">pin {configScaffold.data.git_commit_plan.project_version_pin_plan.pin_state || 'blocked'}</Tag> : null}
@@ -3332,12 +3349,16 @@ function ProjectDetail() {
                   {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.git_workflow_audit_evidence.operation_log_count || 0} audit logs</Tag> : null}
                   {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.active_count || 0) > 0 ? <Tag color="blue">{configScaffold.data.git_workflow_audit_evidence.active_count || 0} active audits</Tag> : null}
                   {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.failed_count || 0) > 0 ? <Tag color="red">{configScaffold.data.git_workflow_audit_evidence.failed_count || 0} failed audits</Tag> : null}
+                  {configScaffold.data.config_ref_refresh_evidence && (configScaffold.data.config_ref_refresh_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.config_ref_refresh_evidence.operation_count || 0} ref ops</Tag> : null}
+                  {configScaffold.data.config_ref_refresh_evidence && (configScaffold.data.config_ref_refresh_evidence.active_count || 0) > 0 ? <Tag color="blue">{configScaffold.data.config_ref_refresh_evidence.active_count || 0} active refs</Tag> : null}
+                  {configScaffold.data.config_ref_refresh_evidence && (configScaffold.data.config_ref_refresh_evidence.failed_count || 0) > 0 ? <Tag color="red">{configScaffold.data.config_ref_refresh_evidence.failed_count || 0} failed refs</Tag> : null}
                   {configScaffold.data.project_version_pin_evidence ? <Tag color={configScaffold.data.project_version_pin_evidence.pin_state === 'recorded' ? 'green' : 'default'}>pin evidence {configScaffold.data.project_version_pin_evidence.pin_state || 'not_recorded'}</Tag> : null}
                   {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.pinned_version_count || 0} pinned versions</Tag> : null}
                   {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.validated_version_count || 0} validated versions</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.steps?.length || 0} commit steps</Tag> : null}
                 </Space>
                 <Space wrap>
+                  <Button size="small" loading={configRefsRefreshing} disabled={!configScaffold.data.remote_count} onClick={refreshConfigRefs}>Refresh config refs</Button>
                   <Button size="small" type="primary" loading={configWorkflowRequesting} disabled={!configScaffold.data.git_commit_plan?.operation_request_enabled} onClick={requestConfigGitWorkflow}>Request config workflow audit</Button>
                   <Button size="small" loading={configPromotionSnapshotRecording} disabled={!configScaffold.data.git_commit_plan?.promotion_readiness_plan?.promotion_ready} onClick={recordConfigPromotionSnapshot}>Record promotion snapshot</Button>
                   {configWorkflowResult?.approval ? <Tag color="gold">approval requested</Tag> : null}

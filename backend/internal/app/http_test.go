@@ -3428,6 +3428,10 @@ func TestGetConfigRepositoryScaffoldHandler(t *testing.T) {
 		WithArgs("project-1", "repo-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "started_at", "finished_at", "operation_log_count"}).
 			AddRow("op-config-1", "completed", time.Now(), time.Now(), time.Now(), time.Now(), 2))
+	mock.ExpectQuery(`(?s)SELECT id, git_remote_id, status, created_at, updated_at, started_at, finished_at, error\s+FROM operation_runs\s+WHERE project_id=\$1\s+AND operation_type='git\.refs\.refresh'\s+AND input->>'config_repository_id'=\$2\s+AND input->>'refresh_kind'='config_ref_validation_refresh'`).
+		WithArgs("project-1", "repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "git_remote_id", "status", "created_at", "updated_at", "started_at", "finished_at", "error"}).
+			AddRow("op-refresh-1", "remote-1", "completed", time.Now(), time.Now(), time.Now(), time.Now(), ""))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/git-repositories/repo-1/config-scaffold", nil)
 	req = withRouteParam(req, "id", "repo-1")
@@ -3473,12 +3477,190 @@ func TestGetConfigRepositoryScaffoldHandler(t *testing.T) {
 		evidence["secret_included"] != false {
 		t.Fatalf("payload git workflow audit evidence = %#v", evidence)
 	}
+	refreshEvidence := mapFromAny(payload["config_ref_refresh_evidence"])
+	if refreshEvidence["refresh_state"] != "recorded" ||
+		intFromAny(refreshEvidence["operation_count"], 0) != 1 ||
+		refreshEvidence["git_fetch_performed"] != true ||
+		refreshEvidence["git_write_performed"] != false ||
+		refreshEvidence["remote_url_included"] != false ||
+		refreshEvidence["commit_sha_included"] != false {
+		t.Fatalf("payload config ref refresh evidence = %#v", refreshEvidence)
+	}
 	resultPlan := mapFromAny(commitPlan["result_recording_plan"])
 	if resultPlan["result_recording_state"] != "recorded" ||
 		resultPlan["sanitized_audit_result_recorded"] != true ||
 		resultPlan["operation_log_written"] != true ||
 		resultPlan["project_version_pin_written"] != false {
 		t.Fatalf("payload result plan = %#v", resultPlan)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRefreshConfigRepositoryRefsQueuesGitRefsRefresh(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+
+	mock.ExpectQuery(`SELECT project_id FROM project_git_repositories WHERE id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`SELECT \* FROM project_git_repositories WHERE id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "repo_key", "repo_role", "default_branch"}).
+			AddRow("repo-1", "project-1", "Config Repository", "config", "config", "main"))
+	mock.ExpectQuery(`(?s)SELECT id, name, remote_key, provider_type, remote_role, default_branch, latest_sha, last_sync_status\s+FROM git_remotes\s+WHERE project_git_repository_id=\$1\s+ORDER BY CASE WHEN remote_role IN \('target', 'origin', 'config'\) THEN 0 ELSE 1 END, created_at DESC\s+LIMIT 1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "remote_key", "provider_type", "remote_role", "default_branch", "latest_sha", "last_sync_status"}).
+			AddRow("remote-1", "origin", "github", "github", "target", "main", "abc123", "completed"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM project_git_repositories\s+WHERE id=\$1\s+FOR UPDATE`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("repo-1"))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, git_remote_id, operation_type, title, input, status, created_at, updated_at\s+FROM operation_runs\s+WHERE status IN \('queued', 'running'\)\s+AND operation_type='git\.refs\.refresh'\s+AND input->>'config_repository_id'=\$1\s+AND input->>'refresh_kind'='config_ref_validation_refresh'`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "git_remote_id", "operation_type", "title", "input", "status", "created_at", "updated_at"}))
+	mock.ExpectQuery(`(?s)INSERT INTO operation_runs\(project_id, git_remote_id, operation_type, title, input\)`).
+		WithArgs("project-1", "remote-1", "git.refs.refresh", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "git_remote_id", "operation_type", "title", "input", "status", "created_at", "updated_at"}).
+			AddRow("op-refresh", "project-1", "remote-1", "git.refs.refresh", "refresh config repository refs", []byte(`{}`), "queued", time.Now(), time.Now()))
+	mock.ExpectExec(`(?s)INSERT INTO worker_jobs\(operation_run_id, tool_name, payload, required_capabilities, preferred_node_kind\)`).
+		WithArgs("op-refresh", "git.refs.refresh", sqlmock.AnyArg(), sqlmock.AnyArg(), "").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
+	mock.ExpectCommit()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/git-repositories/repo-1/config-scaffold/refresh-refs", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "repo-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.refreshConfigRepositoryRefs(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if got["mode"] != "config_repository_ref_refresh_request_result" ||
+		got["refresh_state"] != "queued" ||
+		got["git_refs_refresh_enqueued"] != true ||
+		got["git_write_performed"] != false ||
+		got["remote_url_recorded"] != false ||
+		got["credentials_recorded"] != false ||
+		got["raw_git_output_recorded"] != false {
+		t.Fatalf("refresh response = %#v", got)
+	}
+	operation := mapFromAny(got["operation"])
+	if operation["operation_run_id"] != "op-refresh" ||
+		operation["operation_type"] != "git.refs.refresh" ||
+		operation["status"] != "queued" {
+		t.Fatalf("operation summary = %#v", operation)
+	}
+	encoded := strings.ToLower(rr.Body.String())
+	for _, forbidden := range []string{"https://", "provider_token\":true", "authorization_header\":true", "abc123"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("refresh response leaked %q: %s", forbidden, rr.Body.String())
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRefreshConfigRepositoryRefsReturnsExistingQueuedOperation(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+
+	mock.ExpectQuery(`SELECT project_id FROM project_git_repositories WHERE id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`SELECT \* FROM project_git_repositories WHERE id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "repo_key", "repo_role", "default_branch"}).
+			AddRow("repo-1", "project-1", "Config Repository", "config", "config", "main"))
+	mock.ExpectQuery(`(?s)SELECT id, name, remote_key, provider_type, remote_role, default_branch, latest_sha, last_sync_status\s+FROM git_remotes\s+WHERE project_git_repository_id=\$1\s+ORDER BY CASE WHEN remote_role IN \('target', 'origin', 'config'\) THEN 0 ELSE 1 END, created_at DESC\s+LIMIT 1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "remote_key", "provider_type", "remote_role", "default_branch", "latest_sha", "last_sync_status"}).
+			AddRow("remote-1", "origin", "github", "github", "target", "main", "abc123", "completed"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM project_git_repositories\s+WHERE id=\$1\s+FOR UPDATE`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("repo-1"))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, git_remote_id, operation_type, title, input, status, created_at, updated_at\s+FROM operation_runs\s+WHERE status IN \('queued', 'running'\)\s+AND operation_type='git\.refs\.refresh'\s+AND input->>'config_repository_id'=\$1\s+AND input->>'refresh_kind'='config_ref_validation_refresh'`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "git_remote_id", "operation_type", "title", "input", "status", "created_at", "updated_at"}).
+			AddRow("op-existing", "project-1", "remote-1", "git.refs.refresh", "refresh config repository refs", []byte(`{}`), "queued", time.Now(), time.Now()))
+	mock.ExpectCommit()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/git-repositories/repo-1/config-scaffold/refresh-refs", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "repo-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.refreshConfigRepositoryRefs(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if got["refresh_state"] != "already_queued" ||
+		got["idempotent"] != true ||
+		got["git_refs_refresh_enqueued"] != true ||
+		got["git_write_performed"] != false {
+		t.Fatalf("idempotent refresh response = %#v", got)
+	}
+	operation := mapFromAny(got["operation"])
+	if operation["operation_run_id"] != "op-existing" ||
+		operation["operation_type"] != "git.refs.refresh" ||
+		operation["status"] != "queued" {
+		t.Fatalf("operation summary = %#v", operation)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRefreshConfigRepositoryRefsRejectsUnauthorizedUser(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+
+	mock.ExpectQuery(`SELECT project_id FROM project_git_repositories WHERE id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+		WithArgs("project-1", "viewer-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/git-repositories/repo-1/config-scaffold/refresh-refs", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "repo-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "viewer-1", Role: "viewer"}))
+	rr := httptest.NewRecorder()
+
+	server.refreshConfigRepositoryRefs(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "git_refs_refresh_enqueued") {
+		t.Fatalf("unauthorized response should not expose enqueue result: %s", rr.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

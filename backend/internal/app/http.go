@@ -121,6 +121,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/git-repositories/{id}", s.getGitRepository)
 		r.Patch("/api/git-repositories/{id}", s.updateGitRepository)
 		r.Get("/api/git-repositories/{id}/config-scaffold", s.getConfigRepositoryScaffold)
+		r.Post("/api/git-repositories/{id}/config-scaffold/refresh-refs", s.refreshConfigRepositoryRefs)
 		r.Post("/api/git-repositories/{id}/config-scaffold/request-git-workflow", s.requestConfigRepositoryGitWorkflow)
 		r.Post("/api/git-repositories/{id}/config-scaffold/promotion-snapshot", s.recordConfigRepositoryGitWorkflowPromotionSnapshot)
 		r.Post("/api/git-repositories/{id}/sync", s.createRepositorySync)
@@ -3548,7 +3549,142 @@ func (s *Server) getConfigRepositoryScaffold(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "could not load config git workflow operations")
 		return
 	}
-	writeJSON(w, http.StatusOK, configRepositoryScaffoldPreview(repo, remotes, versions, workflowOperations))
+	refRefreshOperations, err := queryConfigRepositoryRefRefreshOperations(r.Context(), s.store.DB, projectID, repoID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load config ref refresh operations")
+		return
+	}
+	writeJSON(w, http.StatusOK, configRepositoryScaffoldPreview(repo, remotes, versions, workflowOperations, refRefreshOperations))
+}
+
+func (s *Server) refreshConfigRepositoryRefs(w http.ResponseWriter, r *http.Request) {
+	repoID := chi.URLParam(r, "id")
+	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	resource := PolicyResource{Type: "git_repository", ID: repoID, ProjectID: projectID}
+	if !s.requireProjectPolicy(w, r, resource, "git.refs.refresh") {
+		return
+	}
+	repo, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if strings.ToLower(strings.TrimSpace(stringFromMap(repo, "repo_role"))) != "config" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":               "repository is not a config repository",
+			"blocked_reasons":     []string{"repository_role_is_not_config"},
+			"git_write_performed": false,
+			"external_call_made":  false,
+		})
+		return
+	}
+	remote, err := queryOne(r.Context(), s.store.DB, `
+		SELECT id, name, remote_key, provider_type, remote_role, default_branch, latest_sha, last_sync_status
+		FROM git_remotes
+		WHERE project_git_repository_id=$1
+		ORDER BY CASE WHEN remote_role IN ('target', 'origin', 'config') THEN 0 ELSE 1 END, created_at DESC
+		LIMIT 1`, repoID)
+	if errors.Is(err, ErrNotFound) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":               "config remote is required",
+			"blocked_reasons":     []string{"config_remote_missing"},
+			"git_write_performed": false,
+			"external_call_made":  false,
+		})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load config remote")
+		return
+	}
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start config ref refresh transaction")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := queryOne(r.Context(), tx, `
+		SELECT id
+		FROM project_git_repositories
+		WHERE id=$1
+		FOR UPDATE`, repoID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not lock config repository")
+		return
+	}
+	existing, err := queryMaps(r.Context(), tx, `
+		SELECT id, project_id, git_remote_id, operation_type, title, input, status, created_at, updated_at
+		FROM operation_runs
+		WHERE status IN ('queued', 'running')
+			AND operation_type='git.refs.refresh'
+			AND input->>'config_repository_id'=$1
+			AND input->>'refresh_kind'='config_ref_validation_refresh'
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1`, repoID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not check config ref refresh queue")
+		return
+	}
+	idempotent := len(existing) > 0
+	var op map[string]any
+	if idempotent {
+		op = existing[0]
+	} else {
+		remoteID := cleanOptionalID(fmt.Sprint(remote["id"]))
+		input := map[string]any{
+			"config_repository_id":   cleanOptionalID(repoID),
+			"config_remote_id":       remoteID,
+			"remote_id":              remoteID,
+			"repo_key":               cleanOptionalText(stringFromMap(repo, "repo_key")),
+			"default_branch_present": strings.TrimSpace(stringFromMap(remote, "default_branch")) != "" || strings.TrimSpace(stringFromMap(repo, "default_branch")) != "",
+			"refresh_kind":           "config_ref_validation_refresh",
+			"validation_scope":       "config_repository",
+			"git_write_performed":    false,
+			"file_content_included":  false,
+			"secret_included":        false,
+		}
+		title := "refresh config repository refs " + cleanOptionalText(stringFromMap(repo, "name"))
+		op, err = enqueueOperationTx(r.Context(), tx, projectID, remoteID, "git.refs.refresh", title, input, []string{"git"}, "")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not enqueue config ref refresh")
+			return
+		}
+		if !s.syncCanonicalAssetsInTransaction(w, r, tx, "config_ref_refresh.enqueue") {
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit config ref refresh")
+		return
+	}
+	refreshState := "queued"
+	if idempotent {
+		refreshState = "already_queued"
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"mode":                         "config_repository_ref_refresh_request_result",
+		"repository_id":                repoID,
+		"config_remote_id":             remote["id"],
+		"operation":                    configRepositoryOperationSummary(op),
+		"operation_request_state":      refreshState,
+		"refresh_state":                refreshState,
+		"idempotent":                   idempotent,
+		"git_refs_refresh_enqueued":    true,
+		"git_write_performed":          false,
+		"git_commit_created":           false,
+		"git_push_performed":           false,
+		"file_content_included":        false,
+		"secret_included":              false,
+		"remote_url_recorded":          false,
+		"credentials_recorded":         false,
+		"raw_git_output_recorded":      false,
+		"project_version_pin_written":  false,
+		"live_commit_validation_scope": "synced_remote_state_after_worker",
+		"suppressed_fields":            []string{"remote_url", "git_credentials", "provider_token", "authorization_header", "git_output", "commit_sha"},
+	})
 }
 
 func (s *Server) requestConfigRepositoryGitWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -3663,7 +3799,11 @@ func (s *Server) configRepositoryScaffoldPreviewForRequest(ctx context.Context, 
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	return repo, remotes, versions, configRepositoryScaffoldPreview(repo, remotes, versions, workflowOperations), nil
+	refRefreshOperations, err := queryConfigRepositoryRefRefreshOperations(ctx, s.store.DB, projectID, repoID)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return repo, remotes, versions, configRepositoryScaffoldPreview(repo, remotes, versions, workflowOperations, refRefreshOperations), nil
 }
 
 func queryConfigRepositoryGitWorkflowOperations(ctx context.Context, db sqlx.ExtContext, projectID, repoID string) ([]map[string]any, error) {
@@ -3678,6 +3818,29 @@ func queryConfigRepositoryGitWorkflowOperations(ctx context.Context, db sqlx.Ext
 		GROUP BY op.id, op.status, op.created_at, op.updated_at, op.started_at, op.finished_at
 		ORDER BY op.created_at DESC, op.id DESC
 		LIMIT 20`, projectID, repoID)
+}
+
+func queryConfigRepositoryRefRefreshOperations(ctx context.Context, db sqlx.ExtContext, projectID, repoID string) ([]map[string]any, error) {
+	return queryMaps(ctx, db, `
+		SELECT id, git_remote_id, status, created_at, updated_at, started_at, finished_at, error
+		FROM operation_runs
+		WHERE project_id=$1
+			AND operation_type='git.refs.refresh'
+			AND input->>'config_repository_id'=$2
+			AND input->>'refresh_kind'='config_ref_validation_refresh'
+		ORDER BY created_at DESC, id DESC
+		LIMIT 20`, projectID, repoID)
+}
+
+func configRepositoryOperationSummary(op map[string]any) map[string]any {
+	return map[string]any{
+		"operation_run_id": op["id"],
+		"operation_type":   op["operation_type"],
+		"status":           op["status"],
+		"git_remote_id":    op["git_remote_id"],
+		"created_at":       op["created_at"],
+		"updated_at":       op["updated_at"],
+	}
 }
 
 func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
@@ -3811,9 +3974,14 @@ func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]a
 	if len(optionalRows) > 1 {
 		workflowOperations = optionalRows[1]
 	}
+	var refRefreshOperations []map[string]any
+	if len(optionalRows) > 2 {
+		refRefreshOperations = optionalRows[2]
+	}
 	pinEvidence := configRepositoryProjectVersionPinEvidence(repo, remoteSummaries, versions)
 	workflowEvidence := configRepositoryGitWorkflowAuditEvidence(workflowOperations)
-	commitPlan := configRepositoryGitCommitPlan(repo, files, remoteSummaries, blockedReasons, pinEvidence, workflowEvidence)
+	refRefreshEvidence := configRepositoryRefRefreshEvidence(refRefreshOperations)
+	commitPlan := configRepositoryGitCommitPlan(repo, files, remoteSummaries, blockedReasons, pinEvidence, workflowEvidence, refRefreshEvidence)
 	return map[string]any{
 		"mode":                         "config_repository_scaffold_preview",
 		"scaffold_state":               scaffoldState,
@@ -3835,11 +4003,101 @@ func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]a
 		"secret_included":              false,
 		"project_version_pin_evidence": pinEvidence,
 		"git_workflow_audit_evidence":  workflowEvidence,
+		"config_ref_refresh_evidence":  refRefreshEvidence,
 		"live_commit_validation":       "not_performed",
 		"live_commit_validation_state": pinEvidence["live_validation_state"],
 		"git_commit_plan":              commitPlan,
 		"next_step":                    "Create or sync the config remote, commit the scaffold files through a reviewed Git workflow, then pin config_commit_sha in ProjectVersion.",
 		"suppressed_fields":            []string{"file_content", "secret_values", "git_credentials", "provider_token", "author_email"},
+	}
+}
+
+func configRepositoryRefRefreshEvidence(operations []map[string]any) map[string]any {
+	items := make([]map[string]any, 0, len(operations))
+	statusCounts := map[string]int{}
+	for _, operation := range operations {
+		status := strings.ToLower(strings.TrimSpace(fmt.Sprint(operation["status"])))
+		if status == "" || status == "<nil>" {
+			status = "unknown"
+		}
+		statusCounts[status]++
+		items = append(items, map[string]any{
+			"operation_run_id":          cleanOptionalID(fmt.Sprint(operation["id"])),
+			"config_remote_id":          cleanOptionalID(fmt.Sprint(operation["git_remote_id"])),
+			"status":                    status,
+			"created_at":                operation["created_at"],
+			"updated_at":                operation["updated_at"],
+			"started_at":                operation["started_at"],
+			"finished_at":               operation["finished_at"],
+			"result_scope":              "sanitized_config_ref_refresh",
+			"git_write_performed":       false,
+			"git_commit_created":        false,
+			"git_push_performed":        false,
+			"file_content_included":     false,
+			"secret_included":           false,
+			"remote_url_included":       false,
+			"commit_sha_included":       false,
+			"raw_git_output_recorded":   false,
+			"credentials_recorded":      false,
+			"external_call_made":        status == "running" || status == "completed" || status == "succeeded" || status == "success" || status == "failed" || status == "error",
+			"sanitized_error_recorded":  strings.TrimSpace(fmt.Sprint(operation["error"])) != "" && strings.TrimSpace(fmt.Sprint(operation["error"])) != "<nil>",
+			"error_message_included":    false,
+			"project_version_pin_write": false,
+		})
+	}
+	queued := statusCounts["queued"] + statusCounts["pending"]
+	running := statusCounts["running"]
+	completed := statusCounts["completed"] + statusCounts["succeeded"] + statusCounts["success"]
+	failed := statusCounts["failed"] + statusCounts["error"]
+	canceled := statusCounts["canceled"] + statusCounts["cancelled"]
+	active := queued + running
+	known := queued + running + completed + failed + canceled
+	unknown := len(operations) - known
+	if unknown < 0 {
+		unknown = 0
+	}
+	state := "not_requested"
+	switch {
+	case len(operations) == 0:
+		state = "not_requested"
+	case active > 0:
+		state = "waiting_for_worker"
+	case failed > 0:
+		state = "failed"
+	case canceled > 0:
+		state = "canceled"
+	case unknown > 0:
+		state = "unknown"
+	default:
+		state = "recorded"
+	}
+	return map[string]any{
+		"mode":                                "config_repository_ref_refresh_evidence",
+		"refresh_state":                       state,
+		"has_ref_refresh_operations":          len(operations) > 0,
+		"operation_count":                     len(operations),
+		"active_count":                        active,
+		"queued_count":                        queued,
+		"running_count":                       running,
+		"completed_count":                     completed,
+		"failed_count":                        failed,
+		"canceled_count":                      canceled,
+		"unknown_count":                       unknown,
+		"git_fetch_performed":                 completed > 0,
+		"external_call_made":                  completed > 0 || failed > 0 || running > 0,
+		"git_write_performed":                 false,
+		"git_commit_created":                  false,
+		"git_push_performed":                  false,
+		"file_content_included":               false,
+		"secret_included":                     false,
+		"remote_url_included":                 false,
+		"commit_sha_included":                 false,
+		"raw_git_output_recorded":             false,
+		"credentials_recorded":                false,
+		"project_version_pin_written":         false,
+		"live_commit_validation_input_source": "git_remotes.latest_sha_after_refresh",
+		"items":                               items,
+		"suppressed_fields":                   []string{"remote_url", "git_credentials", "provider_token", "authorization_header", "git_output", "commit_sha", "error_message"},
 	}
 }
 
@@ -3955,7 +4213,7 @@ func configRepositoryGitWorkflowAuditEvidence(operations []map[string]any) map[s
 	}
 }
 
-func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[string]any, scaffoldBlockedReasons []string, pinEvidence, workflowEvidence map[string]any) map[string]any {
+func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[string]any, scaffoldBlockedReasons []string, pinEvidence, workflowEvidence, refRefreshEvidence map[string]any) map[string]any {
 	planState := "planned"
 	blockedReasons := append([]string{}, scaffoldBlockedReasons...)
 	defaultBranch := strings.TrimSpace(stringFromMap(repo, "default_branch"))
@@ -3975,6 +4233,8 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 	promotionReadinessPlan := configRepositoryGitCommitPromotionReadinessPlan(pinEvidence, workflowEvidence)
 	pinObserved := boolOnlyFromAny(pinEvidence["config_commit_sha_recorded"])
 	liveValidationObserved := boolOnlyFromAny(pinEvidence["live_validation_recorded"])
+	refRefreshObserved := boolOnlyFromAny(refRefreshEvidence["has_ref_refresh_operations"])
+	refRefreshCompleted := boolOnlyFromAny(refRefreshEvidence["git_fetch_performed"])
 	steps := []map[string]any{
 		{
 			"kind":   "scaffold_review",
@@ -4022,7 +4282,13 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 			"kind":   "live_commit_validation",
 			"status": statusWhen(liveValidationObserved),
 			"checks": []string{"git_fetch", "remote_commit_lookup", "synced_state_validation"},
-			"reason": reasonWhen(liveValidationObserved, "config_commit_sha matches synced remote latest_sha without performing Git fetch", "Live commit validation is not performed by this preview"),
+			"reason": reasonWhen(liveValidationObserved, "config_commit_sha matches synced remote latest_sha; config ref refresh evidence is available when requested", "Live commit validation is limited to synced state until config ref refresh completes"),
+		},
+		{
+			"kind":   "config_ref_refresh",
+			"status": statusWhen(refRefreshCompleted),
+			"checks": []string{"git_refs_refresh", "config_remote", "synced_state_update"},
+			"reason": reasonWhen(refRefreshCompleted, "config remote refs refresh completed and can feed synced-state validation", "Config remote refs refresh has not completed"),
 		},
 	}
 	return map[string]any{
@@ -4041,6 +4307,8 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		"live_commit_validation_performed":  false,
 		"project_version_pin_observed":      pinObserved,
 		"live_commit_validation_observed":   liveValidationObserved,
+		"config_ref_refresh_observed":       refRefreshObserved,
+		"config_ref_refresh_completed":      refRefreshCompleted,
 		"audit_operation_observed":          boolOnlyFromAny(workflowEvidence["has_audit_operations"]),
 		"sanitized_result_observed":         boolOnlyFromAny(workflowEvidence["sanitized_result_recorded"]),
 		"file_content_materialized":         false,
@@ -4062,6 +4330,7 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		"remote_review_plan":                remoteReviewPlan,
 		"project_version_pin_plan":          pinValidationPlan,
 		"git_workflow_audit_evidence":       workflowEvidence,
+		"config_ref_refresh_evidence":       refRefreshEvidence,
 		"promotion_readiness_plan":          promotionReadinessPlan,
 		"result_recording_plan":             configRepositoryGitCommitResultRecordingPlan(pinEvidence, workflowEvidence),
 		"message":                           "Config repository Git workflow can now enqueue an approval-gated audit job; file materialization, Git commit/push, provider requests, ProjectVersion pin writes, and live validation remain disabled.",
