@@ -24292,6 +24292,31 @@ func TestRecordAgentToolAuditSnapshotHandlerRejectsProjectNonMember(t *testing.T
 	}
 }
 
+func TestRecordAgentToolAuditSnapshotHandlerFailsClosedWhenMembershipCheckFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectProjectMembershipCheckError(mock, "project-1", "user-1")
+
+	req := newAgentToolAuditSnapshotRequestAs(`{}`, &User{ID: "user-1", Role: "developer"})
+	rr := httptest.NewRecorder()
+	server.recordAgentToolAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "could not check project membership") {
+		t.Fatalf("unexpected membership-check error response: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordAgentToolAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -24617,6 +24642,31 @@ func TestRecordAgentToolArmingSnapshotHandlerRejectsProjectNonMember(t *testing.
 	}
 	if got.Effect != PolicyDeny || !strings.Contains(got.Reason, "not a member") {
 		t.Fatalf("unexpected policy denial: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentToolArmingSnapshotHandlerFailsClosedWhenMembershipCheckFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectProjectMembershipCheckError(mock, "project-1", "user-1")
+
+	req := newAgentToolArmingSnapshotRequestAs(`{}`, &User{ID: "user-1", Role: "developer"})
+	rr := httptest.NewRecorder()
+	server.recordAgentToolArmingSnapshot(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "could not check project membership") {
+		t.Fatalf("unexpected membership-check error response: %s", rr.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -25001,6 +25051,31 @@ func TestRecordAgentCodeAuditSnapshotHandlerRejectsProjectNonMember(t *testing.T
 	}
 }
 
+func TestRecordAgentCodeAuditSnapshotHandlerFailsClosedWhenMembershipCheckFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectProjectMembershipCheckError(mock, "project-1", "user-1")
+
+	req := newAgentCodeAuditSnapshotRequestAs(`{}`, &User{ID: "user-1", Role: "developer"})
+	rr := httptest.NewRecorder()
+	server.recordAgentCodeAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "could not check project membership") {
+		t.Fatalf("unexpected membership-check error response: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordAgentCodeAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -25286,6 +25361,12 @@ func expectAgentToolAuditSnapshotAsset(mock sqlmock.Sqlmock, found bool) {
 	} else {
 		query.WillReturnError(sql.ErrNoRows)
 	}
+}
+
+func expectProjectMembershipCheckError(mock sqlmock.Sqlmock, projectID, userID string) {
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+		WithArgs(projectID, userID).
+		WillReturnError(fmt.Errorf("membership lookup failed"))
 }
 
 func newAgentToolAuditSnapshotRequest(body string) *http.Request {
