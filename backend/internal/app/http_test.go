@@ -2985,6 +2985,46 @@ func TestRecordConfigRepositoryGitWorkflowPromotionSnapshotDryRunSkipsWrite(t *t
 	}
 }
 
+func TestRecordConfigRepositoryGitWorkflowPromotionSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	serverStore := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	repo := configRepositoryPromotionSnapshotRepo()
+	preview := configRepositoryPromotionSnapshotReadyPreview(repo)
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM assets\s+WHERE asset_type='git_repository'\s+AND source_table='project_git_repositories'\s+AND source_id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-repo-1"))
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-repo-1", "config_git_workflow_promotion_review_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-repo-1", "config_git_workflow_promotion_review_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	result, err := RecordConfigRepositoryGitWorkflowPromotionSnapshot(context.Background(), serverStore, ConfigRepositoryGitWorkflowPromotionSnapshotOptions{
+		RepositoryID: "repo-1",
+		Repository:   repo,
+		Preview:      preview,
+	})
+	if err != nil {
+		t.Fatalf("record promotion snapshot: %v", err)
+	}
+	if result["rows_affected_unknown"] != true ||
+		result["promotion_snapshot_written"] != false ||
+		result["asset_status_snapshot_written"] != false ||
+		result["snapshot_commit_attempted"] != true {
+		t.Fatalf("unexpected rows-affected-unknown promotion result: %#v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordConfigRepositoryGitWorkflowPromotionSnapshotAssetMissing(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -3062,6 +3102,237 @@ func TestRecordConfigRepositoryGitWorkflowPromotionSnapshotBlockedWithoutAudit(t
 	}
 }
 
+func TestConfigRepositoryRefRefreshSnapshotPayloadSanitizesEvidence(t *testing.T) {
+	repo := configRepositoryPromotionSnapshotRepo()
+	preview := configRepositoryRefRefreshSnapshotReadyPreview(repo)
+	snapshot := configRepositoryRefRefreshSnapshotPayload(repo, preview, true)
+	ready, state, missing := configRepositoryRefRefreshSnapshotReadiness(snapshot)
+	if !ready || state != "ref_refresh_recorded" || len(missing) != 0 {
+		t.Fatalf("readiness = %v/%s/%#v; snapshot=%#v", ready, state, missing, snapshot)
+	}
+	if snapshot["config_ref_refresh_observed"] != true ||
+		snapshot["config_ref_refresh_completed"] != true ||
+		snapshot["git_fetch_performed"] != true ||
+		snapshot["git_write_performed"] != false ||
+		snapshot["git_commit_created"] != false ||
+		snapshot["git_push_performed"] != false ||
+		snapshot["project_version_pin_written"] != false ||
+		snapshot["live_remote_validation_performed"] != false ||
+		snapshot["contains_commit_sha"] != false ||
+		snapshot["contains_remote_url"] != false ||
+		snapshot["raw_git_output_recorded"] != false {
+		t.Fatalf("unexpected ref refresh snapshot payload: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, forbidden := range []string{"https://token@", "Bearer secret", "abc123", "secret git output", "secret failure"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("ref refresh snapshot leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestRecordConfigRepositoryRefRefreshSnapshotWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	serverStore := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	repo := configRepositoryPromotionSnapshotRepo()
+	preview := configRepositoryRefRefreshSnapshotReadyPreview(repo)
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM assets\s+WHERE asset_type='git_repository'\s+AND source_table='project_git_repositories'\s+AND source_id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-repo-1"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM assets\s+WHERE asset_type='git_repository'\s+AND source_table='project_git_repositories'\s+AND source_id=\$1\s+ORDER BY updated_at DESC, id DESC\s+LIMIT 1\s+FOR SHARE`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-repo-1"))
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-repo-1", "config_ref_refresh_recorded").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-repo-1", "config_ref_refresh_recorded", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	result, err := RecordConfigRepositoryRefRefreshSnapshot(context.Background(), serverStore, ConfigRepositoryRefRefreshSnapshotOptions{
+		RepositoryID: "repo-1",
+		Repository:   repo,
+		Preview:      preview,
+	})
+	if err != nil {
+		t.Fatalf("record ref refresh snapshot: %v", err)
+	}
+	if result["recording_state"] != "ref_refresh_recorded" ||
+		result["recording_ready"] != true ||
+		result["ref_refresh_snapshot_written"] != true ||
+		result["asset_status_snapshot_written"] != true ||
+		result["snapshot_commit_attempted"] != true ||
+		result["git_write_performed"] != false ||
+		result["external_call_made"] != false {
+		t.Fatalf("unexpected ready ref refresh snapshot result: %#v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordConfigRepositoryRefRefreshSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	serverStore := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	repo := configRepositoryPromotionSnapshotRepo()
+	preview := configRepositoryRefRefreshSnapshotReadyPreview(repo)
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM assets\s+WHERE asset_type='git_repository'\s+AND source_table='project_git_repositories'\s+AND source_id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-repo-1"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM assets\s+WHERE asset_type='git_repository'\s+AND source_table='project_git_repositories'\s+AND source_id=\$1\s+ORDER BY updated_at DESC, id DESC\s+LIMIT 1\s+FOR SHARE`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-repo-1"))
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-repo-1", "config_ref_refresh_recorded").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-repo-1", "config_ref_refresh_recorded", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	result, err := RecordConfigRepositoryRefRefreshSnapshot(context.Background(), serverStore, ConfigRepositoryRefRefreshSnapshotOptions{
+		RepositoryID: "repo-1",
+		Repository:   repo,
+		Preview:      preview,
+	})
+	if err != nil {
+		t.Fatalf("record ref refresh snapshot: %v", err)
+	}
+	if result["rows_affected_unknown"] != true ||
+		result["ref_refresh_snapshot_written"] != false ||
+		result["asset_status_snapshot_written"] != false ||
+		result["snapshot_commit_attempted"] != true {
+		t.Fatalf("unexpected rows-affected-unknown result: %#v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordConfigRepositoryRefRefreshSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	serverStore := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	repo := configRepositoryPromotionSnapshotRepo()
+	preview := configRepositoryRefRefreshSnapshotReadyPreview(repo)
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM assets\s+WHERE asset_type='git_repository'\s+AND source_table='project_git_repositories'\s+AND source_id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-repo-1"))
+
+	result, err := RecordConfigRepositoryRefRefreshSnapshot(context.Background(), serverStore, ConfigRepositoryRefRefreshSnapshotOptions{
+		RepositoryID: "repo-1",
+		Repository:   repo,
+		Preview:      preview,
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("record ref refresh snapshot dry run: %v", err)
+	}
+	if result["recording_state"] != "ref_refresh_recorded" ||
+		result["recording_ready"] != true ||
+		result["recording_enabled"] != false ||
+		result["dry_run"] != true ||
+		result["ref_refresh_snapshot_written"] != false ||
+		result["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run ref refresh snapshot result: %#v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordConfigRepositoryRefRefreshSnapshotBlockedWithoutRefresh(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	serverStore := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	repo := configRepositoryPromotionSnapshotRepo()
+	preview := configRepositoryScaffoldPreview(
+		repo,
+		[]map[string]any{{"id": "remote-1", "remote_key": "github", "provider_type": "github", "remote_role": "target", "default_branch": "main", "latest_sha": "abc123"}},
+		nil,
+		nil,
+		nil,
+	)
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM assets\s+WHERE asset_type='git_repository'\s+AND source_table='project_git_repositories'\s+AND source_id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-repo-1"))
+
+	result, err := RecordConfigRepositoryRefRefreshSnapshot(context.Background(), serverStore, ConfigRepositoryRefRefreshSnapshotOptions{
+		RepositoryID: "repo-1",
+		Repository:   repo,
+		Preview:      preview,
+	})
+	if err != nil {
+		t.Fatalf("record blocked ref refresh snapshot: %v", err)
+	}
+	if result["recording_ready"] != false ||
+		result["ref_refresh_snapshot_written"] != false ||
+		result["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected blocked ref refresh snapshot result: %#v", result)
+	}
+	missing := stringSliceFromAny(result["missing_evidence"])
+	for _, want := range []string{"config_ref_refresh_operation_missing", "config_ref_refresh_not_completed"} {
+		if !containsString(missing, want) {
+			t.Fatalf("blocked ref refresh snapshot missing %s in %#v", want, missing)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordConfigRepositoryRefRefreshSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	serverStore := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	repo := configRepositoryPromotionSnapshotRepo()
+	preview := configRepositoryRefRefreshSnapshotReadyPreview(repo)
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM assets\s+WHERE asset_type='git_repository'\s+AND source_table='project_git_repositories'\s+AND source_id=\$1`).
+		WithArgs("repo-1").
+		WillReturnError(sql.ErrNoRows)
+
+	result, err := RecordConfigRepositoryRefRefreshSnapshot(context.Background(), serverStore, ConfigRepositoryRefRefreshSnapshotOptions{
+		RepositoryID: "repo-1",
+		Repository:   repo,
+		Preview:      preview,
+	})
+	if err != nil {
+		t.Fatalf("record ref refresh snapshot asset missing: %v", err)
+	}
+	if result["recording_state"] != "asset_missing" ||
+		result["recording_ready"] != false ||
+		result["git_repository_asset_observed"] != false ||
+		result["ref_refresh_snapshot_written"] != false {
+		t.Fatalf("unexpected asset-missing ref refresh snapshot result: %#v", result)
+	}
+	if !containsString(stringSliceFromAny(result["missing_evidence"]), "git_repository_asset_missing") {
+		t.Fatalf("missing asset evidence not reported: %#v", result["missing_evidence"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func configRepositoryPromotionSnapshotRepo() map[string]any {
 	return map[string]any{
 		"id":             "repo-1",
@@ -3071,6 +3342,35 @@ func configRepositoryPromotionSnapshotRepo() map[string]any {
 		"repo_role":      "config",
 		"default_branch": "main",
 	}
+}
+
+func configRepositoryRefRefreshSnapshotReadyPreview(repo map[string]any) map[string]any {
+	return configRepositoryScaffoldPreview(
+		repo,
+		[]map[string]any{{
+			"id":               "remote-1",
+			"name":             "origin",
+			"remote_key":       "github",
+			"provider_type":    "github",
+			"remote_role":      "target",
+			"default_branch":   "main",
+			"latest_sha":       "abc123",
+			"last_sync_status": "completed",
+			"remote_url":       "https://token@example.com/repo.git",
+		}},
+		nil,
+		nil,
+		[]map[string]any{{
+			"id":             "op-refresh-1",
+			"git_remote_id":  "remote-1",
+			"status":         "completed",
+			"error":          "",
+			"remote_url":     "https://token@example.com/repo.git",
+			"provider_token": "Bearer secret",
+			"commit_sha":     "abc123",
+			"git_output":     "secret git output",
+		}},
+	)
 }
 
 func configRepositoryPromotionSnapshotReadyPreview(repo map[string]any) map[string]any {

@@ -2989,8 +2989,10 @@ function ProjectDetail() {
   const [configRefsRefreshing, setConfigRefsRefreshing] = useState(false);
   const [configWorkflowRequesting, setConfigWorkflowRequesting] = useState(false);
   const [configPromotionSnapshotRecording, setConfigPromotionSnapshotRecording] = useState(false);
+  const [configRefSnapshotRecording, setConfigRefSnapshotRecording] = useState(false);
   const [configWorkflowResult, setConfigWorkflowResult] = useState<AnyRow>();
   const [configPromotionSnapshotResult, setConfigPromotionSnapshotResult] = useState<AnyRow>();
+  const [configRefSnapshotResult, setConfigRefSnapshotResult] = useState<AnyRow>();
   const [configPinResult, setConfigPinResult] = useState<AnyRow>();
   const [versionSnapshotResult, setVersionSnapshotResult] = useState<AnyRow>();
   const configRepo = repoRows.find((row: AnyRow) => row.repo_role === 'config');
@@ -3062,6 +3064,24 @@ function ProjectDetail() {
       message.error(error.message || 'Request failed');
     } finally {
       setConfigPromotionSnapshotRecording(false);
+    }
+  }
+  async function recordConfigRefSnapshot() {
+    if (!configRepo || configRefSnapshotRecording) return;
+    setConfigRefSnapshotRecording(true);
+    try {
+      const result = await api(`/api/git-repositories/${configRepo.id}/config-scaffold/ref-refresh-snapshot`, { method: 'POST', body: '{}' });
+      setConfigRefSnapshotResult(result);
+      configScaffold.reload();
+      if (result.recording_ready === false) {
+        message.warning(result.message || 'Config refs snapshot is not ready yet');
+      } else {
+        message.success(result.ref_refresh_snapshot_written ? 'Config refs snapshot recorded' : 'Config refs snapshot already current');
+      }
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setConfigRefSnapshotRecording(false);
     }
   }
   async function createVersion(values: AnyRow) {
@@ -3344,6 +3364,8 @@ function ProjectDetail() {
                   {configScaffold.data.git_commit_plan?.promotion_readiness_plan ? <Tag>{configScaffold.data.git_commit_plan.promotion_readiness_plan.live_git_workflow_enabled ? 'live promotion' : 'no live promotion'}</Tag> : null}
                   {configPromotionSnapshotResult ? <Tag color={configPromotionSnapshotResult.promotion_snapshot_written ? 'green' : configPromotionSnapshotResult.recording_state === 'asset_missing' ? 'red' : configPromotionSnapshotResult.recording_ready ? 'gold' : 'default'}>promotion snapshot {configPromotionSnapshotResult.recording_state || 'pending'}</Tag> : null}
                   {configPromotionSnapshotResult ? <Tag>{configPromotionSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag> : null}
+                  {configRefSnapshotResult ? <Tag color={configRefSnapshotResult.ref_refresh_snapshot_written ? 'green' : configRefSnapshotResult.recording_state === 'asset_missing' ? 'red' : configRefSnapshotResult.recording_ready ? 'gold' : 'default'}>refs snapshot {configRefSnapshotResult.recording_state || 'pending'}</Tag> : null}
+                  {configRefSnapshotResult ? <Tag>{configRefSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag> : null}
                   {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag color={configWorkflowAuditEvidenceColor(configScaffold.data.git_workflow_audit_evidence.evidence_state)}>workflow audit {configScaffold.data.git_workflow_audit_evidence.evidence_state || 'unknown'}</Tag> : null}
                   {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.git_workflow_audit_evidence.operation_count || 0} audit ops</Tag> : null}
                   {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.git_workflow_audit_evidence.operation_log_count || 0} audit logs</Tag> : null}
@@ -3359,6 +3381,7 @@ function ProjectDetail() {
                 </Space>
                 <Space wrap>
                   <Button size="small" loading={configRefsRefreshing} disabled={!configScaffold.data.remote_count} onClick={refreshConfigRefs}>Refresh config refs</Button>
+                  <Button size="small" loading={configRefSnapshotRecording} disabled={configScaffold.data.config_ref_refresh_evidence?.refresh_state !== 'recorded'} onClick={recordConfigRefSnapshot}>Record refs snapshot</Button>
                   <Button size="small" type="primary" loading={configWorkflowRequesting} disabled={!configScaffold.data.git_commit_plan?.operation_request_enabled} onClick={requestConfigGitWorkflow}>Request config workflow audit</Button>
                   <Button size="small" loading={configPromotionSnapshotRecording} disabled={!configScaffold.data.git_commit_plan?.promotion_readiness_plan?.promotion_ready} onClick={recordConfigPromotionSnapshot}>Record promotion snapshot</Button>
                   {configWorkflowResult?.approval ? <Tag color="gold">approval requested</Tag> : null}
