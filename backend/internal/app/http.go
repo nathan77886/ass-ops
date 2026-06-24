@@ -4043,6 +4043,7 @@ func configRepositoryProjectVersionPinValidationPlan(defaultBranchConfigured, re
 	if pinObserved {
 		pinReadyReason = "config_commit_sha_observed_in_project_version_metadata"
 	}
+	pinWritePreflightPlan := configRepositoryProjectVersionPinWritePreflightPlan(metadataReady, pinObserved, liveObserved, evidence, blockedReasons)
 	return map[string]any{
 		"mode":                            "config_repository_project_version_pin_validation_plan",
 		"pin_state":                       pinState,
@@ -4059,10 +4060,56 @@ func configRepositoryProjectVersionPinValidationPlan(defaultBranchConfigured, re
 		"contains_commit_sha":             false,
 		"contains_remote_url":             false,
 		"pin_evidence":                    evidence,
+		"pin_write_preflight_plan":        pinWritePreflightPlan,
 		"required_pin_fields":             []string{"project_version_id", "repository_id", "remote_id", "repo_key", "config_commit_sha", "validation_status"},
 		"suppressed_fields":               []string{"remote_url", "branch_name", "commit_message", "commit_sha", "git_credentials", "provider_token", "provider_response_body"},
 		"blocked_reasons":                 blockedReasons,
 		"message":                         "ProjectVersion config_commit_sha pinning and live remote validation are not performed by this preview.",
+	}
+}
+
+func configRepositoryProjectVersionPinWritePreflightPlan(metadataReady, pinObserved, liveObserved bool, evidence map[string]any, parentBlockedReasons []string) map[string]any {
+	preflightState := "blocked"
+	if metadataReady && !pinObserved {
+		preflightState = "metadata_review_ready"
+	}
+	if pinObserved {
+		preflightState = "observed"
+	}
+	blockedReasons := []string{"project_version_pin_write_disabled", "live_remote_commit_validation_not_performed"}
+	if !metadataReady {
+		blockedReasons = append(blockedReasons, parentBlockedReasons...)
+	}
+	if pinObserved {
+		blockedReasons = []string{"project_version_pin_write_disabled"}
+	}
+	return map[string]any{
+		"mode":                             "config_repository_project_version_pin_write_preflight_plan",
+		"preflight_state":                  preflightState,
+		"pin_write_ready_for_review":       metadataReady && !pinObserved,
+		"metadata_ready":                   metadataReady,
+		"project_version_pin_observed":     pinObserved,
+		"live_commit_validation_observed":  liveObserved,
+		"project_version_pin_written":      false,
+		"project_version_update_enabled":   false,
+		"project_version_metadata_written": false,
+		"live_commit_validation_started":   false,
+		"live_remote_validation_performed": false,
+		"git_fetch_performed":              false,
+		"external_call_made":               false,
+		"contains_commit_sha":              false,
+		"contains_remote_url":              false,
+		"contains_git_credentials":         false,
+		"contains_provider_token":          false,
+		"pinned_version_count":             intFromAny(evidence["pinned_version_count"], 0),
+		"validated_version_count":          intFromAny(evidence["validated_version_count"], 0),
+		"mismatched_version_count":         intFromAny(evidence["mismatched_version_count"], 0),
+		"required_write_fields":            []string{"project_version_id", "repository_id", "remote_id", "repo_key", "config_commit_sha", "pin_source_operation_run_id", "validation_status", "reviewed_by"},
+		"required_controls":                []string{"operator_review", "config_commit_sha_source_review", "project_version_metadata_schema_review", "live_remote_validation_review", "redacted_pin_result_recording"},
+		"disabled_backends":                []string{"project_version_update", "live_commit_validation", "git_fetch", "remote_commit_lookup", "operation_log_write"},
+		"suppressed_fields":                []string{"config_commit_sha", "remote_url", "branch_name", "commit_message", "git_credentials", "provider_token", "authorization_header", "provider_response_body", "provider_response_headers", "operator_identity"},
+		"blocked_reasons":                  blockedReasons,
+		"message":                          "ProjectVersion config_commit_sha pin write preflight is metadata-only; no ProjectVersion metadata, operation log, Git fetch, remote validation, URL, credential, or commit SHA is written.",
 	}
 }
 

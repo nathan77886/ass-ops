@@ -2093,6 +2093,17 @@ func TestConfigRepositoryScaffoldPreviewReconcilesProjectVersionPinEvidence(t *t
 		pinPlan["contains_remote_url"] != false {
 		t.Fatalf("unexpected pin plan: %#v", pinPlan)
 	}
+	pinWritePreflight := mapFromAny(pinPlan["pin_write_preflight_plan"])
+	if pinWritePreflight["preflight_state"] != "observed" ||
+		pinWritePreflight["pin_write_ready_for_review"] != false ||
+		pinWritePreflight["project_version_pin_observed"] != true ||
+		pinWritePreflight["live_commit_validation_observed"] != true ||
+		pinWritePreflight["project_version_pin_written"] != false ||
+		intFromAny(pinWritePreflight["pinned_version_count"], 0) != 1 ||
+		intFromAny(pinWritePreflight["validated_version_count"], 0) != 1 {
+		t.Fatalf("unexpected pin write preflight: %#v", pinWritePreflight)
+	}
+	assertConfigRepositoryPinWritePreflightPlanSafe(t, pinWritePreflight)
 	resultPlan := mapFromAny(commitPlan["result_recording_plan"])
 	if resultPlan["result_recording_state"] != "recorded" ||
 		resultPlan["result_recording_ready"] != true ||
@@ -2528,10 +2539,67 @@ func assertConfigRepositoryGitCommitSubplansSafe(t *testing.T, commitPlan map[st
 			t.Fatalf("config pin blocked reasons missing %q: %#v", reason, pinPlan["blocked_reasons"])
 		}
 	}
+	pinWritePreflight := mapFromAny(pinPlan["pin_write_preflight_plan"])
+	assertConfigRepositoryPinWritePreflightPlanSafe(t, pinWritePreflight)
+	if commitPlan["plan_state"] == "planned" && pinWritePreflight["preflight_state"] != "metadata_review_ready" {
+		t.Fatalf("planned config commit should make pin write preflight metadata-review-ready: %#v", pinWritePreflight)
+	}
 	encoded, _ := json.Marshal(commitPlan)
 	for _, forbidden := range []string{"secret_values_here", "git@github.com", "https://token@", "Bearer", "password", "author@example.com"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("config git commit subplans leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func assertConfigRepositoryPinWritePreflightPlanSafe(t *testing.T, plan map[string]any) {
+	t.Helper()
+	if plan["mode"] != "config_repository_project_version_pin_write_preflight_plan" ||
+		plan["project_version_pin_written"] != false ||
+		plan["project_version_update_enabled"] != false ||
+		plan["project_version_metadata_written"] != false ||
+		plan["live_commit_validation_started"] != false ||
+		plan["live_remote_validation_performed"] != false ||
+		plan["git_fetch_performed"] != false ||
+		plan["external_call_made"] != false ||
+		plan["contains_commit_sha"] != false ||
+		plan["contains_remote_url"] != false ||
+		plan["contains_git_credentials"] != false ||
+		plan["contains_provider_token"] != false {
+		t.Fatalf("config pin write preflight should stay disabled and redacted: %#v", plan)
+	}
+	for _, field := range []string{"project_version_id", "repository_id", "remote_id", "repo_key", "config_commit_sha", "pin_source_operation_run_id", "validation_status", "reviewed_by"} {
+		if !containsString(stringSliceFromAny(plan["required_write_fields"]), field) {
+			t.Fatalf("config pin write required_write_fields missing %q: %#v", field, plan["required_write_fields"])
+		}
+	}
+	for _, control := range []string{"operator_review", "config_commit_sha_source_review", "project_version_metadata_schema_review", "live_remote_validation_review", "redacted_pin_result_recording"} {
+		if !containsString(stringSliceFromAny(plan["required_controls"]), control) {
+			t.Fatalf("config pin write required_controls missing %q: %#v", control, plan["required_controls"])
+		}
+	}
+	for _, backend := range []string{"project_version_update", "live_commit_validation", "git_fetch", "remote_commit_lookup", "operation_log_write"} {
+		if !containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
+			t.Fatalf("config pin write disabled_backends missing %q: %#v", backend, plan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"config_commit_sha", "remote_url", "branch_name", "commit_message", "git_credentials", "provider_token", "authorization_header", "provider_response_body", "provider_response_headers", "operator_identity"} {
+		if !containsString(stringSliceFromAny(plan["suppressed_fields"]), field) {
+			t.Fatalf("config pin write suppressed_fields missing %q: %#v", field, plan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"project_version_pin_write_disabled"} {
+		if !containsString(stringSliceFromAny(plan["blocked_reasons"]), reason) {
+			t.Fatalf("config pin write blocked_reasons missing %q: %#v", reason, plan["blocked_reasons"])
+		}
+	}
+	if plan["preflight_state"] == "observed" && plan["pin_write_ready_for_review"] != false {
+		t.Fatalf("observed config pin write preflight should not be ready for a new pin write: %#v", plan)
+	}
+	encoded, _ := json.Marshal(plan)
+	for _, forbidden := range []string{"secret_values_here", "git@github.com", "https://token@", "Bearer", "password", "author@example.com", "abc123"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("config pin write preflight leaked %q: %s", forbidden, encoded)
 		}
 	}
 }
