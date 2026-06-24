@@ -1794,6 +1794,50 @@ func assertDemoDataRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 			t.Fatalf("demo result blocked reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
 		}
 	}
+	preflight := mapFromAny(resultPlan["result_recording_preflight"])
+	if preflight["mode"] != "first_version_demo_data_result_recording_preflight" ||
+		preflight["readiness_status"] != plan["readiness_status"] ||
+		preflight["snapshot_write_enabled"] != false ||
+		preflight["asset_graph_write_enabled"] != false ||
+		preflight["operation_log_write_enabled"] != false ||
+		preflight["external_call_made"] != false ||
+		preflight["contains_remote_url"] != false ||
+		preflight["contains_credentials"] != false {
+		t.Fatalf("demo result preflight should stay review-only and redacted: %#v", preflight)
+	}
+	if plan["readiness_status"] == "ready" {
+		if preflight["readiness_snapshot_ready_for_review"] != true ||
+			preflight["asset_graph_snapshot_ready_for_review"] != true ||
+			preflight["snapshot_contract_ready"] != true ||
+			len(stringSliceFromAny(preflight["missing_required_evidence"])) != 0 {
+			t.Fatalf("ready demo result preflight should be review-ready without writes: %#v", preflight)
+		}
+	} else if preflight["readiness_snapshot_ready_for_review"] != false ||
+		preflight["asset_graph_snapshot_ready_for_review"] != false ||
+		preflight["snapshot_contract_ready"] != false ||
+		!containsString(stringSliceFromAny(preflight["blocked_reasons"]), "required_demo_evidence_missing") {
+		t.Fatalf("non-ready demo result preflight should stay blocked: %#v", preflight)
+	}
+	for _, field := range []string{"project_asset_id", "repository_asset_id", "source_remote_asset_id", "mirror_remote_asset_id", "graph_proof_status", "readiness_status", "evidence_counts", "missing_required_evidence"} {
+		if !containsString(stringSliceFromAny(preflight["required_snapshot_fields"]), field) {
+			t.Fatalf("demo result preflight required snapshot field missing %q: %#v", field, preflight["required_snapshot_fields"])
+		}
+	}
+	for _, field := range []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret", "raw_graph_payload", "operation_log_body"} {
+		if !containsString(stringSliceFromAny(preflight["suppressed_fields"]), field) {
+			t.Fatalf("demo result preflight suppressed field missing %q: %#v", field, preflight["suppressed_fields"])
+		}
+	}
+	for _, backend := range []string{"demo_result_write", "readiness_snapshot_write", "asset_graph_snapshot_write", "operation_log_write"} {
+		if !containsString(stringSliceFromAny(preflight["disabled_backends"]), backend) {
+			t.Fatalf("demo result preflight disabled backend missing %q: %#v", backend, preflight["disabled_backends"])
+		}
+	}
+	for _, reason := range []string{"demo_result_write_disabled", "readiness_snapshot_write_disabled", "asset_graph_snapshot_write_disabled"} {
+		if !containsString(stringSliceFromAny(preflight["blocked_reasons"]), reason) {
+			t.Fatalf("demo result preflight blocked reason missing %q: %#v", reason, preflight["blocked_reasons"])
+		}
+	}
 }
 
 func containsString(items []string, target string) bool {

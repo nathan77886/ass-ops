@@ -907,7 +907,7 @@ function demoDataRehearsalPlan(status: string, evidenceCounts: AnyRow, requiredE
   const environmentPlan = demoDataEnvironmentEvidencePlan(status, evidenceCounts, requiredEvidence);
   const graphPlan = demoDataGraphProofPlan(status, evidenceCounts, requiredEvidence);
   const environmentProof = demoDataEnvironmentProof(status, evidenceCounts, requiredEvidence);
-  const resultPlan = demoDataResultRecordingPlan();
+  const resultPlan = demoDataResultRecordingPlan(status, evidenceCounts, requiredEvidence);
   return {
     mode: 'first_version_demo_data_rehearsal_plan',
     plan_state: planState,
@@ -936,15 +936,8 @@ function demoDataRehearsalPlan(status: string, evidenceCounts: AnyRow, requiredE
 
 // Keep this proof contract in sync with backend/cmd/assops-tool demoDataEnvironmentProof.
 function demoDataEnvironmentProof(status: string, evidenceCounts: AnyRow = {}, requiredEvidence: string[] = []) {
-  const checks: AnyRow = {
-    project_asset: Number(evidenceCounts.project_assets || 0) > 0,
-    project_graph_node: Number(evidenceCounts.project_graph_nodes || 0) > 0,
-    repository_asset: Number(evidenceCounts.repository_assets || 0) > 0,
-    two_git_remote_assets: Number(evidenceCounts.git_remote_assets || 0) >= 2,
-    project_to_repository_graph_link: Number(evidenceCounts.project_repository_links || 0) > 0,
-    repository_to_two_remotes_graph_path: Number(evidenceCounts.complete_repository_paths || 0) > 0
-  };
-  const missing = requiredEvidence.filter((key) => !checks[key]);
+  const checks = demoDataEvidenceChecks(evidenceCounts);
+  const missing = missingDemoDataEvidence(checks, requiredEvidence);
   const proofState = status === 'missing' ? 'blocked' : missing.length ? 'partial' : 'observed';
   const liveEnvironmentDataObserved = status === 'missing' ? false : missing.length === 0;
   const multiRemoteObserved = Number(evidenceCounts.repository_assets || 0) > 0 &&
@@ -973,6 +966,21 @@ function demoDataEnvironmentProof(status: string, evidenceCounts: AnyRow = {}, r
     contains_credentials: false,
     suppressed_fields: ['project_asset_id', 'repository_asset_id', 'source_remote_asset_id', 'mirror_remote_asset_id', 'remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret']
   };
+}
+
+function demoDataEvidenceChecks(evidenceCounts: AnyRow = {}) {
+  return {
+    project_asset: Number(evidenceCounts.project_assets || 0) > 0,
+    project_graph_node: Number(evidenceCounts.project_graph_nodes || 0) > 0,
+    repository_asset: Number(evidenceCounts.repository_assets || 0) > 0,
+    two_git_remote_assets: Number(evidenceCounts.git_remote_assets || 0) >= 2,
+    project_to_repository_graph_link: Number(evidenceCounts.project_repository_links || 0) > 0,
+    repository_to_two_remotes_graph_path: Number(evidenceCounts.complete_repository_paths || 0) > 0
+  };
+}
+
+function missingDemoDataEvidence(checks: AnyRow, requiredEvidence: string[] = []) {
+  return requiredEvidence.filter((key) => !checks[key]);
 }
 
 function demoDataEnvironmentEvidencePlan(status: string, evidenceCounts: AnyRow, requiredEvidence: string[]) {
@@ -1019,9 +1027,34 @@ function demoDataGraphProofPlan(status: string, evidenceCounts: AnyRow, required
   };
 }
 
-function demoDataResultRecordingPlan() {
+function demoDataResultRecordingPlan(status: string, evidenceCounts: AnyRow = {}, requiredEvidence: string[] = []) {
   // Result recording stays blocked even when graph evidence is observed; it only
   // becomes meaningful after a future live demo-data execution writes a result.
+  const checks = demoDataEvidenceChecks(evidenceCounts);
+  const missing = missingDemoDataEvidence(checks, requiredEvidence);
+  const readinessSnapshotReady = status === 'ready' && missing.length === 0;
+  const graphSnapshotReady = readinessSnapshotReady;
+  const preflight = {
+    mode: 'first_version_demo_data_result_recording_preflight',
+    readiness_status: status,
+    readiness_snapshot_ready_for_review: readinessSnapshotReady,
+    asset_graph_snapshot_ready_for_review: graphSnapshotReady,
+    snapshot_contract_ready: readinessSnapshotReady && graphSnapshotReady,
+    snapshot_write_enabled: false,
+    asset_graph_write_enabled: false,
+    operation_log_write_enabled: false,
+    external_call_made: false,
+    contains_remote_url: false,
+    contains_credentials: false,
+    required_evidence: requiredEvidence,
+    missing_required_evidence: missing,
+    evidence_counts: evidenceCounts,
+    required_snapshot_fields: ['project_asset_id', 'repository_asset_id', 'source_remote_asset_id', 'mirror_remote_asset_id', 'graph_proof_status', 'readiness_status', 'evidence_counts', 'missing_required_evidence'],
+    suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret', 'raw_graph_payload', 'operation_log_body'],
+    disabled_backends: ['demo_result_write', 'readiness_snapshot_write', 'asset_graph_snapshot_write', 'operation_log_write'],
+    blocked_reasons: readinessSnapshotReady ? ['demo_result_write_disabled', 'readiness_snapshot_write_disabled', 'asset_graph_snapshot_write_disabled'] : ['demo_result_write_disabled', 'readiness_snapshot_write_disabled', 'asset_graph_snapshot_write_disabled', 'required_demo_evidence_missing'],
+    message: 'Demo result recording preflight is review metadata only; snapshot and operation-log writes remain disabled.'
+  };
   return {
     mode: 'first_version_demo_data_result_recording_plan',
     result_recording_state: 'blocked',
@@ -1035,7 +1068,8 @@ function demoDataResultRecordingPlan() {
     raw_remote_url_recorded: false,
     raw_credentials_recorded: false,
     required_result_fields: ['project_asset_id', 'repository_asset_id', 'source_remote_asset_id', 'mirror_remote_asset_id', 'graph_proof_status', 'readiness_status'],
-    suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret'],
+    result_recording_preflight: preflight,
+    suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret', 'raw_graph_payload', 'operation_log_body'],
     blocked_reasons: ['demo_data_execution_not_performed', 'readiness_snapshot_not_recorded', 'asset_graph_snapshot_not_recorded'],
     message: 'Demo data result recording is disabled until a live environment run creates and proves the graph-backed demo evidence.'
   };
@@ -1382,6 +1416,7 @@ function Dashboard() {
               const plan = row.demo_data_rehearsal_plan;
               if (!plan) return null;
               const environmentProof = plan.environment_demo_proof || {};
+              const resultPreflight = plan.result_recording_plan?.result_recording_preflight || {};
               return <Space size={4} wrap>
                 <Tag color={demoPlanStateColor(plan.plan_state)}>{plan.plan_state}</Tag>
                 {plan.environment_evidence_plan ? <Tag color={demoPlanStateColor(plan.environment_evidence_plan.evidence_state)}>env {plan.environment_evidence_plan.evidence_state || 'blocked'}</Tag> : null}
@@ -1391,6 +1426,8 @@ function Dashboard() {
                 <Tag>{plan.demo_seed_written ? 'seed written' : 'no seed write'}</Tag>
                 <Tag>{plan.asset_graph_written ? 'graph written' : 'no graph write'}</Tag>
                 {plan.result_recording_plan ? <Tag color={demoPlanStateColor(plan.result_recording_plan.result_recording_state)}>{plan.result_recording_plan.result_recording_state || 'blocked'} result</Tag> : null}
+                {resultPreflight.mode ? <Tag color={resultPreflight.snapshot_contract_ready ? 'green' : 'gold'}>{resultPreflight.snapshot_contract_ready ? 'snapshot review' : 'snapshot blocked'}</Tag> : null}
+                {resultPreflight.mode ? <Tag>{resultPreflight.snapshot_write_enabled ? 'snapshot write' : 'no snapshot write'}</Tag> : null}
               </Space>;
             } },
             { title: 'Next', dataIndex: 'next' }

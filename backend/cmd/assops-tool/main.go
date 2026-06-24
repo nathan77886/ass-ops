@@ -1492,7 +1492,7 @@ func projectDemoDataRehearsalPlan(status string, evidence map[string]int, requir
 	environmentPlan := demoDataEnvironmentEvidencePlan(status, evidence, requiredEvidence)
 	graphPlan := demoDataGraphProofPlan(status, evidence, requiredEvidence)
 	environmentProof := demoDataEnvironmentProof(status, evidence, requiredEvidence)
-	resultPlan := demoDataResultRecordingPlan()
+	resultPlan := demoDataResultRecordingPlan(status, evidence, requiredEvidence)
 	return map[string]any{
 		"mode":                      "first_version_demo_data_rehearsal_plan",
 		"plan_state":                planState,
@@ -1536,20 +1536,8 @@ func demoDataEnvironmentProof(status string, evidence map[string]int, requiredEv
 	if evidence == nil {
 		evidence = map[string]int{}
 	}
-	checks := map[string]bool{
-		"project_asset":                        evidence["project_assets"] > 0,
-		"project_graph_node":                   evidence["project_graph_nodes"] > 0,
-		"repository_asset":                     evidence["repository_assets"] > 0,
-		"two_git_remote_assets":                evidence["git_remote_assets"] >= 2,
-		"project_to_repository_graph_link":     evidence["project_repository_links"] > 0,
-		"repository_to_two_remotes_graph_path": evidence["complete_repository_paths"] > 0,
-	}
-	missing := make([]string, 0)
-	for _, key := range requiredEvidence {
-		if !checks[key] {
-			missing = append(missing, key)
-		}
-	}
+	checks := demoDataEvidenceChecks(evidence)
+	missing := missingDemoDataEvidence(checks, requiredEvidence)
 	proofState := "observed"
 	if len(missing) > 0 {
 		proofState = "partial"
@@ -1587,6 +1575,30 @@ func demoDataEnvironmentProof(status string, evidence map[string]int, requiredEv
 		"contains_credentials": false,
 		"suppressed_fields":    []string{"project_asset_id", "repository_asset_id", "source_remote_asset_id", "mirror_remote_asset_id", "remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"},
 	}
+}
+
+func demoDataEvidenceChecks(evidence map[string]int) map[string]bool {
+	if evidence == nil {
+		evidence = map[string]int{}
+	}
+	return map[string]bool{
+		"project_asset":                        evidence["project_assets"] > 0,
+		"project_graph_node":                   evidence["project_graph_nodes"] > 0,
+		"repository_asset":                     evidence["repository_assets"] > 0,
+		"two_git_remote_assets":                evidence["git_remote_assets"] >= 2,
+		"project_to_repository_graph_link":     evidence["project_repository_links"] > 0,
+		"repository_to_two_remotes_graph_path": evidence["complete_repository_paths"] > 0,
+	}
+}
+
+func missingDemoDataEvidence(checks map[string]bool, requiredEvidence []string) []string {
+	missing := make([]string, 0)
+	for _, key := range requiredEvidence {
+		if !checks[key] {
+			missing = append(missing, key)
+		}
+	}
+	return missing
 }
 
 func demoDataEnvironmentEvidencePlan(status string, evidence map[string]int, requiredEvidence []string) map[string]any {
@@ -1643,9 +1655,38 @@ func demoDataGraphProofPlan(status string, evidence map[string]int, requiredEvid
 	}
 }
 
-func demoDataResultRecordingPlan() map[string]any {
+func demoDataResultRecordingPlan(status string, evidence map[string]int, requiredEvidence []string) map[string]any {
 	// Result recording stays blocked even when graph evidence is observed; it only
 	// becomes meaningful after a future live demo-data execution writes a result.
+	checks := demoDataEvidenceChecks(evidence)
+	missing := missingDemoDataEvidence(checks, requiredEvidence)
+	readinessSnapshotReady := status == "ready" && len(missing) == 0
+	graphSnapshotReady := readinessSnapshotReady
+	blockedReasons := []string{"demo_result_write_disabled", "readiness_snapshot_write_disabled", "asset_graph_snapshot_write_disabled"}
+	if !readinessSnapshotReady {
+		blockedReasons = append(blockedReasons, "required_demo_evidence_missing")
+	}
+	preflight := map[string]any{
+		"mode":                                  "first_version_demo_data_result_recording_preflight",
+		"readiness_status":                      status,
+		"readiness_snapshot_ready_for_review":   readinessSnapshotReady,
+		"asset_graph_snapshot_ready_for_review": graphSnapshotReady,
+		"snapshot_contract_ready":               readinessSnapshotReady && graphSnapshotReady,
+		"snapshot_write_enabled":                false,
+		"asset_graph_write_enabled":             false,
+		"operation_log_write_enabled":           false,
+		"external_call_made":                    false,
+		"contains_remote_url":                   false,
+		"contains_credentials":                  false,
+		"required_evidence":                     requiredEvidence,
+		"missing_required_evidence":             missing,
+		"evidence_counts":                       evidence,
+		"required_snapshot_fields":              []string{"project_asset_id", "repository_asset_id", "source_remote_asset_id", "mirror_remote_asset_id", "graph_proof_status", "readiness_status", "evidence_counts", "missing_required_evidence"},
+		"suppressed_fields":                     []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret", "raw_graph_payload", "operation_log_body"},
+		"disabled_backends":                     []string{"demo_result_write", "readiness_snapshot_write", "asset_graph_snapshot_write", "operation_log_write"},
+		"blocked_reasons":                       blockedReasons,
+		"message":                               "Demo result recording preflight is review metadata only; snapshot and operation-log writes remain disabled.",
+	}
 	return map[string]any{
 		"mode":                          "first_version_demo_data_result_recording_plan",
 		"result_recording_state":        "blocked",
@@ -1659,7 +1700,8 @@ func demoDataResultRecordingPlan() map[string]any {
 		"raw_remote_url_recorded":       false,
 		"raw_credentials_recorded":      false,
 		"required_result_fields":        []string{"project_asset_id", "repository_asset_id", "source_remote_asset_id", "mirror_remote_asset_id", "graph_proof_status", "readiness_status"},
-		"suppressed_fields":             []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"},
+		"result_recording_preflight":    preflight,
+		"suppressed_fields":             []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret", "raw_graph_payload", "operation_log_body"},
 		"blocked_reasons":               []string{"demo_data_execution_not_performed", "readiness_snapshot_not_recorded", "asset_graph_snapshot_not_recorded"},
 		"message":                       "Demo data result recording is disabled until a live environment run creates and proves the graph-backed demo evidence.",
 	}
