@@ -240,6 +240,20 @@ function configWorkflowAuditEvidenceColor(status: any) {
   }
 }
 
+function callbackEvidenceColor(status: any) {
+  switch (String(status || '').toLowerCase()) {
+    case 'recorded':
+    case 'observed':
+      return 'green';
+    case 'failed':
+      return 'red';
+    case 'ignored':
+      return 'gold';
+    default:
+      return 'default';
+  }
+}
+
 function rowOptions(rows: AnyRow[] = [], labelKey = 'name') {
   return rows.map((row) => ({ value: row.id, label: row[labelKey] || row.name || row.id }));
 }
@@ -3417,6 +3431,7 @@ function GitRemotes() {
               const deliveryPlan = providerPlan.provider_delivery_plan || {};
               const thresholdPlan = providerPlan.threshold_tuning_plan || {};
               const resultPlan = providerPlan.result_recording_plan || {};
+              const callbackEvidence = readiness.callback_evidence || {};
               const status = readiness.status || 'unknown';
               return <Space size={4} wrap>
                 <Tag color={status === 'ready' ? 'green' : status === 'blocked' ? 'red' : 'default'}>{status}</Tag>
@@ -3426,6 +3441,10 @@ function GitRemotes() {
                 <Tag color={thresholdPlan.threshold_state === 'planned' ? 'gold' : 'red'}>{thresholdPlan.provider_pair_thresholds_tuned ? 'thresholds tuned' : 'thresholds pending'}</Tag>
                 <Tag>{providerPlan.external_call_made ? 'provider call' : 'no provider call'}</Tag>
                 <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
+                {callbackEvidence.delivery_count_7d ? <Tag color={callbackEvidenceColor(callbackEvidence.evidence_state)}>callback {callbackEvidence.evidence_state || 'observed'}</Tag> : null}
+                {callbackEvidence.delivery_count_7d ? <Tag>{callbackEvidence.delivery_count_7d} deliveries</Tag> : null}
+                {callbackEvidence.repo_sync_enqueue_observed ? <Tag color="green">repo sync observed</Tag> : null}
+                {callbackEvidence.failed_count_7d ? <Tag color="red">{callbackEvidence.failed_count_7d} failed callbacks</Tag> : null}
                 <Typography.Text>{shortText(readiness.message, 56)}</Typography.Text>
               </Space>;
             } },

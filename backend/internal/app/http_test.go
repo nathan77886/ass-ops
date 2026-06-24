@@ -13414,7 +13414,7 @@ func TestWebhookConnectionHealth(t *testing.T) {
 			name:        "last rejected",
 			row:         map[string]any{"enabled": true, "last_delivery_status": "rejected", "last_error_message": "invalid signature"},
 			wantHealth:  "danger",
-			wantSummary: "invalid signature",
+			wantSummary: "last delivery rejected",
 		},
 		{
 			name:        "some failures",
@@ -13436,6 +13436,23 @@ func TestWebhookConnectionHealth(t *testing.T) {
 				t.Fatalf("webhookConnectionHealth = %q, %q; want %q containing %q", gotHealth, gotSummary, tc.wantHealth, tc.wantSummary)
 			}
 		})
+	}
+}
+
+func TestWebhookConnectionHealthRedactsErrorMessages(t *testing.T) {
+	health, summary := webhookConnectionHealth(map[string]any{
+		"enabled":              true,
+		"last_delivery_status": "failed",
+		"last_error_message":   "Bearer secret-token payload-body https://provider.example.com/hook",
+		"last_delivery_error":  "password=secret",
+	})
+	if health != "danger" || summary != "last delivery failed" {
+		t.Fatalf("webhookConnectionHealth = %q, %q", health, summary)
+	}
+	for _, forbidden := range []string{"Bearer", "secret-token", "payload-body", "provider.example.com", "password"} {
+		if strings.Contains(summary, forbidden) {
+			t.Fatalf("webhook health summary leaked %q: %s", forbidden, summary)
+		}
 	}
 }
 
@@ -13728,6 +13745,183 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 				if strings.Contains(string(encodedPlan), forbidden) {
 					t.Fatalf("provider callback rehearsal plan leaked %q: %s", forbidden, encodedPlan)
 				}
+			}
+		})
+	}
+}
+
+func TestWebhookCallbackRehearsalReadinessReconcilesObservedEvidence(t *testing.T) {
+	got := webhookCallbackRehearsalReadiness(map[string]any{
+		"provider":                       "gitea",
+		"webhook_url":                    "https://assops.example.com/api/webhooks/gitea/hook-1",
+		"enabled":                        true,
+		"source_remote_id":               "remote-1",
+		"event_types":                    []any{"push"},
+		"deliveries_7d":                  int64(2),
+		"processed_7d":                   int64(1),
+		"ignored_7d":                     int64(1),
+		"signature_valid_7d":             int64(2),
+		"matched_repo_sync_asset_7d":     int64(1),
+		"operation_run_7d":               int64(1),
+		"replayed_7d":                    int64(1),
+		"last_event_status":              "processed",
+		"last_event_type":                "push",
+		"last_event_signature_valid":     true,
+		"secret_token":                   "secret-token",
+		"payload":                        map[string]any{"body": "payload-body"},
+		"result":                         map[string]any{"provider_response": "provider-response"},
+		"last_error_message":             "password should not leak",
+		"last_delivery_error":            "Bearer secret",
+		"last_delivery_status":           "processed",
+		"delivery_id":                    "delivery-secret",
+		"provider_url":                   "https://provider.example.com/hook",
+		"request_headers":                "Authorization: Bearer secret",
+		"request_body":                   "payload-body",
+		"provider_response_body":         "provider-response",
+		"provider_response_headers":      "provider-response-headers",
+		"matched_repo_sync_asset_secret": "asset-secret",
+	}, "https://assops.example.com")
+
+	evidence := mapFromAny(got["callback_evidence"])
+	if evidence["mode"] != "provider_callback_rehearsal_evidence" ||
+		evidence["evidence_state"] != "recorded" ||
+		intFromAny(evidence["delivery_count_7d"], 0) != 2 ||
+		intFromAny(evidence["processed_count_7d"], 0) != 1 ||
+		intFromAny(evidence["signature_valid_count_7d"], 0) != 2 ||
+		intFromAny(evidence["matched_repo_sync_asset_count_7d"], 0) != 1 ||
+		intFromAny(evidence["operation_run_count_7d"], 0) != 1 ||
+		intFromAny(evidence["replayed_count_7d"], 0) != 1 ||
+		evidence["webhook_event_recorded"] != true ||
+		evidence["provider_delivery_observed"] != true ||
+		evidence["signature_validation_observed"] != true ||
+		evidence["webhook_event_replay_observed"] != true ||
+		evidence["repo_sync_enqueue_observed"] != true ||
+		evidence["external_call_made_by_assops"] != false ||
+		evidence["provider_settings_written"] != false ||
+		evidence["provider_test_delivery_sent"] != false ||
+		evidence["contains_token"] != false ||
+		evidence["contains_secret"] != false ||
+		evidence["contains_payload"] != false ||
+		evidence["contains_provider_url"] != false {
+		t.Fatalf("unexpected callback evidence: %#v", evidence)
+	}
+	plan := mapFromAny(got["provider_rehearsal_plan"])
+	if plan["provider_delivery_received"] != true ||
+		plan["webhook_event_created"] != true ||
+		plan["webhook_event_replayed"] != true ||
+		plan["repo_sync_enqueued"] != true ||
+		plan["result_written"] != true ||
+		plan["external_call_made"] != false ||
+		plan["provider_settings_written"] != false ||
+		plan["provider_test_delivery_sent"] != false {
+		t.Fatalf("unexpected provider rehearsal plan evidence: %#v", plan)
+	}
+	resultPlan := mapFromAny(plan["result_recording_plan"])
+	if resultPlan["result_recording_state"] != "recorded" ||
+		resultPlan["result_recording_ready"] != true ||
+		resultPlan["result_written"] != true ||
+		resultPlan["webhook_event_recorded"] != true ||
+		resultPlan["repo_sync_result_recorded"] != true ||
+		resultPlan["github_actions_result_recorded"] != false ||
+		resultPlan["raw_request_headers_recorded"] != false ||
+		resultPlan["raw_request_body_recorded"] != false ||
+		resultPlan["raw_provider_response_recorded"] != false {
+		t.Fatalf("unexpected callback result plan: %#v", resultPlan)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"secret-token", "payload-body", "provider-response", "password", "Bearer secret", "delivery-secret", "provider.example.com", "asset-secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("callback rehearsal evidence leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T) {
+	got := webhookCallbackRehearsalReadiness(map[string]any{
+		"provider":                   "github",
+		"webhook_url":                "https://assops.example.com/api/webhooks/github/hook-1",
+		"enabled":                    true,
+		"source_remote_id":           "remote-1",
+		"event_types":                []any{"workflow_run"},
+		"deliveries_7d":              int64(1),
+		"failures_7d":                int64(1),
+		"signature_valid_7d":         int64(0),
+		"last_event_status":          "rejected",
+		"last_event_type":            "workflow_run",
+		"last_event_signature_valid": false,
+		"secret_token":               "secret-token",
+		"payload":                    map[string]any{"body": "payload-body"},
+		"result":                     map[string]any{"provider_response": "provider-response"},
+		"last_error_message":         "password should not leak",
+		"last_delivery_error":        "Bearer secret",
+		"delivery_id":                "delivery-secret",
+		"provider_url":               "https://provider.example.com/hook",
+		"request_headers":            "Authorization: Bearer secret",
+		"request_body":               "payload-body",
+	}, "https://assops.example.com")
+
+	evidence := mapFromAny(got["callback_evidence"])
+	if evidence["evidence_state"] != "failed" ||
+		intFromAny(evidence["failed_count_7d"], 0) != 1 ||
+		evidence["webhook_event_recorded"] != true ||
+		evidence["signature_validation_observed"] != false {
+		t.Fatalf("unexpected failed callback evidence: %#v", evidence)
+	}
+	plan := mapFromAny(got["provider_rehearsal_plan"])
+	resultPlan := mapFromAny(plan["result_recording_plan"])
+	if resultPlan["result_recording_state"] != "failed" ||
+		resultPlan["result_recording_ready_reason"] != "provider_callback_delivery_failed" ||
+		resultPlan["result_written"] != true ||
+		resultPlan["webhook_event_recorded"] != true ||
+		resultPlan["repo_sync_result_recorded"] != false {
+		t.Fatalf("unexpected failed callback result plan: %#v", resultPlan)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"secret-token", "payload-body", "provider-response", "password", "Bearer secret", "delivery-secret", "provider.example.com"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("failed callback rehearsal evidence leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestWebhookCallbackRehearsalEvidenceStateBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		row        map[string]any
+		wantState  string
+		wantResult string
+	}{
+		{
+			name:       "observed without terminal classification",
+			row:        map[string]any{"provider": "gitea", "deliveries_7d": int64(1), "last_event_status": "received"},
+			wantState:  "observed",
+			wantResult: "recorded",
+		},
+		{
+			name:       "ignored",
+			row:        map[string]any{"provider": "gitea", "deliveries_7d": int64(1), "ignored_7d": int64(1), "last_event_status": "ignored"},
+			wantState:  "ignored",
+			wantResult: "ignored",
+		},
+		{
+			name:       "github processed without operation run is not actions refresh evidence",
+			row:        map[string]any{"provider": "github", "deliveries_7d": int64(1), "processed_7d": int64(1), "operation_run_7d": int64(0), "last_event_status": "processed"},
+			wantState:  "recorded",
+			wantResult: "recorded",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evidence := webhookProviderCallbackRehearsalEvidence(tt.row)
+			if evidence["evidence_state"] != tt.wantState {
+				t.Fatalf("evidence_state = %v, want %s: %#v", evidence["evidence_state"], tt.wantState, evidence)
+			}
+			resultPlan := webhookProviderCallbackRehearsalResultRecordingPlan(evidence)
+			if resultPlan["result_recording_state"] != tt.wantResult {
+				t.Fatalf("result_recording_state = %v, want %s: %#v", resultPlan["result_recording_state"], tt.wantResult, resultPlan)
+			}
+			if strings.Contains(tt.name, "github processed") && evidence["github_actions_refresh_observed"] != false {
+				t.Fatalf("github actions refresh should require operation_run evidence: %#v", evidence)
 			}
 		})
 	}

@@ -5302,15 +5302,22 @@ func (s *Server) listWebhookConnections(w http.ResponseWriter, r *http.Request) 
 			wc.enabled,
 			wc.event_types,
 			wc.last_delivery_status,
-			wc.last_delivery_error,
 			wc.metadata,
 			wc.created_at,
 			wc.updated_at,
 			gr.name AS source_remote_name,
 			COALESCE(stats.deliveries_7d, 0)::int AS deliveries_7d,
 			COALESCE(stats.failures_7d, 0)::int AS failures_7d,
+			COALESCE(stats.processed_7d, 0)::int AS processed_7d,
+			COALESCE(stats.ignored_7d, 0)::int AS ignored_7d,
+			COALESCE(stats.replayed_7d, 0)::int AS replayed_7d,
+			COALESCE(stats.signature_valid_7d, 0)::int AS signature_valid_7d,
+			COALESCE(stats.matched_repo_sync_asset_7d, 0)::int AS matched_repo_sync_asset_7d,
+			COALESCE(stats.operation_run_7d, 0)::int AS operation_run_7d,
 			stats.last_event_at,
-			stats.last_error_message,
+			stats.last_event_status,
+			stats.last_event_type,
+			stats.last_event_signature_valid,
 			('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_path,
 			$2 || ('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_url
 		FROM webhook_connections wc
@@ -5319,15 +5326,34 @@ func (s *Server) listWebhookConnections(w http.ResponseWriter, r *http.Request) 
 			SELECT
 				count(*) FILTER (WHERE we.received_at >= now() - interval '7 days') AS deliveries_7d,
 				count(*) FILTER (WHERE we.status IN ('failed', 'rejected') AND we.received_at >= now() - interval '7 days') AS failures_7d,
+				count(*) FILTER (WHERE we.status='processed' AND we.received_at >= now() - interval '7 days') AS processed_7d,
+				count(*) FILTER (WHERE we.status='ignored' AND we.received_at >= now() - interval '7 days') AS ignored_7d,
+				count(*) FILTER (WHERE we.delivery_id ILIKE '%:replay:%' AND we.received_at >= now() - interval '7 days') AS replayed_7d,
+				count(*) FILTER (WHERE we.signature_valid AND we.received_at >= now() - interval '7 days') AS signature_valid_7d,
+				count(*) FILTER (WHERE we.matched_repo_sync_asset_id IS NOT NULL AND we.received_at >= now() - interval '7 days') AS matched_repo_sync_asset_7d,
+				count(*) FILTER (WHERE we.operation_run_id IS NOT NULL AND we.received_at >= now() - interval '7 days') AS operation_run_7d,
 				max(we.received_at) AS last_event_at,
 				(
-					SELECT recent.error_message
+					SELECT recent.status
 					FROM webhook_events recent
 					WHERE recent.webhook_connection_id=wc.id
-						AND recent.error_message <> ''
 					ORDER BY recent.received_at DESC
 					LIMIT 1
-				) AS last_error_message
+				) AS last_event_status,
+				(
+					SELECT recent.event_type
+					FROM webhook_events recent
+					WHERE recent.webhook_connection_id=wc.id
+					ORDER BY recent.received_at DESC
+					LIMIT 1
+				) AS last_event_type,
+				(
+					SELECT recent.signature_valid
+					FROM webhook_events recent
+					WHERE recent.webhook_connection_id=wc.id
+					ORDER BY recent.received_at DESC
+					LIMIT 1
+				) AS last_event_signature_valid
 			FROM webhook_events we
 			WHERE we.webhook_connection_id=wc.id
 		) stats ON true
@@ -5357,14 +5383,7 @@ func webhookConnectionHealth(row map[string]any) (string, string) {
 	lastStatus := strings.TrimSpace(fmt.Sprint(row["last_delivery_status"]))
 	switch lastStatus {
 	case "failed", "rejected":
-		lastError := strings.TrimSpace(fmt.Sprint(row["last_error_message"]))
-		if lastError == "" || lastError == "<nil>" {
-			lastError = strings.TrimSpace(fmt.Sprint(row["last_delivery_error"]))
-		}
-		if lastError != "" && lastError != "<nil>" {
-			return "danger", truncateText(lastError, 80)
-		}
-		return "danger", "last delivery failed"
+		return "danger", "last delivery " + lastStatus
 	}
 	if failures > 0 {
 		return "warning", fmt.Sprintf("%d failed or rejected deliveries in 7d", failures)
@@ -5410,6 +5429,7 @@ func webhookCallbackRehearsalReadiness(row map[string]any, baseURL string) map[s
 		status = "blocked"
 		message = strings.Join(reasons, "; ")
 	}
+	evidence := webhookProviderCallbackRehearsalEvidence(row)
 	return map[string]any{
 		"status":                  status,
 		"public_origin":           origin,
@@ -5418,12 +5438,80 @@ func webhookCallbackRehearsalReadiness(row map[string]any, baseURL string) map[s
 		"required_provider":       "gitea_or_github_webhook_settings",
 		"external_call_made":      false,
 		"reasons":                 reasons,
-		"provider_rehearsal_plan": webhookProviderCallbackRehearsalPlan(status, reasons),
+		"callback_evidence":       evidence,
+		"provider_rehearsal_plan": webhookProviderCallbackRehearsalPlan(status, reasons, evidence),
 		"message":                 message,
 	}
 }
 
-func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReasons []string) map[string]any {
+func webhookProviderCallbackRehearsalEvidence(row map[string]any) map[string]any {
+	deliveries := intFromAny(row["deliveries_7d"], 0)
+	failures := intFromAny(row["failures_7d"], 0)
+	processed := intFromAny(row["processed_7d"], 0)
+	ignored := intFromAny(row["ignored_7d"], 0)
+	replayed := intFromAny(row["replayed_7d"], 0)
+	signatureValid := intFromAny(row["signature_valid_7d"], 0)
+	matchedRepoSyncAsset := intFromAny(row["matched_repo_sync_asset_7d"], 0)
+	operationRuns := intFromAny(row["operation_run_7d"], 0)
+	lastStatus := strings.ToLower(strings.TrimSpace(fmt.Sprint(row["last_event_status"])))
+	if lastStatus == "" || lastStatus == "<nil>" {
+		lastStatus = strings.ToLower(strings.TrimSpace(fmt.Sprint(row["last_delivery_status"])))
+	}
+	lastEventType := strings.ToLower(strings.TrimSpace(fmt.Sprint(row["last_event_type"])))
+	if lastEventType == "<nil>" {
+		lastEventType = ""
+	}
+	state := "not_observed"
+	switch {
+	case deliveries == 0:
+		state = "not_observed"
+	case failures > 0:
+		state = "failed"
+	case processed > 0:
+		state = "recorded"
+	case ignored > 0:
+		state = "ignored"
+	default:
+		state = "observed"
+	}
+	return map[string]any{
+		"mode":                             "provider_callback_rehearsal_evidence",
+		"evidence_state":                   state,
+		"delivery_count_7d":                deliveries,
+		"processed_count_7d":               processed,
+		"failed_count_7d":                  failures,
+		"ignored_count_7d":                 ignored,
+		"replayed_count_7d":                replayed,
+		"signature_valid_count_7d":         signatureValid,
+		"matched_repo_sync_asset_count_7d": matchedRepoSyncAsset,
+		"operation_run_count_7d":           operationRuns,
+		"last_event_at":                    row["last_event_at"],
+		"last_event_status":                lastStatus,
+		"last_event_type":                  lastEventType,
+		"last_event_signature_valid":       boolOnlyFromAny(row["last_event_signature_valid"]),
+		"provider":                         strings.TrimSpace(fmt.Sprint(row["provider"])),
+		"webhook_event_recorded":           deliveries > 0,
+		"provider_delivery_observed":       deliveries > 0,
+		"signature_validation_observed":    signatureValid > 0,
+		"webhook_event_replay_observed":    replayed > 0,
+		"repo_sync_enqueue_observed":       operationRuns > 0 || matchedRepoSyncAsset > 0,
+		"github_actions_refresh_observed":  strings.EqualFold(strings.TrimSpace(fmt.Sprint(row["provider"])), "github") && processed > 0 && operationRuns > 0,
+		"sanitized_result_recorded":        deliveries > 0,
+		"external_call_made_by_assops":     false,
+		"provider_settings_written":        false,
+		"provider_test_delivery_sent":      false,
+		"raw_request_headers_recorded":     false,
+		"raw_request_body_recorded":        false,
+		"raw_provider_response_recorded":   false,
+		"contains_token":                   false,
+		"contains_secret":                  false,
+		"contains_payload":                 false,
+		"contains_provider_url":            false,
+		"suppressed_fields":                []string{"secret_token", "shared_secret", "signature_header", "provider_token", "provider_url", "request_headers", "request_body", "delivery_payload", "delivery_response", "provider_response_body", "provider_response_headers", "delivery_id", "payload", "result", "error_message"},
+	}
+}
+
+func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReasons []string, evidence map[string]any) map[string]any {
 	planState := "blocked"
 	if readinessStatus == "ready" {
 		planState = "planned"
@@ -5433,6 +5521,8 @@ func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReaso
 	if planState == "planned" {
 		blockedReasons = []string{}
 	}
+	deliveryObserved := boolOnlyFromAny(evidence["provider_delivery_observed"])
+	resultWritten := boolOnlyFromAny(evidence["sanitized_result_recorded"])
 	return map[string]any{
 		"mode":                           "provider_callback_rehearsal_plan",
 		"plan_state":                     planState,
@@ -5440,12 +5530,12 @@ func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReaso
 		"external_call_made":             false,
 		"provider_settings_written":      false,
 		"provider_test_delivery_sent":    false,
-		"provider_delivery_received":     false,
-		"webhook_event_created":          false,
-		"webhook_event_replayed":         false,
-		"repo_sync_enqueued":             false,
-		"github_actions_refresh_started": false,
-		"result_written":                 false,
+		"provider_delivery_received":     deliveryObserved,
+		"webhook_event_created":          deliveryObserved,
+		"webhook_event_replayed":         boolOnlyFromAny(evidence["webhook_event_replay_observed"]),
+		"repo_sync_enqueued":             boolOnlyFromAny(evidence["repo_sync_enqueue_observed"]),
+		"github_actions_refresh_started": boolOnlyFromAny(evidence["github_actions_refresh_observed"]),
+		"result_written":                 resultWritten,
 		"contains_token":                 false,
 		"contains_secret":                false,
 		"contains_payload":               false,
@@ -5494,8 +5584,8 @@ func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReaso
 		"public_endpoint_plan":   webhookProviderCallbackPublicEndpointPlan(planState, readinessReasons),
 		"provider_delivery_plan": webhookProviderCallbackDeliveryPlan(planState),
 		"threshold_tuning_plan":  webhookProviderCallbackThresholdTuningPlan(planState),
-		"result_recording_plan":  webhookProviderCallbackRehearsalResultRecordingPlan(),
-		"message":                "Provider callback rehearsal is audit-only; no provider settings, external delivery, webhook event, replay, repo sync, or GitHub Actions refresh is performed.",
+		"result_recording_plan":  webhookProviderCallbackRehearsalResultRecordingPlan(evidence),
+		"message":                "Provider callback rehearsal is audit-only; no provider settings write or provider test delivery is performed, while existing webhook event evidence is reconciled as sanitized metadata.",
 	}
 }
 
@@ -5595,19 +5685,35 @@ func webhookProviderCallbackThresholdTuningPlan(planState string) map[string]any
 	}
 }
 
-func webhookProviderCallbackRehearsalResultRecordingPlan() map[string]any {
+func webhookProviderCallbackRehearsalResultRecordingPlan(evidence map[string]any) map[string]any {
+	evidenceState := strings.TrimSpace(fmt.Sprint(evidence["evidence_state"]))
+	evidenceObserved := boolOnlyFromAny(evidence["webhook_event_recorded"])
+	resultReady := boolOnlyFromAny(evidence["sanitized_result_recorded"])
+	recordingState := "blocked"
+	recordingReason := "provider_callback_rehearsal_execution_not_performed"
+	switch evidenceState {
+	case "recorded", "observed":
+		recordingState = "recorded"
+		recordingReason = "sanitized_provider_callback_event_observed"
+	case "failed":
+		recordingState = "failed"
+		recordingReason = "provider_callback_delivery_failed"
+	case "ignored":
+		recordingState = "ignored"
+		recordingReason = "provider_callback_delivery_ignored"
+	}
 	return map[string]any{
 		"mode":                             "provider_callback_rehearsal_result_recording_plan",
-		"result_recording_state":           "blocked",
-		"result_recording_ready":           false,
-		"result_recording_ready_reason":    "provider_callback_rehearsal_execution_not_performed",
-		"recording_enabled":                false,
-		"result_written":                   false,
+		"result_recording_state":           recordingState,
+		"result_recording_ready":           resultReady,
+		"result_recording_ready_reason":    recordingReason,
+		"recording_enabled":                resultReady,
+		"result_written":                   resultReady,
 		"webhook_connection_updated":       false,
-		"webhook_event_recorded":           false,
+		"webhook_event_recorded":           evidenceObserved,
 		"operation_log_written":            false,
-		"repo_sync_result_recorded":        false,
-		"github_actions_result_recorded":   false,
+		"repo_sync_result_recorded":        boolOnlyFromAny(evidence["repo_sync_enqueue_observed"]),
+		"github_actions_result_recorded":   boolOnlyFromAny(evidence["github_actions_refresh_observed"]),
 		"threshold_tuning_result_recorded": false,
 		"raw_request_headers_recorded":     false,
 		"raw_request_body_recorded":        false,
