@@ -7881,12 +7881,16 @@ func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summar
 	if len(executionPlan) == 0 {
 		return
 	}
+	workerBindingEvidence := projectVersionRefreshWorkerResultBindingEvidence(summary, stringSliceFromAny(executionPlan["planned_refresh_kinds"]))
+	refreshPlan["worker_result_binding_evidence"] = workerBindingEvidence
 	operationCount := intFromAny(summary["operation_count"], 0)
 	validationRecorded := summary["validation_rerun_recorded"] == true
 	executionPlan["operation_enqueued"] = operationCount > 0
 	executionPlan["worker_job_created"] = operationCount > 0
 	executionPlan["validation_reopened"] = validationRecorded
 	executionPlan["refresh_result_summary"] = summary
+	executionPlan["worker_result_binding_evidence"] = workerBindingEvidence
+	executionPlan["worker_result_binding_state"] = workerBindingEvidence["binding_state"]
 	executionPlan["server_side_validation_recheck_observed"] = boolOnlyFromAny(rerunEvidence["server_side_validation_recheck"])
 	executionPlan["automatic_background_rerun"] = boolOnlyFromAny(rerunEvidence["automatic_background_rerun"])
 	executionPlan["validation_rerun_evidence"] = rerunEvidence
@@ -7904,10 +7908,77 @@ func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summar
 		resultPlan["github_actions_result_recorded"] = projectVersionRefreshKindObserved(summary, "github_actions_api_refresh")
 		resultPlan["argo_revision_result_recorded"] = projectVersionRefreshKindObserved(summary, "argocd_app_refresh")
 		resultPlan["refresh_result_summary"] = summary
+		resultPlan["worker_result_binding_evidence"] = workerBindingEvidence
+		resultPlan["worker_result_binding_state"] = workerBindingEvidence["binding_state"]
 		resultPlan["server_side_validation_recheck_observed"] = boolOnlyFromAny(rerunEvidence["server_side_validation_recheck"])
 		resultPlan["automatic_background_rerun"] = boolOnlyFromAny(rerunEvidence["automatic_background_rerun"])
 		resultPlan["validation_rerun_evidence"] = rerunEvidence
 		resultPlan["blocked_reasons"] = projectVersionRefreshResultBlockedReasons(summary)
+	}
+}
+
+func projectVersionRefreshWorkerResultBindingEvidence(summary map[string]any, plannedKinds []string) map[string]any {
+	operationCount := intFromAny(summary["operation_count"], 0)
+	activeCount := intFromAny(summary["active_count"], 0)
+	failedCount := intFromAny(summary["failed_count"], 0)
+	canceledCount := intFromAny(summary["canceled_count"], 0)
+	observedKinds := stringSliceFromAny(summary["refresh_kinds"])
+	missingKinds := []string{}
+	for _, kind := range plannedKinds {
+		if strings.TrimSpace(kind) == "" {
+			continue
+		}
+		if !stringInSlice(observedKinds, kind) {
+			missingKinds = append(missingKinds, kind)
+		}
+	}
+	allPlannedObserved := len(plannedKinds) > 0 && len(missingKinds) == 0
+	bindingState := "not_recorded"
+	switch {
+	case operationCount == 0:
+		bindingState = "not_recorded"
+	case activeCount > 0:
+		bindingState = "waiting_for_workers"
+	case failedCount > 0:
+		bindingState = "failed"
+	case canceledCount > 0:
+		bindingState = "canceled"
+	case allPlannedObserved:
+		bindingState = "recorded"
+	default:
+		bindingState = "partial_recorded"
+	}
+	return map[string]any{
+		"mode":                            "project_version_refresh_worker_result_binding_evidence",
+		"binding_state":                   bindingState,
+		"project_version_scope_bound":     operationCount > 0,
+		"operation_result_bound":          operationCount > 0,
+		"worker_result_observed":          operationCount > 0,
+		"terminal_worker_result_observed": operationCount > 0 && activeCount == 0,
+		"all_planned_results_observed":    allPlannedObserved,
+		"planned_refresh_kinds":           plannedKinds,
+		"observed_refresh_kinds":          observedKinds,
+		"missing_planned_result_kinds":    missingKinds,
+		"operation_count":                 operationCount,
+		"active_count":                    activeCount,
+		"terminal_count":                  intFromAny(summary["terminal_count"], 0),
+		"failed_count":                    failedCount,
+		"canceled_count":                  canceledCount,
+		"validation_rerun_status":         summary["validation_rerun_status"],
+		"validation_rerun_recorded":       boolOnlyFromAny(summary["validation_rerun_recorded"]),
+		"external_call_made":              false,
+		"provider_api_called":             false,
+		"git_fetch_performed":             false,
+		"argocd_api_called":               false,
+		"raw_response_included":           false,
+		"raw_git_output_included":         false,
+		"raw_argo_response_included":      false,
+		"secret_included":                 false,
+		"contains_remote_url":             false,
+		"contains_provider_token":         false,
+		"contains_provider_response":      false,
+		"suppressed_fields":               []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body", "operation_error_detail"},
+		"message":                         "ProjectVersion refresh worker result binding is reconciled from operation kind/status metadata only; provider responses, Git output, Argo responses, URLs, credentials, and workflow logs remain suppressed.",
 	}
 }
 
@@ -8107,6 +8178,7 @@ func projectVersionProviderRefreshExecutionPlan(steps []map[string]any, refreshP
 	} else if refreshPlanState == "partial" {
 		executionState = "partial"
 	}
+	workerBindingEvidence := projectVersionRefreshWorkerResultBindingEvidence(projectVersionRefreshResultSummary(nil), plannedKinds)
 	return map[string]any{
 		"mode":                             "provider_refresh_execution_plan_preview",
 		"execution_state":                  executionState,
@@ -8129,6 +8201,8 @@ func projectVersionProviderRefreshExecutionPlan(steps []map[string]any, refreshP
 		"unique_blocked_kind_count":        len(blockedKinds),
 		"planned_refresh_kinds":            plannedKinds,
 		"blocked_refresh_kinds":            blockedKinds,
+		"worker_result_binding_evidence":   workerBindingEvidence,
+		"worker_result_binding_state":      workerBindingEvidence["binding_state"],
 		"required_controls":                []string{"operation_approval", "provider_account_binding", "git_remote_credential_review", "github_actions_scope_review", "argo_connection_review", "result_recording_audit", "ui_auto_validation_reload"},
 		"disabled_backends":                []string{"provider_mutation", "raw_provider_response_recording", "server_side_automatic_validation_rerun"},
 		"suppressed_fields":                []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "github_actions_response", "argo_response", "commit_body", "workflow_logs"},

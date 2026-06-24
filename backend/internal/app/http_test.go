@@ -3008,6 +3008,27 @@ func TestProjectVersionValidationPreviewIncludesRefreshResultSummary(t *testing.
 		!containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), "refresh_workers_still_running") {
 		t.Fatalf("refresh result recording plan = %#v", resultPlan)
 	}
+	workerBinding := mapFromAny(executionPlan["worker_result_binding_evidence"])
+	if workerBinding["mode"] != "project_version_refresh_worker_result_binding_evidence" ||
+		workerBinding["binding_state"] != "waiting_for_workers" ||
+		workerBinding["project_version_scope_bound"] != true ||
+		workerBinding["operation_result_bound"] != true ||
+		workerBinding["worker_result_observed"] != true ||
+		workerBinding["terminal_worker_result_observed"] != false ||
+		workerBinding["all_planned_results_observed"] != true ||
+		workerBinding["external_call_made"] != false ||
+		workerBinding["provider_api_called"] != false ||
+		workerBinding["raw_response_included"] != false ||
+		workerBinding["secret_included"] != false {
+		t.Fatalf("refresh worker result binding evidence = %#v", workerBinding)
+	}
+	if len(stringSliceFromAny(workerBinding["missing_planned_result_kinds"])) != 0 {
+		t.Fatalf("worker binding should have all planned kinds observed: %#v", workerBinding)
+	}
+	resultBinding := mapFromAny(resultPlan["worker_result_binding_evidence"])
+	if resultBinding["binding_state"] != "waiting_for_workers" {
+		t.Fatalf("result plan should carry worker binding evidence: %#v", resultPlan)
+	}
 	rerunEvidence := mapFromAny(preview["validation_rerun_evidence"])
 	if rerunEvidence["rerun_state"] != "waiting_for_workers" ||
 		rerunEvidence["server_side_validation_recheck"] != true ||
@@ -3022,6 +3043,37 @@ func TestProjectVersionValidationPreviewIncludesRefreshResultSummary(t *testing.
 	for _, forbidden := range []string{"secret-token", "Bearer secret", "https://token@", "raw_provider_response\":true", "raw_git_output\":\""} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("refresh summary leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestProjectVersionRefreshWorkerResultBindingEvidenceRequiresPlannedKinds(t *testing.T) {
+	summary := projectVersionRefreshResultSummary([]map[string]any{
+		{"id": "op-git", "operation_type": "git.refs.refresh", "status": "completed", "input": map[string]any{"refresh_kind": "git_ref_fetch", "remote_url": "https://token@example.com/repo.git"}},
+	})
+	evidence := projectVersionRefreshWorkerResultBindingEvidence(summary, []string{"git_ref_fetch", "github_actions_api_refresh"})
+	if evidence["binding_state"] != "partial_recorded" ||
+		evidence["terminal_worker_result_observed"] != true ||
+		evidence["all_planned_results_observed"] != false ||
+		evidence["raw_response_included"] != false ||
+		evidence["raw_git_output_included"] != false ||
+		evidence["raw_argo_response_included"] != false ||
+		evidence["secret_included"] != false ||
+		evidence["contains_remote_url"] != false ||
+		evidence["contains_provider_token"] != false ||
+		evidence["contains_provider_response"] != false ||
+		!containsString(stringSliceFromAny(evidence["missing_planned_result_kinds"]), "github_actions_api_refresh") {
+		t.Fatalf("worker result binding should stay partial until every planned kind is observed: %#v", evidence)
+	}
+	for _, field := range []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body", "operation_error_detail"} {
+		if !containsString(stringSliceFromAny(evidence["suppressed_fields"]), field) {
+			t.Fatalf("worker binding suppressed_fields missing %q: %#v", field, evidence["suppressed_fields"])
+		}
+	}
+	encoded, _ := json.Marshal(evidence)
+	for _, forbidden := range []string{"https://token@example.com", "Bearer secret", "raw_provider_response\":true", "raw_git_output\":\""} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("worker binding evidence leaked %q: %s", forbidden, encoded)
 		}
 	}
 }
@@ -3481,6 +3533,26 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 		resultPlan["raw_argo_response_included"] != false ||
 		resultPlan["provider_request_id_included"] != false {
 		t.Fatalf("refresh result recording plan should keep all result flags false: %#v", resultPlan)
+	}
+	workerBinding := mapFromAny(executionPlan["worker_result_binding_evidence"])
+	if workerBinding["mode"] != "project_version_refresh_worker_result_binding_evidence" ||
+		workerBinding["external_call_made"] != false ||
+		workerBinding["provider_api_called"] != false ||
+		workerBinding["git_fetch_performed"] != false ||
+		workerBinding["argocd_api_called"] != false ||
+		workerBinding["raw_response_included"] != false ||
+		workerBinding["raw_git_output_included"] != false ||
+		workerBinding["raw_argo_response_included"] != false ||
+		workerBinding["secret_included"] != false ||
+		workerBinding["contains_remote_url"] != false ||
+		workerBinding["contains_provider_token"] != false ||
+		workerBinding["contains_provider_response"] != false {
+		t.Fatalf("refresh worker binding evidence should stay redacted: %#v", workerBinding)
+	}
+	for _, field := range []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body", "operation_error_detail"} {
+		if !containsString(stringSliceFromAny(workerBinding["suppressed_fields"]), field) {
+			t.Fatalf("worker binding suppressed_fields missing %q: %#v", field, workerBinding["suppressed_fields"])
+		}
 	}
 	for _, field := range []string{"operation_run_id", "refresh_kind", "status", "started_at", "finished_at", "synced_entity_count", "git_ref_fetch_status", "github_actions_refresh_status", "argo_revision_refresh_status", "validation_rerun_status"} {
 		if !containsString(stringSliceFromAny(resultPlan["required_result_fields"]), field) {
