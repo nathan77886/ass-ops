@@ -19429,6 +19429,307 @@ func TestProviderReviewMutationArmingPlanSanitizerKeepsMutationOff(t *testing.T)
 	}
 }
 
+func TestRecordProviderReviewMutationArmingSnapshotWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	approval := providerReviewArmingSnapshotApproval("approved", "ready_to_arm", true, true, false)
+	ledger := providerReviewArmingSnapshotLedger(3)
+	expectOperationApprovalSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-approval-1", "provider_review_mutation_arming_review_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-approval-1", "provider_review_mutation_arming_review_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewMutationArmingSnapshot(context.Background(), store, ProviderReviewMutationArmingSnapshotOptions{
+		OperationApprovalID: "approval-1",
+		Approval:            approval,
+		AttemptLedger:       ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewMutationArmingSnapshot: %v", err)
+	}
+	if got["recording_state"] != "ready_for_operator_review" ||
+		got["provider_review_mutation_arming_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["mutation_armed"] != false {
+		t.Fatalf("unexpected provider review arming snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["attempt_count"] != 3 ||
+		snapshot["attempt_ledger_observed"] != true ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review arming snapshot payload: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewMutationArmingSnapshotBlockedDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	approval := providerReviewArmingSnapshotApproval("pending", "blocked", false, true, false)
+	ledger := providerReviewArmingSnapshotLedger(3)
+	expectOperationApprovalSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewMutationArmingSnapshot(context.Background(), store, ProviderReviewMutationArmingSnapshotOptions{
+		OperationApprovalID: "approval-1",
+		Approval:            approval,
+		AttemptLedger:       ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewMutationArmingSnapshot blocked: %v", err)
+	}
+	if got["recording_ready"] != false ||
+		got["recording_enabled"] != false ||
+		got["provider_review_mutation_arming_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("blocked provider review arming snapshot should not write: %#v", got)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if !containsString(missing, "operation_approval_not_approved") ||
+		!containsString(missing, "provider_review_execution_enabled") ||
+		!containsString(missing, "provider_review_mutation_not_ready_to_arm") {
+		t.Fatalf("unexpected missing evidence: %#v", missing)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewMutationArmingSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	approval := providerReviewArmingSnapshotApproval("approved", "ready_to_arm", true, true, false)
+	ledger := providerReviewArmingSnapshotLedger(3)
+	expectOperationApprovalSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewMutationArmingSnapshot(context.Background(), store, ProviderReviewMutationArmingSnapshotOptions{
+		OperationApprovalID: "approval-1",
+		Approval:            approval,
+		AttemptLedger:       ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewMutationArmingSnapshot asset missing: %v", err)
+	}
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_mutation_arming_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected asset missing provider review arming response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewMutationArmingSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	approval := providerReviewArmingSnapshotApproval("approved", "ready_to_arm", true, true, false)
+	ledger := providerReviewArmingSnapshotLedger(3)
+	expectOperationApprovalSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewMutationArmingSnapshot(context.Background(), store, ProviderReviewMutationArmingSnapshotOptions{
+		OperationApprovalID: "approval-1",
+		Approval:            approval,
+		AttemptLedger:       ledger,
+		DryRun:              true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewMutationArmingSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_mutation_arming_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run provider review arming response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewMutationArmingSnapshotBeginError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	approval := providerReviewArmingSnapshotApproval("approved", "ready_to_arm", true, true, false)
+	ledger := providerReviewArmingSnapshotLedger(3)
+	expectOperationApprovalSnapshotAsset(mock, true)
+	mock.ExpectBegin().WillReturnError(fmt.Errorf("database unavailable"))
+
+	if _, err := RecordProviderReviewMutationArmingSnapshot(context.Background(), store, ProviderReviewMutationArmingSnapshotOptions{
+		OperationApprovalID: "approval-1",
+		Approval:            approval,
+		AttemptLedger:       ledger,
+	}); err == nil || !strings.Contains(err.Error(), "starting provider review mutation arming snapshot transaction") {
+		t.Fatalf("expected begin error, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewMutationArmingSnapshotLockError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	approval := providerReviewArmingSnapshotApproval("approved", "ready_to_arm", true, true, false)
+	ledger := providerReviewArmingSnapshotLedger(3)
+	expectOperationApprovalSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-approval-1", "provider_review_mutation_arming_review_ready").
+		WillReturnError(fmt.Errorf("lock failed"))
+	mock.ExpectRollback()
+
+	if _, err := RecordProviderReviewMutationArmingSnapshot(context.Background(), store, ProviderReviewMutationArmingSnapshotOptions{
+		OperationApprovalID: "approval-1",
+		Approval:            approval,
+		AttemptLedger:       ledger,
+	}); err == nil || !strings.Contains(err.Error(), "locking provider review mutation arming snapshot asset") {
+		t.Fatalf("expected lock error, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewMutationArmingSnapshotInsertError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	approval := providerReviewArmingSnapshotApproval("approved", "ready_to_arm", true, true, false)
+	ledger := providerReviewArmingSnapshotLedger(3)
+	expectOperationApprovalSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-approval-1", "provider_review_mutation_arming_review_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-approval-1", "provider_review_mutation_arming_review_ready", "low", sqlmock.AnyArg()).
+		WillReturnError(fmt.Errorf("insert failed"))
+	mock.ExpectRollback()
+
+	if _, err := RecordProviderReviewMutationArmingSnapshot(context.Background(), store, ProviderReviewMutationArmingSnapshotOptions{
+		OperationApprovalID: "approval-1",
+		Approval:            approval,
+		AttemptLedger:       ledger,
+	}); err == nil || !strings.Contains(err.Error(), "inserting provider review mutation arming snapshot") {
+		t.Fatalf("expected insert error, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewMutationArmingSnapshotCommitError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	approval := providerReviewArmingSnapshotApproval("approved", "ready_to_arm", true, true, false)
+	ledger := providerReviewArmingSnapshotLedger(3)
+	expectOperationApprovalSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-approval-1", "provider_review_mutation_arming_review_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-approval-1", "provider_review_mutation_arming_review_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit().WillReturnError(fmt.Errorf("commit failed"))
+
+	if _, err := RecordProviderReviewMutationArmingSnapshot(context.Background(), store, ProviderReviewMutationArmingSnapshotOptions{
+		OperationApprovalID: "approval-1",
+		Approval:            approval,
+		AttemptLedger:       ledger,
+	}); err == nil || !strings.Contains(err.Error(), "committing provider review mutation arming snapshot") {
+		t.Fatalf("expected commit error, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewMutationArmingSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	approval := providerReviewArmingSnapshotApproval("approved", "ready_to_arm", true, true, true)
+	ledger := providerReviewArmingSnapshotLedger(3)
+	expectOperationApprovalSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-approval-1", "provider_review_mutation_arming_review_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-approval-1", "provider_review_mutation_arming_review_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewMutationArmingSnapshot(context.Background(), store, ProviderReviewMutationArmingSnapshotOptions{
+		OperationApprovalID: "approval-1",
+		Approval:            approval,
+		AttemptLedger:       ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewMutationArmingSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_mutation_arming_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown provider review arming response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRepoSyncRunFiltersFromRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/repo-sync-runs?asset_id=%20asset-1%20&status=%20failed%20&ref=%20refs/heads/main%20&since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z", nil)
 	got, err := repoSyncRunFiltersFromRequest(req)
@@ -24012,6 +24313,88 @@ func expectProviderReviewAttemptSnapshotAsset(mock sqlmock.Sqlmock, found bool) 
 		query.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-attempt-1"))
 	} else {
 		query.WillReturnError(sql.ErrNoRows)
+	}
+}
+
+func expectOperationApprovalSnapshotAsset(mock sqlmock.Sqlmock, found bool) {
+	query := mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='operation_approval'\s+AND source_table='operation_approvals'`).
+		WithArgs("approval-1")
+	if found {
+		query.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-approval-1"))
+	} else {
+		query.WillReturnError(sql.ErrNoRows)
+	}
+}
+
+func providerReviewArmingSnapshotApproval(approvalStatus, armingStatus string, executionEnabled, rehearsalReady, mutationConfig bool) map[string]any {
+	return map[string]any{
+		"id":          "approval-1",
+		"project_id":  "project-1",
+		"action":      templateProviderReviewExecuteApprovalAction,
+		"status":      approvalStatus,
+		"title":       "Provider review execution",
+		"resource_id": "run-1",
+		"request_payload": map[string]any{
+			"kind":                    "project_template_provider_review_execute",
+			"project_id":              "project-1",
+			"project_template_run_id": "run-1",
+			"execution_request": map[string]any{
+				"status":          "approval_ready",
+				"approval_action": templateProviderReviewExecuteApprovalAction,
+				"resource_type":   "project_template_run",
+				"provider_type":   "github",
+				"review_kind":     "pull_request",
+				"source_branch":   "secret-source-branch",
+				"target_branch":   "secret-target-branch",
+			},
+			"provider_review_reconciliation": map[string]any{
+				"status":        "ready",
+				"provider_type": "github",
+				"review_kind":   "pull_request",
+				"adapter_rehearsal": map[string]any{
+					"status":                         "ready",
+					"operation_count":                3,
+					"ready_operation_count":          3,
+					"blocked_operation_count":        0,
+					"mutation_arming_candidate":      true,
+					"external_call_made":             false,
+					"provider_api_call_made":         false,
+					"provider_api_mutation":          "disabled",
+					"adapter_mutation_currently_off": true,
+				},
+				"mutation_arming_plan": map[string]any{
+					"status":                         armingStatus,
+					"provider_type":                  "github",
+					"review_kind":                    "pull_request",
+					"execution_enabled_config":       executionEnabled,
+					"adapter_rehearsal_ready":        rehearsalReady,
+					"mutation_armed_config":          mutationConfig,
+					"mutation_armed":                 mutationConfig,
+					"blocked_reasons":                []string{"provider_review_mutation_armed"},
+					"external_call_made":             false,
+					"provider_api_call_made":         false,
+					"provider_api_mutation":          "disabled",
+					"adapter_mutation_currently_off": true,
+				},
+				"execution_blueprint": map[string]any{
+					"status":                   "ready_for_adapter_implementation",
+					"provider_type":            "github",
+					"review_kind":              "pull_request",
+					"live_adapter_implemented": false,
+				},
+			},
+		},
+	}
+}
+
+func providerReviewArmingSnapshotLedger(attemptCount int) map[string]any {
+	return map[string]any{
+		"status":        "recorded",
+		"attempt_count": attemptCount,
+		"orchestration": map[string]any{
+			"next_operation":          "create_branch_ref",
+			"dependency_chain_status": "ready",
+		},
 	}
 }
 
