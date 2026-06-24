@@ -3447,6 +3447,7 @@ function GitRemotes() {
               const thresholdPlan = providerPlan.threshold_tuning_plan || {};
               const resultPlan = providerPlan.result_recording_plan || {};
               const callbackEvidence = readiness.callback_evidence || {};
+              const replayProof = callbackEvidence.operator_replay_proof || providerPlan.operator_replay_proof || {};
               const status = readiness.status || 'unknown';
               return <Space size={4} wrap>
                 <Tag color={status === 'ready' ? 'green' : status === 'blocked' ? 'red' : 'default'}>{status}</Tag>
@@ -3456,6 +3457,7 @@ function GitRemotes() {
                 <Tag color={thresholdPlan.threshold_state === 'planned' ? 'gold' : 'red'}>{thresholdPlan.provider_pair_thresholds_tuned ? 'thresholds tuned' : 'thresholds pending'}</Tag>
                 <Tag>{providerPlan.external_call_made ? 'provider call' : 'no provider call'}</Tag>
                 <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
+                <Tag color={replayProof.proof_state === 'recorded' ? 'green' : replayProof.proof_state === 'failed' ? 'red' : replayProof.operator_replay_observed ? 'gold' : 'default'}>{replayProof.operator_replay_observed ? `replay proof ${replayProof.proof_state || 'observed'}` : 'replay proof pending'}</Tag>
                 {callbackEvidence.delivery_count_7d ? <Tag color={callbackEvidenceColor(callbackEvidence.evidence_state)}>callback {callbackEvidence.evidence_state || 'observed'}</Tag> : null}
                 {callbackEvidence.delivery_count_7d ? <Tag>{callbackEvidence.delivery_count_7d} deliveries</Tag> : null}
                 {callbackEvidence.repo_sync_enqueue_observed ? <Tag color="green">repo sync observed</Tag> : null}

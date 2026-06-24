@@ -13822,6 +13822,7 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 				plan["provider_delivery_received"] != false ||
 				plan["webhook_event_created"] != false ||
 				plan["webhook_event_replayed"] != false ||
+				plan["operator_replay_proof_recorded"] != false ||
 				plan["repo_sync_enqueued"] != false ||
 				plan["github_actions_refresh_started"] != false ||
 				plan["result_written"] != false ||
@@ -13938,6 +13939,8 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 				resultPlan["result_written"] != false ||
 				resultPlan["webhook_connection_updated"] != false ||
 				resultPlan["webhook_event_recorded"] != false ||
+				resultPlan["operator_replay_proof_state"] != "waiting_for_operator_replay" ||
+				resultPlan["operator_replay_proof_recorded"] != false ||
 				resultPlan["operation_log_written"] != false ||
 				resultPlan["repo_sync_result_recorded"] != false ||
 				resultPlan["github_actions_result_recorded"] != false ||
@@ -14026,10 +14029,33 @@ func TestWebhookCallbackRehearsalReadinessReconcilesObservedEvidence(t *testing.
 		evidence["contains_provider_url"] != false {
 		t.Fatalf("unexpected callback evidence: %#v", evidence)
 	}
+	replayProof := mapFromAny(evidence["operator_replay_proof"])
+	if replayProof["mode"] != "operator_guided_webhook_replay_proof" ||
+		replayProof["proof_state"] != "recorded" ||
+		replayProof["proof_source"] != "webhook_events_aggregate" ||
+		replayProof["manual_replay_required"] != false ||
+		replayProof["operator_replay_observed"] != true ||
+		replayProof["sanitized_replay_result_recorded"] != true ||
+		intFromAny(replayProof["replayed_event_count_7d"], 0) != 1 ||
+		replayProof["signature_validation_observed"] != true ||
+		replayProof["repo_sync_binding_observed"] != true ||
+		replayProof["operation_binding_observed"] != true ||
+		replayProof["external_call_made_by_assops"] != false ||
+		replayProof["provider_api_called"] != false ||
+		replayProof["provider_test_delivery_sent"] != false ||
+		replayProof["source_delivery_id_recorded"] != false ||
+		replayProof["replay_source_delivery_id_recorded"] != false ||
+		replayProof["contains_token"] != false ||
+		replayProof["contains_secret"] != false ||
+		replayProof["contains_payload"] != false ||
+		replayProof["contains_provider_url"] != false {
+		t.Fatalf("unexpected operator replay proof: %#v", replayProof)
+	}
 	plan := mapFromAny(got["provider_rehearsal_plan"])
 	if plan["provider_delivery_received"] != true ||
 		plan["webhook_event_created"] != true ||
 		plan["webhook_event_replayed"] != true ||
+		plan["operator_replay_proof_recorded"] != true ||
 		plan["repo_sync_enqueued"] != true ||
 		plan["result_written"] != true ||
 		plan["external_call_made"] != false ||
@@ -14042,6 +14068,8 @@ func TestWebhookCallbackRehearsalReadinessReconcilesObservedEvidence(t *testing.
 		resultPlan["result_recording_ready"] != true ||
 		resultPlan["result_written"] != true ||
 		resultPlan["webhook_event_recorded"] != true ||
+		resultPlan["operator_replay_proof_state"] != "recorded" ||
+		resultPlan["operator_replay_proof_recorded"] != true ||
 		resultPlan["repo_sync_result_recorded"] != true ||
 		resultPlan["github_actions_result_recorded"] != false ||
 		resultPlan["raw_request_headers_recorded"] != false ||
@@ -14066,6 +14094,7 @@ func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T)
 		"event_types":                []any{"workflow_run"},
 		"deliveries_7d":              int64(1),
 		"failures_7d":                int64(1),
+		"replayed_7d":                int64(1),
 		"signature_valid_7d":         int64(0),
 		"last_event_status":          "rejected",
 		"last_event_type":            "workflow_run",
@@ -14088,12 +14117,24 @@ func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T)
 		evidence["signature_validation_observed"] != false {
 		t.Fatalf("unexpected failed callback evidence: %#v", evidence)
 	}
+	replayProof := mapFromAny(evidence["operator_replay_proof"])
+	if replayProof["proof_state"] != "failed" ||
+		replayProof["manual_replay_required"] != false ||
+		replayProof["operator_replay_observed"] != true ||
+		replayProof["sanitized_replay_result_recorded"] != true ||
+		replayProof["signature_validation_observed"] != false ||
+		replayProof["provider_api_called"] != false ||
+		replayProof["source_delivery_id_recorded"] != false {
+		t.Fatalf("unexpected failed operator replay proof: %#v", replayProof)
+	}
 	plan := mapFromAny(got["provider_rehearsal_plan"])
 	resultPlan := mapFromAny(plan["result_recording_plan"])
 	if resultPlan["result_recording_state"] != "failed" ||
 		resultPlan["result_recording_ready_reason"] != "provider_callback_delivery_failed" ||
 		resultPlan["result_written"] != true ||
 		resultPlan["webhook_event_recorded"] != true ||
+		resultPlan["operator_replay_proof_state"] != "failed" ||
+		resultPlan["operator_replay_proof_recorded"] != false ||
 		resultPlan["repo_sync_result_recorded"] != false {
 		t.Fatalf("unexpected failed callback result plan: %#v", resultPlan)
 	}
@@ -14130,6 +14171,18 @@ func TestWebhookCallbackRehearsalEvidenceStateBoundaries(t *testing.T) {
 			wantState:  "recorded",
 			wantResult: "recorded",
 		},
+		{
+			name:       "operator replay still waiting when no replay aggregate exists",
+			row:        map[string]any{"provider": "gitea", "deliveries_7d": int64(1), "processed_7d": int64(1), "last_event_status": "processed"},
+			wantState:  "recorded",
+			wantResult: "recorded",
+		},
+		{
+			name:       "operator replay observed before processing or repo sync binding",
+			row:        map[string]any{"provider": "gitea", "deliveries_7d": int64(1), "replayed_7d": int64(1), "last_event_status": "received"},
+			wantState:  "observed",
+			wantResult: "recorded",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -14144,7 +14197,35 @@ func TestWebhookCallbackRehearsalEvidenceStateBoundaries(t *testing.T) {
 			if strings.Contains(tt.name, "github processed") && evidence["github_actions_refresh_observed"] != false {
 				t.Fatalf("github actions refresh should require operation_run evidence: %#v", evidence)
 			}
+			if strings.Contains(tt.name, "operator replay still waiting") {
+				replayProof := mapFromAny(evidence["operator_replay_proof"])
+				if replayProof["proof_state"] != "waiting_for_operator_replay" || replayProof["manual_replay_required"] != true || replayProof["operator_replay_observed"] != false {
+					t.Fatalf("operator replay proof should stay waiting without replay aggregate: %#v", replayProof)
+				}
+			}
+			if strings.Contains(tt.name, "operator replay observed") {
+				replayProof := mapFromAny(evidence["operator_replay_proof"])
+				if replayProof["proof_state"] != "observed" || replayProof["manual_replay_required"] != false || replayProof["operator_replay_observed"] != true || replayProof["sanitized_replay_result_recorded"] != true {
+					t.Fatalf("operator replay proof should be observed before processing or repo sync binding: %#v", replayProof)
+				}
+			}
 		})
+	}
+}
+
+func TestWebhookCallbackRehearsalResultRecordingPlanDefaultsMissingReplayProof(t *testing.T) {
+	resultPlan := webhookProviderCallbackRehearsalResultRecordingPlan(map[string]any{
+		"evidence_state":            "recorded",
+		"webhook_event_recorded":    true,
+		"sanitized_result_recorded": true,
+	})
+	if resultPlan["operator_replay_proof_state"] != "waiting_for_operator_replay" ||
+		resultPlan["operator_replay_proof_recorded"] != false {
+		t.Fatalf("missing replay proof should default to waiting without <nil> leak: %#v", resultPlan)
+	}
+	encoded, _ := json.Marshal(resultPlan)
+	if strings.Contains(string(encoded), "<nil>") {
+		t.Fatalf("missing replay proof leaked nil sentinel: %s", encoded)
 	}
 }
 

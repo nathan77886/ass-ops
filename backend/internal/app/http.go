@@ -5497,6 +5497,7 @@ func webhookProviderCallbackRehearsalEvidence(row map[string]any) map[string]any
 		"repo_sync_enqueue_observed":       operationRuns > 0 || matchedRepoSyncAsset > 0,
 		"github_actions_refresh_observed":  strings.EqualFold(strings.TrimSpace(fmt.Sprint(row["provider"])), "github") && processed > 0 && operationRuns > 0,
 		"sanitized_result_recorded":        deliveries > 0,
+		"operator_replay_proof":            webhookProviderCallbackOperatorReplayProof(deliveries, failures, processed, replayed, signatureValid, matchedRepoSyncAsset, operationRuns),
 		"external_call_made_by_assops":     false,
 		"provider_settings_written":        false,
 		"provider_test_delivery_sent":      false,
@@ -5508,6 +5509,49 @@ func webhookProviderCallbackRehearsalEvidence(row map[string]any) map[string]any
 		"contains_payload":                 false,
 		"contains_provider_url":            false,
 		"suppressed_fields":                []string{"secret_token", "shared_secret", "signature_header", "provider_token", "provider_url", "request_headers", "request_body", "delivery_payload", "delivery_response", "provider_response_body", "provider_response_headers", "delivery_id", "payload", "result", "error_message"},
+	}
+}
+
+func webhookProviderCallbackOperatorReplayProof(deliveries, failures, processed, replayed, signatureValid, matchedRepoSyncAsset, operationRuns int) map[string]any {
+	proofState := "waiting_for_operator_replay"
+	switch {
+	case replayed > 0 && failures > 0 && processed == 0:
+		proofState = "failed"
+	case replayed > 0 && (operationRuns > 0 || matchedRepoSyncAsset > 0 || processed > 0):
+		proofState = "recorded"
+	case replayed > 0:
+		proofState = "observed"
+	}
+	return map[string]any{
+		"mode":                               "operator_guided_webhook_replay_proof",
+		"proof_state":                        proofState,
+		"proof_source":                       "webhook_events_aggregate",
+		"manual_replay_required":             replayed == 0,
+		"operator_replay_observed":           replayed > 0,
+		"sanitized_replay_result_recorded":   replayed > 0,
+		"delivery_evidence_count_7d":         deliveries,
+		"replayed_event_count_7d":            replayed,
+		"processed_delivery_count_7d":        processed,
+		"failed_delivery_count_7d":           failures,
+		"signature_valid_delivery_count_7d":  signatureValid,
+		"repo_sync_binding_count_7d":         matchedRepoSyncAsset,
+		"operation_binding_count_7d":         operationRuns,
+		"signature_validation_observed":      replayed > 0 && signatureValid > 0,
+		"repo_sync_binding_observed":         replayed > 0 && matchedRepoSyncAsset > 0,
+		"operation_binding_observed":         replayed > 0 && operationRuns > 0,
+		"external_call_made_by_assops":       false,
+		"provider_api_called":                false,
+		"provider_test_delivery_sent":        false,
+		"raw_request_headers_recorded":       false,
+		"raw_request_body_recorded":          false,
+		"raw_provider_response_recorded":     false,
+		"source_delivery_id_recorded":        false,
+		"replay_source_delivery_id_recorded": false,
+		"contains_token":                     false,
+		"contains_secret":                    false,
+		"contains_payload":                   false,
+		"contains_provider_url":              false,
+		"suppressed_fields":                  []string{"delivery_id", "source_delivery_id", "replay_source_delivery_id", "secret_token", "shared_secret", "signature_header", "authorization_header", "provider_token", "provider_url", "request_headers", "request_body", "payload", "delivery_payload", "result", "error_message", "provider_response_body", "provider_response_headers"},
 	}
 }
 
@@ -5523,6 +5567,8 @@ func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReaso
 	}
 	deliveryObserved := boolOnlyFromAny(evidence["provider_delivery_observed"])
 	resultWritten := boolOnlyFromAny(evidence["sanitized_result_recorded"])
+	replayProof := mapFromAny(evidence["operator_replay_proof"])
+	replayProofState := cleanPreviewString(replayProof["proof_state"])
 	return map[string]any{
 		"mode":                           "provider_callback_rehearsal_plan",
 		"plan_state":                     planState,
@@ -5533,6 +5579,7 @@ func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReaso
 		"provider_delivery_received":     deliveryObserved,
 		"webhook_event_created":          deliveryObserved,
 		"webhook_event_replayed":         boolOnlyFromAny(evidence["webhook_event_replay_observed"]),
+		"operator_replay_proof_recorded": replayProofState == "recorded",
 		"repo_sync_enqueued":             boolOnlyFromAny(evidence["repo_sync_enqueue_observed"]),
 		"github_actions_refresh_started": boolOnlyFromAny(evidence["github_actions_refresh_observed"]),
 		"result_written":                 resultWritten,
@@ -5583,6 +5630,7 @@ func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReaso
 		"execution_blockers":     executionBlockers,
 		"public_endpoint_plan":   webhookProviderCallbackPublicEndpointPlan(planState, readinessReasons),
 		"provider_delivery_plan": webhookProviderCallbackDeliveryPlan(planState),
+		"operator_replay_proof":  replayProof,
 		"threshold_tuning_plan":  webhookProviderCallbackThresholdTuningPlan(planState),
 		"result_recording_plan":  webhookProviderCallbackRehearsalResultRecordingPlan(evidence),
 		"message":                "Provider callback rehearsal is audit-only; no provider settings write or provider test delivery is performed, while existing webhook event evidence is reconciled as sanitized metadata.",
@@ -5689,6 +5737,11 @@ func webhookProviderCallbackRehearsalResultRecordingPlan(evidence map[string]any
 	evidenceState := strings.TrimSpace(fmt.Sprint(evidence["evidence_state"]))
 	evidenceObserved := boolOnlyFromAny(evidence["webhook_event_recorded"])
 	resultReady := boolOnlyFromAny(evidence["sanitized_result_recorded"])
+	replayProof := mapFromAny(evidence["operator_replay_proof"])
+	replayProofState := cleanPreviewString(replayProof["proof_state"])
+	if replayProofState == "" {
+		replayProofState = "waiting_for_operator_replay"
+	}
 	recordingState := "blocked"
 	recordingReason := "provider_callback_rehearsal_execution_not_performed"
 	switch evidenceState {
@@ -5711,6 +5764,8 @@ func webhookProviderCallbackRehearsalResultRecordingPlan(evidence map[string]any
 		"result_written":                   resultReady,
 		"webhook_connection_updated":       false,
 		"webhook_event_recorded":           evidenceObserved,
+		"operator_replay_proof_state":      replayProofState,
+		"operator_replay_proof_recorded":   replayProofState == "recorded",
 		"operation_log_written":            false,
 		"repo_sync_result_recorded":        boolOnlyFromAny(evidence["repo_sync_enqueue_observed"]),
 		"github_actions_result_recorded":   boolOnlyFromAny(evidence["github_actions_refresh_observed"]),
