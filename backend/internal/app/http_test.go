@@ -14418,6 +14418,34 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 				volumeEvidence["contains_provider_url"] != false {
 				t.Fatalf("provider callback threshold volume evidence should stay redacted and no-call: %#v", volumeEvidence)
 			}
+			metricsComparison := mapFromAny(thresholdPlan["provider_metrics_comparison_plan"])
+			if metricsComparison["mode"] != "provider_callback_provider_metrics_comparison_plan" ||
+				metricsComparison["comparison_state"] != "waiting_for_volume" ||
+				metricsComparison["comparison_ready_for_review"] != false ||
+				metricsComparison["local_volume_observed"] != false ||
+				metricsComparison["provider_volume_observed"] != false ||
+				metricsComparison["provider_metrics_fetched"] != false ||
+				metricsComparison["provider_pair_limits_compared"] != false ||
+				metricsComparison["external_call_made"] != false ||
+				metricsComparison["contains_token"] != false ||
+				metricsComparison["contains_secret"] != false ||
+				metricsComparison["contains_payload"] != false ||
+				metricsComparison["contains_provider_url"] != false {
+				t.Fatalf("provider metrics comparison plan should stay no-call and redacted: %#v", metricsComparison)
+			}
+			for _, backend := range []string{"provider_metrics_fetch", "provider_pair_limits_compare", "threshold_delta_persist", "operator_review_audit_insert"} {
+				if !containsString(stringSliceFromAny(metricsComparison["disabled_backends"]), backend) {
+					t.Fatalf("provider metrics comparison disabled backend missing %q: %#v", backend, metricsComparison["disabled_backends"])
+				}
+			}
+			for _, field := range []string{"provider_token", "provider_url", "authorization_header", "request_headers", "provider_response_body", "provider_response_headers", "delivery_id", "payload"} {
+				if !containsString(stringSliceFromAny(metricsComparison["suppressed_fields"]), field) {
+					t.Fatalf("provider metrics comparison suppressed field missing %q: %#v", field, metricsComparison["suppressed_fields"])
+				}
+			}
+			if mapFromAny(configurationPlan["provider_metrics_comparison_plan"])["comparison_state"] != "waiting_for_volume" {
+				t.Fatalf("threshold configuration should carry provider metrics comparison plan: %#v", configurationPlan["provider_metrics_comparison_plan"])
+			}
 			resultPlan := mapFromAny(plan["result_recording_plan"])
 			if resultPlan["mode"] != "provider_callback_rehearsal_result_recording_plan" ||
 				resultPlan["result_recording_state"] != "blocked" ||
@@ -14581,6 +14609,20 @@ func TestWebhookCallbackRehearsalReadinessReconcilesObservedEvidence(t *testing.
 	if !containsString(stringSliceFromAny(thresholdPlan["execution_blockers"]), "operator_threshold_review_not_recorded") {
 		t.Fatalf("ready threshold volume should wait for operator threshold review: %#v", thresholdPlan["execution_blockers"])
 	}
+	metricsComparison := mapFromAny(thresholdPlan["provider_metrics_comparison_plan"])
+	if metricsComparison["comparison_state"] != "ready_for_operator_review" ||
+		metricsComparison["comparison_ready_for_review"] != true ||
+		metricsComparison["local_volume_observed"] != true ||
+		metricsComparison["provider_metrics_fetched"] != false ||
+		metricsComparison["provider_pair_limits_compared"] != false ||
+		metricsComparison["external_call_made"] != false ||
+		intFromAny(metricsComparison["delivery_count_7d"], 0) != 2 ||
+		intFromAny(metricsComparison["operation_run_count_7d"], 0) != 1 {
+		t.Fatalf("ready provider metrics comparison should use local volume only: %#v", metricsComparison)
+	}
+	if !containsString(stringSliceFromAny(metricsComparison["blocked_reasons"]), "provider_metrics_fetch_disabled") {
+		t.Fatalf("ready provider metrics comparison should keep fetch disabled: %#v", metricsComparison["blocked_reasons"])
+	}
 	configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
 	if configurationPlan["configuration_state"] != "ready_for_operator_review" ||
 		configurationPlan["configuration_review_ready"] != true ||
@@ -14590,6 +14632,9 @@ func TestWebhookCallbackRehearsalReadinessReconcilesObservedEvidence(t *testing.
 		configurationPlan["provider_pair_limits_compared"] != false ||
 		configurationPlan["external_call_made"] != false {
 		t.Fatalf("ready threshold configuration should wait for operator review without writes: %#v", configurationPlan)
+	}
+	if mapFromAny(configurationPlan["provider_metrics_comparison_plan"])["comparison_state"] != "ready_for_operator_review" {
+		t.Fatalf("ready threshold configuration should carry metrics comparison: %#v", configurationPlan["provider_metrics_comparison_plan"])
 	}
 	if !containsString(stringSliceFromAny(configurationPlan["blocked_reasons"]), "threshold_configuration_write_disabled") {
 		t.Fatalf("ready threshold configuration should keep write disabled: %#v", configurationPlan["blocked_reasons"])
@@ -14657,6 +14702,19 @@ func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T)
 	if !containsString(stringSliceFromAny(thresholdPlan["execution_blockers"]), "webhook_failures_need_operator_threshold_review") {
 		t.Fatalf("failed threshold volume should expose failure review blocker: %#v", thresholdPlan["execution_blockers"])
 	}
+	metricsComparison := mapFromAny(thresholdPlan["provider_metrics_comparison_plan"])
+	if metricsComparison["comparison_state"] != "needs_failure_review" ||
+		metricsComparison["comparison_ready_for_review"] != false ||
+		metricsComparison["local_volume_observed"] != true ||
+		metricsComparison["provider_metrics_fetched"] != false ||
+		metricsComparison["provider_pair_limits_compared"] != false ||
+		metricsComparison["external_call_made"] != false ||
+		intFromAny(metricsComparison["failed_count_7d"], 0) != 1 {
+		t.Fatalf("failed provider metrics comparison should require failure review without provider calls: %#v", metricsComparison)
+	}
+	if !containsString(stringSliceFromAny(metricsComparison["blocked_reasons"]), "webhook_failures_need_operator_threshold_review") {
+		t.Fatalf("failed provider metrics comparison blocked reasons missing failure review: %#v", metricsComparison["blocked_reasons"])
+	}
 	configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
 	if configurationPlan["configuration_state"] != "needs_failure_review" ||
 		configurationPlan["configuration_review_ready"] != false ||
@@ -14664,6 +14722,9 @@ func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T)
 		configurationPlan["configuration_write_enabled"] != false ||
 		configurationPlan["external_call_made"] != false {
 		t.Fatalf("failed threshold configuration should require failure review without writes: %#v", configurationPlan)
+	}
+	if mapFromAny(configurationPlan["provider_metrics_comparison_plan"])["comparison_state"] != "needs_failure_review" {
+		t.Fatalf("failed threshold configuration should carry metrics comparison: %#v", configurationPlan["provider_metrics_comparison_plan"])
 	}
 	if !containsString(stringSliceFromAny(configurationPlan["blocked_reasons"]), "webhook_failures_need_operator_threshold_review") {
 		t.Fatalf("failed threshold configuration blocked reasons missing failure indicator: %#v", configurationPlan["blocked_reasons"])
@@ -14843,14 +14904,31 @@ func TestWebhookProviderCallbackThresholdVolumeEvidenceBoundaries(t *testing.T) 
 				got["contains_provider_url"] != false {
 				t.Fatalf("threshold volume evidence must stay no-call and redacted: %#v", got)
 			}
-			configurationPlan := webhookProviderCallbackThresholdConfigurationPlan(got)
+			metricsComparison := webhookProviderCallbackProviderMetricsComparisonPlan(got)
+			if metricsComparison["comparison_ready_for_review"] != tt.wantReady ||
+				metricsComparison["provider_metrics_fetched"] != false ||
+				metricsComparison["provider_pair_limits_compared"] != false ||
+				metricsComparison["external_call_made"] != false ||
+				metricsComparison["contains_token"] != false ||
+				metricsComparison["contains_payload"] != false ||
+				metricsComparison["contains_provider_url"] != false {
+				t.Fatalf("provider metrics comparison plan must stay no-call and redacted: %#v", metricsComparison)
+			}
+			configurationPlan := webhookProviderCallbackThresholdConfigurationPlan(got, metricsComparison)
 			wantConfigState := "blocked"
+			wantComparisonState := "local_volume_observed"
 			if tt.wantState == "waiting_for_volume" {
 				wantConfigState = "waiting_for_volume"
+				wantComparisonState = "waiting_for_volume"
 			} else if tt.wantState == "review_failed_volume" {
 				wantConfigState = "needs_failure_review"
+				wantComparisonState = "needs_failure_review"
 			} else if tt.wantReady {
 				wantConfigState = "ready_for_operator_review"
+				wantComparisonState = "ready_for_operator_review"
+			}
+			if metricsComparison["comparison_state"] != wantComparisonState {
+				t.Fatalf("provider metrics comparison = %#v, want state=%s", metricsComparison, wantComparisonState)
 			}
 			if configurationPlan["configuration_state"] != wantConfigState ||
 				configurationPlan["configuration_review_ready"] != tt.wantReady ||
@@ -14859,6 +14937,9 @@ func TestWebhookProviderCallbackThresholdVolumeEvidenceBoundaries(t *testing.T) 
 				configurationPlan["provider_metrics_fetched"] != false ||
 				configurationPlan["external_call_made"] != false {
 				t.Fatalf("threshold configuration plan = %#v, want state=%s ready=%v", configurationPlan, wantConfigState, tt.wantReady)
+			}
+			if mapFromAny(configurationPlan["provider_metrics_comparison_plan"])["comparison_state"] != wantComparisonState {
+				t.Fatalf("configuration should carry provider metrics comparison plan: %#v", configurationPlan["provider_metrics_comparison_plan"])
 			}
 		})
 	}

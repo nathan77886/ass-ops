@@ -3563,6 +3563,7 @@ function GitRemotes() {
               const thresholdPlan = providerPlan.threshold_tuning_plan || {};
               const thresholdVolume = thresholdPlan.volume_evidence || {};
               const thresholdConfig = thresholdPlan.threshold_configuration_plan || {};
+              const metricsComparison = thresholdPlan.provider_metrics_comparison_plan || thresholdConfig.provider_metrics_comparison_plan || {};
               const resultPlan = providerPlan.result_recording_plan || {};
               const callbackEvidence = readiness.callback_evidence || {};
               const replayProof = callbackEvidence.operator_replay_proof || providerPlan.operator_replay_proof || {};
@@ -3574,6 +3575,8 @@ function GitRemotes() {
                 <Tag color={deliveryPlan.delivery_state === 'planned' ? 'gold' : 'red'}>{deliveryPlan.provider_test_delivery_sent ? 'test delivered' : 'no test delivery'}</Tag>
                 <Tag color={thresholdPlan.threshold_state === 'planned' ? 'gold' : 'red'}>{thresholdPlan.provider_pair_thresholds_tuned ? 'thresholds tuned' : 'thresholds pending'}</Tag>
                 <Tag color={thresholdVolumeColor(thresholdPlan, thresholdVolume)}>{thresholdVolume.local_volume_observed ? `volume ${thresholdPlan.threshold_review_state || 'observed'}` : 'volume pending'}</Tag>
+                {metricsComparison.mode ? <Tag color={metricsComparison.comparison_ready_for_review ? 'gold' : metricsComparison.comparison_state === 'needs_failure_review' ? 'red' : 'default'}>metrics {metricsComparison.comparison_state || 'blocked'}</Tag> : null}
+                {metricsComparison.mode ? <Tag>{metricsComparison.provider_metrics_fetched ? 'provider metrics' : 'no provider metrics'}</Tag> : null}
                 {thresholdConfig.mode ? <Tag color={thresholdConfig.configuration_review_ready === true ? 'gold' : 'default'}>{thresholdConfig.configuration_review_ready === true ? 'config review ready' : `config ${thresholdConfig.configuration_state || 'blocked'}`}</Tag> : null}
                 <Tag>{providerPlan.external_call_made ? 'provider call' : 'no provider call'}</Tag>
                 <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>

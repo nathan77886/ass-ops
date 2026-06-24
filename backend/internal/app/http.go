@@ -5780,6 +5780,7 @@ func webhookProviderCallbackThresholdTuningPlan(planState string, evidence map[s
 		thresholdState = "planned"
 	}
 	volumeEvidence := webhookProviderCallbackThresholdVolumeEvidence(evidence)
+	metricsComparisonPlan := webhookProviderCallbackProviderMetricsComparisonPlan(volumeEvidence)
 	thresholdReviewReady := boolOnlyFromAny(volumeEvidence["threshold_review_ready"])
 	executionBlockers := []string{"provider_pair_thresholds_need_live_volume_tuning"}
 	switch cleanPreviewString(volumeEvidence["threshold_review_state"]) {
@@ -5803,7 +5804,8 @@ func webhookProviderCallbackThresholdTuningPlan(planState string, evidence map[s
 		"threshold_configuration_written":   false,
 		"external_call_made":                false,
 		"volume_evidence":                   volumeEvidence,
-		"threshold_configuration_plan":      webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence),
+		"provider_metrics_comparison_plan":  metricsComparisonPlan,
+		"threshold_configuration_plan":      webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence, metricsComparisonPlan),
 		"required_observations":             []string{"provider_pair_active_runs", "provider_pair_recent_failures", "webhook_delivery_failures", "github_actions_run_volume"},
 		"threshold_review_sequence":         []string{"collect_live_sync_volume", "compare_provider_limits", "adjust_warning_thresholds", "adjust_danger_thresholds", "record_threshold_review"},
 		"disabled_backends":                 []string{"provider_metrics_fetch", "threshold_configuration_write", "sync_capacity_backfill"},
@@ -5814,7 +5816,7 @@ func webhookProviderCallbackThresholdTuningPlan(planState string, evidence map[s
 	}
 }
 
-func webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence map[string]any) map[string]any {
+func webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence, metricsComparisonPlan map[string]any) map[string]any {
 	reviewState := cleanPreviewString(volumeEvidence["threshold_review_state"])
 	reviewReady := boolOnlyFromAny(volumeEvidence["threshold_review_ready"])
 	configurationState := "blocked"
@@ -5838,6 +5840,7 @@ func webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence map[string
 		"operator_threshold_review_recorded": false,
 		"provider_metrics_fetched":           false,
 		"provider_pair_limits_compared":      false,
+		"provider_metrics_comparison_plan":   metricsComparisonPlan,
 		"external_call_made":                 false,
 		"contains_token":                     false,
 		"contains_secret":                    false,
@@ -5884,6 +5887,92 @@ func webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence map[string
 		},
 		"blocked_reasons": blockedReasons,
 		"message":         "Threshold configuration persistence is review-only; current thresholds are exposed as non-secret constants and no provider metrics or configuration writes are performed.",
+	}
+}
+
+func webhookProviderCallbackProviderMetricsComparisonPlan(volumeEvidence map[string]any) map[string]any {
+	reviewState := cleanPreviewString(volumeEvidence["threshold_review_state"])
+	if reviewState == "" {
+		reviewState = "waiting_for_volume"
+	}
+	volumeObserved := boolOnlyFromAny(volumeEvidence["local_volume_observed"])
+	reviewReady := boolOnlyFromAny(volumeEvidence["threshold_review_ready"])
+	comparisonState := "waiting_for_volume"
+	switch {
+	case reviewState == "review_failed_volume":
+		comparisonState = "needs_failure_review"
+	case reviewReady:
+		comparisonState = "ready_for_operator_review"
+	case volumeObserved:
+		comparisonState = "local_volume_observed"
+	}
+	blockedReasons := []string{"provider_metrics_fetch_disabled", "provider_pair_limits_compare_disabled"}
+	if !volumeObserved {
+		blockedReasons = append(blockedReasons, "real_provider_volume_not_observed")
+	}
+	if reviewState == "review_failed_volume" {
+		blockedReasons = append(blockedReasons, "webhook_failures_need_operator_threshold_review")
+	} else if volumeObserved && !reviewReady {
+		blockedReasons = append(blockedReasons, "processed_or_repo_sync_volume_not_observed")
+	}
+	return map[string]any{
+		"mode":                               "provider_callback_provider_metrics_comparison_plan",
+		"comparison_state":                   comparisonState,
+		"threshold_review_state":             reviewState,
+		"comparison_ready_for_review":        reviewReady,
+		"local_volume_observed":              volumeObserved,
+		"provider_volume_observed":           false,
+		"provider_metrics_fetched":           false,
+		"provider_pair_limits_compared":      false,
+		"external_call_made":                 false,
+		"contains_token":                     false,
+		"contains_secret":                    false,
+		"contains_payload":                   false,
+		"contains_provider_url":              false,
+		"delivery_count_7d":                  intFromAny(volumeEvidence["delivery_count_7d"], 0),
+		"processed_count_7d":                 intFromAny(volumeEvidence["processed_count_7d"], 0),
+		"failed_count_7d":                    intFromAny(volumeEvidence["failed_count_7d"], 0),
+		"operation_run_count_7d":             intFromAny(volumeEvidence["operation_run_count_7d"], 0),
+		"matched_repo_sync_asset_count_7d":   intFromAny(volumeEvidence["matched_repo_sync_asset_count_7d"], 0),
+		"repo_sync_volume_observed":          boolOnlyFromAny(volumeEvidence["repo_sync_volume_observed"]),
+		"processed_or_bound_volume_observed": boolOnlyFromAny(volumeEvidence["processed_or_bound_volume_observed"]),
+		"current_thresholds": []map[string]any{
+			{"key": "webhook_delivery_failure_7d", "warning_at": repoSyncCapacityWebhookWarningThreshold, "danger_at": repoSyncCapacityWebhookDangerThreshold, "unit": "failed_events"},
+			{"key": "provider_pair_active_24h", "warning_at": repoSyncCapacityPairActiveWarningThreshold, "danger_at": repoSyncCapacityPairActiveDangerThreshold, "unit": "active_runs"},
+			{"key": "provider_pair_failure_24h", "warning_at": repoSyncCapacityPairFailureWarningThreshold, "danger_at": repoSyncCapacityPairFailureDangerThreshold, "unit": "failures"},
+			{"key": "github_actions_volume_24h", "warning_at": repoSyncCapacityGitHubVolumeWarningThreshold, "danger_at": repoSyncCapacityGitHubVolumeDangerThreshold, "unit": "runs"},
+		},
+		"required_provider_metrics": []string{
+			"provider_delivery_attempts",
+			"provider_delivery_failures",
+			"provider_rate_limit_remaining",
+			"provider_actions_run_volume",
+		},
+		"comparison_sequence": []string{
+			"collect_local_webhook_volume",
+			"fetch_provider_delivery_metrics",
+			"compare_provider_pair_limits",
+			"review_threshold_delta",
+			"record_operator_threshold_decision",
+		},
+		"disabled_backends": []string{
+			"provider_metrics_fetch",
+			"provider_pair_limits_compare",
+			"threshold_delta_persist",
+			"operator_review_audit_insert",
+		},
+		"suppressed_fields": []string{
+			"provider_token",
+			"provider_url",
+			"authorization_header",
+			"request_headers",
+			"provider_response_body",
+			"provider_response_headers",
+			"delivery_id",
+			"payload",
+		},
+		"blocked_reasons": blockedReasons,
+		"message":         "Provider metrics comparison is review-only; ASSOPS uses local webhook counters here and does not fetch provider metrics, compare live provider limits, or persist threshold deltas.",
 	}
 }
 
