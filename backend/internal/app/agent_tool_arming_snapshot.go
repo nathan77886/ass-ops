@@ -149,9 +149,9 @@ func RecordAgentToolArmingSnapshot(ctx context.Context, store *Store, opts Agent
 	if rowsAffectedWarning != "" {
 		result["rows_affected_warning"] = rowsAffectedWarning
 		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = 0
-		result["agent_tool_arming_snapshot_written"] = true
-		result["asset_status_snapshot_written"] = true
+		result["snapshots_skipped_as_duplicate"] = -1
+		result["agent_tool_arming_snapshot_written"] = false
+		result["asset_status_snapshot_written"] = false
 	}
 	result["message"] = "Sanitized agent tool arming snapshot recorded from local audit evidence."
 	return result, nil

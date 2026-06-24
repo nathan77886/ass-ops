@@ -153,9 +153,9 @@ func RecordSSHMachineRehearsalSnapshot(ctx context.Context, store *Store, opts S
 		result["rows_affected_warning"] = rowsAffectedWarning
 		result["rows_affected_unknown"] = true
 		result["snapshot_commit_attempted"] = true
-		result["snapshots_skipped_as_duplicate"] = 0
-		result["ssh_rehearsal_snapshot_written"] = true
-		result["asset_status_snapshot_written"] = true
+		result["snapshots_skipped_as_duplicate"] = -1
+		result["ssh_rehearsal_snapshot_written"] = false
+		result["asset_status_snapshot_written"] = false
 	}
 	result["canonical_asset_status_snapshot_attempted"] = true
 	result["message"] = "Sanitized SSH rehearsal attestation snapshot recorded from local operation evidence."
@@ -293,9 +293,9 @@ func RecordSSHMachineTargetEnvironmentProof(ctx context.Context, store *Store, o
 	if rowsAffectedWarning != "" {
 		result["rows_affected_warning"] = rowsAffectedWarning
 		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = 0
-		result["proof_registered"] = true
-		result["asset_status_snapshot_written"] = true
+		result["snapshots_skipped_as_duplicate"] = -1
+		result["proof_registered"] = false
+		result["asset_status_snapshot_written"] = false
 	}
 	result["message"] = "Sanitized SSH target environment proof recorded from local operation evidence."
 	return result, nil

@@ -149,9 +149,9 @@ func RecordWebhookProviderCallbackRehearsalSnapshot(ctx context.Context, store *
 	if rowsAffectedWarning != "" {
 		result["rows_affected_warning"] = rowsAffectedWarning
 		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = 0
-		result["provider_callback_rehearsal_snapshot_written"] = true
-		result["asset_status_snapshot_written"] = true
+		result["snapshots_skipped_as_duplicate"] = -1
+		result["provider_callback_rehearsal_snapshot_written"] = false
+		result["asset_status_snapshot_written"] = false
 	}
 	result["canonical_asset_status_snapshot_attempted"] = true
 	result["message"] = "Sanitized provider callback rehearsal snapshot recorded from local webhook evidence."

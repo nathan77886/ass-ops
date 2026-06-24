@@ -1035,8 +1035,8 @@ func TestRecordArgoPodLogAuditSnapshotHandlerRowsAffectedUnavailable(t *testing.
 		got["snapshots_skipped_as_duplicate"] != float64(-1) ||
 		got["rows_affected_unknown"] != true ||
 		got["snapshot_commit_attempted"] != true ||
-		got["pod_log_audit_snapshot_written"] != true ||
-		got["asset_status_snapshot_written"] != true {
+		got["pod_log_audit_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
 		t.Fatalf("unexpected rows affected unavailable response: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -4968,6 +4968,45 @@ func TestRecordRepoTagRunResultSnapshotWritesSanitizedSnapshot(t *testing.T) {
 	}
 }
 
+func TestRecordRepoTagRunResultSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	runID := "11111111-1111-1111-1111-111111111111"
+	mock.ExpectQuery(`(?s)SELECT rtr\.id,.*FROM repo_tag_runs rtr.*WHERE rtr\.id=\$1`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_run_id", "project_id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "error_message", "started_at", "finished_at", "created_at", "provider_type", "remote_role", "repo_key", "repo_role",
+		}).AddRow(runID, "op-1", "project-1", "repo-1", "remote-1", "remote-1", "v1.0.0", "abc123", "completed", "", now, now, now, "github", "target", "service", "service"))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='repo_tag_run'`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-1", "recorded", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordRepoTagRunResultSnapshot(context.Background(), store, RepoTagRunResultSnapshotOptions{RepoTagRunID: runID})
+	if err != nil {
+		t.Fatalf("RecordRepoTagRunResultSnapshot: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["tag_result_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown repo tag result snapshot: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestCreateRepoTagRunLiveLookupEnqueuesWorker(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -5285,6 +5324,49 @@ func TestRecordRepoTagRunActionsRefreshSnapshotWritesSanitizedSnapshot(t *testin
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("actions refresh snapshot leaked %q: %s", forbidden, encoded)
 		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordRepoTagRunActionsRefreshSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	runID := "11111111-1111-1111-1111-111111111111"
+	mock.ExpectQuery(`(?s)SELECT rtr\.id,.*FROM repo_tag_runs rtr.*WHERE rtr\.id=\$1`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_run_id", "project_id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "error_message", "started_at", "finished_at", "created_at", "provider_type", "remote_role", "repo_key", "repo_role",
+		}).AddRow(runID, "op-1", "project-1", "repo-1", "remote-1", "remote-1", "v1.0.0", "abc123", "completed", "", now, now, now, "github", "target", "service", "service"))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='repo_tag_run'`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\)::int AS total,.*FROM github_action_runs\s+WHERE git_remote_id=\$1\s+AND \(\$2 = '' OR commit_sha=\$2\)`).
+		WithArgs("remote-1", "abc123").
+		WillReturnRows(sqlmock.NewRows([]string{"total", "success_count", "failure_count", "active_count", "synced_count", "latest_synced_at", "latest_updated_at"}).
+			AddRow(2, 1, 1, 0, 2, now, now))
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-1", "github_actions_refresh_recorded", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordRepoTagRunActionsRefreshSnapshot(context.Background(), store, RepoTagRunActionsRefreshSnapshotOptions{RepoTagRunID: runID})
+	if err != nil {
+		t.Fatalf("RecordRepoTagRunActionsRefreshSnapshot: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["actions_refresh_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown actions refresh snapshot: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
@@ -8742,11 +8824,11 @@ func TestRecordSSHMachineRehearsalSnapshotHandlerRowsAffectedUnavailable(t *test
 	}
 	if got["recording_state"] != "recorded" ||
 		got["snapshots_written"] != float64(-1) ||
-		got["snapshots_skipped_as_duplicate"] != float64(0) ||
+		got["snapshots_skipped_as_duplicate"] != float64(-1) ||
 		got["rows_affected_unknown"] != true ||
 		got["snapshot_commit_attempted"] != true ||
-		got["ssh_rehearsal_snapshot_written"] != true ||
-		got["asset_status_snapshot_written"] != true {
+		got["ssh_rehearsal_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
 		t.Fatalf("unexpected rows affected unavailable response: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -8971,6 +9053,53 @@ func TestRecordSSHMachineTargetEnvironmentProofHandlerWritesSanitizedPayload(t *
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("proof response leaked %q: %s", forbidden, encoded)
 		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordSSHMachineTargetEnvironmentProofHandlerRowsAffectedUnknownDoesNotClaimProof(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{
+		{id: "run-2", status: "completed", operationType: "ssh.exec"},
+		{id: "run-1", status: "completed", operationType: "ssh.verify"},
+	})
+	expectSSHRehearsalSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-ssh-1", sshTargetEnvironmentProofStatus).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-ssh-1", sshTargetEnvironmentProofStatus, "ok", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	req := newSSHTargetEnvironmentProofRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineTargetEnvironmentProof(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != float64(-1) ||
+		got["snapshots_skipped_as_duplicate"] != float64(-1) ||
+		got["proof_registered"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown proof response: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -20627,8 +20756,8 @@ func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerHandlesRowsAffecte
 	}
 	if body["recording_state"] != "recorded" ||
 		body["rows_affected_unknown"] != true ||
-		body["provider_callback_rehearsal_snapshot_written"] != true ||
-		body["asset_status_snapshot_written"] != true ||
+		body["provider_callback_rehearsal_snapshot_written"] != false ||
+		body["asset_status_snapshot_written"] != false ||
 		intFromAny(body["snapshots_written"], 0) != -1 {
 		t.Fatalf("unexpected rows-affected warning provider callback snapshot response: %#v", body)
 	}
@@ -22430,6 +22559,50 @@ func TestRecordAgentToolAuditSnapshotHandlerDryRunSkipsWrite(t *testing.T) {
 	}
 }
 
+func TestRecordAgentToolAuditSnapshotHandlerRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "runtime.check"},
+	})
+	expectAgentToolAuditSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-agent-task-1", "agent_tool_audit_recorded").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-agent-task-1", "agent_tool_audit_recorded", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	req := newAgentToolAuditSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != float64(-1) ||
+		got["snapshots_skipped_as_duplicate"] != float64(-1) ||
+		got["agent_tool_audit_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown agent audit response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordAgentToolAuditSnapshotHandlerAssetMissing(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -22681,6 +22854,51 @@ func TestRecordAgentToolArmingSnapshotHandlerDryRunSkipsWrite(t *testing.T) {
 		got["agent_tool_arming_snapshot_written"] != false ||
 		got["asset_status_snapshot_written"] != false {
 		t.Fatalf("unexpected dry-run tool arming response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentToolArmingSnapshotHandlerRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "runtime.check"},
+	})
+	expectAgentToolArmingSnapshotRuntime(mock, true)
+	expectAgentToolAuditSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-agent-task-1", "agent_tool_arming_review_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-agent-task-1", "agent_tool_arming_review_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	req := newAgentToolArmingSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolArmingSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != float64(-1) ||
+		got["snapshots_skipped_as_duplicate"] != float64(-1) ||
+		got["agent_tool_arming_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown tool arming response: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -23019,6 +23237,52 @@ func TestRecordAgentCodeAuditSnapshotHandlerDryRunSkipsWrite(t *testing.T) {
 		got["agent_code_audit_snapshot_written"] != false ||
 		got["asset_status_snapshot_written"] != false {
 		t.Fatalf("unexpected dry-run agent code audit snapshot response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentCodeAuditSnapshotHandlerRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "worker.dispatch.plan"},
+		{id: "call-2", status: "completed", toolName: "codex.execution.plan"},
+		{id: "call-3", status: "completed", toolName: "patch.prepare"},
+	})
+	expectAgentToolAuditSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-agent-task-1", "agent_code_audit_recorded").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-agent-task-1", "agent_code_audit_recorded", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	req := newAgentCodeAuditSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentCodeAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != float64(-1) ||
+		got["snapshots_skipped_as_duplicate"] != float64(-1) ||
+		got["agent_code_audit_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown agent code response: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

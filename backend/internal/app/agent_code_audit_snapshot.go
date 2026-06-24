@@ -165,9 +165,9 @@ func RecordAgentCodeAuditSnapshot(ctx context.Context, store *Store, opts AgentC
 	if rowsAffectedWarning != "" {
 		result["rows_affected_warning"] = rowsAffectedWarning
 		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = 0
-		result["agent_code_audit_snapshot_written"] = true
-		result["asset_status_snapshot_written"] = true
+		result["snapshots_skipped_as_duplicate"] = -1
+		result["agent_code_audit_snapshot_written"] = false
+		result["asset_status_snapshot_written"] = false
 	}
 	result["message"] = "Sanitized agent code audit snapshot recorded from local audit evidence."
 	return result, nil

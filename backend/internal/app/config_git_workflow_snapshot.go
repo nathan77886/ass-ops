@@ -258,7 +258,7 @@ func RecordConfigRepositoryGitWorkflowPromotionSnapshot(ctx context.Context, sto
 	if rowsAffectedWarning != "" {
 		result["rows_affected_warning"] = rowsAffectedWarning
 		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = 0
+		result["snapshots_skipped_as_duplicate"] = -1
 		result["promotion_snapshot_written"] = false
 		result["asset_status_snapshot_written"] = false
 	}
@@ -433,7 +433,7 @@ func RecordConfigRepositoryRefRefreshSnapshot(ctx context.Context, store *Store,
 	if rowsAffectedWarning != "" {
 		result["rows_affected_warning"] = rowsAffectedWarning
 		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = 0
+		result["snapshots_skipped_as_duplicate"] = -1
 		result["ref_refresh_snapshot_written"] = false
 		result["asset_status_snapshot_written"] = false
 	}

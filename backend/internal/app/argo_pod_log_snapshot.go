@@ -144,8 +144,8 @@ func RecordArgoPodLogAuditSnapshot(ctx context.Context, store *Store, opts ArgoP
 		result["rows_affected_unknown"] = true
 		result["snapshot_commit_attempted"] = true
 		result["snapshots_skipped_as_duplicate"] = -1
-		result["pod_log_audit_snapshot_written"] = true
-		result["asset_status_snapshot_written"] = true
+		result["pod_log_audit_snapshot_written"] = false
+		result["asset_status_snapshot_written"] = false
 	}
 	result["message"] = "Sanitized pod log audit snapshot recorded from local audit evidence."
 	return result, nil

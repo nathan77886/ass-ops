@@ -132,6 +132,8 @@ func RecordRepoTagRunResultSnapshot(ctx context.Context, store *Store, opts Repo
 		result["rows_affected_warning"] = rowsAffectedWarning
 		result["rows_affected_unknown"] = true
 		result["snapshots_skipped_as_duplicate"] = -1
+		result["tag_result_snapshot_written"] = false
+		result["asset_status_snapshot_written"] = false
 	}
 	result["message"] = "Sanitized repo tag result snapshot recorded from local repo_tag_run state."
 	return result, nil
@@ -253,6 +255,8 @@ func RecordRepoTagRunActionsRefreshSnapshot(ctx context.Context, store *Store, o
 		result["rows_affected_warning"] = rowsAffectedWarning
 		result["rows_affected_unknown"] = true
 		result["snapshots_skipped_as_duplicate"] = -1
+		result["actions_refresh_snapshot_written"] = false
+		result["asset_status_snapshot_written"] = false
 	}
 	result["message"] = "Sanitized repo tag GitHub Actions refresh snapshot recorded from local github_action_runs state."
 	return result, nil
