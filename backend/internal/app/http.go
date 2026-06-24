@@ -122,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 		r.Patch("/api/git-repositories/{id}", s.updateGitRepository)
 		r.Get("/api/git-repositories/{id}/config-scaffold", s.getConfigRepositoryScaffold)
 		r.Post("/api/git-repositories/{id}/config-scaffold/request-git-workflow", s.requestConfigRepositoryGitWorkflow)
+		r.Post("/api/git-repositories/{id}/config-scaffold/promotion-snapshot", s.recordConfigRepositoryGitWorkflowPromotionSnapshot)
 		r.Post("/api/git-repositories/{id}/sync", s.createRepositorySync)
 		r.Post("/api/git-repositories/{id}/tags", s.createRepositoryTag)
 		r.Get("/api/git-repositories/{id}/repo-sync-assets", s.listRepoSyncAssets)
