@@ -2857,10 +2857,15 @@ function ProjectDetail() {
                   {configScaffold.data.git_commit_plan?.remote_review_plan ? <Tag color={configScaffold.data.git_commit_plan.remote_review_plan.review_state === 'planned' ? 'gold' : 'red'}>review {configScaffold.data.git_commit_plan.remote_review_plan.review_state || 'blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.remote_review_plan ? <Tag>{configScaffold.data.git_commit_plan.remote_review_plan.provider_review_created ? 'review created' : 'no review'}</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.live_commit_validation_performed ? 'live validation' : 'no live validation'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.project_version_pin_observed ? 'green' : 'orange'}>{configScaffold.data.git_commit_plan.project_version_pin_observed ? 'pin observed' : 'no pin evidence'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.live_commit_validation_observed ? 'green' : 'orange'}>{configScaffold.data.git_commit_plan.live_commit_validation_observed ? 'validation observed' : 'no validation evidence'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.project_version_pin_plan ? <Tag color="gold">pin {configScaffold.data.git_commit_plan.project_version_pin_plan.pin_state || 'blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag color="gold">result {configScaffold.data.git_commit_plan.result_recording_plan.result_recording_state || 'blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.result_written ? 'result recorded' : 'no result record'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.project_version_pin_written ? 'pin recorded' : 'no pin record'}</Tag> : null}
+                  {configScaffold.data.project_version_pin_evidence ? <Tag color={configScaffold.data.project_version_pin_evidence.pin_state === 'recorded' ? 'green' : 'default'}>pin evidence {configScaffold.data.project_version_pin_evidence.pin_state || 'not_recorded'}</Tag> : null}
+                  {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.pinned_version_count || 0} pinned versions</Tag> : null}
+                  {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.validated_version_count || 0} validated versions</Tag> : null}
                   {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.steps?.length || 0} commit steps</Tag> : null}
                 </Space>
                 {Array.isArray(configScaffold.data.blocked_reasons) && configScaffold.data.blocked_reasons.length > 0 && (

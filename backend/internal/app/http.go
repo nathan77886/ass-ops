@@ -3236,7 +3236,17 @@ func (s *Server) getConfigRepositoryScaffold(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "could not load git remotes")
 		return
 	}
-	writeJSON(w, http.StatusOK, configRepositoryScaffoldPreview(repo, remotes))
+	versions, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT id, version, metadata, created_at
+		FROM project_versions
+		WHERE project_id=$1
+		ORDER BY created_at DESC
+		LIMIT 100`, projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load project versions")
+		return
+	}
+	writeJSON(w, http.StatusOK, configRepositoryScaffoldPreview(repo, remotes, versions))
 }
 
 func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
@@ -3306,7 +3316,7 @@ func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
-func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]any) map[string]any {
+func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]any, versionRows ...[]map[string]any) map[string]any {
 	repoRole := strings.ToLower(strings.TrimSpace(stringFromMap(repo, "repo_role")))
 	environments := []string{"dev", "test", "prod"}
 	files := make([]map[string]any, 0, len(environments)*3+1)
@@ -3362,34 +3372,41 @@ func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]a
 	if len(blockedReasons) > 0 {
 		scaffoldState = "blocked"
 	}
-	commitPlan := configRepositoryGitCommitPlan(repo, files, remoteSummaries, blockedReasons)
+	var versions []map[string]any
+	if len(versionRows) > 0 {
+		versions = versionRows[0]
+	}
+	pinEvidence := configRepositoryProjectVersionPinEvidence(repo, remoteSummaries, versions)
+	commitPlan := configRepositoryGitCommitPlan(repo, files, remoteSummaries, blockedReasons, pinEvidence)
 	return map[string]any{
-		"mode":                   "config_repository_scaffold_preview",
-		"scaffold_state":         scaffoldState,
-		"repository_id":          repo["id"],
-		"repository_name":        stringFromMap(repo, "name"),
-		"repo_key":               stringFromMap(repo, "repo_key"),
-		"repo_role":              stringFromMap(repo, "repo_role"),
-		"default_branch":         stringFromMap(repo, "default_branch"),
-		"environments":           environments,
-		"files":                  files,
-		"file_count":             len(files),
-		"remote_count":           len(remotes),
-		"remotes":                remoteSummaries,
-		"required_controls":      []string{"config_remote_review", "branch_policy_review", "human_file_review", "project_version_config_commit_pin"},
-		"blocked_reasons":        blockedReasons,
-		"git_write_performed":    false,
-		"external_call_made":     false,
-		"file_content_included":  false,
-		"secret_included":        false,
-		"live_commit_validation": "not_performed",
-		"git_commit_plan":        commitPlan,
-		"next_step":              "Create or sync the config remote, commit the scaffold files through a reviewed Git workflow, then pin config_commit_sha in ProjectVersion.",
-		"suppressed_fields":      []string{"file_content", "secret_values", "git_credentials", "provider_token", "author_email"},
+		"mode":                         "config_repository_scaffold_preview",
+		"scaffold_state":               scaffoldState,
+		"repository_id":                repo["id"],
+		"repository_name":              stringFromMap(repo, "name"),
+		"repo_key":                     stringFromMap(repo, "repo_key"),
+		"repo_role":                    stringFromMap(repo, "repo_role"),
+		"default_branch":               stringFromMap(repo, "default_branch"),
+		"environments":                 environments,
+		"files":                        files,
+		"file_count":                   len(files),
+		"remote_count":                 len(remotes),
+		"remotes":                      remoteSummaries,
+		"required_controls":            []string{"config_remote_review", "branch_policy_review", "human_file_review", "project_version_config_commit_pin"},
+		"blocked_reasons":              blockedReasons,
+		"git_write_performed":          false,
+		"external_call_made":           false,
+		"file_content_included":        false,
+		"secret_included":              false,
+		"project_version_pin_evidence": pinEvidence,
+		"live_commit_validation":       "not_performed",
+		"live_commit_validation_state": pinEvidence["live_validation_state"],
+		"git_commit_plan":              commitPlan,
+		"next_step":                    "Create or sync the config remote, commit the scaffold files through a reviewed Git workflow, then pin config_commit_sha in ProjectVersion.",
+		"suppressed_fields":            []string{"file_content", "secret_values", "git_credentials", "provider_token", "author_email"},
 	}
 }
 
-func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[string]any, scaffoldBlockedReasons []string) map[string]any {
+func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[string]any, scaffoldBlockedReasons []string, pinEvidence map[string]any) map[string]any {
 	planState := "planned"
 	blockedReasons := append([]string{}, scaffoldBlockedReasons...)
 	defaultBranch := strings.TrimSpace(stringFromMap(repo, "default_branch"))
@@ -3405,7 +3422,9 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 	approvalPlan := configRepositoryGitCommitApprovalPlan(planState, blockedReasons)
 	workspacePlan := configRepositoryGitCommitWorkspacePlan(len(files), len(remotes), defaultBranch != "")
 	remoteReviewPlan := configRepositoryRemoteReviewPlan(planState, len(remotes), defaultBranch != "")
-	pinValidationPlan := configRepositoryProjectVersionPinValidationPlan(defaultBranch != "", len(remotes) > 0)
+	pinValidationPlan := configRepositoryProjectVersionPinValidationPlan(defaultBranch != "", len(remotes) > 0, pinEvidence)
+	pinObserved := boolOnlyFromAny(pinEvidence["config_commit_sha_recorded"])
+	liveValidationObserved := boolOnlyFromAny(pinEvidence["live_validation_recorded"])
 	steps := []map[string]any{
 		{
 			"kind":   "scaffold_review",
@@ -3445,15 +3464,15 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		},
 		{
 			"kind":   "project_version_pin",
-			"status": "blocked",
+			"status": statusWhen(pinObserved),
 			"checks": []string{"config_commit_sha", "ProjectVersion.metadata.repositories[].config_commit_sha"},
-			"reason": "ProjectVersion config commit pin is not written by this preview",
+			"reason": reasonWhen(pinObserved, "ProjectVersion config_commit_sha metadata is already recorded for this config repository", "ProjectVersion config commit pin is not written by this preview"),
 		},
 		{
 			"kind":   "live_commit_validation",
-			"status": "blocked",
+			"status": statusWhen(liveValidationObserved),
 			"checks": []string{"git_fetch", "remote_commit_lookup", "synced_state_validation"},
-			"reason": "Live commit validation is not performed by this preview",
+			"reason": reasonWhen(liveValidationObserved, "config_commit_sha matches synced remote latest_sha without performing Git fetch", "Live commit validation is not performed by this preview"),
 		},
 	}
 	return map[string]any{
@@ -3468,6 +3487,8 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		"pull_request_created":              false,
 		"project_version_pin_written":       false,
 		"live_commit_validation_performed":  false,
+		"project_version_pin_observed":      pinObserved,
+		"live_commit_validation_observed":   liveValidationObserved,
 		"file_content_materialized":         false,
 		"secret_scan_performed":             false,
 		"credential_bound":                  false,
@@ -3485,7 +3506,7 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		"workspace_execution_plan":          workspacePlan,
 		"remote_review_plan":                remoteReviewPlan,
 		"project_version_pin_plan":          pinValidationPlan,
-		"result_recording_plan":             configRepositoryGitCommitResultRecordingPlan(),
+		"result_recording_plan":             configRepositoryGitCommitResultRecordingPlan(pinEvidence),
 		"message":                           "Config repository Git commit and live validation are planned only; no files, Git refs, provider requests, or ProjectVersion pins are written.",
 	}
 }
@@ -3587,7 +3608,98 @@ func configRepositoryRemoteReviewPlan(planState string, remoteCount int, default
 	}
 }
 
-func configRepositoryProjectVersionPinValidationPlan(defaultBranchConfigured, remoteConfigured bool) map[string]any {
+func configRepositoryProjectVersionPinEvidence(repo map[string]any, remotes, versions []map[string]any) map[string]any {
+	// This function receives raw ProjectVersion metadata. Return only redacted
+	// evidence; never include the original metadata map or raw config_commit_sha.
+	repoKey := strings.TrimSpace(stringFromMap(repo, "repo_key"))
+	repoID := strings.TrimSpace(fmt.Sprint(repo["id"]))
+	remoteByID := map[string]map[string]any{}
+	for _, remote := range remotes {
+		remoteID := strings.TrimSpace(fmt.Sprint(remote["id"]))
+		if remoteID != "" && remoteID != "<nil>" {
+			remoteByID[remoteID] = remote
+		}
+	}
+	pinned, validated, mismatched := 0, 0, 0
+	items := []map[string]any{}
+	for _, version := range versions {
+		metadata := mapFromAny(version["metadata"])
+		for _, manifest := range mapSliceFromAny(metadata["repositories"]) {
+			configSHA := strings.TrimSpace(stringFromMap(manifest, "config_commit_sha"))
+			if configSHA == "" {
+				continue
+			}
+			manifestRepoKey := strings.TrimSpace(stringFromMap(manifest, "repo_key"))
+			manifestRepoID := strings.TrimSpace(stringFromMap(manifest, "repository_id"))
+			manifestRole := strings.TrimSpace(stringFromMap(manifest, "repo_role"))
+			_ = manifestRole
+			repositoryMatches := (manifestRepoKey != "" && manifestRepoKey == repoKey) || (manifestRepoID != "" && manifestRepoID == repoID)
+			if !repositoryMatches {
+				continue
+			}
+			remoteID := strings.TrimSpace(stringFromMap(manifest, "remote_id"))
+			remote := remoteByID[remoteID]
+			latestSHA := ""
+			if remote != nil {
+				latestSHA = strings.TrimSpace(stringFromMap(remote, "latest_sha"))
+			}
+			validationStatus := "not_observed"
+			if latestSHA != "" && strings.EqualFold(latestSHA, configSHA) {
+				validationStatus = "validated"
+				validated++
+			} else if latestSHA != "" {
+				validationStatus = "mismatched"
+				mismatched++
+			}
+			pinned++
+			items = append(items, map[string]any{
+				"project_version_id":        version["id"],
+				"version":                   version["version"],
+				"repo_key":                  manifestRepoKey,
+				"repo_role":                 manifestRole,
+				"remote_id":                 remoteID,
+				"config_commit_sha_present": true,
+				"remote_latest_sha_present": latestSHA != "",
+				"validation_status":         validationStatus,
+				"commit_sha_included":       false,
+				"remote_url_included":       false,
+				"secret_included":           false,
+			})
+		}
+	}
+	pinState := "not_recorded"
+	if pinned > 0 {
+		pinState = "recorded"
+	}
+	liveState := "not_recorded"
+	if validated > 0 {
+		liveState = "recorded"
+	} else if mismatched > 0 {
+		liveState = "mismatched"
+	} else if pinned > 0 {
+		liveState = "waiting_for_synced_remote"
+	}
+	return map[string]any{
+		"mode":                       "config_repository_project_version_pin_evidence",
+		"project_version_count":      len(versions),
+		"pinned_version_count":       pinned,
+		"validated_version_count":    validated,
+		"mismatched_version_count":   mismatched,
+		"config_commit_sha_recorded": pinned > 0,
+		"live_validation_recorded":   validated > 0,
+		"pin_state":                  pinState,
+		"live_validation_state":      liveState,
+		"items":                      items,
+		"external_call_made":         false,
+		"git_fetch_performed":        false,
+		"commit_sha_included":        false,
+		"remote_url_included":        false,
+		"secret_included":            false,
+		"suppressed_fields":          []string{"config_commit_sha", "remote_url", "git_credentials", "provider_token", "authorization_header", "provider_response_body"},
+	}
+}
+
+func configRepositoryProjectVersionPinValidationPlan(defaultBranchConfigured, remoteConfigured bool, evidence map[string]any) map[string]any {
 	metadataReady := defaultBranchConfigured && remoteConfigured
 	blockedReasons := []string{"project_version_pin_write_disabled", "live_remote_commit_validation_not_performed"}
 	if !remoteConfigured {
@@ -3596,20 +3708,32 @@ func configRepositoryProjectVersionPinValidationPlan(defaultBranchConfigured, re
 	if !defaultBranchConfigured {
 		blockedReasons = append(blockedReasons, "default_branch_missing")
 	}
+	pinObserved := boolOnlyFromAny(evidence["config_commit_sha_recorded"])
+	liveObserved := boolOnlyFromAny(evidence["live_validation_recorded"])
+	pinState := "blocked"
+	if pinObserved {
+		pinState = "observed"
+	}
+	pinReadyReason := "config_commit_sha_pin_write_disabled"
+	if pinObserved {
+		pinReadyReason = "config_commit_sha_observed_in_project_version_metadata"
+	}
 	return map[string]any{
 		"mode":                            "config_repository_project_version_pin_validation_plan",
-		"pin_state":                       "blocked",
-		"pin_ready":                       false,
-		"pin_ready_reason":                "config_commit_sha_pin_write_disabled",
+		"pin_state":                       pinState,
+		"pin_ready":                       pinObserved,
+		"pin_ready_reason":                pinReadyReason,
 		"metadata_ready":                  metadataReady,
 		"project_version_pin_written":     false,
-		"config_commit_sha_recorded":      false,
+		"project_version_pin_observed":    pinObserved,
+		"config_commit_sha_recorded":      pinObserved,
 		"live_commit_validation_started":  false,
-		"live_commit_validation_recorded": false,
+		"live_commit_validation_recorded": liveObserved,
 		"git_fetch_performed":             false,
 		"external_call_made":              false,
 		"contains_commit_sha":             false,
 		"contains_remote_url":             false,
+		"pin_evidence":                    evidence,
 		"required_pin_fields":             []string{"project_version_id", "repository_id", "remote_id", "repo_key", "config_commit_sha", "validation_status"},
 		"suppressed_fields":               []string{"remote_url", "branch_name", "commit_message", "commit_sha", "git_credentials", "provider_token", "provider_response_body"},
 		"blocked_reasons":                 blockedReasons,
@@ -3617,14 +3741,25 @@ func configRepositoryProjectVersionPinValidationPlan(defaultBranchConfigured, re
 	}
 }
 
-func configRepositoryGitCommitResultRecordingPlan() map[string]any {
+func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any) map[string]any {
+	pinObserved := boolOnlyFromAny(evidence["config_commit_sha_recorded"])
+	liveObserved := boolOnlyFromAny(evidence["live_validation_recorded"])
+	recordingState := "blocked"
+	recordingReason := "config_git_commit_execution_not_performed"
+	if pinObserved && liveObserved {
+		recordingState = "recorded"
+		recordingReason = "project_version_pin_and_live_validation_observed"
+	} else if pinObserved {
+		recordingState = "partial"
+		recordingReason = "project_version_config_commit_pin_observed"
+	}
 	return map[string]any{
 		"mode":                             "config_repository_git_commit_result_recording_plan",
-		"result_recording_state":           "blocked",
-		"result_recording_ready":           false,
-		"result_recording_ready_reason":    "config_git_commit_execution_not_performed",
-		"recording_enabled":                false,
-		"result_written":                   false,
+		"result_recording_state":           recordingState,
+		"result_recording_ready":           pinObserved,
+		"result_recording_ready_reason":    recordingReason,
+		"recording_enabled":                pinObserved,
+		"result_written":                   pinObserved,
 		"operation_log_written":            false,
 		"scaffold_artifact_recorded":       false,
 		"commit_record_written":            false,
@@ -3632,8 +3767,10 @@ func configRepositoryGitCommitResultRecordingPlan() map[string]any {
 		"review_request_recorded":          false,
 		"remote_review_subplan_recorded":   false,
 		"project_version_pin_written":      false,
-		"config_commit_sha_recorded":       false,
-		"live_validation_recorded":         false,
+		"project_version_pin_observed":     pinObserved,
+		"config_commit_sha_recorded":       pinObserved,
+		"live_validation_recorded":         liveObserved,
+		"pin_evidence":                     evidence,
 		"raw_file_content_recorded":        false,
 		"raw_secret_value_recorded":        false,
 		"raw_git_output_recorded":          false,

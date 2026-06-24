@@ -1662,6 +1662,168 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 	}
 }
 
+func TestConfigRepositoryScaffoldPreviewReconcilesProjectVersionPinEvidence(t *testing.T) {
+	preview := configRepositoryScaffoldPreview(
+		map[string]any{
+			"id":             "repo-1",
+			"name":           "Config Repository",
+			"repo_key":       "config",
+			"repo_role":      "config",
+			"default_branch": "main",
+		},
+		[]map[string]any{{
+			"id":               "remote-1",
+			"name":             "origin",
+			"remote_key":       "github",
+			"provider_type":    "github",
+			"remote_role":      "target",
+			"default_branch":   "main",
+			"latest_sha":       "ABC123",
+			"last_sync_status": "completed",
+		}},
+		[]map[string]any{{
+			"id":      "version-1",
+			"version": "v0.1.0",
+			"metadata": map[string]any{"repositories": []any{
+				map[string]any{
+					"repo_key":           "config",
+					"repo_role":          "config",
+					"remote_id":          "remote-1",
+					"config_commit_sha":  "abc123",
+					"provider_token":     "secret-token",
+					"remote_url":         "https://token@example.com/repo.git",
+					"raw_provider_body":  "secret-body",
+					"git_credentials":    "secret-credentials",
+					"authorization":      "Bearer secret",
+					"unrelated_password": "password",
+				},
+			}},
+		}},
+	)
+
+	evidence := mapFromAny(preview["project_version_pin_evidence"])
+	if evidence["pin_state"] != "recorded" ||
+		evidence["live_validation_state"] != "recorded" ||
+		evidence["config_commit_sha_recorded"] != true ||
+		evidence["live_validation_recorded"] != true ||
+		evidence["commit_sha_included"] != false ||
+		evidence["remote_url_included"] != false ||
+		evidence["secret_included"] != false ||
+		intFromAny(evidence["pinned_version_count"], 0) != 1 ||
+		intFromAny(evidence["validated_version_count"], 0) != 1 {
+		t.Fatalf("unexpected pin evidence: %#v", evidence)
+	}
+	commitPlan := mapFromAny(preview["git_commit_plan"])
+	if commitPlan["project_version_pin_written"] != false ||
+		commitPlan["project_version_pin_observed"] != true ||
+		commitPlan["live_commit_validation_performed"] != false ||
+		commitPlan["live_commit_validation_observed"] != true ||
+		statusByKind(sliceOfMapsFromAny(commitPlan["steps"]), "project_version_pin") != "planned" ||
+		statusByKind(sliceOfMapsFromAny(commitPlan["steps"]), "live_commit_validation") != "planned" {
+		t.Fatalf("unexpected commit plan evidence: %#v", commitPlan)
+	}
+	pinPlan := mapFromAny(commitPlan["project_version_pin_plan"])
+	if pinPlan["pin_state"] != "observed" ||
+		pinPlan["pin_ready"] != true ||
+		pinPlan["project_version_pin_written"] != false ||
+		pinPlan["project_version_pin_observed"] != true ||
+		pinPlan["config_commit_sha_recorded"] != true ||
+		pinPlan["live_commit_validation_recorded"] != true ||
+		pinPlan["contains_commit_sha"] != false ||
+		pinPlan["contains_remote_url"] != false {
+		t.Fatalf("unexpected pin plan: %#v", pinPlan)
+	}
+	resultPlan := mapFromAny(commitPlan["result_recording_plan"])
+	if resultPlan["result_recording_state"] != "recorded" ||
+		resultPlan["result_recording_ready"] != true ||
+		resultPlan["result_written"] != true ||
+		resultPlan["project_version_pin_written"] != false ||
+		resultPlan["project_version_pin_observed"] != true ||
+		resultPlan["config_commit_sha_recorded"] != true ||
+		resultPlan["live_validation_recorded"] != true ||
+		resultPlan["raw_git_output_recorded"] != false ||
+		resultPlan["raw_provider_response_recorded"] != false {
+		t.Fatalf("unexpected result plan: %#v", resultPlan)
+	}
+	encoded, _ := json.Marshal(preview)
+	for _, forbidden := range []string{"secret-token", "https://token@", "secret-body", "secret-credentials", "Bearer secret", "password"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("config pin evidence leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestConfigRepositoryProjectVersionPinEvidenceBoundaries(t *testing.T) {
+	repo := map[string]any{"id": "repo-config-a", "repo_key": "config-a", "repo_role": "config", "default_branch": "main"}
+	remotes := []map[string]any{{"id": "remote-1", "latest_sha": "abc123"}}
+	tests := []struct {
+		name          string
+		versions      []map[string]any
+		wantPinned    int
+		wantValidated int
+		wantMismatch  int
+		wantLiveState string
+	}{
+		{
+			name: "same role but different repo key is ignored",
+			versions: []map[string]any{{
+				"id":      "version-other",
+				"version": "v0.1.0",
+				"metadata": map[string]any{"repositories": []any{
+					map[string]any{"repo_key": "config-b", "repo_role": "config", "remote_id": "remote-1", "config_commit_sha": "abc123"},
+				}},
+			}},
+			wantLiveState: "not_recorded",
+		},
+		{
+			name: "mismatched synced latest sha is observed",
+			versions: []map[string]any{{
+				"id":      "version-mismatch",
+				"version": "v0.2.0",
+				"metadata": map[string]any{"repositories": []any{
+					map[string]any{"repo_key": "config-a", "repo_role": "config", "remote_id": "remote-1", "config_commit_sha": "def456"},
+				}},
+			}},
+			wantPinned:    1,
+			wantMismatch:  1,
+			wantLiveState: "mismatched",
+		},
+		{
+			name: "missing remote latest sha waits for synced remote",
+			versions: []map[string]any{{
+				"id":      "version-waiting",
+				"version": "v0.3.0",
+				"metadata": map[string]any{"repositories": []any{
+					map[string]any{"repository_id": "repo-config-a", "repo_role": "config", "remote_id": "remote-missing", "config_commit_sha": "abc123"},
+				}},
+			}},
+			wantPinned:    1,
+			wantLiveState: "waiting_for_synced_remote",
+		},
+		{
+			name:          "empty versions are not recorded",
+			wantLiveState: "not_recorded",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evidence := configRepositoryProjectVersionPinEvidence(repo, remotes, tt.versions)
+			if intFromAny(evidence["pinned_version_count"], 0) != tt.wantPinned ||
+				intFromAny(evidence["validated_version_count"], 0) != tt.wantValidated ||
+				intFromAny(evidence["mismatched_version_count"], 0) != tt.wantMismatch ||
+				evidence["live_validation_state"] != tt.wantLiveState {
+				t.Fatalf("unexpected evidence: %#v", evidence)
+			}
+			encoded, _ := json.Marshal(evidence)
+			for _, forbidden := range []string{"abc123", "def456"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("evidence leaked commit sha %q: %s", forbidden, encoded)
+				}
+			}
+		})
+	}
+}
+
 func assertConfigRepositoryGitCommitSubplansSafe(t *testing.T, commitPlan map[string]any) {
 	t.Helper()
 	approvalPlan := mapFromAny(commitPlan["approval_request_plan"])
@@ -1854,6 +2016,10 @@ func TestGetConfigRepositoryScaffoldHandler(t *testing.T) {
 		WithArgs("repo-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "remote_key", "provider_type", "remote_role", "default_branch", "latest_sha", "last_sync_status"}).
 			AddRow("remote-1", "origin", "github", "github", "target", "main", "abc123", "completed"))
+	mock.ExpectQuery(`(?s)SELECT id, version, metadata, created_at\s+FROM project_versions\s+WHERE project_id=\$1\s+ORDER BY created_at DESC\s+LIMIT 100`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "version", "metadata", "created_at"}).
+			AddRow("version-1", "v0.1.0", []byte(`{"repositories":[{"repo_key":"config","repo_role":"config","remote_id":"remote-1","config_commit_sha":"abc123"}]}`), time.Now()))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/git-repositories/repo-1/config-scaffold", nil)
 	req = withRouteParam(req, "id", "repo-1")
@@ -1882,7 +2048,9 @@ func TestGetConfigRepositoryScaffoldHandler(t *testing.T) {
 		commitPlan["plan_state"] != "planned" ||
 		commitPlan["git_commit_created"] != false ||
 		commitPlan["git_push_performed"] != false ||
-		commitPlan["live_commit_validation_performed"] != false {
+		commitPlan["live_commit_validation_performed"] != false ||
+		commitPlan["project_version_pin_observed"] != true ||
+		commitPlan["live_commit_validation_observed"] != true {
 		t.Fatalf("payload git_commit_plan = %#v", commitPlan)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
