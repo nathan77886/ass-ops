@@ -3660,8 +3660,9 @@ function GitRemotes() {
     setApplyingThresholdConfigID(id);
     try {
       const result = await api(`/api/webhook-connections/${id}/threshold-configuration`, { method: 'POST', body: '{}' });
-      message.success(result.threshold_configuration_written ? 'Threshold configuration applied' : 'Threshold configuration reviewed');
+      message.success(result.capacity_signals_recomputed ? 'Threshold configuration applied and capacity signals recomputed' : result.threshold_configuration_written ? 'Threshold configuration applied' : 'Threshold configuration reviewed');
       webhookConnections.reload();
+      syncAssetDetail.reload();
     } finally {
       setApplyingThresholdConfigID(undefined);
     }
@@ -3869,6 +3870,7 @@ function GitRemotes() {
                 {metricsComparison.mode ? <Tag>{metricsComparison.provider_metrics_fetched ? 'provider metrics' : 'no provider metrics'}</Tag> : null}
                 {thresholdConfig.mode ? <Tag color={thresholdConfig.configuration_review_ready === true ? 'gold' : 'default'}>{thresholdConfig.configuration_review_ready === true ? 'config review ready' : `config ${thresholdConfig.configuration_state || 'blocked'}`}</Tag> : null}
                 {thresholdConfig.threshold_configuration_written ? <Tag color="green">{thresholdConfig.threshold_configuration_count || 0} configs</Tag> : null}
+                {thresholdConfig.capacity_signals_recomputed ? <Tag color="green">capacity recomputed</Tag> : null}
                 {thresholdAudit.mode ? <Tag color={thresholdAudit.decision_ready_for_review ? 'gold' : thresholdAudit.decision_state === 'needs_failure_review' ? 'red' : 'default'}>threshold audit {thresholdAudit.decision_state || 'blocked'}</Tag> : null}
                 {thresholdAudit.mode ? <Tag>{thresholdAudit.audit_insert_enabled ? 'audit write enabled' : 'no audit write'}</Tag> : null}
                 {thresholdAudit.threshold_decision_audit_count ? <Tag color="green">{thresholdAudit.threshold_decision_audit_count} audit rows</Tag> : null}
@@ -4013,6 +4015,7 @@ function GitRemotes() {
             { title: 'Signal', dataIndex: 'name' },
             { title: 'Severity', render: (_, row) => <Tag color={signalSeverityColor(row.severity)}>{row.severity || 'ok'}</Tag> },
             { title: 'Status', render: (_, row) => String(row.status ?? '-') },
+            { title: 'Source', render: (_, row) => row.threshold_configuration_applied ? <Tag color="green">configured</Tag> : <Tag>default</Tag> },
             { title: 'Threshold', render: (_, row) => row.threshold ? shortText(row.threshold, 88) : '-' },
             { title: 'Detail', render: (_, row) => shortText(row.detail, 120) }
           ]} />

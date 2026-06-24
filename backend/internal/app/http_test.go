@@ -16825,6 +16825,52 @@ func TestRepoSyncCapacitySignals(t *testing.T) {
 	}
 }
 
+func TestRepoSyncCapacitySignalsUseWebhookThresholdConfigurations(t *testing.T) {
+	signals := repoSyncCapacitySignalsWithThresholds(
+		map[string]any{"id": "asset-1", "enabled": true},
+		map[string]any{
+			"source_provider":               "gitea",
+			"target_provider":               "github",
+			"source_last_sync_status":       "completed",
+			"target_last_sync_status":       "completed",
+			"active_runs":                   int64(2),
+			"failed_runs_7d":                int64(2),
+			"webhook_failures_7d":           int64(2),
+			"github_runs_24h":               int64(75),
+			"provider_pair_active_runs":     int64(6),
+			"provider_pair_runs_24h":        int64(12),
+			"provider_pair_failed_runs_24h": int64(1),
+		},
+		"source-1",
+		"target-1",
+		map[string]webhookThresholdConfiguration{
+			"sync_capacity_active":        {WarningAt: 3, DangerAt: 5, Unit: "active_runs", Source: "webhook_threshold_configuration", Applied: true},
+			"sync_failure_7d":             {WarningAt: 3, DangerAt: 6, Unit: "failures", Source: "webhook_threshold_configuration", Applied: true},
+			"webhook_delivery_failure_7d": {WarningAt: 3, DangerAt: 6, Unit: "failed_events", Source: "webhook_threshold_configuration", Applied: true},
+			"github_actions_volume_24h":   {WarningAt: 80, DangerAt: 250, Unit: "runs", Source: "webhook_threshold_configuration", Applied: true},
+			"provider_pair_active_24h":    {WarningAt: 7, DangerAt: 12, Unit: "active_runs", Source: "webhook_threshold_configuration", Applied: true},
+			"provider_pair_failure_24h":   {WarningAt: 2, DangerAt: 4, Unit: "failures", Source: "webhook_threshold_configuration", Applied: true},
+		},
+	)
+	byName := map[string]map[string]any{}
+	for _, signal := range signals {
+		byName[fmt.Sprint(signal["name"])] = signal
+	}
+	for _, name := range []string{"sync capacity", "7d sync failures", "webhook delivery", "GitHub Actions volume", "provider pair pressure"} {
+		if byName[name]["threshold_configuration_applied"] != true ||
+			byName[name]["capacity_signals_recomputed"] != true ||
+			!strings.Contains(fmt.Sprint(byName[name]["threshold_source"]), "webhook_threshold_configuration") {
+			t.Fatalf("%s should use configured threshold: %#v", name, byName[name])
+		}
+		if byName[name]["severity"] != "ok" {
+			t.Fatalf("%s severity = %v, want ok after configured thresholds: %#v", name, byName[name]["severity"], byName[name])
+		}
+	}
+	if !strings.Contains(fmt.Sprint(byName["sync capacity"]["threshold"]), "warning >= 3 active runs") {
+		t.Fatalf("sync capacity threshold did not use configured value: %#v", byName["sync capacity"])
+	}
+}
+
 func TestRepoSyncCapacityThresholdDetail(t *testing.T) {
 	got := thresholdDetail(2, 4, "items")
 	if got != "warning >= 2 items / danger >= 4 items" {
@@ -16884,6 +16930,39 @@ func TestRepoSyncCapacitySignalsSQLIncludesProviderPairPressure(t *testing.T) {
 		if !strings.Contains(sql, token) {
 			t.Fatalf("repo sync capacity SQL/source missing %q", token)
 		}
+	}
+}
+
+func TestWebhookThresholdConfigurationOverrideSQLUsesSourceRemote(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	mock.ExpectQuery(`(?s)SELECT DISTINCT ON \(wtc\.threshold_key\).*FROM webhook_threshold_configurations wtc\s+JOIN webhook_connections wc ON wc\.id=wtc\.webhook_connection_id\s+WHERE wc\.source_remote_id=\$1\s+AND wtc\.evidence_window=\$2`).
+		WithArgs("remote-1", "7d").
+		WillReturnRows(sqlmock.NewRows([]string{"threshold_key", "warning_at", "danger_at", "unit", "evidence_window", "applied_at"}).
+			AddRow("webhook_delivery_failure_7d", 2, 4, "failed_events", "7d", time.Now()))
+
+	thresholds, err := queryWebhookThresholdConfigurationOverrides(context.Background(), sqlx.NewDb(db, "sqlmock"), "remote-1", "7d")
+	if err != nil {
+		t.Fatalf("query threshold overrides: %v", err)
+	}
+	threshold := thresholds["webhook_delivery_failure_7d"]
+	if threshold.WarningAt != 2 || threshold.DangerAt != 4 || threshold.Unit != "failed_events" || threshold.EvidenceWindow != "7d" || !threshold.Applied {
+		t.Fatalf("threshold override = %#v", threshold)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestThresholdForKeyFallsBackToExpectedUnit(t *testing.T) {
+	threshold := thresholdForKey(map[string]webhookThresholdConfiguration{
+		"sync_capacity_active": {WarningAt: 2, DangerAt: 4, Unit: "failures", Applied: true},
+	}, "sync_capacity_active", 1, 3, "active_runs")
+	if threshold.Unit != "active_runs" || threshold.WarningAt != 2 || threshold.DangerAt != 4 || !threshold.Applied {
+		t.Fatalf("threshold should preserve configured counts but fallback unit: %#v", threshold)
 	}
 }
 
@@ -17293,10 +17372,13 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 					t.Fatalf("provider callback threshold persisted fields missing %q: %#v", field, configurationPlan["required_persisted_fields"])
 				}
 			}
-			for _, backend := range []string{"provider_metrics_fetch", "threshold_configuration_write", "threshold_configuration_audit_insert", "sync_capacity_signal_recompute"} {
+			for _, backend := range []string{"provider_metrics_fetch", "threshold_configuration_write", "threshold_configuration_audit_insert"} {
 				if !containsString(stringSliceFromAny(configurationPlan["disabled_backends"]), backend) {
 					t.Fatalf("provider callback threshold configuration disabled backend missing %q: %#v", backend, configurationPlan["disabled_backends"])
 				}
+			}
+			if containsString(stringSliceFromAny(configurationPlan["disabled_backends"]), "sync_capacity_signal_recompute") {
+				t.Fatalf("local read-time capacity recompute should not be disabled: %#v", configurationPlan["disabled_backends"])
 			}
 			volumeEvidence := mapFromAny(thresholdPlan["volume_evidence"])
 			if volumeEvidence["mode"] != "provider_callback_threshold_volume_evidence" ||
@@ -17664,6 +17746,12 @@ func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T)
 
 func TestAnnotateWebhookThresholdDecisionAuditEvidenceMarksPersistedAudit(t *testing.T) {
 	item := map[string]any{
+		"source_remote_id":           "remote-1",
+		"deliveries_7d":              int64(4),
+		"failures_7d":                int64(0),
+		"processed_7d":               int64(2),
+		"operation_run_7d":           int64(1),
+		"matched_repo_sync_asset_7d": int64(1),
 		"callback_rehearsal": map[string]any{
 			"provider_rehearsal_plan": map[string]any{
 				"threshold_tuning_plan": map[string]any{
@@ -17702,6 +17790,12 @@ func TestAnnotateWebhookThresholdDecisionAuditEvidenceMarksPersistedAudit(t *tes
 
 func TestAnnotateWebhookThresholdConfigurationEvidenceMarksPersistedConfig(t *testing.T) {
 	item := map[string]any{
+		"source_remote_id":           "remote-1",
+		"deliveries_7d":              int64(4),
+		"failures_7d":                int64(0),
+		"processed_7d":               int64(2),
+		"operation_run_7d":           int64(1),
+		"matched_repo_sync_asset_7d": int64(1),
 		"callback_rehearsal": map[string]any{
 			"provider_rehearsal_plan": map[string]any{
 				"threshold_tuning_plan": map[string]any{
@@ -17738,10 +17832,23 @@ func TestAnnotateWebhookThresholdConfigurationEvidenceMarksPersistedConfig(t *te
 		configurationPlan["threshold_configuration_written"] != true ||
 		configurationPlan["configuration_state"] != "recorded" ||
 		configurationPlan["configuration_write_enabled"] != true ||
+		configurationPlan["capacity_signals_recomputed"] != true ||
+		configurationPlan["capacity_signal_recompute_mode"] != "read_time_repo_sync_asset_detail" ||
 		intFromAny(configurationPlan["threshold_configuration_count"], 0) != 6 ||
 		decisionAuditPlan["threshold_configuration_written"] != true ||
+		decisionAuditPlan["capacity_signals_recomputed"] != true ||
+		decisionAuditPlan["capacity_signal_recompute_mode"] != "read_time_repo_sync_asset_detail" ||
 		decisionAuditPlan["configuration_write_enabled"] != true {
 		t.Fatalf("persisted threshold configuration evidence was not merged into readiness: %#v", readiness)
+	}
+	recomputeEvidence := mapFromAny(configurationPlan["capacity_signal_recompute_evidence"])
+	if recomputeEvidence["mode"] != "webhook_threshold_capacity_signal_recompute_evidence" ||
+		recomputeEvidence["capacity_signals_recomputed"] != true ||
+		recomputeEvidence["recompute_mode"] != "read_time_repo_sync_asset_detail" ||
+		recomputeEvidence["source_remote_id"] != "remote-1" ||
+		recomputeEvidence["external_call_made"] != false ||
+		recomputeEvidence["raw_provider_response_recorded"] != false {
+		t.Fatalf("capacity recompute evidence = %#v", recomputeEvidence)
 	}
 	if containsString(stringSliceFromAny(configurationPlan["blocked_reasons"]), "operator_threshold_review_not_recorded") ||
 		containsString(stringSliceFromAny(decisionAuditPlan["blocked_reasons"]), "operator_threshold_review_not_recorded") {
@@ -17968,7 +18075,8 @@ func TestApplyWebhookThresholdConfigurationHandlerWritesSanitizedConfigurations(
 				payload["operator_threshold_review_recorded"] == true &&
 				payload["provider_metrics_fetched"] == false &&
 				payload["provider_pair_limits_compared"] == false &&
-				payload["capacity_signals_recomputed"] == false &&
+				payload["capacity_signals_recomputed"] == true &&
+				payload["capacity_signal_recompute_mode"] == "read_time_repo_sync_asset_detail" &&
 				payload["external_call_made"] == false &&
 				payload["contains_secret"] == false &&
 				payload["contains_payload"] == false &&
@@ -17993,9 +18101,18 @@ func TestApplyWebhookThresholdConfigurationHandlerWritesSanitizedConfigurations(
 	if body["threshold_configuration_written"] != true ||
 		intFromAny(body["threshold_configuration_count"], 0) != len(webhookProviderCallbackCurrentThresholds()) ||
 		body["provider_metrics_fetched"] != false ||
-		body["capacity_signals_recomputed"] != false ||
+		body["capacity_signals_recomputed"] != true ||
+		body["capacity_signal_recompute_mode"] != "read_time_repo_sync_asset_detail" ||
 		body["external_call_made"] != false {
 		t.Fatalf("threshold configuration response should be sanitized and recorded: %#v", body)
+	}
+	recomputeEvidence := mapFromAny(body["capacity_signal_recompute_evidence"])
+	if recomputeEvidence["mode"] != "webhook_threshold_capacity_signal_recompute_evidence" ||
+		recomputeEvidence["capacity_signals_recomputed"] != true ||
+		recomputeEvidence["external_call_made"] != false ||
+		recomputeEvidence["raw_provider_response_recorded"] != false ||
+		recomputeEvidence["contains_secret"] != false {
+		t.Fatalf("threshold configuration recompute evidence should be local and sanitized: %#v", recomputeEvidence)
 	}
 	encoded := rr.Body.String()
 	for _, forbidden := range []string{"secret-token", "payload-body", "provider-response", "Bearer", "provider.example.com"} {
@@ -18153,10 +18270,13 @@ func assertWebhookThresholdDecisionAuditPlanSafe(t *testing.T, plan map[string]a
 			t.Fatalf("threshold decision audit required_controls missing %q: %#v", control, plan["required_controls"])
 		}
 	}
-	for _, backend := range []string{"threshold_configuration_write", "threshold_delta_persist", "sync_capacity_signal_recompute", "provider_metrics_fetch"} {
+	for _, backend := range []string{"threshold_configuration_write", "threshold_delta_persist", "provider_metrics_fetch"} {
 		if !containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
 			t.Fatalf("threshold decision audit disabled_backends missing %q: %#v", backend, plan["disabled_backends"])
 		}
+	}
+	if containsString(stringSliceFromAny(plan["disabled_backends"]), "sync_capacity_signal_recompute") {
+		t.Fatalf("local read-time capacity recompute should not be listed as disabled: %#v", plan["disabled_backends"])
 	}
 	if plan["audit_insert_enabled"] != true && !containsString(stringSliceFromAny(plan["disabled_backends"]), "threshold_configuration_audit_insert") {
 		t.Fatalf("threshold decision audit disabled_backends missing audit insert while disabled: %#v", plan["disabled_backends"])
