@@ -4089,6 +4089,28 @@ func TestSSHMachineRehearsalPreviewSanitizesEvidence(t *testing.T) {
 		environmentProofPlan["private_key_included"] != false {
 		t.Fatalf("unexpected environment proof plan: %#v", environmentProofPlan)
 	}
+	attestationPlan := mapFromAny(preview["target_environment_attestation_plan"])
+	if preview["target_environment_attestation_ready"] != true ||
+		attestationPlan["mode"] != "ssh_target_environment_attestation_plan" ||
+		attestationPlan["attestation_state"] != "ready_for_operator_review" ||
+		attestationPlan["attestation_ready_for_review"] != true ||
+		attestationPlan["runbook_reference_observed"] != true ||
+		attestationPlan["authorized_machine_fixture_observed"] != true ||
+		attestationPlan["operator_approval_proof_observed"] != true ||
+		attestationPlan["target_environment_proof_observed"] != true ||
+		attestationPlan["verify_result_observed"] != true ||
+		attestationPlan["exec_result_observed"] != true ||
+		attestationPlan["sanitized_result_recorded"] != true ||
+		attestationPlan["environment_probe_performed"] != false ||
+		attestationPlan["ssh_process_started"] != false ||
+		attestationPlan["ssh_verify_executed"] != false ||
+		attestationPlan["ssh_exec_executed"] != false ||
+		attestationPlan["raw_output_recorded"] != false ||
+		attestationPlan["operator_identity_recorded"] != false ||
+		attestationPlan["key_material_included"] != false ||
+		attestationPlan["external_call_made"] != false {
+		t.Fatalf("unexpected target environment attestation plan: %#v", attestationPlan)
+	}
 	assertSSHRehearsalPlansSafe(t, preview)
 	latestExec := mapFromAny(evidence["latest_exec"])
 	if latestExec["command"] != nil || latestExec["stdout"] != nil || latestExec["stderr"] != nil {
@@ -4677,6 +4699,51 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 		}
 	} else if environmentProofPlan["environment_proof_state"] == "ready" {
 		t.Fatalf("ssh environment proof cannot be ready without environment_proof_ready: %#v", environmentProofPlan)
+	}
+	attestationPlan := mapFromAny(preview["target_environment_attestation_plan"])
+	if attestationPlan["mode"] != "ssh_target_environment_attestation_plan" ||
+		attestationPlan["environment_probe_performed"] != false ||
+		attestationPlan["ssh_process_started"] != false ||
+		attestationPlan["ssh_verify_executed"] != false ||
+		attestationPlan["ssh_exec_executed"] != false ||
+		attestationPlan["raw_output_recorded"] != false ||
+		attestationPlan["operator_identity_recorded"] != false ||
+		attestationPlan["key_material_included"] != false ||
+		attestationPlan["external_call_made"] != false {
+		t.Fatalf("ssh target environment attestation should stay disabled and redacted: %#v", attestationPlan)
+	}
+	if preview["target_environment_attestation_ready"] != attestationPlan["attestation_ready_for_review"] {
+		t.Fatalf("ssh preview attestation flag should mirror plan: preview=%#v plan=%#v", preview["target_environment_attestation_ready"], attestationPlan)
+	}
+	for _, field := range []string{"runbook_reference", "authorized_machine_fixture", "operator_approval_proof", "target_environment_proof", "completed_verify", "completed_exec", "sanitized_result_recording"} {
+		if !containsString(stringSliceFromAny(attestationPlan["required_attestation_fields"]), field) {
+			t.Fatalf("ssh attestation required field missing %q: %#v", field, attestationPlan["required_attestation_fields"])
+		}
+	}
+	for _, backend := range []string{"environment_probe", "ssh_process_start", "ssh_verify_execute", "ssh_exec_execute", "raw_output_recording", "operator_identity_recording"} {
+		if !containsString(stringSliceFromAny(attestationPlan["disabled_backends"]), backend) {
+			t.Fatalf("ssh attestation disabled backend missing %q: %#v", backend, attestationPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"runbook_url", "runbook_path", "environment_identifier", "fixture_identifier", "operator_identity", "operator_notes", "ssh_host", "ssh_user", "ssh_key_material", "command", "stdout", "stderr", "raw_output", "known_hosts"} {
+		if !containsString(stringSliceFromAny(attestationPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh attestation suppressed field missing %q: %#v", field, attestationPlan["suppressed_fields"])
+		}
+	}
+	if boolOnlyFromAny(attestationPlan["attestation_ready_for_review"]) {
+		if attestationPlan["attestation_state"] != "ready_for_operator_review" ||
+			attestationPlan["runbook_reference_observed"] != true ||
+			attestationPlan["authorized_machine_fixture_observed"] != true ||
+			attestationPlan["operator_approval_proof_observed"] != true ||
+			attestationPlan["target_environment_proof_observed"] != true ||
+			attestationPlan["verify_result_observed"] != true ||
+			attestationPlan["exec_result_observed"] != true ||
+			attestationPlan["sanitized_result_recorded"] != true ||
+			len(stringSliceFromAny(attestationPlan["blocked_reasons"])) != 0 {
+			t.Fatalf("ready ssh target environment attestation should include all boolean evidence: %#v", attestationPlan)
+		}
+	} else if attestationPlan["attestation_state"] == "ready_for_operator_review" {
+		t.Fatalf("ssh target environment attestation cannot be ready without review readiness: %#v", attestationPlan)
 	}
 	if boolOnlyFromAny(controlEvidence["controls_ready"]) {
 		if controlEvidence["control_state"] != "ready" ||

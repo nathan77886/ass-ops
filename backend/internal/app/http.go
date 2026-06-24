@@ -19616,6 +19616,7 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 	execPlan := sshRehearsalExecExecutionPlan(metadataReady, hasVerified, hasExecuted)
 	liveControlEvidence := sshRehearsalLiveControlEvidence(metadata, metadataReady, hasVerified, hasExecuted)
 	environmentProofPlan := sshRehearsalEnvironmentProofPlan(metadata, metadataReady, hasVerified, hasExecuted, liveControlEvidence, evidence)
+	targetEnvironmentAttestationPlan := sshTargetEnvironmentAttestationPlan(metadataReady, liveControlEvidence, environmentProofPlan, evidence)
 
 	steps := []map[string]any{
 		{
@@ -19660,33 +19661,35 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 	}
 
 	return map[string]any{
-		"mode":                             "ssh_rehearsal_plan_preview",
-		"rehearsal_state":                  state,
-		"execution_enabled":                false,
-		"external_call_made":               false,
-		"ssh_process_started":              false,
-		"command_executed":                 false,
-		"stdout_included":                  false,
-		"stderr_included":                  false,
-		"private_key_included":             false,
-		"known_hosts_included":             false,
-		"secret_included":                  false,
-		"live_evidence_recorded":           boolOnlyFromAny(evidence["has_live_evidence"]),
-		"sanitized_result_recorded":        cleanPreviewString(evidence["evidence_state"]) == "recorded",
-		"result_recording_state":           resultRecordingPlan["recording_state"],
-		"auth_reference_present":           hasKeyReference || authType != "",
-		"known_hosts_configured":           hasKnownHostsReference,
-		"approval_request_plan":            approvalPlan,
-		"auth_binding_plan":                authBindingPlan,
-		"verify_execution_plan":            verifyPlan,
-		"exec_execution_plan":              execPlan,
-		"result_recording_plan":            resultRecordingPlan,
-		"live_rehearsal_control_evidence":  liveControlEvidence,
-		"live_rehearsal_controls_ready":    liveControlEvidence["controls_ready"],
-		"environment_proof_plan":           environmentProofPlan,
-		"environment_proof_ready":          environmentProofPlan["environment_proof_ready"],
-		"operator_approved_proof_recorded": liveControlEvidence["operator_approval_recorded"],
-		"required_live_rehearsal":          requiredLiveRehearsal,
+		"mode":                                 "ssh_rehearsal_plan_preview",
+		"rehearsal_state":                      state,
+		"execution_enabled":                    false,
+		"external_call_made":                   false,
+		"ssh_process_started":                  false,
+		"command_executed":                     false,
+		"stdout_included":                      false,
+		"stderr_included":                      false,
+		"private_key_included":                 false,
+		"known_hosts_included":                 false,
+		"secret_included":                      false,
+		"live_evidence_recorded":               boolOnlyFromAny(evidence["has_live_evidence"]),
+		"sanitized_result_recorded":            cleanPreviewString(evidence["evidence_state"]) == "recorded",
+		"result_recording_state":               resultRecordingPlan["recording_state"],
+		"auth_reference_present":               hasKeyReference || authType != "",
+		"known_hosts_configured":               hasKnownHostsReference,
+		"approval_request_plan":                approvalPlan,
+		"auth_binding_plan":                    authBindingPlan,
+		"verify_execution_plan":                verifyPlan,
+		"exec_execution_plan":                  execPlan,
+		"result_recording_plan":                resultRecordingPlan,
+		"live_rehearsal_control_evidence":      liveControlEvidence,
+		"live_rehearsal_controls_ready":        liveControlEvidence["controls_ready"],
+		"environment_proof_plan":               environmentProofPlan,
+		"environment_proof_ready":              environmentProofPlan["environment_proof_ready"],
+		"target_environment_attestation_plan":  targetEnvironmentAttestationPlan,
+		"target_environment_attestation_ready": targetEnvironmentAttestationPlan["attestation_ready_for_review"],
+		"operator_approved_proof_recorded":     liveControlEvidence["operator_approval_recorded"],
+		"required_live_rehearsal":              requiredLiveRehearsal,
 		"required_controls": []string{
 			"machine_metadata_review",
 			"ssh_auth_material_binding",
@@ -19723,6 +19726,88 @@ func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]a
 		},
 		"steps":           steps,
 		"recent_evidence": evidence,
+	}
+}
+
+func sshTargetEnvironmentAttestationPlan(metadataReady bool, controlEvidence, environmentProofPlan, evidence map[string]any) map[string]any {
+	runbookRecorded := boolOnlyFromAny(controlEvidence["runbook_reference_recorded"])
+	fixtureRecorded := boolOnlyFromAny(controlEvidence["fixture_reference_recorded"])
+	operatorApprovalRecorded := boolOnlyFromAny(controlEvidence["operator_approval_recorded"])
+	targetEnvironmentProofObserved := boolOnlyFromAny(environmentProofPlan["target_environment_reference_recorded"]) &&
+		boolOnlyFromAny(environmentProofPlan["operator_environment_proof_recorded"])
+	verifyObserved := boolOnlyFromAny(environmentProofPlan["completed_verify_evidence"])
+	execObserved := boolOnlyFromAny(environmentProofPlan["completed_exec_evidence"])
+	sanitizedResultRecorded := boolOnlyFromAny(environmentProofPlan["sanitized_result_recorded"]) &&
+		cleanPreviewString(evidence["evidence_state"]) == "recorded"
+	readyForReview := metadataReady && runbookRecorded && fixtureRecorded && operatorApprovalRecorded &&
+		targetEnvironmentProofObserved && verifyObserved && execObserved && sanitizedResultRecorded
+
+	attestationState := "blocked"
+	readyReason := "ssh_target_environment_attestation_machine_metadata_incomplete"
+	switch {
+	case readyForReview:
+		attestationState = "ready_for_operator_review"
+		readyReason = "ssh_target_environment_attestation_ready_for_operator_review"
+	case metadataReady && (runbookRecorded || fixtureRecorded || operatorApprovalRecorded || targetEnvironmentProofObserved || verifyObserved || execObserved || sanitizedResultRecorded):
+		attestationState = "partial"
+		readyReason = "ssh_target_environment_attestation_incomplete"
+	case metadataReady:
+		attestationState = "planned"
+		readyReason = "ssh_target_environment_attestation_not_recorded"
+	}
+
+	blockedReasons := []string{}
+	if !metadataReady {
+		blockedReasons = append(blockedReasons, "machine_metadata_incomplete")
+	}
+	if !runbookRecorded {
+		blockedReasons = append(blockedReasons, "runbook_reference_not_recorded")
+	}
+	if !fixtureRecorded {
+		blockedReasons = append(blockedReasons, "authorized_machine_fixture_not_recorded")
+	}
+	if !operatorApprovalRecorded {
+		blockedReasons = append(blockedReasons, "operator_approval_proof_not_recorded")
+	}
+	if !targetEnvironmentProofObserved {
+		blockedReasons = append(blockedReasons, "target_environment_proof_not_recorded")
+	}
+	if !verifyObserved {
+		blockedReasons = append(blockedReasons, "completed_ssh_verify_not_recorded")
+	}
+	if !execObserved {
+		blockedReasons = append(blockedReasons, "completed_ssh_exec_not_recorded")
+	}
+	if !sanitizedResultRecorded {
+		blockedReasons = append(blockedReasons, "sanitized_ssh_result_not_recorded")
+	}
+
+	return map[string]any{
+		"mode":                                "ssh_target_environment_attestation_plan",
+		"attestation_state":                   attestationState,
+		"attestation_ready_for_review":        readyForReview,
+		"attestation_ready_reason":            readyReason,
+		"machine_metadata_ready":              metadataReady,
+		"runbook_reference_observed":          runbookRecorded,
+		"authorized_machine_fixture_observed": fixtureRecorded,
+		"operator_approval_proof_observed":    operatorApprovalRecorded,
+		"target_environment_proof_observed":   targetEnvironmentProofObserved,
+		"verify_result_observed":              verifyObserved,
+		"exec_result_observed":                execObserved,
+		"sanitized_result_recorded":           sanitizedResultRecorded,
+		"environment_probe_performed":         false,
+		"ssh_process_started":                 false,
+		"ssh_verify_executed":                 false,
+		"ssh_exec_executed":                   false,
+		"raw_output_recorded":                 false,
+		"operator_identity_recorded":          false,
+		"key_material_included":               false,
+		"external_call_made":                  false,
+		"required_attestation_fields":         []string{"runbook_reference", "authorized_machine_fixture", "operator_approval_proof", "target_environment_proof", "completed_verify", "completed_exec", "sanitized_result_recording"},
+		"disabled_backends":                   []string{"environment_probe", "ssh_process_start", "ssh_verify_execute", "ssh_exec_execute", "raw_output_recording", "operator_identity_recording"},
+		"suppressed_fields":                   []string{"runbook_url", "runbook_path", "environment_identifier", "fixture_identifier", "operator_identity", "operator_notes", "ssh_host", "ssh_user", "ssh_key_material", "command", "stdout", "stderr", "raw_output", "known_hosts"},
+		"blocked_reasons":                     blockedReasons,
+		"message":                             "Target environment attestation is a redacted operator-review preflight only; it does not probe the environment, start SSH, execute verify/exec, record raw output, or include operator identity.",
 	}
 }
 

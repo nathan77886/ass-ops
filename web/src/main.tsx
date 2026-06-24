@@ -4772,6 +4772,8 @@ function ConfigPage() {
     live_rehearsal_controls_ready: sshRehearsal.data.live_rehearsal_controls_ready,
     environment_proof_plan: sshRehearsal.data.environment_proof_plan,
     environment_proof_ready: sshRehearsal.data.environment_proof_ready,
+    target_environment_attestation_plan: sshRehearsal.data.target_environment_attestation_plan,
+    target_environment_attestation_ready: sshRehearsal.data.target_environment_attestation_ready,
     operator_approved_proof_recorded: sshRehearsal.data.operator_approved_proof_recorded,
     required_live_rehearsal: sshRehearsal.data.required_live_rehearsal,
     required_controls: sshRehearsal.data.required_controls,
@@ -4977,6 +4979,10 @@ function ConfigPage() {
                   {sshRehearsalView.operator_approved_proof_recorded ? <Tag color="green">operator proof recorded</Tag> : <Tag>no operator proof</Tag>}
                   {sshRehearsalView.environment_proof_plan ? <Tag color={sshRehearsalView.environment_proof_plan.environment_proof_state === 'ready' ? 'green' : sshRehearsalView.environment_proof_plan.environment_proof_state === 'blocked' ? 'red' : 'gold'}>env proof {sshRehearsalView.environment_proof_plan.environment_proof_state || 'blocked'}</Tag> : null}
                   {sshRehearsalView.environment_proof_plan ? <Tag>{sshRehearsalView.environment_proof_plan.environment_proof_ready ? 'env proof ready' : 'env proof pending'}</Tag> : null}
+                  {sshRehearsalView.target_environment_attestation_plan ? <Tag color={sshRehearsalView.target_environment_attestation_plan.attestation_state === 'ready_for_operator_review' ? 'green' : sshRehearsalView.target_environment_attestation_plan.attestation_state === 'blocked' ? 'red' : 'gold'}>target attestation {sshRehearsalView.target_environment_attestation_plan.attestation_state || 'blocked'}</Tag> : null}
+                  {sshRehearsalView.target_environment_attestation_plan ? <Tag>{sshRehearsalView.target_environment_attestation_plan.environment_probe_performed ? 'env probed' : 'no env probe'}</Tag> : null}
+                  {sshRehearsalView.target_environment_attestation_plan ? <Tag>{sshRehearsalView.target_environment_attestation_plan.raw_output_recorded ? 'raw output recorded' : 'no raw output'}</Tag> : null}
+                  {sshRehearsalView.target_environment_attestation_ready ? <Tag color="green">target proof review ready</Tag> : <Tag>target proof pending</Tag>}
                   {sshRehearsalView.recent_evidence?.evidence_state ? <Tag color={sshRehearsalView.recent_evidence.evidence_state === 'recorded' ? 'green' : sshRehearsalView.recent_evidence.evidence_state === 'failed' ? 'red' : 'gold'}>evidence {sshRehearsalView.recent_evidence.evidence_state}</Tag> : null}
                   <Tag>{sshRehearsalView.recent_evidence?.verify_runs || 0} verify runs</Tag>
                   <Tag>{sshRehearsalView.recent_evidence?.exec_runs || 0} exec runs</Tag>
