@@ -599,6 +599,146 @@ func TestArgoPodLogQueryPreviewReportsMissingTargetMetadata(t *testing.T) {
 	assertPodLogExecutionPlanSafe(t, executionPlan)
 }
 
+func TestArgoPodLogQueryPreviewReconcilesAuditEvidence(t *testing.T) {
+	preview := argoPodLogQueryPreview("api-7d9f", "web", 500, 30, map[string]any{
+		"id":           "target-1",
+		"name":         "prod",
+		"environment":  "prod",
+		"cluster_name": "prod-cluster",
+		"namespace":    "billing",
+		"status":       "Healthy",
+	}, []map[string]any{
+		{
+			"id":                  "op-pod-logs",
+			"status":              "completed",
+			"operation_log_count": int64(2),
+			"input":               map[string]any{"kubeconfig": "secret kubeconfig", "log_body": "actual log line"},
+		},
+	})
+	evidence := mapFromAny(preview["audit_evidence"])
+	if evidence["evidence_state"] != "recorded" ||
+		evidence["has_audit_operations"] != true ||
+		evidence["sanitized_result_recorded"] != true ||
+		intFromAny(evidence["operation_count"], 0) != 1 ||
+		intFromAny(evidence["operation_log_count"], 0) != 2 ||
+		evidence["log_body_included"] != false ||
+		evidence["kubeconfig_included"] != false ||
+		evidence["raw_response_included"] != false {
+		t.Fatalf("unexpected pod log audit evidence: %#v", evidence)
+	}
+	executionPlan := mapFromAny(mapFromAny(preview["retrieval_plan"])["execution_plan"])
+	if executionPlan["audit_operation_observed"] != true ||
+		executionPlan["sanitized_result_observed"] != true ||
+		executionPlan["operation_enqueued"] != false ||
+		executionPlan["worker_job_created"] != false ||
+		executionPlan["kubernetes_api_call"] != false ||
+		executionPlan["log_body_included"] != false {
+		t.Fatalf("unexpected pod log execution evidence: %#v", executionPlan)
+	}
+	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
+	if resultPlan["recording_state"] != "recorded" ||
+		resultPlan["result_written"] != true ||
+		resultPlan["operation_log_written"] != true ||
+		resultPlan["audit_operation_observed"] != true ||
+		resultPlan["sanitized_result_observed"] != true ||
+		resultPlan["kubeconfig_binding_recorded"] != false ||
+		resultPlan["log_capture_recorded"] != false ||
+		resultPlan["log_body_included"] != false ||
+		resultPlan["raw_response_included"] != false {
+		t.Fatalf("unexpected pod log result plan: %#v", resultPlan)
+	}
+	assertPodLogExecutionPlanSafe(t, executionPlan)
+	encoded, _ := json.Marshal(preview)
+	for _, forbidden := range []string{"secret kubeconfig", "actual log line", "apiVersion:", "Bearer secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("pod log evidence leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestPreviewArgoPodLogQueryLoadsSanitizedAuditEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
+		WithArgs("target-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
+			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
+		WithArgs("project-1", "target-1", "api-7d9f", "web").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
+			AddRow("op-pod-logs", "completed", nil, nil, nil, int64(2)))
+
+	body := strings.NewReader(`{"deployment_target_id":"target-1","pod_name":"api-7d9f","container_name":"web","tail_lines":500,"since_seconds":30}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/argo/pod-logs/preview", body)
+	req = withRouteParam(req, "id", "project-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.previewArgoPodLogQuery(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var preview map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&preview); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	evidence := mapFromAny(preview["audit_evidence"])
+	if evidence["evidence_state"] != "recorded" ||
+		evidence["sanitized_result_recorded"] != true ||
+		intFromAny(evidence["operation_log_count"], 0) != 2 {
+		t.Fatalf("unexpected handler audit evidence: %#v", evidence)
+	}
+	encoded := rr.Body.String()
+	for _, forbidden := range []string{"secret kubeconfig", "actual log line", "apiVersion:", "Bearer secret"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("pod log preview handler leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestArgoPodLogAuditEvidenceStatusCombinations(t *testing.T) {
+	tests := []struct {
+		name      string
+		statuses  []string
+		wantState string
+	}{
+		{name: "running waits", statuses: []string{"running", "completed"}, wantState: "waiting_for_worker"},
+		{name: "failed terminal", statuses: []string{"failed", "completed"}, wantState: "failed"},
+		{name: "canceled terminal", statuses: []string{"canceled"}, wantState: "canceled"},
+		{name: "unknown terminal", statuses: []string{"mystery"}, wantState: "unknown"},
+		{name: "empty not requested", wantState: "not_requested"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows := make([]map[string]any, 0, len(tt.statuses))
+			for index, status := range tt.statuses {
+				rows = append(rows, map[string]any{"id": fmt.Sprintf("op-%d", index), "status": status})
+			}
+			evidence := argoPodLogAuditEvidenceSummary(rows)
+			if evidence["evidence_state"] != tt.wantState {
+				t.Fatalf("evidence_state=%#v want %s; evidence=%#v", evidence["evidence_state"], tt.wantState, evidence)
+			}
+			if containsString(tt.statuses, "completed") && evidence["sanitized_result_recorded"] != true {
+				t.Fatalf("sanitized_result_recorded should reflect completed evidence independently: %#v", evidence)
+			}
+			encoded, _ := json.Marshal(evidence)
+			for _, forbidden := range []string{"log line", "secret kubeconfig", "Bearer secret"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("pod log evidence leaked %q: %s", forbidden, encoded)
+				}
+			}
+		})
+	}
+}
+
 func TestCleanArgoPodLogRequestClampsRanges(t *testing.T) {
 	req, err := cleanArgoPodLogRequest(argoPodLogRequest{
 		DeploymentTargetID: " target-1 ",
@@ -955,9 +1095,10 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		}
 	}
 	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
-	if resultPlan["result_written"] != false ||
-		resultPlan["operation_log_written"] != false ||
-		resultPlan["log_body_included"] != false ||
+	evidence := mapFromAny(executionPlan["audit_evidence"])
+	hasAuditEvidence := boolOnlyFromAny(evidence["has_audit_operations"])
+	hasSanitizedResult := boolOnlyFromAny(evidence["sanitized_result_recorded"])
+	if resultPlan["log_body_included"] != false ||
 		resultPlan["redacted_log_body_included"] != false ||
 		resultPlan["kubeconfig_binding_recorded"] != false ||
 		resultPlan["pod_scope_recorded"] != false ||
@@ -967,8 +1108,18 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		resultPlan["authorization_header_included"] != false {
 		t.Fatalf("pod log result recording plan should keep all result flags false: %#v", resultPlan)
 	}
+	if hasAuditEvidence {
+		if resultPlan["audit_operation_observed"] != true ||
+			resultPlan["result_written"] != hasSanitizedResult ||
+			resultPlan["sanitized_result_observed"] != hasSanitizedResult ||
+			resultPlan["recording_state"] != evidence["evidence_state"] {
+			t.Fatalf("pod log result recording plan should reflect sanitized evidence only: result=%#v evidence=%#v", resultPlan, evidence)
+		}
+	} else if resultPlan["result_written"] != false || resultPlan["operation_log_written"] != false {
+		t.Fatalf("pod log result recording plan should not report writes without evidence: %#v", resultPlan)
+	}
 	if executionPlan["prerequisite_state"] == "metadata_available" {
-		if resultPlan["recording_state"] != "planned" || resultPlan["recording_ready"] != true || resultPlan["recording_enabled"] != true || resultPlan["status_snapshot_written"] != true || resultPlan["canonical_asset_sync_queued"] != true {
+		if !hasAuditEvidence && (resultPlan["recording_state"] != "planned" || resultPlan["recording_ready"] != true || resultPlan["recording_enabled"] != true || resultPlan["status_snapshot_written"] != true || resultPlan["canonical_asset_sync_queued"] != true) {
 			t.Fatalf("metadata-ready pod log result recording plan should be planned for sanitized audit metadata: %#v", resultPlan)
 		}
 	} else if resultPlan["recording_state"] != "blocked" || resultPlan["recording_ready"] != false || resultPlan["recording_enabled"] != false {
@@ -984,9 +1135,11 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 			t.Fatalf("pod log result suppressed_fields missing %q: %#v", field, resultPlan["suppressed_fields"])
 		}
 	}
-	for _, reason := range []string{"live_log_backend_disabled", "sanitized_log_result_not_recorded"} {
-		if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), reason) {
-			t.Fatalf("pod log result blocked reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
+	if !hasSanitizedResult {
+		for _, reason := range []string{"live_log_backend_disabled", "sanitized_log_result_not_recorded"} {
+			if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), reason) {
+				t.Fatalf("pod log result blocked reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
+			}
 		}
 	}
 	encodedExecutionPlan, _ := json.Marshal(executionPlan)
