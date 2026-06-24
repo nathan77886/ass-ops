@@ -4648,9 +4648,12 @@ function AgentTasks() {
   const [taskID, setTaskID] = useState<string>();
   const [toolAuditSnapshotLoading, setToolAuditSnapshotLoading] = useState(false);
   const [toolAuditSnapshotResult, setToolAuditSnapshotResult] = useState<AnyRow>();
+  const [codeAuditSnapshotLoading, setCodeAuditSnapshotLoading] = useState(false);
+  const [codeAuditSnapshotResult, setCodeAuditSnapshotResult] = useState<AnyRow>();
   const taskDetail = useLoad(() => taskID ? api(`/api/agent/tasks/${taskID}`) : Promise.resolve(null), [taskID]);
   useEffect(() => {
     setToolAuditSnapshotResult(undefined);
+    setCodeAuditSnapshotResult(undefined);
   }, [taskID]);
   async function createTask(values: AnyRow) {
     if (!project) {
@@ -4695,6 +4698,24 @@ function AgentTasks() {
       message.error(error.message || 'Request failed');
     } finally {
       setToolAuditSnapshotLoading(false);
+    }
+  }
+  async function recordCodeAuditSnapshot(id: string) {
+    setCodeAuditSnapshotLoading(true);
+    try {
+      const result = await api(`/api/agent/tasks/${id}/code-audit-snapshot`, { method: 'POST', body: JSON.stringify({}) });
+      setCodeAuditSnapshotResult(result);
+      taskDetail.reload();
+      if (result.recording_ready === false) {
+        message.warning(result.message || 'Agent code audit snapshot is not ready yet');
+      } else {
+        message.success(result.agent_code_audit_snapshot_written ? 'Agent code audit snapshot recorded' : 'Agent code audit snapshot already current');
+      }
+    } catch (error: any) {
+      setCodeAuditSnapshotResult(undefined);
+      message.error(error.message || 'Request failed');
+    } finally {
+      setCodeAuditSnapshotLoading(false);
     }
   }
   function latestPlanApproved(row: AnyRow) {
@@ -4822,6 +4843,21 @@ function AgentTasks() {
             >
               Record audit snapshot
             </Button>
+            <Button
+              size="small"
+              onClick={() => recordCodeAuditSnapshot(taskDetail.data.id)}
+              loading={codeAuditSnapshotLoading}
+              disabled={
+                taskDetail.data.code_modification_evidence?.evidence_state !== 'recorded' ||
+                !taskDetail.data.code_modification_evidence?.sanitized_result_recorded ||
+                !taskDetail.data.code_modification_evidence?.worker_dispatch_audit_recorded ||
+                !taskDetail.data.code_modification_evidence?.codex_execution_plan_recorded ||
+                !taskDetail.data.code_modification_evidence?.patch_prepare_audit_recorded ||
+                Boolean(taskDetail.data.code_modification_evidence?.active_tool_call_count)
+              }
+            >
+              Record code audit snapshot
+            </Button>
           </Space>
           <Table<AnyRow> rowKey="id" size="small" dataSource={taskDetail.data.plans || []} pagination={{ pageSize: 4 }} columns={[
             { title: 'Status', render: (_, row) => <Tag color={row.status === 'approved' ? 'green' : 'blue'}>{row.status}</Tag> },
@@ -4853,6 +4889,20 @@ function AgentTasks() {
               <Tag>{taskDetail.data.code_modification_evidence.codex_execution_plan_recorded ? 'codex plan recorded' : 'no codex plan'}</Tag>
               <Tag>{taskDetail.data.code_modification_evidence.patch_prepare_audit_recorded ? 'patch audit recorded' : 'no patch audit'}</Tag>
               <Tag>{taskDetail.data.code_modification_evidence.sanitized_result_recorded ? 'code audit recorded' : 'code audit pending'}</Tag>
+            </Space>
+          ) : null}
+          {codeAuditSnapshotResult ? (
+            <Space wrap>
+              <Tag color={codeAuditSnapshotResult.recording_state === 'recorded' ? 'green' : codeAuditSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'gold'}>code snapshot {codeAuditSnapshotResult.recording_state || 'pending'}</Tag>
+              <Tag>{codeAuditSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
+              <Tag>{codeAuditSnapshotResult.agent_task_asset_observed ? 'agent task asset observed' : 'agent task asset missing'}</Tag>
+              <Tag>{codeAuditSnapshotResult.source_checkout_performed ? 'checkout done' : 'no checkout'}</Tag>
+              <Tag>{codeAuditSnapshotResult.branch_created ? 'branch created' : 'no branch'}</Tag>
+              <Tag>{codeAuditSnapshotResult.diff_materialized ? 'diff materialized' : 'no diff'}</Tag>
+              <Tag>{codeAuditSnapshotResult.file_patch_applied ? 'patch applied' : 'no patch apply'}</Tag>
+              <Tag>{codeAuditSnapshotResult.git_commit_created ? 'commit created' : 'no commit'}</Tag>
+              <Tag>{codeAuditSnapshotResult.git_push_performed ? 'push performed' : 'no push'}</Tag>
+              <Tag>{codeAuditSnapshotResult.contains_token ? 'token present' : 'no tokens'}</Tag>
             </Space>
           ) : null}
           <Table<AnyRow> rowKey="id" size="small" dataSource={taskDetail.data.tool_calls || []} pagination={{ pageSize: 5 }} columns={[
