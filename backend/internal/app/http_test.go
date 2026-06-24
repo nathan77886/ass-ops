@@ -2022,6 +2022,163 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 	}
 }
 
+func TestPinConfigCommitMetadataUpdatesExistingManifest(t *testing.T) {
+	next, changed, err := pinConfigCommitMetadata(map[string]any{
+		"release": "v1",
+		"repositories": []map[string]any{{
+			"repository_id": "repo-1",
+			"repo_key":      "config",
+			"tag":           "keep-me",
+		}},
+	}, map[string]any{
+		"id":        "repo-1",
+		"repo_key":  "config",
+		"repo_role": "config",
+	}, map[string]any{
+		"id":            "remote-1",
+		"remote_key":    "github",
+		"remote_role":   "target",
+		"provider_type": "github",
+	}, "abc123")
+	if err != nil {
+		t.Fatalf("pinConfigCommitMetadata returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("changed = false, want true")
+	}
+	if next["release"] != "v1" {
+		t.Fatalf("release field not preserved: %#v", next)
+	}
+	repositories := sliceOfMapsFromAny(next["repositories"])
+	if len(repositories) != 1 {
+		t.Fatalf("repositories = %#v", repositories)
+	}
+	item := repositories[0]
+	expected := map[string]any{
+		"repository_id":     "repo-1",
+		"repo_key":          "config",
+		"repo_role":         "config",
+		"remote_id":         "remote-1",
+		"remote_key":        "github",
+		"remote_role":       "target",
+		"provider_type":     "github",
+		"config_commit_sha": "abc123",
+		"validation_status": "local_synced_remote_latest_sha",
+		"tag":               "keep-me",
+	}
+	for key, value := range expected {
+		if item[key] != value {
+			t.Fatalf("item[%s] = %#v, want %#v in %#v", key, item[key], value, item)
+		}
+	}
+}
+
+func TestPinConfigCommitMetadataAppendsMissingManifest(t *testing.T) {
+	next, changed, err := pinConfigCommitMetadata(map[string]any{
+		"repositories": []map[string]any{{
+			"repository_id": "repo-other",
+			"repo_key":      "service",
+		}},
+	}, map[string]any{
+		"id":        "repo-1",
+		"repo_key":  "config",
+		"repo_role": "config",
+	}, map[string]any{
+		"id":            "remote-1",
+		"remote_key":    "github",
+		"remote_role":   "target",
+		"provider_type": "github",
+	}, "abc123")
+	if err != nil {
+		t.Fatalf("pinConfigCommitMetadata returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("changed = false, want true")
+	}
+	repositories := sliceOfMapsFromAny(next["repositories"])
+	if len(repositories) != 2 {
+		t.Fatalf("repositories = %#v", repositories)
+	}
+	appended := repositories[1]
+	if appended["repository_id"] != "repo-1" ||
+		appended["repo_key"] != "config" ||
+		appended["remote_id"] != "remote-1" ||
+		appended["config_commit_sha"] != "abc123" {
+		t.Fatalf("appended manifest = %#v", appended)
+	}
+}
+
+func TestPinConfigCommitMetadataMatchesExistingManifestByRepoKey(t *testing.T) {
+	next, changed, err := pinConfigCommitMetadata(map[string]any{
+		"repositories": []map[string]any{{
+			"repository_id": "old-repo-id",
+			"repo_key":      "config",
+			"tag":           "keep-me",
+		}},
+	}, map[string]any{
+		"id":        "repo-1",
+		"repo_key":  "config",
+		"repo_role": "config",
+	}, map[string]any{
+		"id":            "remote-1",
+		"remote_key":    "github",
+		"remote_role":   "target",
+		"provider_type": "github",
+	}, "abc123")
+	if err != nil {
+		t.Fatalf("pinConfigCommitMetadata returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("changed = false, want true")
+	}
+	repositories := sliceOfMapsFromAny(next["repositories"])
+	if len(repositories) != 1 {
+		t.Fatalf("repositories should update in place by repo_key, got %#v", repositories)
+	}
+	item := repositories[0]
+	if item["repository_id"] != "repo-1" ||
+		item["repo_key"] != "config" ||
+		item["config_commit_sha"] != "abc123" ||
+		item["tag"] != "keep-me" {
+		t.Fatalf("repo_key matched manifest = %#v", item)
+	}
+}
+
+func TestPinConfigCommitMetadataAlreadyPinned(t *testing.T) {
+	next, changed, err := pinConfigCommitMetadata(map[string]any{
+		"repositories": []map[string]any{{
+			"repository_id":     "repo-1",
+			"repo_key":          "config",
+			"repo_role":         "config",
+			"remote_id":         "remote-1",
+			"remote_key":        "github",
+			"remote_role":       "target",
+			"provider_type":     "github",
+			"config_commit_sha": "abc123",
+			"validation_status": "local_synced_remote_latest_sha",
+		}},
+	}, map[string]any{
+		"id":        "repo-1",
+		"repo_key":  "config",
+		"repo_role": "config",
+	}, map[string]any{
+		"id":            "remote-1",
+		"remote_key":    "github",
+		"remote_role":   "target",
+		"provider_type": "github",
+	}, "abc123")
+	if err != nil {
+		t.Fatalf("pinConfigCommitMetadata returned error: %v", err)
+	}
+	if changed {
+		t.Fatalf("changed = true, want false")
+	}
+	repositories := sliceOfMapsFromAny(next["repositories"])
+	if len(repositories) != 1 || repositories[0]["config_commit_sha"] != "abc123" {
+		t.Fatalf("repositories = %#v", repositories)
+	}
+}
+
 func TestConfigRepositoryScaffoldPreviewReconcilesProjectVersionPinEvidence(t *testing.T) {
 	preview := configRepositoryScaffoldPreview(
 		map[string]any{

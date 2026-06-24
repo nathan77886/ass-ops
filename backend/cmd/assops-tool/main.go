@@ -111,7 +111,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -221,6 +221,36 @@ func runDBCommand(cfg app.Config, args []string) error {
 		}
 		result, err := app.RecordProjectVersionValidationSnapshot(ctx, store, app.ProjectVersionValidationSnapshotOptions{
 			ProjectVersionID: *projectVersionID,
+			DryRun:           *dryRun,
+		})
+		if err != nil {
+			return err
+		}
+		return printJSON(result)
+	case "pin-config-commit":
+		fs := flag.NewFlagSet("db pin-config-commit", flag.ContinueOnError)
+		projectVersionID := fs.String("project-version-id", "", "project version ID to update")
+		repositoryID := fs.String("repository-id", "", "config repository ID to pin")
+		remoteID := fs.String("remote-id", "", "config remote ID to use when multiple remotes have latest_sha")
+		dryRun := fs.Bool("dry-run", false, "print the sanitized result without writing")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return usage()
+		}
+		store, err := app.OpenStore(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if err := store.ApplyMigrations(ctx, "backend/migrations"); err != nil {
+			return err
+		}
+		result, err := app.PinConfigCommit(ctx, store, app.ConfigCommitPinOptions{
+			ProjectVersionID: *projectVersionID,
+			RepositoryID:     *repositoryID,
+			RemoteID:         *remoteID,
 			DryRun:           *dryRun,
 		})
 		if err != nil {
