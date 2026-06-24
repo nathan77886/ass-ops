@@ -166,6 +166,7 @@ Security defaults:
 - Provider review downstream subplans now require matching mode, operation, and endpoint identity before branch policy, provider-send, retry/backoff, response result recording, transaction, provider-call boundary, or execution-lock metadata can be treated as ready; invocation, activation, execution-lock, transaction, provider-call boundary, and request-validation preflight paths also require the execution claim plan itself to match the same operation and endpoint before accepting claim or idempotency metadata readiness.
 - Provider review transaction, provider-call boundary, and result-recording plans also require the response plan to carry the expected completed/planned/failed attempt-status transitions and dependency-unlock metadata for the same operation before treating response metadata as ready.
 - Provider review invocation and activation summaries now also require each nested request, credential, runtime, transport, provider-send, response, transaction, execution-lock, branch-policy, or activation subplan to match the same operation and endpoint before mirroring its ready flag.
+- Provider review attempt activation snapshots can now persist sanitized adapter activation/provider-call-boundary metadata for the current execution candidate into canonical asset status history, while still recording no provider request, no provider-call boundary write, disabled mutation, and no URLs/tokens/refs/branch names/file content/request or response bodies/headers/idempotency material/provider request ids.
 
 ## MVP Boundaries
 

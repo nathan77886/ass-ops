@@ -19730,6 +19730,192 @@ func TestRecordProviderReviewMutationArmingSnapshotRowsAffectedUnknownDoesNotCla
 	}
 }
 
+func TestRecordProviderReviewAttemptActivationSnapshotWritesBlockedCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_activation_blocked").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_activation_blocked", "warning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptActivationSnapshot(context.Background(), store, ProviderReviewAttemptActivationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptActivationSnapshot: %v", err)
+	}
+	if got["recording_state"] != "activation_blocked" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_activation_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["mutation_armed"] != false ||
+		got["provider_request_sent"] != false ||
+		got["provider_call_boundary_recorded"] != false {
+		t.Fatalf("unexpected provider review activation snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["activation_plan_observed"] != true ||
+		snapshot["provider_call_boundary_plan_observed"] != true ||
+		snapshot["provider_request_sent"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review activation snapshot payload: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptActivationSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptActivationSnapshot(context.Background(), store, ProviderReviewAttemptActivationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptActivationSnapshot asset missing: %v", err)
+	}
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_activation_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected asset missing provider review activation response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptActivationSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptActivationSnapshot(context.Background(), store, ProviderReviewAttemptActivationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptActivationSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_activation_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run provider review activation response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptActivationSnapshotNotCurrentCandidateDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("completed", "dependency_satisfied")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptActivationSnapshot(context.Background(), store, ProviderReviewAttemptActivationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptActivationSnapshot not current: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_activation_snapshot_written"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("unexpected not-current provider review activation response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptActivationSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_activation_blocked").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_activation_blocked", "warning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptActivationSnapshot(context.Background(), store, ProviderReviewAttemptActivationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptActivationSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_activation_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown provider review activation response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRepoSyncRunFiltersFromRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/repo-sync-runs?asset_id=%20asset-1%20&status=%20failed%20&ref=%20refs/heads/main%20&since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z", nil)
 	got, err := repoSyncRunFiltersFromRequest(req)
@@ -24396,6 +24582,76 @@ func providerReviewArmingSnapshotLedger(attemptCount int) map[string]any {
 			"dependency_chain_status": "ready",
 		},
 	}
+}
+
+func providerReviewActivationSnapshotAttempt(status, dependency string) map[string]any {
+	return map[string]any{
+		"id":                      "attempt-1",
+		"operation_approval_id":   "approval-1",
+		"project_template_run_id": "run-1",
+		"provider_type":           "github",
+		"review_kind":             "pull_request",
+		"operation_name":          "create_branch_ref",
+		"endpoint_key":            "github.create_branch_ref",
+		"status":                  status,
+		"replay_check":            "detect_existing_branch_ref",
+		"conflict_policy":         "treat_existing_matching_ref_as_success",
+		"retry_policy":            "retry_only_after_response_diagnostics",
+		"operation_order":         10,
+		"depends_on_operation":    "",
+		"dependency_status":       dependency,
+		"request_summary": map[string]any{
+			"mode":                        "redacted_attempt_request_summary",
+			"operation_name":              "create_branch_ref",
+			"endpoint_key":                "github.create_branch_ref",
+			"payload_builder":             "build_redacted_branch_ref_request",
+			"response_handler":            "handle_branch_ref_response",
+			"execution_status":            "ready_for_adapter_implementation",
+			"request_body_included":       false,
+			"headers_included":            false,
+			"idempotency_key_kind":        "operation_scope_hash",
+			"idempotency_key_included":    false,
+			"requires_provider_client":    true,
+			"requires_request_builder":    true,
+			"requires_response_handler":   true,
+			"requires_idempotency_ledger": true,
+			"provider_api_call_made":      false,
+			"provider_api_mutation":       "disabled",
+			"external_call_made":          false,
+			"payload_redacted":            true,
+			"contains_token":              false,
+			"contains_provider_url":       false,
+			"contains_repository_ref":     false,
+			"contains_branch_name":        false,
+			"contains_file_content":       false,
+		},
+		"response_diagnostics": map[string]any{
+			"mode":                     "redacted_attempt_response_diagnostics",
+			"endpoint_key":             "github.create_branch_ref",
+			"status":                   "pending",
+			"success_status_class":     "2xx",
+			"retryable_status_classes": []string{"5xx"},
+			"response_body_included":   false,
+			"headers_included":         false,
+			"contains_token":           false,
+			"contains_provider_url":    false,
+			"provider_api_call_made":   false,
+			"provider_api_mutation":    "disabled",
+			"external_call_made":       false,
+		},
+		"provider_api_call_made": false,
+		"provider_api_mutation":  "disabled",
+		"external_call_made":     false,
+		"claimed_at":             nil,
+		"approval_id":            "approval-1",
+		"approval_project_id":    "project-1",
+		"approval_action":        templateProviderReviewExecuteApprovalAction,
+		"approval_status":        "approved",
+	}
+}
+
+func providerReviewActivationSnapshotLedger(attempt map[string]any) map[string]any {
+	return providerReviewAttemptLedgerSummary([]map[string]any{attempt})
 }
 
 func expectProviderReviewAttemptLocalResultSelect(mock sqlmock.Sqlmock, opts providerReviewAttemptClaimSelectOptions) {
