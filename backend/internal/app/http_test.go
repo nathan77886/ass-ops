@@ -18985,6 +18985,99 @@ func TestRecordProviderReviewAttemptLocalResultHandlerReleasesClaimForRetryable(
 	}
 }
 
+func TestRecordProviderReviewAttemptLocalResultHandlerBlocksUnapprovedApproval(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	claimedAt := time.Now()
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectBegin()
+	expectProviderReviewAttemptLocalResultSelect(mock, providerReviewAttemptClaimSelectOptions{
+		Status:         "running",
+		Dependency:     "independent",
+		ApprovalAction: templateProviderReviewExecuteApprovalAction,
+		ApprovalStatus: "pending",
+		ClaimedAt:      claimedAt,
+	})
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLocalResult(rr, newProviderReviewAttemptLocalResultRequest(`{"result":"success"}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["result_recorded"] != false ||
+		got["result_state"] != "operation_approval_not_approved" ||
+		got["result_status"] != "success" ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["contains_token"] != false ||
+		got["contains_provider_url"] != false {
+		t.Fatalf("unexpected unapproved local result response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLocalResultHandlerRejectsWrongApprovalAction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	claimedAt := time.Now()
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectBegin()
+	expectProviderReviewAttemptLocalResultSelect(mock, providerReviewAttemptClaimSelectOptions{
+		Status:         "running",
+		Dependency:     "independent",
+		ApprovalAction: "ssh.exec",
+		ApprovalStatus: "approved",
+		ClaimedAt:      claimedAt,
+	})
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLocalResult(rr, newProviderReviewAttemptLocalResultRequest(`{"result":"success"}`))
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLocalResultHandlerRejectsInvalidResultBeforeDBLookup(t *testing.T) {
+	server := &Server{}
+	rr := httptest.NewRecorder()
+
+	server.recordProviderReviewAttemptLocalResult(rr, newProviderReviewAttemptLocalResultRequest(`{"result":"provider_success_with_body"}`))
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRecordProviderReviewAttemptLocalResultHandlerRejectsInvalidJSONBeforeDBLookup(t *testing.T) {
+	server := &Server{}
+	rr := httptest.NewRecorder()
+
+	server.recordProviderReviewAttemptLocalResult(rr, newProviderReviewAttemptLocalResultRequest(`{"result":`))
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestProviderReviewAttemptSnapshotPayloadSanitizesAttempt(t *testing.T) {
 	snapshot := providerReviewAttemptSnapshotPayload(map[string]any{
 		"id":                      "attempt-1",
