@@ -100,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/project-versions/{id}/validation", s.getProjectVersionValidation)
 		r.Post("/api/project-versions/{id}/refresh", s.refreshProjectVersionProviders)
 		r.Post("/api/project-versions/{id}/validation-snapshot", s.recordProjectVersionValidationSnapshot)
+		r.Post("/api/project-versions/{id}/validation-rerun-snapshot", s.recordProjectVersionValidationRerunSnapshot)
 		r.Post("/api/project-versions/{id}/pin-config-commit", s.pinProjectVersionConfigCommit)
 		r.Get("/api/asset-graph-views", s.listAssetGraphViews)
 		r.Post("/api/asset-graph-views", s.createAssetGraphView)
@@ -2445,6 +2446,14 @@ func (s *Server) pinProjectVersionConfigCommit(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) recordProjectVersionValidationSnapshot(w http.ResponseWriter, r *http.Request) {
+	s.recordProjectVersionValidationSnapshotWithOptions(w, r, false)
+}
+
+func (s *Server) recordProjectVersionValidationRerunSnapshot(w http.ResponseWriter, r *http.Request) {
+	s.recordProjectVersionValidationSnapshotWithOptions(w, r, true)
+}
+
+func (s *Server) recordProjectVersionValidationSnapshotWithOptions(w http.ResponseWriter, r *http.Request, requireRecordedRefresh bool) {
 	versionID := chi.URLParam(r, "id")
 	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
 	if err != nil {
@@ -2460,9 +2469,15 @@ func (s *Server) recordProjectVersionValidationSnapshot(w http.ResponseWriter, r
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	recordingTrigger := "operator_request"
+	if requireRecordedRefresh {
+		recordingTrigger = "validation_auto_reload"
+	}
 	result, err := RecordProjectVersionValidationSnapshot(r.Context(), s.store, ProjectVersionValidationSnapshotOptions{
-		ProjectVersionID: versionID,
-		DryRun:           req.DryRun,
+		ProjectVersionID:       versionID,
+		DryRun:                 req.DryRun,
+		RequireRecordedRefresh: requireRecordedRefresh,
+		RecordingTrigger:       recordingTrigger,
 	})
 	if err != nil {
 		if s.log != nil {

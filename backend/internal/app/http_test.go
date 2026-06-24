@@ -3976,6 +3976,236 @@ func TestRecordProjectVersionValidationSnapshotHandlerWritesSnapshot(t *testing.
 	}
 }
 
+func TestRecordProjectVersionValidationRerunSnapshotHandlerBlockedByReadiness(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	metadata := []byte(`{"repositories":[{"repo_key":"service","repo_role":"service","remote_id":"remote-1","remote_key":"github","commit_sha":"abc123","tag":"v0.1.0","github_action_run_id":"run-1"}]}`)
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, version, source, metadata, created_at\s+FROM project_versions\s+WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
+			AddRow("version-1", "project-1", "v0.1.0", "manual", metadata, time.Now()))
+	mock.ExpectQuery(`(?s)SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, gr.default_branch`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "remote_key", "provider_type", "latest_sha", "default_branch", "repo_key", "repo_role", "repository_name"}).
+			AddRow("remote-1", "github", "github", "abc123", "main", "service", "service", "Service"))
+	mock.ExpectQuery(`(?s)SELECT id, project_git_repository_id, target_remote_id, git_remote_id, tag_name, target_sha, status, created_at, finished_at\s+FROM repo_tag_runs`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "created_at", "finished_at"}).
+			AddRow("tag-1", "repo-1", "remote-1", "remote-1", "v0.1.0", "abc123", "succeeded", time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, git_remote_id, run_id, workflow_name, branch, commit_sha, status, conclusion, started_at, updated_at\s+FROM github_action_runs`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "git_remote_id", "run_id", "workflow_name", "branch", "commit_sha", "status", "conclusion", "started_at", "updated_at"}).
+			AddRow("action-1", "remote-1", "run-1", "ci", "main", "abc123", "completed", "success", time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, name, namespace, status, metadata, synced_at, updated_at\s+FROM argo_apps`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "namespace", "status", "metadata", "synced_at", "updated_at"}))
+	mock.ExpectQuery(`(?s)SELECT id, name, last_sync_status\s+FROM argo_connections`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "last_sync_status"}))
+	mock.ExpectQuery(`(?s)SELECT id, operation_type, status, error, input, started_at, finished_at, created_at, updated_at\s+FROM operation_runs`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "error", "input", "started_at", "finished_at", "created_at", "updated_at"}).
+			AddRow("op-1", "github.actions.sync", "running", "", []byte(`{"project_version_id":"version-1","refresh_kind":"github_actions_api_refresh"}`), time.Now(), nil, time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='project_version'`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/project-versions/version-1/validation-rerun-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "version-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.recordProjectVersionValidationRerunSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "waiting_for_workers" ||
+		got["recording_ready"] != false ||
+		got["recording_enabled"] != false ||
+		got["recording_trigger"] != "validation_auto_reload" ||
+		got["auto_record_terminal_required"] != true ||
+		got["auto_record_terminal_satisfied"] != false ||
+		got["validation_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected blocked rerun snapshot response: %#v", got)
+	}
+	if !containsString(stringSliceFromAny(got["missing_evidence"]), "refresh_workers_still_running") {
+		t.Fatalf("blocked response missing worker evidence: %#v", got["missing_evidence"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProjectVersionValidationRerunSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	metadata := []byte(`{"repositories":[{"repo_key":"service","repo_role":"service","remote_id":"remote-1","remote_key":"github","commit_sha":"abc123","tag":"v0.1.0","github_action_run_id":"run-1"}]}`)
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, version, source, metadata, created_at\s+FROM project_versions\s+WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
+			AddRow("version-1", "project-1", "v0.1.0", "manual", metadata, time.Now()))
+	mock.ExpectQuery(`(?s)SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, gr.default_branch`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "remote_key", "provider_type", "latest_sha", "default_branch", "repo_key", "repo_role", "repository_name"}).
+			AddRow("remote-1", "github", "github", "abc123", "main", "service", "service", "Service"))
+	mock.ExpectQuery(`(?s)SELECT id, project_git_repository_id, target_remote_id, git_remote_id, tag_name, target_sha, status, created_at, finished_at\s+FROM repo_tag_runs`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "created_at", "finished_at"}).
+			AddRow("tag-1", "repo-1", "remote-1", "remote-1", "v0.1.0", "abc123", "succeeded", time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, git_remote_id, run_id, workflow_name, branch, commit_sha, status, conclusion, started_at, updated_at\s+FROM github_action_runs`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "git_remote_id", "run_id", "workflow_name", "branch", "commit_sha", "status", "conclusion", "started_at", "updated_at"}).
+			AddRow("action-1", "remote-1", "run-1", "ci", "main", "abc123", "completed", "success", time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, name, namespace, status, metadata, synced_at, updated_at\s+FROM argo_apps`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "namespace", "status", "metadata", "synced_at", "updated_at"}))
+	mock.ExpectQuery(`(?s)SELECT id, name, last_sync_status\s+FROM argo_connections`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "last_sync_status"}))
+	mock.ExpectQuery(`(?s)SELECT id, operation_type, status, error, input, started_at, finished_at, created_at, updated_at\s+FROM operation_runs`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "error", "input", "started_at", "finished_at", "created_at", "updated_at"}).
+			AddRow("op-1", "github.actions.sync", "completed", "", []byte(`{"project_version_id":"version-1","refresh_kind":"github_actions_api_refresh"}`), time.Now(), time.Now(), time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='project_version'`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-1", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/project-versions/version-1/validation-rerun-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "version-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.recordProjectVersionValidationRerunSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["recording_trigger"] != "validation_auto_reload" ||
+		got["auto_record_terminal_required"] != true ||
+		got["auto_record_terminal_satisfied"] != true ||
+		got["validation_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["operation_log_written"] != false ||
+		got["external_call_made"] != false {
+		t.Fatalf("unexpected ready rerun snapshot response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProjectVersionValidationSnapshotHandlerRowsAffectedUnknown(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	metadata := []byte(`{"repositories":[{"repo_key":"service","repo_role":"service","remote_id":"remote-1","remote_key":"github","commit_sha":"abc123","tag":"v0.1.0","github_action_run_id":"run-1"}]}`)
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, version, source, metadata, created_at\s+FROM project_versions\s+WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
+			AddRow("version-1", "project-1", "v0.1.0", "manual", metadata, time.Now()))
+	mock.ExpectQuery(`(?s)SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, gr.default_branch`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "remote_key", "provider_type", "latest_sha", "default_branch", "repo_key", "repo_role", "repository_name"}).
+			AddRow("remote-1", "github", "github", "abc123", "main", "service", "service", "Service"))
+	mock.ExpectQuery(`(?s)SELECT id, project_git_repository_id, target_remote_id, git_remote_id, tag_name, target_sha, status, created_at, finished_at\s+FROM repo_tag_runs`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "created_at", "finished_at"}).
+			AddRow("tag-1", "repo-1", "remote-1", "remote-1", "v0.1.0", "abc123", "succeeded", time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, git_remote_id, run_id, workflow_name, branch, commit_sha, status, conclusion, started_at, updated_at\s+FROM github_action_runs`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "git_remote_id", "run_id", "workflow_name", "branch", "commit_sha", "status", "conclusion", "started_at", "updated_at"}).
+			AddRow("action-1", "remote-1", "run-1", "ci", "main", "abc123", "completed", "success", time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, name, namespace, status, metadata, synced_at, updated_at\s+FROM argo_apps`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "namespace", "status", "metadata", "synced_at", "updated_at"}))
+	mock.ExpectQuery(`(?s)SELECT id, name, last_sync_status\s+FROM argo_connections`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "last_sync_status"}))
+	mock.ExpectQuery(`(?s)SELECT id, operation_type, status, error, input, started_at, finished_at, created_at, updated_at\s+FROM operation_runs`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "error", "input", "started_at", "finished_at", "created_at", "updated_at"}).
+			AddRow("op-1", "github.actions.sync", "completed", "", []byte(`{"project_version_id":"version-1","refresh_kind":"github_actions_api_refresh"}`), time.Now(), time.Now(), time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='project_version'`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-1", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/project-versions/version-1/validation-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "version-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.recordProjectVersionValidationSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["snapshots_written"] != float64(-1) ||
+		got["snapshots_skipped_as_duplicate"] != float64(-1) ||
+		got["rows_affected_unknown"] != true ||
+		got["validation_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
 	preview := projectVersionValidationPreview(
 		map[string]any{
@@ -4388,6 +4618,51 @@ func TestProjectVersionValidationRerunEvidenceRecordsServerSideRecheck(t *testin
 				}
 			}
 		})
+	}
+}
+
+func TestProjectVersionValidationSnapshotAutoRecordReadinessRequiresRecordedTerminalRefresh(t *testing.T) {
+	baseVersion := map[string]any{
+		"id":      "version-1",
+		"version": "v0.1.0",
+		"metadata": map[string]any{"repositories": []any{
+			map[string]any{"repo_key": "service", "remote_id": "remote-1", "commit_sha": "abc123"},
+		}},
+	}
+	waitingPreview := projectVersionValidationPreview(
+		baseVersion,
+		[]map[string]any{{"id": "remote-1", "provider_type": "github", "latest_sha": "abc123"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		[]map[string]any{
+			{"id": "op-git", "operation_type": "git.refs.refresh", "status": "running", "input": map[string]any{"refresh_kind": "git_ref_fetch"}},
+		},
+	)
+	waitingSnapshot := projectVersionValidationSnapshotPayload(waitingPreview, true)
+	ready, state, missing := projectVersionValidationSnapshotAutoRecordReadiness(waitingPreview, waitingSnapshot)
+	if ready || state != "waiting_for_workers" ||
+		!containsString(missing, "refresh_workers_still_running") ||
+		!containsString(missing, "validation_rerun_not_recorded") {
+		t.Fatalf("waiting refresh should not be auto-recordable: ready=%v state=%s missing=%#v", ready, state, missing)
+	}
+
+	recordedPreview := projectVersionValidationPreview(
+		baseVersion,
+		[]map[string]any{{"id": "remote-1", "provider_type": "github", "latest_sha": "abc123"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		[]map[string]any{
+			{"id": "op-git", "operation_type": "git.refs.refresh", "status": "completed", "input": map[string]any{"refresh_kind": "git_ref_fetch"}},
+		},
+	)
+	recordedSnapshot := projectVersionValidationSnapshotPayload(recordedPreview, true)
+	ready, state, missing = projectVersionValidationSnapshotAutoRecordReadiness(recordedPreview, recordedSnapshot)
+	if !ready || state != "ready_to_record" || len(missing) != 0 {
+		t.Fatalf("recorded terminal refresh should be auto-recordable: ready=%v state=%s missing=%#v", ready, state, missing)
 	}
 }
 

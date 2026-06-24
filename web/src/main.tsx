@@ -1219,6 +1219,9 @@ function sanitizedValidationSnapshotResult(result: AnyRow = {}) {
     'recording_state',
     'recording_ready',
     'recording_enabled',
+    'recording_trigger',
+    'auto_record_terminal_required',
+    'auto_record_terminal_satisfied',
     'dry_run',
     'project_version_id',
     'project_version_asset_observed',
@@ -3030,6 +3033,20 @@ function ProjectDetail() {
       setRecordingValidationSnapshotID(undefined);
     }
   }
+  async function autoRecordValidationSnapshot(versionID: string) {
+    setRecordingValidationSnapshotID(versionID);
+    try {
+      const result = await api(`/api/project-versions/${versionID}/validation-rerun-snapshot`, {
+        method: 'POST',
+        body: JSON.stringify({ dry_run: false })
+      });
+      const safeResult = sanitizedValidationSnapshotResult(result);
+      setVersionSnapshotResult(safeResult);
+      return safeResult;
+    } finally {
+      setRecordingValidationSnapshotID(undefined);
+    }
+  }
   useEffect(() => {
     const versionID = versionValidationAutoReload?.version_id;
     if (!versionID || versionValidationAutoReload?.status !== 'polling') return;
@@ -3058,14 +3075,23 @@ function ProjectDetail() {
             validation_rerun_status: rerunStatus,
             last_checked_at: new Date().toISOString()
           });
+          if (timer !== undefined) window.clearInterval(timer);
           if (rerunStatus === 'recorded') {
-            message.success('Version validation refreshed');
+            try {
+              const snapshot = await autoRecordValidationSnapshot(versionID);
+              if (snapshot.recording_ready === false) {
+                message.warning(snapshot.message || 'Version validation refreshed, but snapshot recording is not ready yet');
+              } else {
+                message.success(snapshot.validation_snapshot_written ? 'Version validation refreshed and snapshot recorded' : 'Version validation refreshed; snapshot already current');
+              }
+            } catch (error: any) {
+              message.warning(error.message || 'Version validation refreshed, but snapshot recording failed');
+            }
           } else if (rerunStatus === 'refresh_failed') {
             message.error('Version refresh finished with failed operations');
           } else if (rerunStatus === 'refresh_canceled') {
             message.warning('Version refresh was canceled');
           }
-          if (timer !== undefined) window.clearInterval(timer);
           return;
         }
         if (attempts >= 60) {
@@ -3270,6 +3296,8 @@ function ProjectDetail() {
                     Record validation snapshot
                   </Button>
                   {versionSnapshotResult ? <Tag color={versionSnapshotResult.validation_snapshot_written ? 'green' : versionSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>snapshot {versionSnapshotResult.recording_state || 'unknown'}</Tag> : null}
+                  {versionSnapshotResult ? <Tag>{versionSnapshotResult.recording_trigger || 'operator_request'}</Tag> : null}
+                  {versionSnapshotResult?.auto_record_terminal_required ? <Tag color={versionSnapshotResult.auto_record_terminal_satisfied ? 'green' : 'gold'}>{versionSnapshotResult.auto_record_terminal_satisfied ? 'auto terminal satisfied' : 'auto terminal waiting'}</Tag> : null}
                   {versionSnapshotResult ? <Tag>{versionSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'no asset status write'}</Tag> : null}
                   {versionSnapshotResult ? <Tag>{versionSnapshotResult.operation_log_written ? 'operation log' : 'no operation log'}</Tag> : null}
                   {versionSnapshotResult ? <Tag>{versionSnapshotResult.external_call_made ? 'external call' : 'no external call'}</Tag> : null}

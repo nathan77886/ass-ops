@@ -11,8 +11,10 @@ import (
 )
 
 type ProjectVersionValidationSnapshotOptions struct {
-	ProjectVersionID string
-	DryRun           bool
+	ProjectVersionID       string
+	DryRun                 bool
+	RequireRecordedRefresh bool
+	RecordingTrigger       string
 }
 
 func RecordProjectVersionValidationSnapshot(ctx context.Context, store *Store, opts ProjectVersionValidationSnapshotOptions) (map[string]any, error) {
@@ -24,16 +26,20 @@ func RecordProjectVersionValidationSnapshot(ctx context.Context, store *Store, o
 	if err != nil {
 		return nil, err
 	}
-	assetID, assetErr := projectVersionAssetID(ctx, store.DB, versionID)
-	if assetErr != nil && !opts.DryRun {
-		return nil, assetErr
+	recordingTrigger := strings.TrimSpace(opts.RecordingTrigger)
+	if recordingTrigger == "" {
+		recordingTrigger = "operator_request"
 	}
+	assetID, assetErr := projectVersionAssetID(ctx, store.DB, versionID)
 	snapshot := projectVersionValidationSnapshotPayload(preview, assetErr == nil)
 	result := map[string]any{
 		"mode":                           "project_version_validation_snapshot_recording",
 		"recording_state":                "ready_to_record",
 		"recording_ready":                true,
 		"recording_enabled":              !opts.DryRun,
+		"recording_trigger":              recordingTrigger,
+		"auto_record_terminal_required":  opts.RequireRecordedRefresh,
+		"auto_record_terminal_satisfied": !opts.RequireRecordedRefresh,
 		"dry_run":                        opts.DryRun,
 		"project_version_id":             versionID,
 		"project_version_asset_observed": assetErr == nil,
@@ -44,6 +50,21 @@ func RecordProjectVersionValidationSnapshot(ctx context.Context, store *Store, o
 		"asset_status_snapshot_written":  false,
 		"operation_log_written":          false,
 		"external_call_made":             false,
+	}
+	if opts.RequireRecordedRefresh {
+		ready, state, missing := projectVersionValidationSnapshotAutoRecordReadiness(preview, snapshot)
+		result["recording_state"] = state
+		result["recording_ready"] = ready
+		result["recording_enabled"] = ready && !opts.DryRun
+		result["auto_record_terminal_satisfied"] = ready
+		if len(missing) > 0 {
+			result["missing_evidence"] = missing
+		}
+		if !ready {
+			result["message"] = "ProjectVersion validation snapshot auto-recording is waiting for a terminal recorded refresh result; no snapshot was written."
+			return result, nil
+		}
+		result["recording_state"] = "ready_to_record"
 	}
 	if assetErr != nil {
 		result["recording_state"] = "asset_missing"
@@ -102,7 +123,7 @@ func RecordProjectVersionValidationSnapshot(ctx context.Context, store *Store, o
 	if rows, err := execResult.RowsAffected(); err == nil {
 		written = int(rows)
 	} else {
-		written = 1
+		written = -1
 		rowsAffectedWarning = "rows affected unavailable"
 	}
 	if err := tx.Commit(); err != nil {
@@ -111,9 +132,11 @@ func RecordProjectVersionValidationSnapshot(ctx context.Context, store *Store, o
 	committed = true
 	result["recording_state"] = "recorded"
 	result["snapshots_written"] = written
-	result["snapshots_skipped_as_duplicate"] = 1 - written
-	result["validation_snapshot_written"] = written > 0
-	result["asset_status_snapshot_written"] = written > 0
+	if written >= 0 {
+		result["snapshots_skipped_as_duplicate"] = 1 - written
+		result["validation_snapshot_written"] = written > 0
+		result["asset_status_snapshot_written"] = written > 0
+	}
 	if rowsAffectedWarning != "" {
 		result["rows_affected_warning"] = rowsAffectedWarning
 		result["rows_affected_unknown"] = true
@@ -121,6 +144,46 @@ func RecordProjectVersionValidationSnapshot(ctx context.Context, store *Store, o
 	}
 	result["message"] = "Sanitized ProjectVersion validation snapshot recorded from local synced database state."
 	return result, nil
+}
+
+func projectVersionValidationSnapshotAutoRecordReadiness(preview map[string]any, snapshot map[string]any) (bool, string, []string) {
+	summary := mapFromAny(preview["provider_refresh_result_summary"])
+	rerunEvidence := mapFromAny(preview["validation_rerun_evidence"])
+	status := strings.TrimSpace(fmt.Sprint(summary["validation_rerun_status"]))
+	if status == "" || status == "<nil>" {
+		status = "not_requested"
+	}
+	activeCount := intFromAny(summary["active_count"], 0)
+	operationCount := intFromAny(summary["operation_count"], 0)
+	state := "blocked"
+	if status == "waiting_for_workers" || activeCount > 0 {
+		state = "waiting_for_workers"
+	}
+	missing := []string{}
+	if operationCount == 0 {
+		missing = append(missing, "provider_refresh_execution_not_performed")
+	}
+	if activeCount > 0 {
+		missing = append(missing, "refresh_workers_still_running")
+	}
+	if status != "recorded" {
+		missing = append(missing, "validation_rerun_not_recorded")
+	}
+	if !boolOnlyFromAny(rerunEvidence["server_side_validation_recheck_ready"]) {
+		missing = append(missing, "server_side_validation_recheck_not_terminal")
+	}
+	if !boolOnlyFromAny(snapshot["snapshot_ready_for_review"]) {
+		missing = append(missing, "validation_snapshot_not_ready_for_review")
+	}
+	ready := operationCount > 0 &&
+		activeCount == 0 &&
+		status == "recorded" &&
+		boolOnlyFromAny(rerunEvidence["server_side_validation_recheck_ready"]) &&
+		boolOnlyFromAny(snapshot["snapshot_ready_for_review"])
+	if ready {
+		return true, "ready_to_record", nil
+	}
+	return false, state, missing
 }
 
 func projectVersionValidationPreviewFromDB(ctx context.Context, db sqlx.ExtContext, versionID string) (map[string]any, error) {
