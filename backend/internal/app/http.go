@@ -144,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/repo-sync-assets/{id}/restore", s.restoreRepoSyncAsset)
 		r.Post("/api/repo-sync-assets/{id}/run", s.runRepoSyncAsset)
 		r.Get("/api/repo-tag-runs", s.listRepoTagRuns)
+		r.Post("/api/repo-tag-runs/{id}/live-lookup", s.createRepoTagRunLiveLookup)
 		r.Post("/api/repo-tag-runs/{id}/result-snapshot", s.recordRepoTagRunResultSnapshot)
 		r.Post("/api/repo-tag-runs/{id}/actions-refresh-snapshot", s.recordRepoTagRunActionsRefreshSnapshot)
 		r.Get("/api/operation-approvals", s.listOperationApprovals)
@@ -8747,9 +8748,25 @@ func (s *Server) listRepoTagRuns(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT * FROM repo_tag_runs
-			WHERE project_git_repository_id=$1
-			ORDER BY created_at DESC
+			SELECT rtr.*,
+				lookup_op.id AS lookup_operation_id,
+				lookup_op.status AS lookup_operation_status,
+				lookup_op.result AS lookup_operation_result,
+				lookup_op.error AS lookup_operation_error,
+				lookup_op.started_at AS lookup_operation_started_at,
+				lookup_op.finished_at AS lookup_operation_finished_at,
+				lookup_op.created_at AS lookup_operation_created_at
+			FROM repo_tag_runs rtr
+			LEFT JOIN LATERAL (
+				SELECT id, status, result, error, started_at, finished_at, created_at
+				FROM operation_runs
+				WHERE operation_type='repo.tag.lookup'
+					AND input->>'repo_tag_run_id'=rtr.id::text
+				ORDER BY created_at DESC
+				LIMIT 1
+			) lookup_op ON true
+			WHERE rtr.project_git_repository_id=$1
+			ORDER BY rtr.created_at DESC
 			LIMIT 100`, repoID)
 		items = repoTagRunsWithRemoteRehearsal(items)
 		writeQueryResult(w, items, err)
@@ -8763,16 +8780,47 @@ func (s *Server) listRepoTagRuns(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT * FROM repo_tag_runs
-			WHERE target_remote_id=$1 OR git_remote_id=$1
-			ORDER BY created_at DESC
+			SELECT rtr.*,
+				lookup_op.id AS lookup_operation_id,
+				lookup_op.status AS lookup_operation_status,
+				lookup_op.result AS lookup_operation_result,
+				lookup_op.error AS lookup_operation_error,
+				lookup_op.started_at AS lookup_operation_started_at,
+				lookup_op.finished_at AS lookup_operation_finished_at,
+				lookup_op.created_at AS lookup_operation_created_at
+			FROM repo_tag_runs rtr
+			LEFT JOIN LATERAL (
+				SELECT id, status, result, error, started_at, finished_at, created_at
+				FROM operation_runs
+				WHERE operation_type='repo.tag.lookup'
+					AND input->>'repo_tag_run_id'=rtr.id::text
+				ORDER BY created_at DESC
+				LIMIT 1
+			) lookup_op ON true
+			WHERE rtr.target_remote_id=$1 OR rtr.git_remote_id=$1
+			ORDER BY rtr.created_at DESC
 			LIMIT 100`, remoteID)
 		items = repoTagRunsWithRemoteRehearsal(items)
 		writeQueryResult(w, items, err)
 	default:
 		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT rtr.*
+			SELECT rtr.*,
+				lookup_op.id AS lookup_operation_id,
+				lookup_op.status AS lookup_operation_status,
+				lookup_op.result AS lookup_operation_result,
+				lookup_op.error AS lookup_operation_error,
+				lookup_op.started_at AS lookup_operation_started_at,
+				lookup_op.finished_at AS lookup_operation_finished_at,
+				lookup_op.created_at AS lookup_operation_created_at
 			FROM repo_tag_runs rtr
+			LEFT JOIN LATERAL (
+				SELECT id, status, result, error, started_at, finished_at, created_at
+				FROM operation_runs
+				WHERE operation_type='repo.tag.lookup'
+					AND input->>'repo_tag_run_id'=rtr.id::text
+				ORDER BY created_at DESC
+				LIMIT 1
+			) lookup_op ON true
 			LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
 			WHERE $1 OR COALESCE(rtr.project_id::text, pgr.project_id::text, '')='' OR EXISTS (
 				SELECT 1 FROM project_members pm
@@ -8782,6 +8830,167 @@ func (s *Server) listRepoTagRuns(w http.ResponseWriter, r *http.Request) {
 			LIMIT 100`, userCanReadAllProjects(user), userIDOrNil(user))
 		items = repoTagRunsWithRemoteRehearsal(items)
 		writeQueryResult(w, items, err)
+	}
+}
+
+func (s *Server) createRepoTagRunLiveLookup(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	run, err := queryOne(r.Context(), s.store.DB, `
+		SELECT rtr.*, COALESCE(rtr.project_id, pgr.project_id) AS effective_project_id
+		FROM repo_tag_runs rtr
+		LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
+		WHERE rtr.id=$1`, runID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	projectID := strings.TrimSpace(stringFromMap(run, "effective_project_id"))
+	if projectID == "" {
+		projectID = strings.TrimSpace(stringFromMap(run, "project_id"))
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_tag_run", ID: runID, ProjectID: projectID}, "update") {
+		return
+	}
+	targetRemoteID := strings.TrimSpace(firstNonEmptyString(stringFromMap(run, "target_remote_id"), stringFromMap(run, "git_remote_id")))
+	tagName := strings.TrimSpace(stringFromMap(run, "tag_name"))
+	if targetRemoteID == "" {
+		writeError(w, http.StatusBadRequest, "target_remote_id is required")
+		return
+	}
+	if tagName == "" {
+		writeError(w, http.StatusBadRequest, "tag_name is required")
+		return
+	}
+	if !isSafeGitRefPart(tagName) {
+		writeError(w, http.StatusBadRequest, "tag_name is invalid")
+		return
+	}
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start lookup transaction")
+		return
+	}
+	defer tx.Rollback()
+	lockedRun, err := queryOne(r.Context(), tx, `
+		SELECT rtr.*, COALESCE(rtr.project_id, pgr.project_id) AS effective_project_id
+		FROM repo_tag_runs rtr
+		LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
+		WHERE rtr.id=$1
+		FOR UPDATE OF rtr`, runID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	targetRemoteID = strings.TrimSpace(firstNonEmptyString(stringFromMap(lockedRun, "target_remote_id"), stringFromMap(lockedRun, "git_remote_id")))
+	tagName = strings.TrimSpace(stringFromMap(lockedRun, "tag_name"))
+	if targetRemoteID == "" || tagName == "" {
+		writeError(w, http.StatusBadRequest, "repo tag run requires target remote and tag name")
+		return
+	}
+	inFlight, err := repoTagLookupInFlightOperation(r.Context(), tx, runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not check lookup queue")
+		return
+	}
+	if inFlight != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"mode":                    "repo_tag_live_lookup_enqueue",
+			"idempotent":              true,
+			"repo_tag_run_id":         runID,
+			"target_remote_id":        targetRemoteID,
+			"operation":               repoTagLookupOperationSummary(inFlight),
+			"worker_job":              repoTagLookupWorkerJobSummary(inFlight),
+			"credentials_recorded":    false,
+			"remote_url_recorded":     false,
+			"raw_git_output_recorded": false,
+		})
+		return
+	}
+	input := map[string]any{
+		"repo_tag_run_id":  runID,
+		"target_remote_id": targetRemoteID,
+		"tag_name":         tagName,
+	}
+	op, err := enqueueOperationTx(r.Context(), tx, projectID, targetRemoteID, "repo.tag.lookup", "lookup repository tag", input, []string{"git"}, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not enqueue live lookup")
+		return
+	}
+	if _, err := SyncCanonicalAssetsWith(r.Context(), tx); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync canonical assets")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit live lookup")
+		return
+	}
+	job, _ := repoTagLookupJobForOperation(r.Context(), s.store.DB, fmt.Sprint(op["id"]))
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"mode":                    "repo_tag_live_lookup_enqueue",
+		"idempotent":              false,
+		"repo_tag_run_id":         runID,
+		"target_remote_id":        targetRemoteID,
+		"operation":               repoTagLookupOperationSummary(op),
+		"worker_job":              repoTagLookupWorkerJobSummary(job),
+		"credentials_recorded":    false,
+		"remote_url_recorded":     false,
+		"raw_git_output_recorded": false,
+	})
+}
+
+func repoTagLookupInFlightOperation(ctx context.Context, db sqlx.ExtContext, runID string) (map[string]any, error) {
+	item, err := queryOne(ctx, db, `
+		SELECT op.id, op.operation_type, op.status, op.error, op.started_at, op.finished_at, op.created_at, op.updated_at,
+			wj.id AS worker_job_id, wj.status AS worker_job_status, wj.tool_name AS worker_job_tool_name
+		FROM operation_runs op
+		LEFT JOIN worker_jobs wj ON wj.operation_run_id=op.id AND wj.tool_name='repo.tag.lookup'
+		WHERE op.operation_type='repo.tag.lookup'
+			AND op.status IN ('queued', 'running')
+			AND op.input->>'repo_tag_run_id'=$1
+		ORDER BY op.created_at DESC
+		LIMIT 1`, runID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return item, nil
+}
+
+func repoTagLookupJobForOperation(ctx context.Context, db sqlx.ExtContext, opID string) (map[string]any, error) {
+	return queryOne(ctx, db, `
+		SELECT id AS worker_job_id, status AS worker_job_status, tool_name AS worker_job_tool_name
+		FROM worker_jobs
+		WHERE operation_run_id=$1 AND tool_name='repo.tag.lookup'
+		ORDER BY created_at DESC
+		LIMIT 1`, opID)
+}
+
+func repoTagLookupOperationSummary(operation map[string]any) map[string]any {
+	if operation == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":             operation["id"],
+		"operation_type": operation["operation_type"],
+		"status":         operation["status"],
+		"error":          operation["error"],
+		"started_at":     operation["started_at"],
+		"finished_at":    operation["finished_at"],
+		"created_at":     operation["created_at"],
+		"updated_at":     operation["updated_at"],
+	}
+}
+
+func repoTagLookupWorkerJobSummary(job map[string]any) map[string]any {
+	if job == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":        job["worker_job_id"],
+		"tool_name": job["worker_job_tool_name"],
+		"status":    job["worker_job_status"],
 	}
 }
 
@@ -8850,6 +9059,13 @@ func repoTagRemoteRehearsalPlan(run map[string]any) map[string]any {
 	targetRemoteBound := strings.TrimSpace(firstNonEmptyString(stringFromMap(run, "target_remote_id"), stringFromMap(run, "git_remote_id"))) != ""
 	tagObserved := status == "completed" || status == "succeeded" || status == "success"
 	tagFailed := status == "failed" || status == "error" || status == "canceled" || status == "cancelled"
+	lookupStatus := strings.ToLower(strings.TrimSpace(stringFromMap(run, "lookup_operation_status")))
+	lookupResult := mapFromAny(run["lookup_operation_result"])
+	lookupFound := boolOnlyFromAny(lookupResult["remote_tag_found"])
+	lookupPerformed := boolOnlyFromAny(lookupResult["git_remote_lookup_performed"]) || lookupStatus == "completed"
+	lookupRunning := lookupStatus == "queued" || lookupStatus == "running"
+	lookupFailed := lookupStatus == "failed" || lookupStatus == "timeout" || strings.TrimSpace(stringFromMap(run, "lookup_operation_error")) != "" || (lookupPerformed && !lookupFound)
+	lookupObserved := lookupPerformed && !lookupFailed
 	rehearsalState := "planned"
 	if !tagNameConfigured || !targetRemoteBound {
 		rehearsalState = "blocked"
@@ -8858,6 +9074,15 @@ func repoTagRemoteRehearsalPlan(run map[string]any) map[string]any {
 		rehearsalState = "failed"
 	}
 	if tagObserved {
+		rehearsalState = "observed"
+	}
+	if lookupFailed {
+		rehearsalState = "failed"
+	}
+	if lookupRunning {
+		rehearsalState = "running"
+	}
+	if lookupObserved {
 		rehearsalState = "observed"
 	}
 	blockedReasons := []string{}
@@ -8870,14 +9095,18 @@ func repoTagRemoteRehearsalPlan(run map[string]any) map[string]any {
 	if !targetSHAConfigured {
 		blockedReasons = append(blockedReasons, "target_sha_missing")
 	}
-	if !tagObserved {
+	if !tagObserved && !lookupObserved {
 		blockedReasons = append(blockedReasons, "live_remote_tag_success_not_observed")
 	}
 	if tagFailed {
 		blockedReasons = append(blockedReasons, "live_remote_tag_failed_observed")
 	}
 	resultEvidence := repoTagRemoteResultEvidence(run, rehearsalState, tagObserved, tagFailed, tagNameConfigured, targetSHAConfigured, targetRemoteBound)
-	lookupPreflight := repoTagLiveRemoteLookupPreflight(rehearsalState, status, tagObserved, tagFailed, tagNameConfigured, targetSHAConfigured, targetRemoteBound)
+	lookupPreflight := repoTagLiveRemoteLookupPreflight(rehearsalState, status, tagObserved, tagFailed, tagNameConfigured, targetSHAConfigured, targetRemoteBound, lookupStatus, lookupResult, lookupFailed)
+	disabledBackends := []string{"git_tag", "git_push", "github_actions_api_sync"}
+	if !lookupPerformed {
+		disabledBackends = append(disabledBackends, "remote_tag_lookup", "repo_tag_run_update")
+	}
 	return map[string]any{
 		"mode":                             "repo_tag_remote_rehearsal_plan",
 		"rehearsal_state":                  rehearsalState,
@@ -8889,11 +9118,11 @@ func repoTagRemoteRehearsalPlan(run map[string]any) map[string]any {
 		"live_remote_tag_failed_observed":  tagFailed,
 		"tag_result_evidence":              resultEvidence,
 		"execution_enabled":                false,
-		"external_call_made":               false,
+		"external_call_made":               lookupPerformed,
 		"git_tag_created":                  false,
 		"git_push_performed":               false,
 		"github_actions_refresh_performed": false,
-		"remote_tag_lookup_performed":      false,
+		"remote_tag_lookup_performed":      lookupPerformed,
 		"result_written":                   boolOnlyFromAny(resultEvidence["sanitized_result_recorded"]),
 		"contains_token":                   false,
 		"contains_remote_url":              false,
@@ -8916,13 +9145,7 @@ func repoTagRemoteRehearsalPlan(run map[string]any) map[string]any {
 			"refresh_github_actions_after_tag",
 			"record_redacted_actions_refresh_result",
 		},
-		"disabled_backends": []string{
-			"git_tag",
-			"git_push",
-			"remote_tag_lookup",
-			"github_actions_api_sync",
-			"repo_tag_run_update",
-		},
+		"disabled_backends": disabledBackends,
 		"suppressed_fields": []string{
 			"tag_name",
 			"target_sha",
@@ -8939,14 +9162,17 @@ func repoTagRemoteRehearsalPlan(run map[string]any) map[string]any {
 		"live_result_plan":             repoTagLiveResultPlan(rehearsalState, tagObserved, tagFailed, lookupPreflight),
 		"actions_refresh_plan":         repoTagActionsRefreshPlan(rehearsalState, tagObserved, tagFailed, lookupPreflight),
 		"result_recording_plan":        repoTagRemoteRehearsalResultRecordingPlan(resultEvidence, lookupPreflight),
-		"message":                      "Remote tag success rehearsal is audit-only; no Git tag, push, provider refresh, or remote lookup is performed; existing repo tag run state is reconciled as sanitized result evidence.",
+		"message":                      "Remote tag success rehearsal reconciles sanitized tag-run evidence; live remote lookup is available as a controlled read-only worker while tag creation, push, and provider-backed Actions refresh remain disabled.",
 	}
 }
 
-func repoTagLiveRemoteLookupPreflight(rehearsalState, status string, tagObserved, tagFailed, tagNameConfigured, targetSHAConfigured, targetRemoteBound bool) map[string]any {
+func repoTagLiveRemoteLookupPreflight(rehearsalState, status string, tagObserved, tagFailed, tagNameConfigured, targetSHAConfigured, targetRemoteBound bool, lookupStatus string, lookupResult map[string]any, lookupFailed bool) map[string]any {
 	lookupState := "blocked"
-	if tagNameConfigured && targetSHAConfigured && targetRemoteBound {
+	if tagNameConfigured && targetRemoteBound {
 		lookupState = "planned"
+	}
+	if lookupStatus == "queued" || lookupStatus == "running" {
+		lookupState = "running"
 	}
 	if tagObserved {
 		lookupState = "observed"
@@ -8954,19 +9180,24 @@ func repoTagLiveRemoteLookupPreflight(rehearsalState, status string, tagObserved
 	if tagFailed {
 		lookupState = "failed"
 	}
-	// Keep this blocker even for observed local tag-run evidence: the plan proves
-	// that no live remote lookup backend ran while reconciling sanitized rows.
-	blockedReasons := []string{"remote_tag_lookup_backend_disabled"}
+	lookupPerformed := boolOnlyFromAny(lookupResult["git_remote_lookup_performed"]) || lookupStatus == "completed"
+	if lookupPerformed && !lookupFailed {
+		lookupState = "observed"
+	}
+	if lookupFailed {
+		lookupState = "failed"
+	}
+	blockedReasons := []string{}
+	if !lookupPerformed && lookupState != "running" {
+		blockedReasons = append(blockedReasons, "remote_tag_lookup_backend_disabled", "remote_tag_lookup_not_run")
+	}
 	if !tagNameConfigured {
 		blockedReasons = append(blockedReasons, "tag_name_missing")
-	}
-	if !targetSHAConfigured {
-		blockedReasons = append(blockedReasons, "target_sha_missing")
 	}
 	if !targetRemoteBound {
 		blockedReasons = append(blockedReasons, "target_remote_missing")
 	}
-	if !tagObserved {
+	if !tagObserved && !lookupPerformed {
 		blockedReasons = append(blockedReasons, "live_remote_tag_success_not_observed")
 	}
 	if tagFailed {
@@ -8975,21 +9206,22 @@ func repoTagLiveRemoteLookupPreflight(rehearsalState, status string, tagObserved
 	return map[string]any{
 		"mode":                             "repo_tag_live_remote_lookup_preflight",
 		"lookup_state":                     lookupState,
+		"lookup_operation_status":          lookupStatus,
 		"tag_run_status":                   status,
 		"rehearsal_state":                  rehearsalState,
-		"lookup_ready_for_review":          tagNameConfigured && targetSHAConfigured && targetRemoteBound && !tagFailed,
+		"lookup_ready_for_review":          tagNameConfigured && targetRemoteBound && !tagFailed && !lookupPerformed,
 		"tag_name_configured":              tagNameConfigured,
 		"target_sha_configured":            targetSHAConfigured,
 		"target_remote_bound":              targetRemoteBound,
 		"live_remote_tag_success_observed": tagObserved,
 		"live_remote_tag_failed_observed":  tagFailed,
-		"remote_tag_lookup_performed":      false,
-		"git_ls_remote_performed":          false,
+		"remote_tag_lookup_performed":      lookupPerformed,
+		"git_ls_remote_performed":          lookupPerformed,
 		"provider_api_called":              false,
 		"github_actions_refresh_performed": false,
-		"repo_tag_run_update_performed":    false,
+		"repo_tag_run_update_performed":    lookupPerformed,
 		"operation_log_written":            false,
-		"external_call_made":               false,
+		"external_call_made":               lookupPerformed,
 		"contains_token":                   false,
 		"contains_remote_url":              false,
 		"contains_ref_name":                false,
@@ -8997,11 +9229,19 @@ func repoTagLiveRemoteLookupPreflight(rehearsalState, status string, tagObserved
 		"contains_tag_message":             false,
 		"required_lookup_fields":           []string{"target_remote_id", "tag_name", "target_sha", "tag_run_status", "repository_binding", "provider_type"},
 		"required_review_controls":         []string{"target_remote_review", "git_credential_review", "tag_ref_policy_review", "actions_refresh_scope_review", "sanitized_result_recording_review"},
-		"disabled_backends":                []string{"remote_tag_lookup", "git_ls_remote", "provider_tag_lookup", "github_actions_api_sync", "repo_tag_run_update", "operation_log_write"},
+		"disabled_backends":                repoTagLookupDisabledBackends(lookupPerformed),
 		"suppressed_fields":                []string{"tag_name", "target_sha", "tag_message", "remote_url", "git_credentials", "provider_token", "authorization_header", "git_output", "github_actions_response", "provider_response_body", "provider_response_headers"},
 		"blocked_reasons":                  blockedReasons,
-		"message":                          "Live remote tag lookup preflight is review metadata only; no remote lookup, provider API call, Actions refresh, repo_tag_run update, or operation log write is performed.",
+		"message":                          "Live remote tag lookup uses a controlled read-only git ls-remote worker; raw Git output, remote URLs, and credentials remain suppressed.",
 	}
+}
+
+func repoTagLookupDisabledBackends(lookupPerformed bool) []string {
+	backends := []string{"provider_tag_lookup", "github_actions_api_sync", "operation_log_write"}
+	if !lookupPerformed {
+		backends = append([]string{"remote_tag_lookup", "git_ls_remote", "repo_tag_run_update"}, backends...)
+	}
+	return backends
 }
 
 func repoTagRemoteResultEvidence(run map[string]any, rehearsalState string, tagObserved, tagFailed, tagNameConfigured, targetSHAConfigured, targetRemoteBound bool) map[string]any {

@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -313,6 +314,84 @@ func (e *GitExecutor) Tag(ctx context.Context, db sqlx.ExtContext, opID string) 
 		return result, err
 	}
 	result.AfterSHA, _ = e.revParse(ctx, workTree, "refs/tags/"+tagName)
+	return result, nil
+}
+
+func (e *GitExecutor) LookupTag(ctx context.Context, db sqlx.ExtContext, opID string) (*gitExecutionResult, error) {
+	op, err := queryOne(ctx, db, "SELECT input FROM operation_runs WHERE id=$1 AND operation_type='repo.tag.lookup'", opID)
+	if err != nil {
+		return nil, err
+	}
+	input := mapFromAny(op["input"])
+	runID := strings.TrimSpace(stringFromMap(input, "repo_tag_run_id"))
+	targetRemoteID := strings.TrimSpace(stringFromMap(input, "target_remote_id"))
+	tagName := strings.TrimSpace(stringFromMap(input, "tag_name"))
+	if runID == "" {
+		return nil, fmt.Errorf("repo_tag_run_id is required")
+	}
+	if targetRemoteID == "" {
+		return nil, fmt.Errorf("target_remote_id is required")
+	}
+	if tagName == "" || !isSafeGitRefPart(tagName) {
+		return nil, fmt.Errorf("unsafe tag ref")
+	}
+	run, err := queryOne(ctx, db, `
+		SELECT id, target_remote_id, git_remote_id, tag_name
+		FROM repo_tag_runs
+		WHERE id=$1
+		LIMIT 1`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("loading repo tag run: %w", err)
+	}
+	runRemoteID := strings.TrimSpace(firstNonEmptyString(stringFromMap(run, "target_remote_id"), stringFromMap(run, "git_remote_id")))
+	if runRemoteID != "" && runRemoteID != targetRemoteID {
+		return nil, fmt.Errorf("target_remote_id does not match repo tag run")
+	}
+	runTagName := strings.TrimSpace(stringFromMap(run, "tag_name"))
+	if runTagName != "" && runTagName != tagName {
+		return nil, fmt.Errorf("tag_name does not match repo tag run")
+	}
+	remote, err := queryOne(ctx, db, "SELECT * FROM git_remotes WHERE id=$1", targetRemoteID)
+	if err != nil {
+		return nil, fmt.Errorf("loading target remote: %w", err)
+	}
+	remoteURL := remoteURLFromRow(remote)
+	if remoteURL == "" {
+		return nil, fmt.Errorf("target remote must have remote_url or urls")
+	}
+	safeRemoteURL, stripped := stripGitRemoteURLUserinfo(remoteURL)
+	if safeRemoteURL == "" {
+		return nil, fmt.Errorf("target remote URL is invalid")
+	}
+
+	runner := e.Runner
+	if runner == nil {
+		runner = execCommandRunner{}
+	}
+	stdout, _, err := runner.Run(ctx, "", "git", "ls-remote", "--tags", safeRemoteURL, "refs/tags/"+tagName)
+	result := &gitExecutionResult{Details: map[string]any{
+		"mode":                         "repo_tag_live_remote_lookup",
+		"repo_tag_run_id":              runID,
+		"target_remote_id":             targetRemoteID,
+		"tag_lookup_performed":         true,
+		"external_call_made":           true,
+		"git_remote_lookup_performed":  true,
+		"raw_git_output_recorded":      false,
+		"remote_url_recorded":          false,
+		"credentials_recorded":         false,
+		"contains_token":               false,
+		"credential_userinfo_stripped": stripped,
+	}}
+	if err != nil {
+		return result, fmt.Errorf("git ls-remote failed: %s", sanitizeLookupError(err))
+	}
+	matchedSHA, matchedCount := parseLsRemoteTagLookup(stdout, tagName)
+	found := matchedCount > 0
+	result.AfterSHA = matchedSHA
+	result.Details["remote_tag_found"] = found
+	result.Details["matched_sha_present"] = matchedSHA != ""
+	result.Details["matched_sha"] = matchedSHA
+	result.Details["matched_count"] = matchedCount
 	return result, nil
 }
 
@@ -2436,6 +2515,16 @@ func (e *GitExecutor) newWorkDir(pattern string) (string, func(), error) {
 }
 
 func remoteURLFromRow(row map[string]any) string {
+	if bytes, ok := row["remote_url"].(sql.RawBytes); ok {
+		if value := strings.TrimSpace(string(bytes)); value != "" {
+			return value
+		}
+	}
+	if bytes, ok := row["remote_url"].([]byte); ok {
+		if value := strings.TrimSpace(string(bytes)); value != "" {
+			return value
+		}
+	}
 	if value := strings.TrimSpace(fmt.Sprint(row["remote_url"])); value != "" && value != "<nil>" {
 		return value
 	}
@@ -2447,6 +2536,47 @@ func remoteURLFromRow(row map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func stripGitRemoteURLUserinfo(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if strings.Contains(value, "://<redacted>@") {
+		return strings.Replace(value, "://<redacted>@", "://", 1), true
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed == nil || parsed.User == nil {
+		return value, false
+	}
+	parsed.User = nil
+	return parsed.String(), true
+}
+
+func parseLsRemoteTagLookup(stdout, tagName string) (string, int) {
+	matchedSHA := ""
+	matchedCount := 0
+	targetRef := "refs/tags/" + tagName
+	peeledTargetRef := targetRef + "^{}"
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[1] != targetRef && fields[1] != peeledTargetRef {
+			continue
+		}
+		matchedCount++
+		if matchedSHA == "" && isFullHexSHA(fields[0]) {
+			matchedSHA = fields[0]
+		}
+	}
+	return matchedSHA, matchedCount
+}
+
+func sanitizeLookupError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return truncateProviderError(sanitizeGitOutput(err.Error()), providerRunErrorLimit)
 }
 
 func defaultBranchFromRow(row map[string]any) string {

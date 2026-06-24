@@ -11,7 +11,75 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jmoiron/sqlx"
 )
+
+type fakeGitCommandRunner struct {
+	stdout string
+	stderr string
+	err    error
+	calls  []fakeGitCommandCall
+}
+
+type fakeGitCommandCall struct {
+	dir  string
+	name string
+	args []string
+}
+
+func (r *fakeGitCommandRunner) Run(ctx context.Context, dir, name string, args ...string) (string, string, error) {
+	r.calls = append(r.calls, fakeGitCommandCall{dir: dir, name: name, args: append([]string(nil), args...)})
+	return r.stdout, r.stderr, r.err
+}
+
+func TestGitExecutorLookupTagStripsUserinfoAndSuppressesOutput(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	runID := "11111111-1111-1111-1111-111111111111"
+	remoteID := "22222222-2222-2222-2222-222222222222"
+	input, _ := json.Marshal(map[string]any{"repo_tag_run_id": runID, "target_remote_id": remoteID, "tag_name": "v1.0.0"})
+	mock.ExpectQuery("SELECT input FROM operation_runs").
+		WithArgs("op-1").
+		WillReturnRows(sqlmock.NewRows([]string{"input"}).AddRow(input))
+	mock.ExpectQuery("SELECT id, target_remote_id, git_remote_id, tag_name").
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "target_remote_id", "git_remote_id", "tag_name"}).AddRow(runID, remoteID, nil, "v1.0.0"))
+	mock.ExpectQuery("SELECT \\* FROM git_remotes").
+		WithArgs(remoteID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "remote_url"}).AddRow(remoteID, "https://user:secret@example.com/org/repo.git"))
+	runner := &fakeGitCommandRunner{stdout: "0123456789abcdef0123456789abcdef01234567\trefs/tags/v1.0.0\n", stderr: "secret stderr"}
+	exec := &GitExecutor{Runner: runner}
+
+	result, err := exec.LookupTag(context.Background(), sqlxDB, "op-1")
+	if err != nil {
+		t.Fatalf("LookupTag: %v", err)
+	}
+	if result.Stdout != "" || result.Stderr != "" {
+		t.Fatalf("lookup should not record git output, stdout=%q stderr=%q", result.Stdout, result.Stderr)
+	}
+	if result.AfterSHA != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("AfterSHA mismatch: %q", result.AfterSHA)
+	}
+	if !boolOnlyFromAny(result.Details["remote_tag_found"]) || !boolOnlyFromAny(result.Details["credential_userinfo_stripped"]) {
+		t.Fatalf("unexpected lookup details: %#v", result.Details)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected one git call, got %d", len(runner.calls))
+	}
+	args := strings.Join(runner.calls[0].args, " ")
+	if strings.Contains(args, "secret") || !strings.Contains(args, "https://example.com/org/repo.git") {
+		t.Fatalf("git args should strip userinfo, got %q", args)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
 
 func TestGitRefsFromInput(t *testing.T) {
 	tests := []struct {
@@ -1371,6 +1439,82 @@ func TestSanitizeGitOutput(t *testing.T) {
 	want := "fatal: could not read from <remote> and <remote> and <remote>"
 	if got != want {
 		t.Fatalf("sanitizeGitOutput = %q, want %q", got, want)
+	}
+}
+
+func TestLookupTagStripsCredentialUserinfoAndReturnsSafeResult(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	sqlDB := sqlx.NewDb(db, "sqlmock")
+	opID := "11111111-1111-1111-1111-111111111111"
+	runID := "22222222-2222-2222-2222-222222222222"
+	remoteID := "33333333-3333-3333-3333-333333333333"
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	input := []byte(fmt.Sprintf(`{"repo_tag_run_id":%q,"target_remote_id":%q,"tag_name":"v1.2.3"}`, runID, remoteID))
+	mock.ExpectQuery(`SELECT input FROM operation_runs WHERE id=\$1 AND operation_type='repo\.tag\.lookup'`).
+		WithArgs(opID).
+		WillReturnRows(sqlmock.NewRows([]string{"input"}).AddRow(input))
+	mock.ExpectQuery(`(?s)SELECT id, target_remote_id, git_remote_id, tag_name\s+FROM repo_tag_runs\s+WHERE id=\$1`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "target_remote_id", "git_remote_id", "tag_name"}).
+			AddRow(runID, remoteID, remoteID, "v1.2.3"))
+	mock.ExpectQuery(`SELECT \* FROM git_remotes WHERE id=\$1`).
+		WithArgs(remoteID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "remote_url"}).
+			AddRow(remoteID, "https://token:secret@example.com/org/repo.git"))
+	runner := &fakeGitCommandRunner{stdout: sha + "\trefs/tags/v1.2.3\n"}
+
+	result, err := (&GitExecutor{Runner: runner}).LookupTag(context.Background(), sqlDB, opID)
+	if err != nil {
+		t.Fatalf("LookupTag: %v", err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.name != "git" || len(call.args) != 4 || call.args[0] != "ls-remote" || call.args[1] != "--tags" || call.args[3] != "refs/tags/v1.2.3" {
+		t.Fatalf("unexpected git call: %#v", call)
+	}
+	if call.args[2] != "https://example.com/org/repo.git" || strings.Contains(call.args[2], "token") || strings.Contains(call.args[2], "secret") {
+		t.Fatalf("remote URL was not stripped before git call: %#v", call.args)
+	}
+	if result.Stdout != "" || result.Stderr != "" {
+		t.Fatalf("lookup must not record stdout/stderr: %#v", result)
+	}
+	if result.AfterSHA != sha ||
+		result.Details["remote_tag_found"] != true ||
+		result.Details["matched_sha"] != sha ||
+		result.Details["matched_count"] != 1 ||
+		result.Details["credential_userinfo_stripped"] != true ||
+		result.Details["remote_url_recorded"] != false ||
+		result.Details["raw_git_output_recorded"] != false ||
+		result.Details["credentials_recorded"] != false {
+		t.Fatalf("unexpected lookup result: %#v", result.Details)
+	}
+	encoded, _ := json.Marshal(result)
+	for _, leak := range []string{"token:secret", "https://token", "secret", "example.com/org/repo.git", "refs/tags/v1.2.3"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("lookup result leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestLookupTagSanitizesGitError(t *testing.T) {
+	err := fmt.Errorf("fatal: authentication failed for https://token:secret@example.com/org/repo.git")
+	got := sanitizeLookupError(err)
+	for _, leak := range []string{"token", "secret", "example.com/org/repo.git", "https://"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("sanitizeLookupError leaked %q in %q", leak, got)
+		}
+	}
+	if !strings.Contains(got, "<remote>") {
+		t.Fatalf("sanitizeLookupError should preserve redacted remote marker: %q", got)
 	}
 }
 

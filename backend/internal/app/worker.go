@@ -105,7 +105,11 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 		if result == nil {
 			result = map[string]any{"adapter": true}
 		}
-		result["error"] = adapterErr.Error()
+		adapterErrorMessage := adapterErr.Error()
+		if fmt.Sprint(job["tool_name"]) == "repo.tag.lookup" {
+			adapterErrorMessage = sanitizeLookupError(adapterErr)
+		}
+		result["error"] = adapterErrorMessage
 		if err := w.recordAdapterFailure(ctx, tx, job, result, adapterErr); err != nil {
 			return err
 		}
@@ -113,12 +117,12 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 		opErrJSON, _ := jsonParam(operationRunResult(job, result))
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE worker_jobs SET status='failed', result=$2::jsonb, error=$3, finished_at=now(), updated_at=now()
-			WHERE id=$1`, job["id"], errJSON, adapterErr.Error()); err != nil {
+			WHERE id=$1`, job["id"], errJSON, adapterErrorMessage); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE operation_runs SET status='failed', result=$2::jsonb, error=$3, finished_at=now(), updated_at=now()
-			WHERE id=$1`, opID, opErrJSON, adapterErr.Error()); err != nil {
+			WHERE id=$1`, opID, opErrJSON, adapterErrorMessage); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
@@ -240,7 +244,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "ssh.exec", "ssh.verify", "argo.apps.sync", "argo.pod_logs", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute", "config.git_commit", "project_version.validation_rerun":
+	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "repo.tag.lookup", "ssh.exec", "ssh.verify", "argo.apps.sync", "argo.pod_logs", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute", "config.git_commit", "project_version.validation_rerun":
 		return true
 	default:
 		return false
@@ -350,6 +354,20 @@ func (w *ControlWorker) recoverStaleRunningJobs(ctx context.Context) error {
 				error_message='worker timed out while running',
 				finished_at=now()
 			WHERE operation_run_id=$1 AND status IN ('queued', 'running')`, opID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE repo_tag_runs
+			SET status='failed',
+				error_message='worker timed out while running',
+				finished_at=now()
+			WHERE id=(
+				SELECT NULLIF(input->>'repo_tag_run_id', '')::uuid
+				FROM operation_runs
+				WHERE id=$1 AND operation_type='repo.tag.lookup'
+				LIMIT 1
+			)
+			AND status IN ('queued', 'running')`, opID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -558,6 +576,22 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 	case "repo.tag", "repo.create_tag":
 		_, err := db.ExecContext(ctx, "UPDATE repo_tag_runs SET status='running', started_at=COALESCE(started_at, now()) WHERE operation_run_id=$1", opID)
 		return err
+	case "repo.tag.lookup":
+		if _, err := db.ExecContext(ctx, `
+			UPDATE repo_tag_runs
+			SET status='running', started_at=COALESCE(started_at, now()), error_message=''
+			WHERE id=(
+				SELECT NULLIF(input->>'repo_tag_run_id', '')::uuid
+				FROM operation_runs
+				WHERE id=$1 AND operation_type='repo.tag.lookup'
+				LIMIT 1
+			)`, opID); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+			return fmt.Errorf("syncing canonical assets for running repo tag lookup: %w", err)
+		}
+		return nil
 	case "ssh.exec", "ssh.verify":
 		// Verify is audited through the same SSH run table, but the executor
 		// defensively forces the command to a no-op connectivity check.
@@ -693,6 +727,10 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 		execution, err := NewGitExecutor("").Tag(ctx, w.store.DB, opID)
 		mergeGitExecutionResult(result, execution)
 		return result, err
+	case "repo.tag.lookup":
+		execution, err := NewGitExecutor("").LookupTag(ctx, w.store.DB, opID)
+		mergeRepoTagLookupExecutionResult(result, execution)
+		return result, err
 	case "github.actions.sync":
 		syncResult, err := NewGitHubActionsSyncer().Sync(ctx, w.store.DB, opID)
 		mergeGitHubActionsResult(result, syncResult)
@@ -780,6 +818,23 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 			SET status='failed', stdout=$2, stderr=$3, error_message=$4, finished_at=now()
 			WHERE operation_run_id=$1`, opID, stdout, stderr, adapterErr.Error())
 		return err
+	case "repo.tag.lookup":
+		safeError := sanitizeLookupError(adapterErr)
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE repo_tag_runs
+			SET status='failed', error_message=$2, finished_at=now()
+			WHERE id=(
+				SELECT NULLIF(input->>'repo_tag_run_id', '')::uuid
+				FROM operation_runs
+				WHERE id=$1 AND operation_type='repo.tag.lookup'
+				LIMIT 1
+			)`, opID, safeError); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed repo tag lookup: %w", err)
+		}
+		return nil
 	case "github.actions.sync":
 		remoteID, _ := result["remote_id"].(string)
 		if remoteID == "" {
@@ -1067,6 +1122,28 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed repo tag: %w", err)
+		}
+		return nil
+	case "repo.tag.lookup":
+		afterSHA, _ := result["matched_sha"].(string)
+		found := boolOnlyFromAny(result["remote_tag_found"])
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE repo_tag_runs
+			SET status=CASE WHEN $2 THEN 'completed' ELSE 'failed' END,
+				target_sha=CASE WHEN $2 AND NULLIF($3, '') IS NOT NULL THEN $3 ELSE target_sha END,
+				error_message=CASE WHEN $2 THEN '' ELSE 'remote tag not found' END,
+				finished_at=now()
+			WHERE id=(
+				SELECT NULLIF(input->>'repo_tag_run_id', '')::uuid
+				FROM operation_runs
+				WHERE id=$1 AND operation_type='repo.tag.lookup'
+				LIMIT 1
+			)`, opID, found, afterSHA); err != nil {
+			return err
+		}
+		result["repo_tag_run_update_performed"] = true
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed repo tag lookup: %w", err)
 		}
 		return nil
 	case "github.actions.sync":
@@ -2416,6 +2493,21 @@ func mergeGitExecutionResult(result map[string]any, execution *gitExecutionResul
 	result["stderr"] = execution.Stderr
 	result["after_sha"] = execution.AfterSHA
 	result["details"] = execution.Details
+}
+
+func mergeRepoTagLookupExecutionResult(result map[string]any, execution *gitExecutionResult) {
+	if execution == nil {
+		return
+	}
+	for key, value := range execution.Details {
+		result[key] = value
+	}
+	result["matched_sha"] = execution.AfterSHA
+	result["matched_sha_present"] = execution.AfterSHA != ""
+	result["raw_git_output_recorded"] = false
+	result["remote_url_recorded"] = false
+	result["credentials_recorded"] = false
+	result["contains_token"] = false
 }
 
 func gitExecutionOutputFromMap(result map[string]any) (string, string) {

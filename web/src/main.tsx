@@ -3625,6 +3625,7 @@ function GitRemotes() {
   const [callbackSnapshotResults, setCallbackSnapshotResults] = useState<Record<string, AnyRow>>({});
   const [recordingTagSnapshotID, setRecordingTagSnapshotID] = useState<string>();
   const [recordingTagActionsSnapshotID, setRecordingTagActionsSnapshotID] = useState<string>();
+  const [runningTagLookupID, setRunningTagLookupID] = useState<string>();
   const [tagSnapshotResults, setTagSnapshotResults] = useState<Record<string, AnyRow>>({});
   const [tagActionsSnapshotResults, setTagActionsSnapshotResults] = useState<Record<string, AnyRow>>({});
   const syncAssetDetail = useLoad(() => syncAssetID ? api(`/api/repo-sync-assets/${syncAssetID}`) : Promise.resolve(null), [syncAssetID]);
@@ -3849,6 +3850,18 @@ function GitRemotes() {
     tagRuns.reload();
     remotes.reload();
   }
+  async function runTagLookup(id: string) {
+    setRunningTagLookupID(id);
+    try {
+      const result = await api(`/api/repo-tag-runs/${id}/live-lookup`, { method: 'POST', body: '{}' });
+      message.success(result.idempotent ? 'Lookup already queued' : 'Lookup queued');
+      tagRuns.reload();
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setRunningTagLookupID(undefined);
+    }
+  }
   async function recordTagResultSnapshot(id: string) {
     setRecordingTagSnapshotID(id);
     try {
@@ -4070,6 +4083,8 @@ function GitRemotes() {
               <Tag>{plan.live_remote_tag_success_observed ? 'remote success' : 'no remote success'}</Tag>
               {lookupPreflight.mode ? <Tag color={lookupPreflight.lookup_state === 'observed' ? 'green' : lookupPreflight.lookup_state === 'failed' || lookupPreflight.lookup_state === 'blocked' ? 'red' : 'gold'}>lookup {lookupPreflight.lookup_state || 'blocked'}</Tag> : null}
               {lookupPreflight.mode ? <Tag>{lookupPreflight.remote_tag_lookup_performed ? 'remote lookup' : 'no remote lookup'}</Tag> : null}
+              {row.lookup_operation_status ? <Tag color={row.lookup_operation_status === 'completed' ? 'green' : row.lookup_operation_status === 'failed' ? 'red' : 'blue'}>op {row.lookup_operation_status}</Tag> : null}
+              {row.lookup_operation_result?.remote_tag_found !== undefined ? <Tag color={row.lookup_operation_result.remote_tag_found ? 'green' : 'default'}>{row.lookup_operation_result.remote_tag_found ? `found ${row.lookup_operation_result.matched_count || 0}` : 'not found'}</Tag> : null}
               <Tag color={liveResultPlan.live_result_state === 'planned' ? 'gold' : 'red'}>{liveResultPlan.repo_tag_run_result_written ? 'tag result saved' : liveResultPlan.live_result_state === 'failed' ? 'tag result failed' : 'tag result pending'}</Tag>
               <Tag color={actionsRefreshPlan.refresh_state === 'planned' ? 'gold' : 'red'}>{actionsRefreshPlan.github_actions_refresh_performed ? 'actions refreshed' : actionsRefreshPlan.refresh_state === 'failed' ? 'actions refresh failed' : 'actions refresh pending'}</Tag>
               <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
@@ -4086,14 +4101,25 @@ function GitRemotes() {
           { title: 'Created', dataIndex: 'created_at' },
           { title: 'Action', render: (_, row) => {
             const resultPlan = row.remote_rehearsal_plan?.result_recording_plan || {};
-            return <Button
-              size="small"
-              onClick={() => recordTagResultSnapshot(row.id)}
-              disabled={!resultPlan.result_recording_ready}
-              loading={recordingTagSnapshotID === row.id}
-            >
-              Record result snapshot
-            </Button>;
+            const lookupPreflight = row.remote_rehearsal_plan?.live_remote_lookup_preflight || {};
+            return <Space size={6} wrap>
+              <Button
+                size="small"
+                onClick={() => runTagLookup(row.id)}
+                disabled={lookupPreflight.lookup_state === 'running' || !lookupPreflight.lookup_ready_for_review}
+                loading={runningTagLookupID === row.id}
+              >
+                Run lookup
+              </Button>
+              <Button
+                size="small"
+                onClick={() => recordTagResultSnapshot(row.id)}
+                disabled={!resultPlan.result_recording_ready}
+                loading={recordingTagSnapshotID === row.id}
+              >
+                Record result snapshot
+              </Button>
+            </Space>;
           } },
           { title: 'Actions', render: (_, row) => {
             const plan = row.remote_rehearsal_plan || {};

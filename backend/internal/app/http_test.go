@@ -3638,6 +3638,39 @@ func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
 			"target_sha":       "abc999",
 			"target_remote_id": "remote-4",
 		},
+		{
+			"id":                      "run-7",
+			"status":                  "running",
+			"tag_name":                "v1.0.5",
+			"target_remote_id":        "remote-5",
+			"lookup_operation_status": "running",
+		},
+		{
+			"id":                      "run-8",
+			"status":                  "failed",
+			"tag_name":                "v1.0.6",
+			"target_remote_id":        "remote-6",
+			"lookup_operation_status": "failed",
+			"lookup_operation_error":  "sanitized lookup failure",
+		},
+		{
+			"id":                      "run-9",
+			"status":                  "completed",
+			"tag_name":                "v1.0.7",
+			"target_sha":              "abc777",
+			"target_remote_id":        "remote-7",
+			"lookup_operation_status": "completed",
+			"lookup_operation_result": map[string]any{
+				"git_remote_lookup_performed": true,
+				"remote_tag_found":            true,
+				"matched_sha_present":         true,
+				"matched_count":               1,
+				"raw_git_output_recorded":     false,
+				"remote_url_recorded":         false,
+				"credentials_recorded":        false,
+				"contains_token":              false,
+			},
+		},
 	})
 	observedPlan := mapFromAny(items[0]["remote_rehearsal_plan"])
 	if observedPlan["mode"] != "repo_tag_remote_rehearsal_plan" ||
@@ -3668,8 +3701,8 @@ func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
 		!containsString(stringSliceFromAny(plannedPlan["blocked_reasons"]), "live_remote_tag_success_not_observed") {
 		t.Fatalf("planned tag rehearsal plan = %#v", plannedPlan)
 	}
-	if lookup := mapFromAny(plannedPlan["live_remote_lookup_preflight"]); lookup["lookup_state"] != "blocked" || lookup["lookup_ready_for_review"] != false {
-		t.Fatalf("planned tag with missing SHA should block lookup review: %#v", lookup)
+	if lookup := mapFromAny(plannedPlan["live_remote_lookup_preflight"]); lookup["lookup_state"] != "planned" || lookup["lookup_ready_for_review"] != true {
+		t.Fatalf("planned tag with missing SHA should still allow lookup review: %#v", lookup)
 	}
 	assertRepoTagRemoteRehearsalPlanSafe(t, plannedPlan)
 	blockedPlan := mapFromAny(items[2]["remote_rehearsal_plan"])
@@ -3716,6 +3749,32 @@ func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
 		t.Fatalf("unknown tag with complete metadata should plan lookup review: %#v", lookup)
 	}
 	assertRepoTagRemoteRehearsalPlanSafe(t, unknownPlan)
+	runningLookupPlan := mapFromAny(items[6]["remote_rehearsal_plan"])
+	if runningLookupPlan["rehearsal_state"] != "running" {
+		t.Fatalf("running lookup should mark rehearsal running: %#v", runningLookupPlan)
+	}
+	if lookup := mapFromAny(runningLookupPlan["live_remote_lookup_preflight"]); lookup["lookup_state"] != "running" || lookup["lookup_ready_for_review"] != true {
+		t.Fatalf("running lookup preflight = %#v", lookup)
+	}
+	assertRepoTagRemoteRehearsalPlanSafe(t, runningLookupPlan)
+	failedLookupPlan := mapFromAny(items[7]["remote_rehearsal_plan"])
+	if failedLookupPlan["rehearsal_state"] != "failed" {
+		t.Fatalf("failed lookup should mark rehearsal failed: %#v", failedLookupPlan)
+	}
+	if lookup := mapFromAny(failedLookupPlan["live_remote_lookup_preflight"]); lookup["lookup_state"] != "failed" {
+		t.Fatalf("failed lookup preflight = %#v", lookup)
+	}
+	assertRepoTagRemoteRehearsalPlanSafe(t, failedLookupPlan)
+	observedLookupPlan := mapFromAny(items[8]["remote_rehearsal_plan"])
+	if observedLookupPlan["rehearsal_state"] != "observed" ||
+		observedLookupPlan["remote_tag_lookup_performed"] != true ||
+		observedLookupPlan["external_call_made"] != true {
+		t.Fatalf("observed lookup plan = %#v", observedLookupPlan)
+	}
+	if lookup := mapFromAny(observedLookupPlan["live_remote_lookup_preflight"]); lookup["lookup_state"] != "observed" || lookup["remote_tag_lookup_performed"] != true || lookup["repo_tag_run_update_performed"] != true {
+		t.Fatalf("observed lookup preflight = %#v", lookup)
+	}
+	assertRepoTagRemoteRehearsalPlanSafe(t, observedLookupPlan)
 	for _, plan := range []map[string]any{observedPlan, failedPlan} {
 		encodedPlan, _ := json.Marshal(plan)
 		for _, forbidden := range []string{"do-not-serialize", "git@github.com", "https://token@", "Bearer", "password", "abc123", "v1.0.0", "secret git output"} {
@@ -3729,20 +3788,27 @@ func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
 func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 	t.Helper()
 	if plan["execution_enabled"] != false ||
-		plan["external_call_made"] != false ||
 		plan["git_tag_created"] != false ||
 		plan["git_push_performed"] != false ||
 		plan["github_actions_refresh_performed"] != false ||
-		plan["remote_tag_lookup_performed"] != false ||
 		plan["contains_token"] != false ||
 		plan["contains_remote_url"] != false ||
 		plan["contains_ref_name"] != false ||
 		plan["contains_tag_message"] != false {
 		t.Fatalf("tag rehearsal plan should keep live execution disabled and redacted: %#v", plan)
 	}
-	for _, backend := range []string{"git_tag", "git_push", "remote_tag_lookup", "github_actions_api_sync", "repo_tag_run_update"} {
+	lookupPerformed := plan["remote_tag_lookup_performed"] == true
+	if plan["external_call_made"] != lookupPerformed {
+		t.Fatalf("external_call_made should track controlled lookup only: %#v", plan)
+	}
+	for _, backend := range []string{"git_tag", "git_push", "github_actions_api_sync"} {
 		if !containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
 			t.Fatalf("disabled backends missing %q: %#v", backend, plan["disabled_backends"])
+		}
+	}
+	for _, backend := range []string{"remote_tag_lookup", "repo_tag_run_update"} {
+		if lookupPerformed == containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
+			t.Fatalf("lookup backend disabled state mismatch for %q: %#v", backend, plan["disabled_backends"])
 		}
 	}
 	for _, step := range []string{"lookup_remote_tag_result", "persist_sanitized_tag_run_result", "refresh_github_actions_after_tag"} {
@@ -3781,8 +3847,11 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 		t.Fatalf("tag rehearsal result_written = %v, want %v: %#v", plan["result_written"], wantResultReady, plan)
 	}
 	wantLookupState := "blocked"
-	if plan["tag_name_configured"] == true && plan["target_sha_configured"] == true && plan["target_remote_bound"] == true {
+	if plan["tag_name_configured"] == true && plan["target_remote_bound"] == true {
 		wantLookupState = "planned"
+	}
+	if plan["rehearsal_state"] == "running" {
+		wantLookupState = "running"
 	}
 	if tagObserved {
 		wantLookupState = "observed"
@@ -3790,16 +3859,19 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 	if tagFailed {
 		wantLookupState = "failed"
 	}
+	if lookupPerformed && !tagFailed {
+		wantLookupState = "observed"
+	}
 	lookupPreflight := mapFromAny(plan["live_remote_lookup_preflight"])
 	if lookupPreflight["mode"] != "repo_tag_live_remote_lookup_preflight" ||
 		lookupPreflight["lookup_state"] != wantLookupState ||
-		lookupPreflight["remote_tag_lookup_performed"] != false ||
-		lookupPreflight["git_ls_remote_performed"] != false ||
+		lookupPreflight["remote_tag_lookup_performed"] != lookupPerformed ||
+		lookupPreflight["git_ls_remote_performed"] != lookupPerformed ||
 		lookupPreflight["provider_api_called"] != false ||
 		lookupPreflight["github_actions_refresh_performed"] != false ||
-		lookupPreflight["repo_tag_run_update_performed"] != false ||
+		lookupPreflight["repo_tag_run_update_performed"] != lookupPerformed ||
 		lookupPreflight["operation_log_written"] != false ||
-		lookupPreflight["external_call_made"] != false ||
+		lookupPreflight["external_call_made"] != lookupPerformed ||
 		lookupPreflight["contains_token"] != false ||
 		lookupPreflight["contains_remote_url"] != false ||
 		lookupPreflight["contains_ref_name"] != false ||
@@ -3807,18 +3879,23 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 		lookupPreflight["contains_tag_message"] != false {
 		t.Fatalf("tag lookup preflight should stay disabled and redacted: %#v", lookupPreflight)
 	}
-	wantLookupReady := plan["tag_name_configured"] == true && plan["target_sha_configured"] == true && plan["target_remote_bound"] == true && !tagFailed
+	wantLookupReady := plan["tag_name_configured"] == true && plan["target_remote_bound"] == true && !tagFailed && !lookupPerformed
 	if lookupPreflight["lookup_ready_for_review"] != wantLookupReady {
 		t.Fatalf("lookup review readiness = %v, want %v: %#v", lookupPreflight["lookup_ready_for_review"], wantLookupReady, lookupPreflight)
 	}
-	for _, field := range []string{"target_remote_id", "tag_name", "target_sha", "tag_run_status", "repository_binding", "provider_type"} {
+	for _, field := range []string{"target_remote_id", "tag_name", "tag_run_status", "repository_binding", "provider_type"} {
 		if !containsString(stringSliceFromAny(lookupPreflight["required_lookup_fields"]), field) {
 			t.Fatalf("lookup preflight required field missing %q: %#v", field, lookupPreflight["required_lookup_fields"])
 		}
 	}
-	for _, backend := range []string{"remote_tag_lookup", "git_ls_remote", "provider_tag_lookup", "github_actions_api_sync", "repo_tag_run_update", "operation_log_write"} {
+	for _, backend := range []string{"provider_tag_lookup", "github_actions_api_sync", "operation_log_write"} {
 		if !containsString(stringSliceFromAny(lookupPreflight["disabled_backends"]), backend) {
 			t.Fatalf("lookup preflight disabled backend missing %q: %#v", backend, lookupPreflight["disabled_backends"])
+		}
+	}
+	for _, backend := range []string{"remote_tag_lookup", "git_ls_remote", "repo_tag_run_update"} {
+		if lookupPerformed == containsString(stringSliceFromAny(lookupPreflight["disabled_backends"]), backend) {
+			t.Fatalf("lookup preflight backend disabled state mismatch for %q: %#v", backend, lookupPreflight["disabled_backends"])
 		}
 	}
 	for _, field := range []string{"tag_name", "target_sha", "tag_message", "remote_url", "git_credentials", "provider_token", "authorization_header", "git_output", "github_actions_response", "provider_response_body", "provider_response_headers"} {
@@ -3826,8 +3903,8 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 			t.Fatalf("lookup preflight suppressed field missing %q: %#v", field, lookupPreflight["suppressed_fields"])
 		}
 	}
-	if !containsString(stringSliceFromAny(lookupPreflight["blocked_reasons"]), "remote_tag_lookup_backend_disabled") {
-		t.Fatalf("lookup preflight should keep backend disabled blocker: %#v", lookupPreflight["blocked_reasons"])
+	if !lookupPerformed && !containsString(stringSliceFromAny(lookupPreflight["blocked_reasons"]), "remote_tag_lookup_not_run") && plan["rehearsal_state"] != "running" {
+		t.Fatalf("lookup preflight should keep not-run blocker until lookup runs: %#v", lookupPreflight["blocked_reasons"])
 	}
 	wantLiveResultReason := "live_remote_tag_success_not_observed"
 	if tagObserved {
@@ -4320,6 +4397,125 @@ func TestRecordRepoTagRunResultSnapshotWritesSanitizedSnapshot(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("repo tag snapshot leaked %q: %s", forbidden, encoded)
 		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestCreateRepoTagRunLiveLookupEnqueuesWorker(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	runID := "11111111-1111-1111-1111-111111111111"
+	remoteID := "22222222-2222-2222-2222-222222222222"
+	projectID := "33333333-3333-3333-3333-333333333333"
+	opID := "44444444-4444-4444-4444-444444444444"
+	jobID := "55555555-5555-5555-5555-555555555555"
+	mock.ExpectQuery(`(?s)SELECT rtr\.\*, COALESCE\(rtr\.project_id, pgr\.project_id\) AS effective_project_id\s+FROM repo_tag_runs rtr`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "effective_project_id", "target_remote_id", "git_remote_id", "tag_name"}).
+			AddRow(runID, projectID, projectID, remoteID, remoteID, "v1.2.3"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT rtr\.\*, COALESCE\(rtr\.project_id, pgr\.project_id\) AS effective_project_id\s+FROM repo_tag_runs rtr.*FOR UPDATE OF rtr`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "effective_project_id", "target_remote_id", "git_remote_id", "tag_name"}).
+			AddRow(runID, projectID, projectID, remoteID, remoteID, "v1.2.3"))
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.operation_type, op\.status`).
+		WithArgs(runID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`(?s)INSERT INTO operation_runs\(project_id, git_remote_id, operation_type, title, input\)`).
+		WithArgs(projectID, remoteID, "repo.tag.lookup", "lookup repository tag", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "created_at", "updated_at"}).
+			AddRow(opID, "repo.tag.lookup", "queued", time.Now(), time.Now()))
+	mock.ExpectExec(`(?s)INSERT INTO worker_jobs\(operation_run_id, tool_name, payload, required_capabilities, preferred_node_kind\)`).
+		WithArgs(opID, "repo.tag.lookup", sqlmock.AnyArg(), sqlmock.AnyArg(), "").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).
+		WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
+	mock.ExpectCommit()
+	mock.ExpectQuery(`(?s)SELECT id AS worker_job_id, status AS worker_job_status, tool_name AS worker_job_tool_name\s+FROM worker_jobs`).
+		WithArgs(opID).
+		WillReturnRows(sqlmock.NewRows([]string{"worker_job_id", "worker_job_status", "worker_job_tool_name"}).
+			AddRow(jobID, "queued", "repo.tag.lookup"))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/repo-tag-runs/"+runID+"/live-lookup", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", runID)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.createRepoTagRunLiveLookup(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["idempotent"] != false ||
+		got["repo_tag_run_id"] != runID ||
+		got["target_remote_id"] != remoteID ||
+		got["credentials_recorded"] != false ||
+		got["remote_url_recorded"] != false ||
+		got["raw_git_output_recorded"] != false ||
+		mapFromAny(got["operation"])["operation_type"] != "repo.tag.lookup" ||
+		mapFromAny(got["worker_job"])["tool_name"] != "repo.tag.lookup" {
+		t.Fatalf("unexpected lookup enqueue response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestCreateRepoTagRunLiveLookupReturnsInFlightOperation(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	runID := "11111111-1111-1111-1111-111111111111"
+	remoteID := "22222222-2222-2222-2222-222222222222"
+	projectID := "33333333-3333-3333-3333-333333333333"
+	opID := "44444444-4444-4444-4444-444444444444"
+	jobID := "55555555-5555-5555-5555-555555555555"
+	mock.ExpectQuery(`(?s)SELECT rtr\.\*, COALESCE\(rtr\.project_id, pgr\.project_id\) AS effective_project_id\s+FROM repo_tag_runs rtr`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "effective_project_id", "target_remote_id", "git_remote_id", "tag_name"}).
+			AddRow(runID, projectID, projectID, remoteID, remoteID, "v1.2.3"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT rtr\.\*, COALESCE\(rtr\.project_id, pgr\.project_id\) AS effective_project_id\s+FROM repo_tag_runs rtr.*FOR UPDATE OF rtr`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "effective_project_id", "target_remote_id", "git_remote_id", "tag_name"}).
+			AddRow(runID, projectID, projectID, remoteID, remoteID, "v1.2.3"))
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.operation_type, op\.status`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "worker_job_id", "worker_job_status", "worker_job_tool_name"}).
+			AddRow(opID, "repo.tag.lookup", "running", jobID, "running", "repo.tag.lookup"))
+	mock.ExpectRollback()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/repo-tag-runs/"+runID+"/live-lookup", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", runID)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.createRepoTagRunLiveLookup(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["idempotent"] != true ||
+		mapFromAny(got["operation"])["id"] != opID ||
+		mapFromAny(got["worker_job"])["id"] != jobID {
+		t.Fatalf("unexpected in-flight response: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
@@ -8970,6 +9166,79 @@ func TestRecordAdapterFailureLogsProjectVersionValidationRerunSafely(t *testing.
 		"operation_run_id": "op-validation",
 		"tool_name":        "project_version.validation_rerun",
 	}, map[string]any{}, fmt.Errorf("database detail that must not be logged"))
+	if err != nil {
+		t.Fatalf("record adapter failure: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAdapterSuccessUpdatesRepoTagLookupWithoutOutput(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	worker := &ControlWorker{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)UPDATE repo_tag_runs\s+SET status=CASE WHEN \$2 THEN 'completed' ELSE 'failed' END,\s+target_sha=CASE WHEN \$2 AND NULLIF\(\$3, ''\) IS NOT NULL THEN \$3 ELSE target_sha END,\s+error_message=CASE WHEN \$2 THEN '' ELSE 'remote tag not found' END,\s+finished_at=now\(\)\s+WHERE id=\(\s+SELECT NULLIF\(input->>'repo_tag_run_id', ''\)::uuid\s+FROM operation_runs\s+WHERE id=\$1 AND operation_type='repo\.tag\.lookup'`).
+		WithArgs("op-lookup", true, "0123456789abcdef0123456789abcdef01234567").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).
+		WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
+	mock.ExpectCommit()
+
+	tx, err := worker.store.DB.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	err = worker.recordAdapterSuccess(context.Background(), tx, map[string]any{
+		"id":               "job-lookup",
+		"operation_run_id": "op-lookup",
+		"tool_name":        "repo.tag.lookup",
+	}, map[string]any{
+		"remote_tag_found": true,
+		"matched_sha":      "0123456789abcdef0123456789abcdef01234567",
+	})
+	if err != nil {
+		t.Fatalf("record adapter success: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAdapterFailureUpdatesRepoTagLookupWithSanitizedError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	worker := &ControlWorker{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)UPDATE repo_tag_runs\s+SET status='failed', error_message=\$2, finished_at=now\(\)\s+WHERE id=\(\s+SELECT NULLIF\(input->>'repo_tag_run_id', ''\)::uuid\s+FROM operation_runs\s+WHERE id=\$1 AND operation_type='repo\.tag\.lookup'`).
+		WithArgs("op-lookup", "fatal: authentication failed for <remote>").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).
+		WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
+	mock.ExpectCommit()
+
+	tx, err := worker.store.DB.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	err = worker.recordAdapterFailure(context.Background(), tx, map[string]any{
+		"id":               "job-lookup",
+		"operation_run_id": "op-lookup",
+		"tool_name":        "repo.tag.lookup",
+	}, map[string]any{}, fmt.Errorf("fatal: authentication failed for https://token:secret@example.com/org/repo.git"))
 	if err != nil {
 		t.Fatalf("record adapter failure: %v", err)
 	}
