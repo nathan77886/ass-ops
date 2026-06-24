@@ -525,6 +525,11 @@ func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 			counts["complete_repository_paths"] != 0 {
 			t.Fatalf("repository demo rehearsal plan without graph links = %#v", plan)
 		}
+		proof := mapFromAny(plan["environment_demo_proof"])
+		if proof["complete_repository_multi_remote_path_observed"] != false ||
+			!containsString(stringSliceFromAny(proof["missing_evidence"]), "repository_to_two_remotes_graph_path") {
+			t.Fatalf("repository demo proof without graph links = %#v", proof)
+		}
 		assertDemoDataRehearsalPlanSafe(t, plan)
 	}
 
@@ -551,6 +556,13 @@ func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 			len(stringSliceFromAny(plan["blocked_reasons"])) != 0 {
 			t.Fatalf("repository demo rehearsal plan with graph links = %#v", plan)
 		}
+		proof := mapFromAny(plan["environment_demo_proof"])
+		if proof["proof_state"] != "observed" ||
+			proof["proof_ready"] != true ||
+			proof["complete_repository_multi_remote_path_observed"] != true ||
+			len(stringSliceFromAny(proof["missing_evidence"])) != 0 {
+			t.Fatalf("repository demo proof with graph links = %#v", proof)
+		}
 		assertDemoDataRehearsalPlanSafe(t, plan)
 	}
 
@@ -568,6 +580,12 @@ func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 	})
 	if got := readinessByKey(t, crossRepositoryAggregation, "repositories"); got.Status != "partial" || got.Evidence != "2 repos / 2 remotes / 0 complete repos / 1 project links / 2 remote links" {
 		t.Fatalf("repository readiness with cross-repository aggregate links = %#v, want partial without a complete repository", got)
+	} else {
+		proof := mapFromAny(mapFromAny(got.DemoDataRehearsalPlan)["environment_demo_proof"])
+		if proof["complete_repository_multi_remote_path_observed"] != false ||
+			!containsString(stringSliceFromAny(proof["missing_evidence"]), "repository_to_two_remotes_graph_path") {
+			t.Fatalf("cross-repository aggregate proof should not report a complete multi-remote path: %#v", proof)
+		}
 	}
 
 	unrelatedGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
@@ -598,6 +616,47 @@ func TestCountRepositoryGraphLinks(t *testing.T) {
 	got := countRepositoryGraphLinks(graph)
 	if got.ProjectRepository != 1 || got.RepositoryRemotes != 2 || got.CompleteRepos != 1 {
 		t.Fatalf("countRepositoryGraphLinks = %#v, want 1 project link, 2 remote links, and 1 complete repo", got)
+	}
+}
+
+func TestDemoDataEnvironmentProofPartialWhenReadyStatusLacksRequiredEvidence(t *testing.T) {
+	proof := demoDataEnvironmentProof("ready", map[string]int{
+		"repository_assets":        1,
+		"git_remote_assets":        2,
+		"project_repository_links": 1,
+	}, []string{"repository_asset", "two_git_remote_assets", "project_to_repository_graph_link", "repository_to_two_remotes_graph_path"})
+	if proof["proof_state"] != "partial" ||
+		proof["proof_ready"] != false ||
+		proof["live_environment_data_observed"] != false ||
+		proof["complete_repository_multi_remote_path_observed"] != false ||
+		!containsString(stringSliceFromAny(proof["missing_evidence"]), "repository_to_two_remotes_graph_path") {
+		t.Fatalf("ready status without required graph evidence should stay partial: %#v", proof)
+	}
+	if proof["external_call_made"] != false ||
+		proof["demo_seed_written"] != false ||
+		proof["project_created"] != false ||
+		proof["repository_created"] != false ||
+		proof["git_remote_created"] != false ||
+		proof["asset_graph_written"] != false ||
+		proof["contains_remote_url"] != false ||
+		proof["contains_credentials"] != false {
+		t.Fatalf("direct demo environment proof should stay no-call and redacted: %#v", proof)
+	}
+}
+
+func TestDemoDataEnvironmentProofBlockedStatusDoesNotReportObservedEvidence(t *testing.T) {
+	proof := demoDataEnvironmentProof("missing", map[string]int{
+		"repository_assets":         1,
+		"git_remote_assets":         2,
+		"project_repository_links":  1,
+		"repository_remote_links":   2,
+		"complete_repository_paths": 1,
+	}, []string{"repository_asset", "two_git_remote_assets", "project_to_repository_graph_link", "repository_to_two_remotes_graph_path"})
+	if proof["proof_state"] != "blocked" ||
+		proof["proof_ready"] != false ||
+		proof["live_environment_data_observed"] != false ||
+		proof["complete_repository_multi_remote_path_observed"] != false {
+		t.Fatalf("missing status should suppress observed proof signals even with complete counts: %#v", proof)
 	}
 }
 
@@ -1637,6 +1696,34 @@ func assertDemoDataRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 		}
 	} else if !containsString(stringSliceFromAny(environmentPlan["blocked_reasons"]), "required_graph_evidence_missing") {
 		t.Fatalf("non-ready demo environment should report missing graph evidence: %#v", environmentPlan["blocked_reasons"])
+	}
+
+	environmentProof := mapFromAny(plan["environment_demo_proof"])
+	if environmentProof["mode"] != "first_version_demo_environment_proof" ||
+		environmentProof["external_call_made"] != false ||
+		environmentProof["demo_seed_written"] != false ||
+		environmentProof["project_created"] != false ||
+		environmentProof["repository_created"] != false ||
+		environmentProof["git_remote_created"] != false ||
+		environmentProof["asset_graph_written"] != false ||
+		environmentProof["contains_remote_url"] != false ||
+		environmentProof["contains_credentials"] != false {
+		t.Fatalf("demo environment proof should stay observed-only and redacted: %#v", environmentProof)
+	}
+	if plan["readiness_status"] == "ready" {
+		if environmentProof["proof_state"] != "observed" ||
+			environmentProof["proof_ready"] != true ||
+			environmentProof["live_environment_data_observed"] != true ||
+			len(stringSliceFromAny(environmentProof["missing_evidence"])) != 0 {
+			t.Fatalf("ready demo environment proof should be observed: %#v", environmentProof)
+		}
+	} else if environmentProof["proof_ready"] != false {
+		t.Fatalf("non-ready demo environment proof should not be ready: %#v", environmentProof)
+	}
+	for _, field := range []string{"project_asset_id", "repository_asset_id", "source_remote_asset_id", "mirror_remote_asset_id", "remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"} {
+		if !containsString(stringSliceFromAny(environmentProof["suppressed_fields"]), field) {
+			t.Fatalf("demo environment proof suppressed fields missing %q: %#v", field, environmentProof["suppressed_fields"])
+		}
 	}
 
 	graphPlan := mapFromAny(plan["graph_proof_plan"])

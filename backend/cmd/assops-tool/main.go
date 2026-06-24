@@ -1491,6 +1491,7 @@ func projectDemoDataRehearsalPlan(status string, evidence map[string]int, requir
 	}
 	environmentPlan := demoDataEnvironmentEvidencePlan(status, evidence, requiredEvidence)
 	graphPlan := demoDataGraphProofPlan(status, evidence, requiredEvidence)
+	environmentProof := demoDataEnvironmentProof(status, evidence, requiredEvidence)
 	resultPlan := demoDataResultRecordingPlan()
 	return map[string]any{
 		"mode":                      "first_version_demo_data_rehearsal_plan",
@@ -1508,6 +1509,7 @@ func projectDemoDataRehearsalPlan(status string, evidence map[string]int, requir
 		"required_evidence":         requiredEvidence,
 		"evidence_counts":           evidence,
 		"environment_evidence_plan": environmentPlan,
+		"environment_demo_proof":    environmentProof,
 		"graph_proof_plan":          graphPlan,
 		"result_recording_plan":     resultPlan,
 		"disabled_backends": []string{
@@ -1526,6 +1528,64 @@ func projectDemoDataRehearsalPlan(status string, evidence map[string]int, requir
 		},
 		"blocked_reasons": blockedReasons,
 		"message":         "Demo data rehearsal is audit-only; create project/repository/remote evidence in the live environment, then sync the canonical asset graph.",
+	}
+}
+
+// Keep this proof contract in sync with web/src/main.tsx demoDataEnvironmentProof.
+func demoDataEnvironmentProof(status string, evidence map[string]int, requiredEvidence []string) map[string]any {
+	if evidence == nil {
+		evidence = map[string]int{}
+	}
+	checks := map[string]bool{
+		"project_asset":                        evidence["project_assets"] > 0,
+		"project_graph_node":                   evidence["project_graph_nodes"] > 0,
+		"repository_asset":                     evidence["repository_assets"] > 0,
+		"two_git_remote_assets":                evidence["git_remote_assets"] >= 2,
+		"project_to_repository_graph_link":     evidence["project_repository_links"] > 0,
+		"repository_to_two_remotes_graph_path": evidence["complete_repository_paths"] > 0,
+	}
+	missing := make([]string, 0)
+	for _, key := range requiredEvidence {
+		if !checks[key] {
+			missing = append(missing, key)
+		}
+	}
+	proofState := "observed"
+	if len(missing) > 0 {
+		proofState = "partial"
+	}
+	if status == "missing" {
+		proofState = "blocked"
+	}
+	liveEnvironmentDataObserved := len(missing) == 0
+	if status == "missing" {
+		liveEnvironmentDataObserved = false
+	}
+	multiRemoteObserved := evidence["repository_assets"] > 0 &&
+		evidence["git_remote_assets"] >= 2 &&
+		evidence["project_repository_links"] > 0 &&
+		evidence["complete_repository_paths"] > 0 &&
+		evidence["repository_remote_links"] >= 2 &&
+		proofState != "blocked"
+	return map[string]any{
+		"mode":                           "first_version_demo_environment_proof",
+		"proof_state":                    proofState,
+		"proof_ready":                    len(missing) == 0 && status == "ready",
+		"proof_source":                   "canonical_asset_graph_counts",
+		"live_environment_data_observed": liveEnvironmentDataObserved,
+		"complete_repository_multi_remote_path_observed": multiRemoteObserved,
+		"required_evidence":    requiredEvidence,
+		"missing_evidence":     missing,
+		"evidence_counts":      evidence,
+		"external_call_made":   false,
+		"demo_seed_written":    false,
+		"project_created":      false,
+		"repository_created":   false,
+		"git_remote_created":   false,
+		"asset_graph_written":  false,
+		"contains_remote_url":  false,
+		"contains_credentials": false,
+		"suppressed_fields":    []string{"project_asset_id", "repository_asset_id", "source_remote_asset_id", "mirror_remote_asset_id", "remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"},
 	}
 }
 

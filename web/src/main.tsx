@@ -906,6 +906,7 @@ function demoDataRehearsalPlan(status: string, evidenceCounts: AnyRow, requiredE
   const planState = status === 'ready' ? 'observed' : status === 'missing' ? 'blocked' : 'planned';
   const environmentPlan = demoDataEnvironmentEvidencePlan(status, evidenceCounts, requiredEvidence);
   const graphPlan = demoDataGraphProofPlan(status, evidenceCounts, requiredEvidence);
+  const environmentProof = demoDataEnvironmentProof(status, evidenceCounts, requiredEvidence);
   const resultPlan = demoDataResultRecordingPlan();
   return {
     mode: 'first_version_demo_data_rehearsal_plan',
@@ -923,12 +924,54 @@ function demoDataRehearsalPlan(status: string, evidenceCounts: AnyRow, requiredE
     required_evidence: requiredEvidence,
     evidence_counts: evidenceCounts,
     environment_evidence_plan: environmentPlan,
+    environment_demo_proof: environmentProof,
     graph_proof_plan: graphPlan,
     result_recording_plan: resultPlan,
     disabled_backends: ['project_create', 'repository_create', 'git_remote_create', 'demo_seed_write', 'asset_graph_write'],
     suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret'],
     blocked_reasons: status === 'ready' ? [] : ['live_demo_graph_evidence_incomplete'],
     message: 'Demo data rehearsal is audit-only; create project/repository/remote evidence in the live environment, then sync the canonical asset graph.'
+  };
+}
+
+// Keep this proof contract in sync with backend/cmd/assops-tool demoDataEnvironmentProof.
+function demoDataEnvironmentProof(status: string, evidenceCounts: AnyRow = {}, requiredEvidence: string[] = []) {
+  const checks: AnyRow = {
+    project_asset: Number(evidenceCounts.project_assets || 0) > 0,
+    project_graph_node: Number(evidenceCounts.project_graph_nodes || 0) > 0,
+    repository_asset: Number(evidenceCounts.repository_assets || 0) > 0,
+    two_git_remote_assets: Number(evidenceCounts.git_remote_assets || 0) >= 2,
+    project_to_repository_graph_link: Number(evidenceCounts.project_repository_links || 0) > 0,
+    repository_to_two_remotes_graph_path: Number(evidenceCounts.complete_repository_paths || 0) > 0
+  };
+  const missing = requiredEvidence.filter((key) => !checks[key]);
+  const proofState = status === 'missing' ? 'blocked' : missing.length ? 'partial' : 'observed';
+  const liveEnvironmentDataObserved = status === 'missing' ? false : missing.length === 0;
+  const multiRemoteObserved = Number(evidenceCounts.repository_assets || 0) > 0 &&
+    Number(evidenceCounts.git_remote_assets || 0) >= 2 &&
+    Number(evidenceCounts.project_repository_links || 0) > 0 &&
+    Number(evidenceCounts.complete_repository_paths || 0) > 0 &&
+    Number(evidenceCounts.repository_remote_links || 0) >= 2 &&
+    proofState !== 'blocked';
+  return {
+    mode: 'first_version_demo_environment_proof',
+    proof_state: proofState,
+    proof_ready: missing.length === 0 && status === 'ready',
+    proof_source: 'canonical_asset_graph_counts',
+    live_environment_data_observed: liveEnvironmentDataObserved,
+    complete_repository_multi_remote_path_observed: multiRemoteObserved,
+    required_evidence: requiredEvidence,
+    missing_evidence: missing,
+    evidence_counts: evidenceCounts,
+    external_call_made: false,
+    demo_seed_written: false,
+    project_created: false,
+    repository_created: false,
+    git_remote_created: false,
+    asset_graph_written: false,
+    contains_remote_url: false,
+    contains_credentials: false,
+    suppressed_fields: ['project_asset_id', 'repository_asset_id', 'source_remote_asset_id', 'mirror_remote_asset_id', 'remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret']
   };
 }
 
@@ -1338,9 +1381,12 @@ function Dashboard() {
             { title: 'Demo plan', render: (_, row) => {
               const plan = row.demo_data_rehearsal_plan;
               if (!plan) return null;
+              const environmentProof = plan.environment_demo_proof || {};
               return <Space size={4} wrap>
                 <Tag color={demoPlanStateColor(plan.plan_state)}>{plan.plan_state}</Tag>
                 {plan.environment_evidence_plan ? <Tag color={demoPlanStateColor(plan.environment_evidence_plan.evidence_state)}>env {plan.environment_evidence_plan.evidence_state || 'blocked'}</Tag> : null}
+                {environmentProof.proof_state ? <Tag color={demoPlanStateColor(environmentProof.proof_state)}>proof {environmentProof.proof_state}</Tag> : null}
+                {environmentProof.complete_repository_multi_remote_path_observed ? <Tag color="green">multi-remote path</Tag> : null}
                 {plan.graph_proof_plan ? <Tag color={demoPlanStateColor(plan.graph_proof_plan.proof_state)}>graph {plan.graph_proof_plan.proof_state || 'blocked'}</Tag> : null}
                 <Tag>{plan.demo_seed_written ? 'seed written' : 'no seed write'}</Tag>
                 <Tag>{plan.asset_graph_written ? 'graph written' : 'no graph write'}</Tag>
