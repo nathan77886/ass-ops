@@ -23644,6 +23644,116 @@ func TestSanitizeOperationApprovalViewFiltersRejectsInvalidValues(t *testing.T) 
 	}
 }
 
+func TestUpdateOperationApprovalViewScopesToCurrentUser(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	now := time.Now()
+	mock.ExpectQuery(`(?s)UPDATE operation_approval_views\s+SET name=COALESCE\(NULLIF\(\$3, ''\), name\),\s+filters=COALESCE\(\$4::jsonb, filters\),\s+updated_at=now\(\)\s+WHERE id=\$1 AND user_id=\$2\s+RETURNING id, user_id, name, filters, created_at, updated_at`).
+		WithArgs("view-1", "user-1", "Mine", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "user_id", "name", "filters", "created_at", "updated_at"}).
+			AddRow("view-1", "user-1", "Mine", []byte(`{"status":"pending"}`), now, now))
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/operation-approval-views/view-1", strings.NewReader(`{"name":"Mine","filters":{"status":"pending","request_payload":"secret"}}`))
+	req = withRouteParam(req, "id", "view-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "user-1", Role: "developer"}))
+	rr := httptest.NewRecorder()
+
+	server.updateOperationApprovalView(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "request_payload") || strings.Contains(rr.Body.String(), "secret") {
+		t.Fatalf("approval view response leaked unsanitized filter: %s", rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if filters := mapFromAny(body["filters"]); filters["status"] != "pending" {
+		t.Fatalf("sanitized filters = %#v", filters)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestUpdateOperationApprovalViewReturnsNotFoundForOtherUser(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)UPDATE operation_approval_views\s+SET name=COALESCE\(NULLIF\(\$3, ''\), name\),\s+filters=COALESCE\(\$4::jsonb, filters\),\s+updated_at=now\(\)\s+WHERE id=\$1 AND user_id=\$2\s+RETURNING id, user_id, name, filters, created_at, updated_at`).
+		WithArgs("view-1", "user-2", "Mine", nil).
+		WillReturnError(ErrNotFound)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/operation-approval-views/view-1", strings.NewReader(`{"name":"Mine"}`))
+	req = withRouteParam(req, "id", "view-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "user-2", Role: "developer"}))
+	rr := httptest.NewRecorder()
+
+	server.updateOperationApprovalView(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestDeleteOperationApprovalViewScopesToCurrentUser(t *testing.T) {
+	tests := []struct {
+		name       string
+		userID     string
+		rows       int64
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "other user sees not found", userID: "user-2", rows: 0, wantStatus: http.StatusNotFound, wantBody: "not found"},
+		{name: "owner user deletes own view", userID: "user-1", rows: 1, wantStatus: http.StatusNoContent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			defer db.Close()
+			server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+			mock.ExpectExec(`(?s)DELETE FROM operation_approval_views\s+WHERE id=\$1 AND user_id=\$2`).
+				WithArgs("view-1", tt.userID).
+				WillReturnResult(sqlmock.NewResult(0, tt.rows))
+
+			req := httptest.NewRequest(http.MethodDelete, "/api/operation-approval-views/view-1", nil)
+			req = withRouteParam(req, "id", "view-1")
+			req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: tt.userID, Role: "developer"}))
+			rr := httptest.NewRecorder()
+
+			server.deleteOperationApprovalView(rr, req)
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rr.Code, tt.wantStatus, rr.Body.String())
+			}
+			if tt.wantBody != "" && !strings.Contains(rr.Body.String(), tt.wantBody) {
+				t.Fatalf("body = %s, want %q", rr.Body.String(), tt.wantBody)
+			}
+			if tt.wantStatus == http.StatusNoContent && rr.Body.Len() != 0 {
+				t.Fatalf("204 response body should be empty: %s", rr.Body.String())
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("sql expectations: %v", err)
+			}
+		})
+	}
+}
+
 func TestCanRetryTemplateProvision(t *testing.T) {
 	tests := []struct {
 		name string
