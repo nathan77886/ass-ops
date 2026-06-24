@@ -20677,6 +20677,241 @@ func TestAgentToolAuditSnapshotStatusHealthForTerminalStates(t *testing.T) {
 	}
 }
 
+func TestAgentToolArmingSnapshotPayloadSanitizesEvidence(t *testing.T) {
+	task := map[string]any{
+		"id":         "task-1",
+		"project_id": "project-1",
+		"title":      "do not serialize title",
+		"prompt":     "prompt with secret",
+		"status":     "completed",
+	}
+	evidence := agentToolCallAuditEvidence([]map[string]any{
+		{
+			"id":               "call-1",
+			"operation_run_id": "op-1",
+			"tool_name":        "runtime.check",
+			"status":           "completed",
+			"input":            map[string]any{"token": "do-not-serialize", "runtime_config": "secret runtime"},
+			"output":           map[string]any{"raw": "actual tool output", "authorization_header": "Bearer secret"},
+		},
+	})
+	dispatch := agentWorkerDispatchPlan(map[string]any{
+		"id":           "runtime-1",
+		"name":         "Secret Runtime",
+		"runtime_type": "codex-cli",
+		"codex_binary": "codex",
+		"model":        "gpt-5-codex",
+		"status":       "verified",
+		"config":       map[string]any{"token": "do-not-serialize"},
+	}, evidence)
+	snapshot := agentToolArmingSnapshotPayload(task, dispatch, true)
+	ready, state, missing := agentToolArmingSnapshotReadiness(snapshot)
+	if !ready || state != "ready_for_operator_review" || len(missing) != 0 {
+		t.Fatalf("readiness = %v/%s/%#v; snapshot=%#v", ready, state, missing, snapshot)
+	}
+	if snapshot["runtime_metadata_ready"] != true ||
+		snapshot["tool_allowlist_ready"] != true ||
+		snapshot["audit_evidence_observed"] != true ||
+		snapshot["terminal_audit_observed"] != true ||
+		snapshot["sanitized_result_recorded"] != true ||
+		snapshot["result_callback_observed"] != true ||
+		snapshot["arming_ready_for_operator_review"] != true ||
+		snapshot["tool_review_ready_for_operator"] != true ||
+		snapshot["live_tool_invocation_allowed"] != false ||
+		snapshot["tool_invocation_enabled"] != false ||
+		snapshot["tool_invoked"] != false ||
+		snapshot["allowlisted_tool_invoked"] != false ||
+		snapshot["raw_tool_input_materialized"] != false ||
+		snapshot["raw_tool_output_recorded"] != false ||
+		snapshot["runtime_config_materialized"] != false ||
+		snapshot["codex_cli_process_started"] != false ||
+		snapshot["repository_mutation_allowed"] != false ||
+		snapshot["contains_token"] != false {
+		t.Fatalf("unexpected tool arming snapshot: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, forbidden := range []string{"do-not-serialize", "secret runtime", "actual tool output", "Bearer secret", "prompt with secret", "Secret Runtime"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("agent tool arming snapshot leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestRecordAgentToolArmingSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "runtime.check"},
+	})
+	expectAgentToolArmingSnapshotRuntime(mock, true)
+	expectAgentToolAuditSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-agent-task-1", "agent_tool_arming_review_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-agent-task-1", "agent_tool_arming_review_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	req := newAgentToolArmingSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolArmingSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "ready_for_operator_review" ||
+		got["recording_ready"] != true ||
+		got["agent_tool_arming_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["tool_invocation_enabled"] != false ||
+		got["tool_invoked"] != false ||
+		got["raw_tool_output_recorded"] != false ||
+		got["codex_cli_process_started"] != false ||
+		got["repository_mutation_allowed"] != false {
+		t.Fatalf("unexpected ready tool arming response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["arming_ready_for_operator_review"] != true ||
+		snapshot["tool_review_ready_for_operator"] != true ||
+		snapshot["live_tool_invocation_allowed"] != false ||
+		snapshot["raw_tool_input_materialized"] != false ||
+		snapshot["raw_tool_output_recorded"] != false {
+		t.Fatalf("unexpected ready tool arming snapshot: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentToolArmingSnapshotHandlerDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "runtime.check"},
+	})
+	expectAgentToolArmingSnapshotRuntime(mock, true)
+	expectAgentToolAuditSnapshotAsset(mock, true)
+
+	req := newAgentToolArmingSnapshotRequest(`{"dry_run":true}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolArmingSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "ready_for_operator_review" ||
+		got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["agent_tool_arming_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run tool arming response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentToolArmingSnapshotHandlerBlockedWithoutRuntime(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "runtime.check"},
+	})
+	expectAgentToolArmingSnapshotRuntime(mock, false)
+	expectAgentToolAuditSnapshotAsset(mock, true)
+
+	req := newAgentToolArmingSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolArmingSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_ready"] != false ||
+		got["agent_tool_arming_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["tool_invocation_enabled"] != false {
+		t.Fatalf("unexpected runtime-blocked tool arming response: %#v", got)
+	}
+	if !containsString(stringSliceFromAny(got["missing_evidence"]), "runtime_metadata") ||
+		!containsString(stringSliceFromAny(got["missing_evidence"]), "tool_execution_arming_not_ready") {
+		t.Fatalf("runtime-blocked response missing evidence: %#v", got["missing_evidence"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentToolArmingSnapshotHandlerAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "runtime.check"},
+	})
+	expectAgentToolArmingSnapshotRuntime(mock, true)
+	expectAgentToolAuditSnapshotAsset(mock, false)
+
+	req := newAgentToolArmingSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolArmingSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["agent_task_asset_observed"] != false ||
+		got["agent_tool_arming_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected asset-missing tool arming response: %#v", got)
+	}
+	if !containsString(stringSliceFromAny(got["missing_evidence"]), "agent_task_asset_missing") {
+		t.Fatalf("asset-missing response missing evidence: %#v", got["missing_evidence"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestAgentCodeAuditSnapshotPayloadSanitizesEvidence(t *testing.T) {
 	task := map[string]any{
 		"id":         "task-1",
@@ -21082,10 +21317,27 @@ func newAgentToolAuditSnapshotRequest(body string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
 
+func newAgentToolArmingSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/agent/tasks/task-1/tool-arming-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "task-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
 func newAgentCodeAuditSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/agent/tasks/task-1/code-audit-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "task-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func expectAgentToolArmingSnapshotRuntime(mock sqlmock.Sqlmock, found bool) {
+	query := mock.ExpectQuery(`(?s)SELECT id, project_id, name, runtime_type, codex_binary, model, status, updated_at\s+FROM ai_runtimes\s+WHERE project_id=\$1 OR project_id IS NULL`).
+		WithArgs("project-1")
+	if found {
+		query.WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "runtime_type", "codex_binary", "model", "status", "updated_at"}).
+			AddRow("runtime-1", "project-1", "Demo Codex", "codex-cli", "codex", "gpt-5-codex", "verified", time.Now()))
+	} else {
+		query.WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "runtime_type", "codex_binary", "model", "status", "updated_at"}))
+	}
 }
 
 func newAgentCodeAuditSnapshotRequestAs(body string, user *User) *http.Request {

@@ -4790,11 +4790,14 @@ function AgentTasks() {
   const [taskID, setTaskID] = useState<string>();
   const [toolAuditSnapshotLoading, setToolAuditSnapshotLoading] = useState(false);
   const [toolAuditSnapshotResult, setToolAuditSnapshotResult] = useState<AnyRow>();
+  const [toolArmingSnapshotLoading, setToolArmingSnapshotLoading] = useState(false);
+  const [toolArmingSnapshotResult, setToolArmingSnapshotResult] = useState<AnyRow>();
   const [codeAuditSnapshotLoading, setCodeAuditSnapshotLoading] = useState(false);
   const [codeAuditSnapshotResult, setCodeAuditSnapshotResult] = useState<AnyRow>();
   const taskDetail = useLoad(() => taskID ? api(`/api/agent/tasks/${taskID}`) : Promise.resolve(null), [taskID]);
   useEffect(() => {
     setToolAuditSnapshotResult(undefined);
+    setToolArmingSnapshotResult(undefined);
     setCodeAuditSnapshotResult(undefined);
   }, [taskID]);
   async function createTask(values: AnyRow) {
@@ -4840,6 +4843,24 @@ function AgentTasks() {
       message.error(error.message || 'Request failed');
     } finally {
       setToolAuditSnapshotLoading(false);
+    }
+  }
+  async function recordToolArmingSnapshot(id: string) {
+    setToolArmingSnapshotLoading(true);
+    try {
+      const result = await api(`/api/agent/tasks/${id}/tool-arming-snapshot`, { method: 'POST', body: JSON.stringify({}) });
+      setToolArmingSnapshotResult(result);
+      taskDetail.reload();
+      if (result.recording_ready === false) {
+        message.warning(result.message || 'Agent tool arming snapshot is not ready yet');
+      } else {
+        message.success(result.agent_tool_arming_snapshot_written ? 'Agent tool arming snapshot recorded' : 'Agent tool arming snapshot already current');
+      }
+    } catch (error: any) {
+      setToolArmingSnapshotResult(undefined);
+      message.error(error.message || 'Request failed');
+    } finally {
+      setToolArmingSnapshotLoading(false);
     }
   }
   async function recordCodeAuditSnapshot(id: string) {
@@ -4987,6 +5008,14 @@ function AgentTasks() {
             </Button>
             <Button
               size="small"
+              onClick={() => recordToolArmingSnapshot(taskDetail.data.id)}
+              loading={toolArmingSnapshotLoading}
+              disabled={!taskDetail.data.tool_call_audit_evidence?.sanitized_result_recorded}
+            >
+              Record arming snapshot
+            </Button>
+            <Button
+              size="small"
               onClick={() => recordCodeAuditSnapshot(taskDetail.data.id)}
               loading={codeAuditSnapshotLoading}
               disabled={
@@ -5023,6 +5052,17 @@ function AgentTasks() {
               <Tag>{toolAuditSnapshotResult.agent_task_asset_observed ? 'agent task asset observed' : 'agent task asset missing'}</Tag>
               <Tag>{toolAuditSnapshotResult.raw_tool_output_recorded ? 'raw output recorded' : 'no raw output'}</Tag>
               <Tag>{toolAuditSnapshotResult.secret_included ? 'secret included' : 'no secrets'}</Tag>
+            </Space>
+          ) : null}
+          {toolArmingSnapshotResult ? (
+            <Space wrap>
+              <Tag color={toolArmingSnapshotResult.recording_state === 'ready_for_operator_review' ? 'green' : toolArmingSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'gold'}>arming snapshot {toolArmingSnapshotResult.recording_state || 'pending'}</Tag>
+              <Tag>{toolArmingSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
+              <Tag>{toolArmingSnapshotResult.arming_ready_for_operator_review ? 'operator review ready' : 'arming blocked'}</Tag>
+              <Tag>{toolArmingSnapshotResult.tool_review_ready_for_operator ? 'tool review ready' : 'tool review blocked'}</Tag>
+              <Tag>{toolArmingSnapshotResult.tool_invocation_enabled ? 'tools enabled' : 'tools blocked'}</Tag>
+              <Tag>{toolArmingSnapshotResult.raw_tool_output_recorded ? 'raw output recorded' : 'no raw output'}</Tag>
+              <Tag>{toolArmingSnapshotResult.secret_included ? 'secret included' : 'no secrets'}</Tag>
             </Space>
           ) : null}
           {taskDetail.data.code_modification_evidence ? (
