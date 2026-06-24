@@ -4991,6 +4991,8 @@ function ConfigPage() {
   const [podLogLoading, setPodLogLoading] = useState(false);
   const [podLogRunLoading, setPodLogRunLoading] = useState(false);
   const [podLogRunResult, setPodLogRunResult] = useState<AnyRow>();
+  const [podLogSnapshotLoading, setPodLogSnapshotLoading] = useState(false);
+  const [podLogSnapshotResult, setPodLogSnapshotResult] = useState<AnyRow>();
   const [sshOpen, setSSHOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const argoConnections = useLoad(() => project ? api(`/api/projects/${project.id}/argo/connections`) : Promise.resolve({ items: [] }), [project?.id]);
@@ -5131,6 +5133,7 @@ function ConfigPage() {
       });
       setPodLogPreview(result);
       setPodLogRunResult(undefined);
+      setPodLogSnapshotResult(undefined);
       message.success('Pod log query preview ready');
     } catch (error: any) {
       message.error(error.message || 'Request failed');
@@ -5161,6 +5164,46 @@ function ConfigPage() {
       message.error(error.message || 'Request failed');
     } finally {
       setPodLogRunLoading(false);
+    }
+  }
+  async function recordPodLogAuditSnapshot() {
+    if (!project || !podLogPreview) return;
+    const target = podLogPreview.deployment_target || {};
+    const query = podLogPreview.query || {};
+    setPodLogSnapshotLoading(true);
+    try {
+      const result = await api(`/api/projects/${project.id}/argo/pod-log-audit-snapshot`, {
+        method: 'POST',
+        body: JSON.stringify({
+          deployment_target_id: target.id,
+          pod_name: query.pod_name,
+          container_name: query.container_name,
+          tail_lines: Number(query.tail_lines || 200),
+          since_seconds: Number(query.since_seconds || 0)
+        })
+      });
+      setPodLogSnapshotResult(result);
+      const refreshed = await api(`/api/projects/${project.id}/argo/pod-log-query-preview`, {
+        method: 'POST',
+        body: JSON.stringify({
+          deployment_target_id: target.id,
+          pod_name: query.pod_name,
+          container_name: query.container_name,
+          tail_lines: Number(query.tail_lines || 200),
+          since_seconds: Number(query.since_seconds || 0)
+        })
+      });
+      setPodLogPreview(refreshed);
+      if (result.recording_ready === false) {
+        message.warning(result.message || 'Pod log audit snapshot is not ready yet');
+      } else {
+        message.success(result.pod_log_audit_snapshot_written ? 'Pod log audit snapshot recorded' : 'Pod log audit snapshot already current');
+      }
+    } catch (error: any) {
+      setPodLogSnapshotResult(undefined);
+      message.error(error.message || 'Request failed');
+    } finally {
+      setPodLogSnapshotLoading(false);
     }
   }
   async function runSSHCommand(values: AnyRow) {
@@ -5338,11 +5381,16 @@ function ConfigPage() {
                   </Space>
                   <Space>
                     <Button type="primary" onClick={requestPodLogAudit} loading={podLogRunLoading} disabled={!podLogPreview.operation_request_enabled || !podLogPreview.retrieval_plan?.execution_plan?.audit_worker_job_enabled}>Request audit</Button>
+                    <Button onClick={recordPodLogAuditSnapshot} loading={podLogSnapshotLoading} disabled={podLogPreview.audit_evidence?.evidence_state !== 'recorded'}>Record audit snapshot</Button>
                     {podLogRunResult ? <Tag color={podLogRunResult.approval ? 'gold' : 'blue'}>{podLogRunResult.approval ? 'approval requested' : 'operation queued'}</Tag> : null}
                     {podLogRunResult?.worker_job_created ? <Tag>worker job created</Tag> : null}
                     {podLogRunResult ? <Tag>{podLogRunResult.log_body_included ? 'log body included' : 'no log body'}</Tag> : null}
+                    {podLogSnapshotResult ? <Tag color={podLogSnapshotResult.pod_log_audit_snapshot_written ? 'green' : podLogSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>snapshot {podLogSnapshotResult.recording_state || 'unknown'}</Tag> : null}
+                    {podLogSnapshotResult ? <Tag>{podLogSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'no asset status write'}</Tag> : null}
+                    {podLogSnapshotResult ? <Tag>{podLogSnapshotResult.log_body_included ? 'log body included' : 'no log body'}</Tag> : null}
                   </Space>
                   {podLogRunResult ? <JSONBlock value={podLogRunResult} /> : null}
+                  {podLogSnapshotResult ? <JSONBlock value={podLogSnapshotResult} /> : null}
                   <JSONBlock value={podLogPreview} />
                 </Space>
               )}

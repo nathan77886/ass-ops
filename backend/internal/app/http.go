@@ -185,6 +185,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/projects/{id}/rollback-points", s.listRollbackPoints)
 		r.Post("/api/projects/{id}/argo/pod-log-query-preview", s.previewArgoPodLogQuery)
 		r.Post("/api/projects/{id}/argo/pod-logs", s.requestArgoPodLogRetrieval)
+		r.Post("/api/projects/{id}/argo/pod-log-audit-snapshot", s.recordArgoPodLogAuditSnapshot)
 		r.Post("/api/projects/{id}/webhook-connections", s.createWebhookConnection)
 		r.Get("/api/projects/{id}/webhook-connections", s.listWebhookConnections)
 		r.Get("/api/projects/{id}/webhook-events", s.listWebhookEvents)
@@ -19359,6 +19360,52 @@ func (s *Server) requestArgoPodLogRetrieval(w http.ResponseWriter, r *http.Reque
 		"log_body_included":  false,
 		"message":            "Pod log approval requested; worker job will be created only after approval.",
 	})
+}
+
+func (s *Server) recordArgoPodLogAuditSnapshot(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	var req struct {
+		DeploymentTargetID string `json:"deployment_target_id"`
+		PodName            string `json:"pod_name"`
+		ContainerName      string `json:"container_name"`
+		TailLines          int    `json:"tail_lines"`
+		SinceSeconds       int    `json:"since_seconds"`
+		DryRun             bool   `json:"dry_run"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	cleaned, err := cleanArgoPodLogRequest(argoPodLogRequest{
+		DeploymentTargetID: req.DeploymentTargetID,
+		PodName:            req.PodName,
+		ContainerName:      req.ContainerName,
+		TailLines:          req.TailLines,
+		SinceSeconds:       req.SinceSeconds,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "deployment_target", ID: cleaned.DeploymentTargetID, ProjectID: projectID}, "update") {
+		return
+	}
+	result, err := RecordArgoPodLogAuditSnapshot(r.Context(), s.store, ArgoPodLogAuditSnapshotOptions{
+		ProjectID:          projectID,
+		DeploymentTargetID: cleaned.DeploymentTargetID,
+		PodName:            cleaned.PodName,
+		ContainerName:      cleaned.ContainerName,
+		TailLines:          cleaned.TailLines,
+		SinceSeconds:       cleaned.SinceSeconds,
+		DryRun:             req.DryRun,
+	})
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("pod log audit snapshot failed", "project_id", projectID, "deployment_target_id", cleaned.DeploymentTargetID, "error", err)
+		}
+		writeError(w, http.StatusBadRequest, "record pod log audit snapshot failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func argoPodLogOperationInput(projectID string, target, query, executionPlan map[string]any) map[string]any {

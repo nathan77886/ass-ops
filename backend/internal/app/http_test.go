@@ -709,6 +709,372 @@ func TestArgoPodLogQueryPreviewReconcilesAuditEvidence(t *testing.T) {
 	}
 }
 
+func TestArgoPodLogAuditSnapshotPayloadIsSafeAndReadinessGated(t *testing.T) {
+	preview := argoPodLogQueryPreview("api-7d9f", "web", 500, 30, map[string]any{
+		"id":           "target-1",
+		"name":         "prod",
+		"environment":  "prod",
+		"cluster_name": "prod-cluster",
+		"namespace":    "billing",
+		"status":       "Healthy",
+	}, []map[string]any{
+		{
+			"id":                  "op-pod-logs",
+			"status":              "completed",
+			"operation_log_count": int64(2),
+			"input":               map[string]any{"kubeconfig": "secret kubeconfig", "log_body": "actual log line"},
+		},
+	})
+	snapshot := argoPodLogAuditSnapshotPayload(preview, true)
+	ready, state, missing := argoPodLogAuditSnapshotReadiness(preview, snapshot)
+	if !ready || state != "ready_to_record" || len(missing) != 0 {
+		t.Fatalf("recorded pod log audit should be snapshot-ready: ready=%v state=%s missing=%#v snapshot=%#v", ready, state, missing, snapshot)
+	}
+	if snapshot["mode"] != "pod_log_audit_snapshot" ||
+		snapshot["deployment_target_asset_observed"] != true ||
+		snapshot["audit_evidence_state"] != "recorded" ||
+		snapshot["sanitized_result_recorded"] != true ||
+		snapshot["live_stream_review_ready"] != true ||
+		snapshot["log_body_included"] != false ||
+		snapshot["redacted_log_body_included"] != false ||
+		snapshot["kubeconfig_included"] != false ||
+		snapshot["raw_response_included"] != false ||
+		snapshot["secret_included"] != false {
+		t.Fatalf("unexpected pod log audit snapshot: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, forbidden := range []string{"secret kubeconfig", "actual log line", "apiVersion:", "Bearer secret", "kubeconfig-data"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("pod log snapshot leaked %q: %s", forbidden, encoded)
+		}
+	}
+
+	waitingPreview := argoPodLogQueryPreview("api-7d9f", "web", 500, 30, map[string]any{
+		"id":           "target-1",
+		"name":         "prod",
+		"environment":  "prod",
+		"cluster_name": "prod-cluster",
+		"namespace":    "billing",
+		"status":       "Healthy",
+	}, []map[string]any{
+		{"id": "op-pod-logs", "status": "running", "operation_log_count": int64(1)},
+	})
+	waitingSnapshot := argoPodLogAuditSnapshotPayload(waitingPreview, true)
+	ready, state, missing = argoPodLogAuditSnapshotReadiness(waitingPreview, waitingSnapshot)
+	if ready || state != "waiting_for_worker" ||
+		!containsString(missing, "pod_log_audit_worker_still_running") ||
+		!containsString(missing, "sanitized_pod_log_audit_result_not_recorded") {
+		t.Fatalf("running pod log audit should not be snapshot-ready: ready=%v state=%s missing=%#v", ready, state, missing)
+	}
+}
+
+func TestRecordArgoPodLogAuditSnapshotHandlerBlockedByReadiness(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
+		WithArgs("target-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
+			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
+		WithArgs("project-1", "target-1", "api-7d9f", "web").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
+			AddRow("op-pod-logs", "running", nil, nil, nil, int64(1)))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='deployment_target'`).
+		WithArgs("target-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-target-1"))
+
+	body := strings.NewReader(`{"deployment_target_id":"target-1","pod_name":"api-7d9f","container_name":"web","tail_lines":500,"since_seconds":30}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/argo/pod-log-audit-snapshot", body)
+	req = withRouteParam(req, "id", "project-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.recordArgoPodLogAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "waiting_for_worker" ||
+		got["recording_ready"] != false ||
+		got["recording_enabled"] != false ||
+		got["pod_log_audit_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["log_body_included"] != false ||
+		got["kubeconfig_included"] != false {
+		t.Fatalf("unexpected blocked pod log snapshot response: %#v", got)
+	}
+	if !containsString(stringSliceFromAny(got["missing_evidence"]), "pod_log_audit_worker_still_running") {
+		t.Fatalf("blocked pod log snapshot missing worker evidence: %#v", got["missing_evidence"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordArgoPodLogAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
+		WithArgs("target-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
+			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
+		WithArgs("project-1", "target-1", "api-7d9f", "web").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
+			AddRow("op-pod-logs", "completed", nil, nil, nil, int64(2)))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='deployment_target'`).
+		WithArgs("target-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-target-1"))
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-target-1", "pod_log_audit_recorded", "warning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	body := strings.NewReader(`{"deployment_target_id":"target-1","pod_name":"api-7d9f","container_name":"web","tail_lines":500,"since_seconds":30}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/argo/pod-log-audit-snapshot", body)
+	req = withRouteParam(req, "id", "project-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.recordArgoPodLogAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["recording_ready"] != true ||
+		got["pod_log_audit_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["operation_log_written"] != false ||
+		got["external_call_made"] != false ||
+		got["log_body_included"] != false ||
+		got["kubeconfig_included"] != false ||
+		got["raw_response_included"] != false {
+		t.Fatalf("unexpected ready pod log snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["audit_evidence_state"] != "recorded" ||
+		snapshot["live_stream_review_ready"] != true ||
+		snapshot["log_body_included"] != false ||
+		snapshot["kubeconfig_included"] != false {
+		t.Fatalf("unexpected ready pod log snapshot payload: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func expectArgoPodLogSnapshotEvidenceQueries(mock sqlmock.Sqlmock, status string, assetFound bool) {
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
+		WithArgs("target-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
+			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
+		WithArgs("project-1", "target-1", "api-7d9f", "web").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
+			AddRow("op-pod-logs", status, nil, nil, nil, int64(2)))
+	assetQuery := mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='deployment_target'`).
+		WithArgs("target-1")
+	if assetFound {
+		assetQuery.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-target-1"))
+	} else {
+		assetQuery.WillReturnError(sql.ErrNoRows)
+	}
+}
+
+func newArgoPodLogSnapshotRequest() *http.Request {
+	body := strings.NewReader(`{"deployment_target_id":"target-1","pod_name":"api-7d9f","container_name":"web","tail_lines":500,"since_seconds":30}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/argo/pod-log-audit-snapshot", body)
+	req = withRouteParam(req, "id", "project-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func TestRecordArgoPodLogAuditSnapshotHandlerAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectArgoPodLogSnapshotEvidenceQueries(mock, "completed", false)
+	rr := httptest.NewRecorder()
+
+	server.recordArgoPodLogAuditSnapshot(rr, newArgoPodLogSnapshotRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["deployment_target_asset_observed"] != false ||
+		got["pod_log_audit_snapshot_written"] != false {
+		t.Fatalf("unexpected asset missing response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordArgoPodLogAuditSnapshotHandlerDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectArgoPodLogSnapshotEvidenceQueries(mock, "completed", true)
+	req := newArgoPodLogSnapshotRequest()
+	req.Body = io.NopCloser(strings.NewReader(`{"deployment_target_id":"target-1","pod_name":"api-7d9f","container_name":"web","tail_lines":500,"since_seconds":30,"dry_run":true}`))
+	rr := httptest.NewRecorder()
+
+	server.recordArgoPodLogAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "ready_to_record" ||
+		got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["pod_log_audit_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordArgoPodLogAuditSnapshotHandlerSkipsDuplicate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectArgoPodLogSnapshotEvidenceQueries(mock, "completed", true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-target-1", "pod_log_audit_recorded", "warning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 0))
+	mock.ExpectCommit()
+	rr := httptest.NewRecorder()
+
+	server.recordArgoPodLogAuditSnapshot(rr, newArgoPodLogSnapshotRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["snapshots_written"] != float64(0) ||
+		got["snapshots_skipped_as_duplicate"] != float64(1) ||
+		got["pod_log_audit_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected duplicate response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordArgoPodLogAuditSnapshotHandlerRowsAffectedUnavailable(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectArgoPodLogSnapshotEvidenceQueries(mock, "completed", true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-target-1", "pod_log_audit_recorded", "warning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+	rr := httptest.NewRecorder()
+
+	server.recordArgoPodLogAuditSnapshot(rr, newArgoPodLogSnapshotRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["snapshots_written"] != float64(-1) ||
+		got["snapshots_skipped_as_duplicate"] != float64(-1) ||
+		got["rows_affected_unknown"] != true ||
+		got["snapshot_commit_attempted"] != true ||
+		got["pod_log_audit_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true {
+		t.Fatalf("unexpected rows affected unavailable response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordArgoPodLogAuditSnapshotHandlerFailedEvidenceDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectArgoPodLogSnapshotEvidenceQueries(mock, "failed", true)
+	rr := httptest.NewRecorder()
+
+	server.recordArgoPodLogAuditSnapshot(rr, newArgoPodLogSnapshotRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "blocked" ||
+		got["recording_ready"] != false ||
+		got["pod_log_audit_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		!containsString(stringSliceFromAny(got["missing_evidence"]), "sanitized_pod_log_audit_result_not_recorded") {
+		t.Fatalf("unexpected failed evidence response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestPreviewArgoPodLogQueryLoadsSanitizedAuditEvidence(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
