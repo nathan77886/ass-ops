@@ -130,8 +130,8 @@ func RecordDemoReadinessSnapshot(ctx context.Context, store *Store, opts DemoRea
 		result["rows_affected_unknown"] = true
 		result["snapshots_written"] = -1
 		result["snapshots_skipped_as_duplicate"] = -1
-		result["readiness_snapshot_written"] = true
-		result["asset_graph_snapshot_written"] = true
+		result["readiness_snapshot_written"] = false
+		result["asset_graph_snapshot_written"] = false
 	} else {
 		result["snapshots_written"] = written
 		result["snapshots_skipped_as_duplicate"] = len(targets) - written

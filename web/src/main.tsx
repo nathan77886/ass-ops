@@ -1489,7 +1489,7 @@ function Dashboard() {
     try {
       const result = await api('/api/demo-readiness-snapshot', { method: 'POST', body: '{}' });
       setDemoSnapshotResult(result);
-      message.success(result.readiness_snapshot_written ? 'Demo readiness snapshot recorded' : 'Demo readiness snapshot already current');
+      message.success(result.readiness_snapshot_written ? 'Demo readiness snapshot recorded' : result.rows_affected_unknown ? 'Demo readiness snapshot recorded with unverified row count' : 'Demo readiness snapshot already current');
     } catch (error: any) {
       message.error(error.message || 'Request failed');
     } finally {
@@ -1515,6 +1515,7 @@ function Dashboard() {
           {demoDataResult ? <Tag>{demoDataResult.provider_api_called ? 'provider called' : 'no provider call'}</Tag> : null}
           {demoSnapshotResult ? <Tag color={demoSnapshotResult.readiness_snapshot_written ? 'green' : demoSnapshotResult.recording_state === 'blocked' ? 'red' : 'default'}>snapshot {demoSnapshotResult.recording_state || 'unknown'}</Tag> : null}
           {demoSnapshotResult ? <Tag>{demoSnapshotResult.asset_graph_snapshot_written ? 'asset status written' : 'no asset status write'}</Tag> : null}
+          {demoSnapshotResult?.rows_affected_unknown ? <Tag color="gold">rows affected unknown</Tag> : null}
           <Button size="small" onClick={ensureDemoReadinessData} loading={demoDataLoading}>Ensure demo data</Button>
           <Button size="small" onClick={recordDemoReadinessSnapshot} loading={demoSnapshotLoading}>Record demo snapshot</Button>
         </Space>}
