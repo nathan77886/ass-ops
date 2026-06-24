@@ -15129,6 +15129,17 @@ func TestGetAgentTaskIncludesToolCallAuditEvidence(t *testing.T) {
 		evidence["raw_tool_output_recorded"] != false {
 		t.Fatalf("unexpected handler audit evidence: %#v", evidence)
 	}
+	codeEvidence := mapFromAny(body["code_modification_evidence"])
+	if codeEvidence["mode"] != "redacted_agent_code_modification_evidence" ||
+		codeEvidence["evidence_state"] != "partial_recorded" ||
+		codeEvidence["has_code_modification_audit"] != true ||
+		codeEvidence["codex_execution_plan_recorded"] != false ||
+		codeEvidence["patch_prepare_audit_recorded"] != false ||
+		codeEvidence["repository_mutation_allowed"] != false ||
+		codeEvidence["raw_patch_recorded"] != false ||
+		codeEvidence["contains_patch_content"] != false {
+		t.Fatalf("unexpected handler code modification evidence: %#v", codeEvidence)
+	}
 	encoded, _ := json.Marshal(evidence)
 	for _, forbidden := range []string{"do-not-serialize", "actual tool output"} {
 		if strings.Contains(string(encoded), forbidden) {
@@ -15398,6 +15409,77 @@ func TestAgentCodeModificationPlan(t *testing.T) {
 			t.Fatalf("code modification plan should not expose sensitive config hints: %s", encoded)
 		}
 	}
+}
+
+func TestAgentCodeModificationPlanReconcilesAuditEvidence(t *testing.T) {
+	evidence := agentToolCallAuditEvidence([]map[string]any{
+		{"id": "call-worker", "operation_run_id": "op-1", "tool_name": "worker.dispatch.plan", "status": "completed", "input": map[string]any{"token": "do-not-serialize"}, "output": map[string]any{"raw": "actual tool output"}},
+		{"id": "call-codex", "operation_run_id": "op-1", "tool_name": "codex.execution.plan", "status": "completed", "input": map[string]any{"workspace_path": "/tmp/secret-workspace"}, "output": map[string]any{"diff_content": "secret diff"}},
+		{"id": "call-patch", "operation_run_id": "op-1", "tool_name": "patch.prepare", "status": "completed", "input": map[string]any{"patch_content": "secret patch"}, "output": map[string]any{"test_output": "secret test"}},
+	})
+	got := agentCodeModificationPlan(evidence)
+	assertAgentCodeModificationPlanSafe(t, got)
+	codeEvidence := mapFromAny(got["code_modification_evidence"])
+	if codeEvidence["evidence_state"] != "recorded" ||
+		codeEvidence["has_code_modification_audit"] != true ||
+		codeEvidence["sanitized_result_recorded"] != true ||
+		codeEvidence["worker_dispatch_audit_recorded"] != true ||
+		codeEvidence["codex_execution_plan_recorded"] != true ||
+		codeEvidence["patch_prepare_audit_recorded"] != true ||
+		codeEvidence["repository_mutation_allowed"] != false ||
+		codeEvidence["source_checkout_performed"] != false ||
+		codeEvidence["file_patch_applied"] != false ||
+		codeEvidence["tests_executed"] != false ||
+		codeEvidence["git_commit_created"] != false ||
+		codeEvidence["git_push_performed"] != false ||
+		codeEvidence["raw_patch_recorded"] != false ||
+		codeEvidence["raw_diff_recorded"] != false ||
+		codeEvidence["contains_patch_content"] != false ||
+		len(stringSliceFromAny(codeEvidence["missing_audit_evidence"])) != 0 {
+		t.Fatalf("code modification evidence should reconcile complete audit without enabling mutation: %#v", codeEvidence)
+	}
+	recording := mapFromAny(got["result_recording_plan"])
+	if recording["recording_state"] != "recorded" ||
+		recording["recording_enabled"] != true ||
+		recording["result_written"] != true ||
+		recording["patch_artifact_written"] != false ||
+		recording["diff_artifact_written"] != false ||
+		recording["test_result_written"] != false ||
+		recording["commit_record_written"] != false ||
+		recording["push_record_written"] != false ||
+		recording["raw_patch_recorded"] != false ||
+		recording["raw_diff_recorded"] != false ||
+		recording["raw_test_output_recorded"] != false {
+		t.Fatalf("code modification recording should reflect sanitized audit only: %#v", recording)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"do-not-serialize", "actual tool output", "/tmp/secret-workspace", "secret diff", "secret patch", "secret test"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("code modification evidence leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestAgentCodeModificationEvidenceRequiresWorkerDispatchAudit(t *testing.T) {
+	evidence := agentToolCallAuditEvidence([]map[string]any{
+		{"id": "call-codex", "operation_run_id": "op-1", "tool_name": "codex.execution.plan", "status": "completed"},
+		{"id": "call-patch", "operation_run_id": "op-1", "tool_name": "patch.prepare", "status": "completed"},
+	})
+	got := agentCodeModificationPlan(evidence)
+	codeEvidence := mapFromAny(got["code_modification_evidence"])
+	if codeEvidence["evidence_state"] != "partial_recorded" ||
+		codeEvidence["sanitized_result_recorded"] != true ||
+		codeEvidence["worker_dispatch_audit_recorded"] != false ||
+		codeEvidence["codex_execution_plan_recorded"] != true ||
+		codeEvidence["patch_prepare_audit_recorded"] != true ||
+		!containsString(stringSliceFromAny(codeEvidence["missing_audit_evidence"]), "worker_dispatch_plan_audit") {
+		t.Fatalf("missing worker dispatch audit should keep code modification evidence partial: %#v", codeEvidence)
+	}
+	recording := mapFromAny(got["result_recording_plan"])
+	if recording["recording_state"] != "partial_recorded" || recording["result_written"] != true {
+		t.Fatalf("recording should reflect partial sanitized audit evidence: %#v", recording)
+	}
+	assertAgentCodeModificationPlanSafe(t, got)
 }
 
 func TestAgentWorkerDispatchPlan(t *testing.T) {
@@ -15871,6 +15953,51 @@ func assertAgentCodeModificationPlanSafe(t *testing.T, got map[string]any) {
 	}
 	if !containsString(stringSliceFromAny(got["blocked_reasons"]), "commit_push_agent_not_invoked") {
 		t.Fatalf("blocked_reasons should include commit_push_agent_not_invoked: %#v", got["blocked_reasons"])
+	}
+	codeEvidence := mapFromAny(got["code_modification_evidence"])
+	if codeEvidence["mode"] != "redacted_agent_code_modification_evidence" ||
+		codeEvidence["execution_enabled"] != false ||
+		codeEvidence["mutation_enabled"] != false ||
+		codeEvidence["external_call_made"] != false ||
+		codeEvidence["repository_mutation_allowed"] != false ||
+		codeEvidence["source_checkout_performed"] != false ||
+		codeEvidence["workspace_bound"] != false ||
+		codeEvidence["branch_created"] != false ||
+		codeEvidence["patch_content_materialized"] != false ||
+		codeEvidence["diff_materialized"] != false ||
+		codeEvidence["file_patch_applied"] != false ||
+		codeEvidence["tests_executed"] != false ||
+		codeEvidence["git_commit_created"] != false ||
+		codeEvidence["git_push_performed"] != false ||
+		codeEvidence["pull_request_created"] != false ||
+		codeEvidence["commit_push_agent_invoked"] != false ||
+		codeEvidence["raw_patch_recorded"] != false ||
+		codeEvidence["raw_diff_recorded"] != false ||
+		codeEvidence["raw_file_content_recorded"] != false ||
+		codeEvidence["raw_command_output_recorded"] != false ||
+		codeEvidence["raw_test_output_recorded"] != false ||
+		codeEvidence["contains_token"] != false ||
+		codeEvidence["contains_remote_url"] != false ||
+		codeEvidence["contains_branch_name"] != false ||
+		codeEvidence["contains_workspace_path"] != false ||
+		codeEvidence["contains_patch_content"] != false ||
+		codeEvidence["contains_diff_content"] != false ||
+		codeEvidence["contains_file_content"] != false {
+		t.Fatalf("code modification evidence should stay disabled and redacted: %#v", codeEvidence)
+	}
+	for _, field := range []string{"worker_dispatch_plan_audit", "codex_execution_plan_audit", "patch_prepare_audit", "terminal_tool_call_audit"} {
+		if !containsString(stringSliceFromAny(codeEvidence["required_audit_evidence"]), field) {
+			t.Fatalf("code modification required audit evidence missing %q: %#v", field, codeEvidence["required_audit_evidence"])
+		}
+	}
+	for _, field := range []string{"runtime_config", "environment_variables", "authorization_header", "source_remote_url", "repository_url", "workspace_path", "branch_name", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "file_content", "test_output", "command_output", "token", "api_key"} {
+		if !containsString(stringSliceFromAny(codeEvidence["suppressed_fields"]), field) {
+			t.Fatalf("code modification evidence suppressed_fields missing %q: %#v", field, codeEvidence["suppressed_fields"])
+		}
+	}
+	recording := mapFromAny(got["result_recording_plan"])
+	if recording["recording_enabled"] == true && codeEvidence["sanitized_result_recorded"] != true {
+		t.Fatalf("recording cannot be enabled without sanitized code evidence: recording=%#v evidence=%#v", recording, codeEvidence)
 	}
 }
 

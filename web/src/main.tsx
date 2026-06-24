@@ -3654,6 +3654,7 @@ function agentAuditEvidenceColor(state?: string) {
   if (state === 'recorded') return 'green';
   if (state === 'failed' || state === 'mixed_failed') return 'red';
   if (state === 'waiting_for_worker') return 'blue';
+  if (state === 'partial_recorded') return 'gold';
   if (state === 'canceled') return 'orange';
   if (state === 'unknown' || state === 'absent') return 'purple';
   return 'default';
@@ -4317,6 +4318,7 @@ function AgentTasks() {
     if (row.tool_name === 'patch.prepare') {
       const guardrail = output.patch_workflow_guardrail || {};
       const codePlan = guardrail.code_modification_plan || {};
+      const codeEvidence = codePlan.code_modification_evidence || {};
       const reasons = Array.isArray(guardrail.blocked_reasons) ? guardrail.blocked_reasons : [];
       const readiness = agentReadinessGateTags(guardrail.execution_readiness);
       return <Space size={4} wrap>
@@ -4326,6 +4328,9 @@ function AgentTasks() {
         <Tag color={codePlan.branch_created === true ? 'red' : 'green'}>{codePlan.branch_created === true ? 'Branch created' : 'No branch'}</Tag>
         <Tag color={codePlan.diff_materialized === true ? 'red' : 'green'}>{codePlan.diff_materialized === true ? 'Diff ready' : 'No diff'}</Tag>
         <Tag color={codePlan.commit_push_agent_invoked === true ? 'blue' : 'gold'}>{codePlan.commit_push_agent_invoked === true ? 'Commit agent invoked' : 'No commit agent'}</Tag>
+        {codeEvidence.has_code_modification_audit ? <Tag color={agentAuditEvidenceColor(codeEvidence.evidence_state)}>code audit {codeEvidence.evidence_state}</Tag> : null}
+        {codeEvidence.codex_execution_plan_recorded ? <Tag color="blue">codex plan audit</Tag> : null}
+        {codeEvidence.patch_prepare_audit_recorded ? <Tag color="blue">patch audit</Tag> : null}
         {readiness}
         {reasons.length ? <Typography.Text>{reasons.length} blocked reason{reasons.length === 1 ? '' : 's'}</Typography.Text> : <Typography.Text>{output.message || 'Mutation disabled'}</Typography.Text>}
         {codePlan.message ? <Typography.Text type="secondary">{shortText(codePlan.message, 96)}</Typography.Text> : null}
@@ -4410,6 +4415,14 @@ function AgentTasks() {
               {taskDetail.data.tool_call_audit_evidence.active_count ? <Tag color="blue">{taskDetail.data.tool_call_audit_evidence.active_count} active</Tag> : null}
               {taskDetail.data.tool_call_audit_evidence.failed_count ? <Tag color="red">{taskDetail.data.tool_call_audit_evidence.failed_count} failed</Tag> : null}
               <Tag>{taskDetail.data.tool_call_audit_evidence.sanitized_result_recorded ? 'sanitized result recorded' : 'sanitized result pending'}</Tag>
+            </Space>
+          ) : null}
+          {taskDetail.data.code_modification_evidence ? (
+            <Space wrap>
+              <Tag color={agentAuditEvidenceColor(taskDetail.data.code_modification_evidence.evidence_state)}>code audit {taskDetail.data.code_modification_evidence.evidence_state || 'not_recorded'}</Tag>
+              <Tag>{taskDetail.data.code_modification_evidence.codex_execution_plan_recorded ? 'codex plan recorded' : 'no codex plan'}</Tag>
+              <Tag>{taskDetail.data.code_modification_evidence.patch_prepare_audit_recorded ? 'patch audit recorded' : 'no patch audit'}</Tag>
+              <Tag>{taskDetail.data.code_modification_evidence.sanitized_result_recorded ? 'code audit recorded' : 'code audit pending'}</Tag>
             </Space>
           ) : null}
           <Table<AnyRow> rowKey="id" size="small" dataSource={taskDetail.data.tool_calls || []} pagination={{ pageSize: 5 }} columns={[

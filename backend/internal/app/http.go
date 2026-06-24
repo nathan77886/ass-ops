@@ -16097,7 +16097,9 @@ func (s *Server) getAgentTask(w http.ResponseWriter, r *http.Request) {
 		ORDER BY created_at DESC, id DESC
 		LIMIT 100`, chi.URLParam(r, "id"))
 	task["tool_calls"] = toolCalls
-	task["tool_call_audit_evidence"] = agentToolCallAuditEvidence(toolCalls)
+	toolCallEvidence := agentToolCallAuditEvidence(toolCalls)
+	task["tool_call_audit_evidence"] = toolCallEvidence
+	task["code_modification_evidence"] = agentCodeModificationEvidence(toolCallEvidence)
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -16654,7 +16656,12 @@ func agentPatchWorkflowGuardrail() map[string]any {
 	}
 }
 
-func agentCodeModificationPlan() map[string]any {
+func agentCodeModificationPlan(auditEvidenceRows ...map[string]any) map[string]any {
+	auditEvidence := map[string]any{}
+	if len(auditEvidenceRows) > 0 {
+		auditEvidence = auditEvidenceRows[0]
+	}
+	codeEvidence := agentCodeModificationEvidence(auditEvidence)
 	return map[string]any{
 		"mode":                          "redacted_agent_code_modification_plan",
 		"plan_state":                    "blocked",
@@ -16688,6 +16695,8 @@ func agentCodeModificationPlan() map[string]any {
 		"contains_diff_content":         false,
 		"contains_file_content":         false,
 		"execution_boundary_redacted":   true,
+		"code_modification_evidence":    codeEvidence,
+		"audit_result_recorded":         boolOnlyFromAny(codeEvidence["sanitized_result_recorded"]),
 		"blocked_reasons": []string{
 			"agent_code_modification_backend_disabled",
 			"source_checkout_not_armed",
@@ -16746,16 +16755,116 @@ func agentCodeModificationPlan() map[string]any {
 			"delegate_commit_push_agent",
 			"open_provider_review",
 		},
-		"result_recording_plan": agentCodeModificationResultRecordingPlan(),
+		"result_recording_plan": agentCodeModificationResultRecordingPlan(codeEvidence),
 		"message":               "Agent code modification is represented as a redacted rehearsal plan only; source checkout, branch creation, patch application, tests, commit, push, and review creation remain disabled.",
 	}
 }
 
-func agentCodeModificationResultRecordingPlan() map[string]any {
+func agentCodeModificationEvidence(auditEvidence map[string]any) map[string]any {
+	toolCounts := mapFromAny(auditEvidence["tool_counts"])
+	hasAudit := boolOnlyFromAny(auditEvidence["has_tool_call_audit"])
+	activeCount := intFromAny(auditEvidence["active_count"], 0)
+	hasCodexPlan := intFromAny(toolCounts["codex.execution.plan"], 0) > 0
+	hasPatchPrepare := intFromAny(toolCounts["patch.prepare"], 0) > 0
+	hasWorkerDispatch := intFromAny(toolCounts["worker.dispatch.plan"], 0) > 0
+	auditState := cleanPreviewString(auditEvidence["evidence_state"])
+	evidenceState := "not_recorded"
+	switch {
+	case !hasAudit:
+		evidenceState = "not_recorded"
+	case activeCount > 0:
+		evidenceState = "waiting_for_worker"
+	case auditState == "failed" || auditState == "canceled" || auditState == "mixed_failed" || auditState == "unknown" || auditState == "absent":
+		evidenceState = auditState
+	case boolOnlyFromAny(auditEvidence["sanitized_result_recorded"]) && hasWorkerDispatch && hasCodexPlan && hasPatchPrepare:
+		evidenceState = "recorded"
+	case boolOnlyFromAny(auditEvidence["sanitized_result_recorded"]):
+		evidenceState = "partial_recorded"
+	default:
+		evidenceState = "blocked"
+	}
+	missing := []string{}
+	if !hasWorkerDispatch {
+		missing = append(missing, "worker_dispatch_plan_audit")
+	}
+	if !hasCodexPlan {
+		missing = append(missing, "codex_execution_plan_audit")
+	}
+	if !hasPatchPrepare {
+		missing = append(missing, "patch_prepare_audit")
+	}
+	if !boolOnlyFromAny(auditEvidence["sanitized_result_recorded"]) {
+		missing = append(missing, "terminal_tool_call_audit")
+	}
+	return map[string]any{
+		"mode":                              "redacted_agent_code_modification_evidence",
+		"evidence_state":                    evidenceState,
+		"tool_call_audit_state":             auditState,
+		"has_code_modification_audit":       hasAudit,
+		"sanitized_result_recorded":         hasAudit && activeCount == 0,
+		"worker_dispatch_audit_recorded":    hasWorkerDispatch,
+		"codex_execution_plan_recorded":     hasCodexPlan,
+		"patch_prepare_audit_recorded":      hasPatchPrepare,
+		"completed_tool_call_count":         intFromAny(auditEvidence["completed_count"], 0),
+		"failed_tool_call_count":            intFromAny(auditEvidence["failed_count"], 0),
+		"active_tool_call_count":            activeCount,
+		"terminal_tool_call_count":          intFromAny(auditEvidence["terminal_count"], 0),
+		"required_audit_evidence":           []string{"worker_dispatch_plan_audit", "codex_execution_plan_audit", "patch_prepare_audit", "terminal_tool_call_audit"},
+		"missing_audit_evidence":            missing,
+		"execution_enabled":                 false,
+		"mutation_enabled":                  false,
+		"external_call_made":                false,
+		"repository_mutation_allowed":       false,
+		"source_checkout_performed":         false,
+		"workspace_bound":                   false,
+		"branch_created":                    false,
+		"patch_content_materialized":        false,
+		"diff_materialized":                 false,
+		"file_patch_applied":                false,
+		"tests_executed":                    false,
+		"git_commit_created":                false,
+		"git_push_performed":                false,
+		"pull_request_created":              false,
+		"commit_push_agent_invoked":         false,
+		"raw_patch_recorded":                false,
+		"raw_diff_recorded":                 false,
+		"raw_file_content_recorded":         false,
+		"raw_command_output_recorded":       false,
+		"raw_test_output_recorded":          false,
+		"contains_token":                    false,
+		"contains_remote_url":               false,
+		"contains_branch_name":              false,
+		"contains_workspace_path":           false,
+		"contains_patch_content":            false,
+		"contains_diff_content":             false,
+		"contains_file_content":             false,
+		"suppressed_fields":                 []string{"runtime_config", "environment_variables", "authorization_header", "source_remote_url", "repository_url", "workspace_path", "branch_name", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "file_content", "test_output", "command_output", "token", "api_key"},
+		"tool_call_audit_evidence_attached": hasAudit,
+		"message":                           "Agent code modification evidence is reconciled from sanitized audit rows only; source checkout, patch content, diff, tests, commit, push, and provider review remain disabled.",
+	}
+}
+
+func agentCodeModificationResultRecordingPlan(evidenceRows ...map[string]any) map[string]any {
+	evidence := map[string]any{}
+	if len(evidenceRows) > 0 {
+		evidence = evidenceRows[0]
+	}
+	recordingState := "blocked"
+	recordingEnabled := false
+	resultWritten := false
+	readyReason := "agent_code_modification_result_not_recorded"
+	if boolOnlyFromAny(evidence["has_code_modification_audit"]) {
+		recordingState = cleanPreviewString(evidence["evidence_state"])
+		recordingEnabled = boolOnlyFromAny(evidence["sanitized_result_recorded"])
+		resultWritten = boolOnlyFromAny(evidence["sanitized_result_recorded"])
+		readyReason = "sanitized_agent_code_modification_audit_observed"
+	}
 	return map[string]any{
 		"mode":                         "redacted_agent_code_modification_result_recording_plan",
-		"recording_enabled":            false,
-		"result_written":               false,
+		"recording_state":              recordingState,
+		"recording_ready_reason":       readyReason,
+		"recording_enabled":            recordingEnabled,
+		"result_written":               resultWritten,
 		"operation_log_written":        false,
 		"patch_artifact_written":       false,
 		"diff_artifact_written":        false,
@@ -16776,6 +16885,7 @@ func agentCodeModificationResultRecordingPlan() map[string]any {
 		"contains_file_content":        false,
 		"requires_sanitization":        true,
 		"requires_human_result_review": true,
+		"code_modification_evidence":   evidence,
 		"suppressed_fields": []string{
 			"source_remote_url",
 			"workspace_path",
