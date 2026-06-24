@@ -1452,8 +1452,27 @@ function Dashboard() {
   const readinessRows = firstVersionReadinessRows(assets.data?.items || [], ops.data?.items || [], approvalSummary.data || {}, graph.data || {});
   const readinessCounts = countByField(readinessRows, 'status');
   const graphWarning = graph.error ? `Asset graph unavailable: ${graph.error}` : graph.data && !graphPayloadAvailable(graph.data) ? 'Asset graph response missing nodes or edges' : '';
+  const [demoDataLoading, setDemoDataLoading] = useState(false);
+  const [demoDataResult, setDemoDataResult] = useState<AnyRow>();
   const [demoSnapshotLoading, setDemoSnapshotLoading] = useState(false);
   const [demoSnapshotResult, setDemoSnapshotResult] = useState<AnyRow>();
+  async function ensureDemoReadinessData() {
+    setDemoDataLoading(true);
+    try {
+      const result = await api('/api/demo-readiness-data', { method: 'POST', body: '{}' });
+      setDemoDataResult(result);
+      if (result.readiness_snapshot_written) {
+        setDemoSnapshotResult(result.readiness_snapshot);
+      }
+      message.success(result.project_created || result.repository_created || result.git_remote_created ? 'Demo readiness data prepared' : 'Demo readiness data already prepared');
+      assets.reload();
+      graph.reload();
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setDemoDataLoading(false);
+    }
+  }
   async function recordDemoReadinessSnapshot() {
     setDemoSnapshotLoading(true);
     try {
@@ -1479,8 +1498,13 @@ function Dashboard() {
       <Card
         title="First-Version Readiness"
         extra={<Space size={8} wrap>
+          {demoDataResult ? <Tag color={demoDataResult.asset_graph_written ? 'green' : 'default'}>demo data {demoDataResult.recording_state || 'unknown'}</Tag> : null}
+          {demoDataResult ? <Tag>{demoDataResult.git_remote_count || 0} remotes</Tag> : null}
+          {demoDataResult ? <Tag>{demoDataResult.git_remote_url_written ? 'remote URL written' : 'no remote URL'}</Tag> : null}
+          {demoDataResult ? <Tag>{demoDataResult.provider_api_called ? 'provider called' : 'no provider call'}</Tag> : null}
           {demoSnapshotResult ? <Tag color={demoSnapshotResult.readiness_snapshot_written ? 'green' : demoSnapshotResult.recording_state === 'blocked' ? 'red' : 'default'}>snapshot {demoSnapshotResult.recording_state || 'unknown'}</Tag> : null}
           {demoSnapshotResult ? <Tag>{demoSnapshotResult.asset_graph_snapshot_written ? 'asset status written' : 'no asset status write'}</Tag> : null}
+          <Button size="small" onClick={ensureDemoReadinessData} loading={demoDataLoading}>Ensure demo data</Button>
           <Button size="small" onClick={recordDemoReadinessSnapshot} loading={demoSnapshotLoading}>Record demo snapshot</Button>
         </Space>}
       >

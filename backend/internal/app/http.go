@@ -77,6 +77,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/auth/me", s.me)
 		r.Post("/api/projects", s.createProject)
 		r.Get("/api/projects", s.listProjects)
+		r.Post("/api/demo-readiness-data", s.ensureDemoReadinessData)
 		r.Post("/api/demo-readiness-snapshot", s.recordDemoReadinessSnapshot)
 		r.Get("/api/project-templates", s.listProjectTemplates)
 		r.Get("/api/project-templates/{id}", s.getProjectTemplate)
@@ -448,6 +449,45 @@ func (s *Server) recordDemoReadinessSnapshot(w http.ResponseWriter, r *http.Requ
 	result, err := RecordDemoReadinessSnapshot(r.Context(), s.store, opts)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "record demo readiness snapshot failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) ensureDemoReadinessData(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePolicy(w, r, PolicyResource{Type: "project"}, "create") {
+		return
+	}
+	var req struct {
+		ProjectName    string `json:"project_name"`
+		ProjectSlug    string `json:"project_slug"`
+		RepositoryName string `json:"repository_name"`
+		RepositoryKey  string `json:"repository_key"`
+		DryRun         bool   `json:"dry_run"`
+		RecordSnapshot *bool  `json:"record_snapshot"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	recordSnapshot := true
+	if req.RecordSnapshot != nil {
+		recordSnapshot = *req.RecordSnapshot
+	}
+	actorUserID := ""
+	if user := currentUser(r); user != nil {
+		actorUserID = user.ID
+	}
+	result, err := EnsureDemoReadinessData(r.Context(), s.store, DemoReadinessDataOptions{
+		ProjectName:    req.ProjectName,
+		ProjectSlug:    req.ProjectSlug,
+		RepositoryName: req.RepositoryName,
+		RepositoryKey:  req.RepositoryKey,
+		ActorUserID:    actorUserID,
+		DryRun:         req.DryRun,
+		RecordSnapshot: recordSnapshot,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not ensure demo readiness data")
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

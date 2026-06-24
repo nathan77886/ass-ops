@@ -3826,6 +3826,193 @@ func TestRecordDemoReadinessSnapshotRejectsInvalidProjectIDBeforeDB(t *testing.T
 	}
 }
 
+func TestEnsureDemoReadinessDataCreatesSanitizedLocalGraph(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	projectID := "11111111-1111-1111-1111-111111111111"
+	repositoryID := "22222222-2222-2222-2222-222222222222"
+	sourceRemoteID := "33333333-3333-3333-3333-333333333333"
+	mirrorRemoteID := "44444444-4444-4444-4444-444444444444"
+	userID := "55555555-5555-5555-5555-555555555555"
+
+	mock.ExpectQuery(`SELECT id FROM projects WHERE slug=\$1`).
+		WithArgs("assops-demo").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(\$1\)`).
+		WithArgs(demoReadinessDataAdvisoryLockID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT id FROM projects WHERE slug=\$1`).
+		WithArgs("assops-demo").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`(?s)INSERT INTO projects\(name, slug, description\).*RETURNING id`).
+		WithArgs("ASSOPS Demo", "assops-demo", "First-version demo project created by the readiness data execution path.").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(projectID))
+	mock.ExpectExec(`(?s)INSERT INTO project_members\(project_id, user_id, role\)`).
+		WithArgs(projectID, userID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)SELECT id FROM project_git_repositories\s+WHERE project_id=\$1 AND repo_key=\$2`).
+		WithArgs(projectID, "demo-service").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`(?s)INSERT INTO project_git_repositories\(.*RETURNING id`).
+		WithArgs(projectID, "ASSOPS Demo Service", "demo-service", "Local first-version demo repository shell for readiness evidence.").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(repositoryID))
+	mock.ExpectQuery(`(?s)SELECT id FROM git_remotes\s+WHERE project_git_repository_id=\$1 AND remote_key=\$2.*LIMIT 1`).
+		WithArgs(repositoryID, "gitea").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`(?s)INSERT INTO git_remotes\(.*RETURNING id`).
+		WithArgs(repositoryID, "Demo Gitea Source", "gitea", "gitea", "gitea", "source", true, sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(sourceRemoteID))
+	mock.ExpectQuery(`(?s)SELECT id FROM git_remotes\s+WHERE project_git_repository_id=\$1 AND remote_key=\$2.*LIMIT 1`).
+		WithArgs(repositoryID, "github").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`(?s)INSERT INTO git_remotes\(.*RETURNING id`).
+		WithArgs(repositoryID, "Demo GitHub Mirror", "github", "github", "github", "mirror", false, sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(mirrorRemoteID))
+	mock.ExpectCommit()
+
+	got, err := ensureDemoReadinessDataWithSync(context.Background(), store, DemoReadinessDataOptions{
+		ActorUserID:    userID,
+		RecordSnapshot: false,
+	}, func(context.Context, sqlx.QueryerContext) (AssetSyncResult, error) {
+		return AssetSyncResult{SyncedAssets: 4, InsertedRelations: 3}, nil
+	})
+	if err != nil {
+		t.Fatalf("EnsureDemoReadinessData: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["project_created"] != true ||
+		got["repository_created"] != true ||
+		got["git_remote_created"] != true ||
+		got["git_remote_created_count"] != 2 ||
+		got["asset_graph_written"] != true ||
+		got["canonical_assets_synced"] != true ||
+		got["external_call_made"] != false ||
+		got["provider_api_called"] != false ||
+		got["git_remote_url_written"] != false ||
+		got["operation_log_written"] != false {
+		t.Fatalf("unexpected demo readiness data result: %#v", got)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"git@github.com", "https://", "Bearer ", "fatal:", "commit "} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("demo readiness data leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestEnsureDemoReadinessDataHandlerDeniesViewerBeforeDB(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	req := httptest.NewRequest(http.MethodPost, "/api/demo-readiness-data", strings.NewReader(`{}`))
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "viewer-1", Role: "viewer"}))
+	rr := httptest.NewRecorder()
+
+	server.ensureDemoReadinessData(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestEnsureDemoReadinessDataHandlerDryRunDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	server := &Server{store: store}
+	projectID := "11111111-1111-1111-1111-111111111111"
+	repositoryID := "22222222-2222-2222-2222-222222222222"
+
+	mock.ExpectQuery(`SELECT id FROM projects WHERE slug=\$1`).
+		WithArgs("assops-demo").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(projectID))
+	mock.ExpectQuery(`(?s)SELECT id FROM project_git_repositories\s+WHERE project_id=\$1 AND repo_key=\$2`).
+		WithArgs(projectID, "demo-service").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(repositoryID))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM git_remotes\s+WHERE project_git_repository_id=\$1 AND remote_key IN \('gitea', 'github'\)`).
+		WithArgs(repositoryID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/demo-readiness-data", strings.NewReader(`{"dry_run":true,"record_snapshot":false}`))
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.ensureDemoReadinessData(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["dry_run"] != true ||
+		got["recording_enabled"] != false ||
+		got["recording_state"] != "dry_run" ||
+		got["asset_graph_written"] != false ||
+		got["provider_api_called"] != false {
+		t.Fatalf("unexpected handler dry-run result: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestEnsureDemoReadinessDataDryRunDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	projectID := "11111111-1111-1111-1111-111111111111"
+	repositoryID := "22222222-2222-2222-2222-222222222222"
+
+	mock.ExpectQuery(`SELECT id FROM projects WHERE slug=\$1`).
+		WithArgs("assops-demo").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(projectID))
+	mock.ExpectQuery(`(?s)SELECT id FROM project_git_repositories\s+WHERE project_id=\$1 AND repo_key=\$2`).
+		WithArgs(projectID, "demo-service").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(repositoryID))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM git_remotes\s+WHERE project_git_repository_id=\$1 AND remote_key IN \('gitea', 'github'\)`).
+		WithArgs(repositoryID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	got, err := EnsureDemoReadinessData(context.Background(), store, DemoReadinessDataOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("EnsureDemoReadinessData dry run: %v", err)
+	}
+	if got["dry_run"] != true ||
+		got["recording_enabled"] != false ||
+		got["recording_state"] != "dry_run" ||
+		got["project_observed"] != true ||
+		got["repository_observed"] != true ||
+		got["git_remote_count"] != 2 ||
+		got["asset_graph_written"] != false {
+		t.Fatalf("unexpected dry-run demo readiness data result: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestRecordRepoTagRunResultSnapshotWritesSanitizedSnapshot(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
