@@ -1719,6 +1719,31 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 		t.Fatalf("git commit plan controls/backends/steps = %#v", commitPlan)
 	}
 	assertConfigRepositoryGitCommitSubplansSafe(t, commitPlan)
+	promotionPlan := mapFromAny(commitPlan["promotion_readiness_plan"])
+	if promotionPlan["mode"] != "config_repository_audit_to_live_promotion_readiness_plan" ||
+		promotionPlan["promotion_state"] != "blocked" ||
+		promotionPlan["promotion_ready"] != false ||
+		promotionPlan["promotion_ready_reason"] != "config_git_commit_audit_result_not_recorded" ||
+		promotionPlan["live_git_workflow_enabled"] != false ||
+		promotionPlan["git_workspace_mutation_enabled"] != false ||
+		promotionPlan["git_commit_created"] != false ||
+		promotionPlan["git_push_performed"] != false ||
+		promotionPlan["provider_review_created"] != false ||
+		promotionPlan["project_version_pin_written"] != false ||
+		promotionPlan["live_remote_validation_performed"] != false ||
+		promotionPlan["external_call_made"] != false ||
+		promotionPlan["contains_file_content"] != false ||
+		promotionPlan["contains_remote_url"] != false ||
+		promotionPlan["contains_credentials"] != false ||
+		promotionPlan["contains_git_output"] != false ||
+		promotionPlan["contains_provider_response"] != false {
+		t.Fatalf("promotion readiness plan should stay blocked and redacted: %#v", promotionPlan)
+	}
+	for _, field := range []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "commit_sha", "git_output", "provider_response_body", "provider_response_headers"} {
+		if !containsString(stringSliceFromAny(promotionPlan["suppressed_fields"]), field) {
+			t.Fatalf("promotion suppressed fields missing %q: %#v", field, promotionPlan["suppressed_fields"])
+		}
+	}
 	resultPlan := mapFromAny(commitPlan["result_recording_plan"])
 	if resultPlan["mode"] != "config_repository_git_commit_result_recording_plan" ||
 		resultPlan["result_recording_state"] != "blocked" ||
@@ -1744,6 +1769,14 @@ func TestConfigRepositoryScaffoldPreview(t *testing.T) {
 		resultPlan["contains_branch_name"] != false ||
 		resultPlan["contains_commit_message"] != false {
 		t.Fatalf("git commit result recording plan should stay disabled and redacted: %#v", resultPlan)
+	}
+	resultPromotionPlan := mapFromAny(resultPlan["promotion_readiness_plan"])
+	if resultPromotionPlan["promotion_state"] != "blocked" ||
+		resultPromotionPlan["promotion_ready"] != false ||
+		resultPromotionPlan["git_commit_created"] != false ||
+		resultPromotionPlan["project_version_pin_written"] != false ||
+		resultPromotionPlan["live_remote_validation_performed"] != false {
+		t.Fatalf("result promotion readiness should remain blocked: %#v", resultPromotionPlan)
 	}
 	for _, required := range []string{"scaffold_file_count", "secret_scan_status", "commit_created", "push_performed", "review_request_created", "remote_review_state", "config_commit_sha_present", "live_validation_status"} {
 		if !containsString(stringSliceFromAny(resultPlan["result_diagnostic_fields"]), required) {
@@ -1995,6 +2028,23 @@ func TestConfigRepositoryScaffoldPreviewReconcilesGitWorkflowAuditEvidence(t *te
 		resultPlan["raw_provider_response_recorded"] != false {
 		t.Fatalf("unexpected result plan audit evidence: %#v", resultPlan)
 	}
+	promotionPlan := mapFromAny(commitPlan["promotion_readiness_plan"])
+	if promotionPlan["promotion_state"] != "audit_result_ready_for_review" ||
+		promotionPlan["promotion_ready"] != true ||
+		promotionPlan["sanitized_audit_result_recorded"] != true ||
+		promotionPlan["git_commit_created"] != false ||
+		promotionPlan["git_push_performed"] != false ||
+		promotionPlan["project_version_pin_written"] != false ||
+		promotionPlan["live_remote_validation_performed"] != false ||
+		promotionPlan["external_call_made"] != false {
+		t.Fatalf("unexpected promotion readiness for audit evidence: %#v", promotionPlan)
+	}
+	resultPromotionPlan := mapFromAny(resultPlan["promotion_readiness_plan"])
+	if resultPromotionPlan["promotion_state"] != "audit_result_ready_for_review" ||
+		resultPromotionPlan["promotion_ready"] != true ||
+		resultPromotionPlan["provider_review_created"] != false {
+		t.Fatalf("unexpected result promotion readiness for audit evidence: %#v", resultPromotionPlan)
+	}
 	encoded, _ := json.Marshal(preview)
 	for _, forbidden := range []string{"https://token@", "Bearer secret", "secret output"} {
 		if strings.Contains(string(encoded), forbidden) {
@@ -2053,6 +2103,17 @@ func TestConfigRepositoryGitWorkflowAuditEvidenceTakesPriorityOverExistingPin(t 
 		resultPlan["operation_log_written"] != true ||
 		resultPlan["project_version_pin_written"] != false {
 		t.Fatalf("failed workflow audit should take priority over existing pin/live evidence: %#v", resultPlan)
+	}
+	promotionPlan := mapFromAny(commitPlan["promotion_readiness_plan"])
+	if promotionPlan["promotion_state"] != "failed" ||
+		promotionPlan["promotion_ready"] != false ||
+		promotionPlan["promotion_ready_reason"] != "config_git_commit_audit_operation_failed" ||
+		promotionPlan["project_version_pin_observed"] != true ||
+		promotionPlan["live_commit_validation_observed"] != true ||
+		promotionPlan["git_push_performed"] != false ||
+		promotionPlan["project_version_pin_written"] != false ||
+		promotionPlan["live_remote_validation_performed"] != false {
+		t.Fatalf("failed workflow audit should block promotion readiness: %#v", promotionPlan)
 	}
 }
 

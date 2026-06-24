@@ -3676,6 +3676,7 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 	workspacePlan := configRepositoryGitCommitWorkspacePlan(len(files), len(remotes), defaultBranch != "")
 	remoteReviewPlan := configRepositoryRemoteReviewPlan(planState, len(remotes), defaultBranch != "")
 	pinValidationPlan := configRepositoryProjectVersionPinValidationPlan(defaultBranch != "", len(remotes) > 0, pinEvidence)
+	promotionReadinessPlan := configRepositoryGitCommitPromotionReadinessPlan(pinEvidence, workflowEvidence)
 	pinObserved := boolOnlyFromAny(pinEvidence["config_commit_sha_recorded"])
 	liveValidationObserved := boolOnlyFromAny(pinEvidence["live_validation_recorded"])
 	steps := []map[string]any{
@@ -3765,6 +3766,7 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		"remote_review_plan":                remoteReviewPlan,
 		"project_version_pin_plan":          pinValidationPlan,
 		"git_workflow_audit_evidence":       workflowEvidence,
+		"promotion_readiness_plan":          promotionReadinessPlan,
 		"result_recording_plan":             configRepositoryGitCommitResultRecordingPlan(pinEvidence, workflowEvidence),
 		"message":                           "Config repository Git workflow can now enqueue an approval-gated audit job; file materialization, Git commit/push, provider requests, ProjectVersion pin writes, and live validation remain disabled.",
 	}
@@ -4117,6 +4119,7 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any, workf
 		"sanitized_audit_result_recorded":  workflowRecorded,
 		"pin_evidence":                     evidence,
 		"git_workflow_audit_evidence":      workflowEvidence,
+		"promotion_readiness_plan":         configRepositoryGitCommitPromotionReadinessPlan(evidence, workflowEvidence),
 		"raw_file_content_recorded":        false,
 		"raw_secret_value_recorded":        false,
 		"raw_git_output_recorded":          false,
@@ -4175,6 +4178,69 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any, workf
 			"live_remote_commit_validation_not_performed",
 		},
 		"message": "Config Git workflow result recording only reconciles sanitized audit operation metadata; no scaffold artifact, Git result, provider review, ProjectVersion pin write, or live validation record is persisted.",
+	}
+}
+
+func configRepositoryGitCommitPromotionReadinessPlan(evidence map[string]any, workflowEvidence map[string]any) map[string]any {
+	pinObserved := boolOnlyFromAny(evidence["config_commit_sha_recorded"])
+	liveObserved := boolOnlyFromAny(evidence["live_validation_recorded"])
+	workflowObserved := boolOnlyFromAny(workflowEvidence["has_audit_operations"])
+	workflowRecorded := boolOnlyFromAny(workflowEvidence["sanitized_result_recorded"])
+	workflowState := strings.TrimSpace(fmt.Sprint(workflowEvidence["evidence_state"]))
+	promotionState := "blocked"
+	promotionReason := "config_git_commit_audit_result_not_recorded"
+	switch {
+	case workflowState == "waiting_for_worker":
+		promotionState = "waiting_for_worker"
+		promotionReason = "config_git_commit_audit_operation_waiting_for_worker"
+	case workflowState == "failed" || workflowState == "mixed_failed":
+		promotionState = "failed"
+		promotionReason = "config_git_commit_audit_operation_failed"
+	case workflowState == "canceled":
+		promotionState = "canceled"
+		promotionReason = "config_git_commit_audit_operation_canceled"
+	case workflowRecorded && pinObserved && liveObserved:
+		promotionState = "ready_for_live_workflow_review"
+		promotionReason = "audit_result_pin_and_live_validation_ready_for_operator_review"
+	case workflowRecorded:
+		promotionState = "audit_result_ready_for_review"
+		promotionReason = "sanitized_audit_result_ready_for_operator_review"
+	case pinObserved || liveObserved:
+		promotionState = "partial_evidence"
+		promotionReason = "project_version_pin_or_live_validation_observed_without_audit_result"
+	}
+	promotionReady := promotionState == "ready_for_live_workflow_review" || promotionState == "audit_result_ready_for_review"
+	return map[string]any{
+		"mode":                             "config_repository_audit_to_live_promotion_readiness_plan",
+		"promotion_state":                  promotionState,
+		"promotion_ready":                  promotionReady,
+		"promotion_ready_reason":           promotionReason,
+		"audit_operation_observed":         workflowObserved,
+		"sanitized_audit_result_recorded":  workflowRecorded,
+		"project_version_pin_observed":     pinObserved,
+		"live_commit_validation_observed":  liveObserved,
+		"live_git_workflow_enabled":        false,
+		"live_git_commit_enabled":          false,
+		"git_workspace_mutation_enabled":   false,
+		"git_commit_created":               false,
+		"git_push_performed":               false,
+		"provider_review_created":          false,
+		"project_version_pin_written":      false,
+		"live_remote_validation_performed": false,
+		"external_call_made":               false,
+		"contains_file_content":            false,
+		"contains_remote_url":              false,
+		"contains_credentials":             false,
+		"contains_commit_sha":              false,
+		"contains_branch_name":             false,
+		"contains_git_output":              false,
+		"contains_provider_response":       false,
+		"required_controls":                []string{"operator_review", "git_workspace_backend", "secret_scan_backend", "git_commit_backend", "git_push_backend", "provider_review_backend", "project_version_pin_write_backend", "live_remote_validation_backend"},
+		"disabled_backends":                []string{"git_workspace_mutation", "secret_scan", "git_commit", "git_push", "provider_review", "project_version_pin_write", "live_remote_validation"},
+		"promotion_blockers":               []string{"git_workspace_backend_disabled", "secret_scan_not_performed", "git_commit_not_created", "git_push_not_performed", "provider_review_workflow_not_wired", "project_version_pin_write_disabled", "live_remote_commit_validation_not_performed"},
+		"promotion_sequence":               []string{"operator_review_sanitized_audit_result", "materialize_scaffold_in_clean_workspace", "run_secret_scan", "commit_config_scaffold", "push_review_branch", "open_provider_review", "pin_project_version_config_commit_sha", "validate_live_remote_commit", "record_redacted_live_result"},
+		"suppressed_fields":                []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "commit_sha", "git_output", "provider_response_body", "provider_response_headers"},
+		"message":                          "Sanitized audit evidence can only be reviewed for future promotion; this preview still performs no Git mutation, provider request, ProjectVersion pin write, or live validation.",
 	}
 }
 
