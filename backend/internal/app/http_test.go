@@ -24261,6 +24261,37 @@ func TestRecordAgentToolAuditSnapshotHandlerBlockedByActiveAudit(t *testing.T) {
 	}
 }
 
+func TestRecordAgentToolAuditSnapshotHandlerRejectsProjectNonMember(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+		WithArgs("project-1", "user-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	req := newAgentToolAuditSnapshotRequestAs(`{}`, &User{ID: "user-1", Role: "developer"})
+	rr := httptest.NewRecorder()
+	server.recordAgentToolAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	var got PolicyDecision
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Effect != PolicyDeny || !strings.Contains(got.Reason, "not a member") {
+		t.Fatalf("unexpected policy denial: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordAgentToolAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -24558,6 +24589,37 @@ func TestAgentToolArmingSnapshotPayloadSanitizesEvidence(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("agent tool arming snapshot leaked %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestRecordAgentToolArmingSnapshotHandlerRejectsProjectNonMember(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+		WithArgs("project-1", "user-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	req := newAgentToolArmingSnapshotRequestAs(`{}`, &User{ID: "user-1", Role: "developer"})
+	rr := httptest.NewRecorder()
+	server.recordAgentToolArmingSnapshot(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	var got PolicyDecision
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Effect != PolicyDeny || !strings.Contains(got.Reason, "not a member") {
+		t.Fatalf("unexpected policy denial: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
 
@@ -25232,10 +25294,22 @@ func newAgentToolAuditSnapshotRequest(body string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
 
+func newAgentToolAuditSnapshotRequestAs(body string, user *User) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/agent/tasks/task-1/tool-audit-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "task-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, user))
+}
+
 func newAgentToolArmingSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/agent/tasks/task-1/tool-arming-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "task-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newAgentToolArmingSnapshotRequestAs(body string, user *User) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/agent/tasks/task-1/tool-arming-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "task-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, user))
 }
 
 func newProviderReviewAttemptClaimRequest() *http.Request {
