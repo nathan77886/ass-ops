@@ -2500,21 +2500,23 @@ func (s *Server) enqueueProjectVersionRefreshOperationsTx(ctx context.Context, t
 		return nil, fmt.Errorf("no planned provider refresh operations are available")
 	}
 	return map[string]any{
-		"mode":                      "project_version_provider_refresh_execution",
-		"project_version_id":        versionID,
-		"version":                   version["version"],
-		"operation_enqueued":        true,
-		"worker_job_created":        true,
-		"external_call_made":        false,
-		"secret_included":           false,
-		"raw_provider_response":     false,
-		"operation_count":           len(operations),
-		"blocked_step_count":        len(blockedSteps),
-		"operations":                operations,
-		"blocked_steps":             blockedSteps,
-		"validation_rerun_required": true,
-		"result_recording_scope":    "operation_ids_and_sanitized_refresh_kinds",
-		"required_operator_action":  "Wait for queued refresh operations to complete, then re-open ProjectVersion validation.",
+		"mode":                             "project_version_provider_refresh_execution",
+		"project_version_id":               versionID,
+		"version":                          version["version"],
+		"operation_enqueued":               true,
+		"worker_job_created":               true,
+		"external_call_made":               false,
+		"secret_included":                  false,
+		"raw_provider_response":            false,
+		"operation_count":                  len(operations),
+		"blocked_step_count":               len(blockedSteps),
+		"operations":                       operations,
+		"blocked_steps":                    blockedSteps,
+		"validation_rerun_required":        true,
+		"validation_auto_reload_supported": true,
+		"server_side_validation_rerun":     false,
+		"result_recording_scope":           "operation_ids_and_sanitized_refresh_kinds",
+		"required_operator_action":         "Keep the validation panel open; the UI can reload ProjectVersion validation until queued refresh operations finish.",
 	}, nil
 }
 
@@ -7137,12 +7139,14 @@ func projectVersionRefreshResultSummary(operations []map[string]any) map[string]
 	rerunStatus := "not_requested"
 	if operationCount > 0 {
 		rerunStatus = "waiting_for_workers"
-		if activeCount == 0 && failed == 0 && canceled == 0 {
-			rerunStatus = "recorded"
-		} else if activeCount == 0 && failed > 0 {
-			rerunStatus = "refresh_failed"
-		} else if activeCount == 0 && canceled > 0 {
-			rerunStatus = "refresh_canceled"
+		if activeCount == 0 {
+			if failed > 0 {
+				rerunStatus = "refresh_failed"
+			} else if canceled > 0 {
+				rerunStatus = "refresh_canceled"
+			} else {
+				rerunStatus = "recorded"
+			}
 		}
 	}
 	return map[string]any{
@@ -7252,7 +7256,7 @@ func projectVersionRefreshResultBlockedReasons(summary map[string]any) []string 
 	case "refresh_canceled":
 		return []string{"refresh_worker_canceled"}
 	default:
-		return []string{"provider_refresh_execution_not_performed", "synced_state_write_not_performed", "validation_rerun_not_performed"}
+		return []string{"provider_refresh_execution_not_performed", "synced_state_write_not_performed", "validation_auto_reload_not_observed"}
 	}
 }
 
@@ -7363,7 +7367,7 @@ func projectVersionProviderRefreshPlan(repositories, remotes, argoConnections []
 		"steps":                    steps,
 		"required_live_rehearsal":  required,
 		"execution_plan":           executionPlan,
-		"required_operator_action": "Run the planned refresh operations, then re-open this validation preview.",
+		"required_operator_action": "Run the planned refresh operations and keep this validation preview open so the UI can auto-reload observed refresh results.",
 	}
 }
 
@@ -7399,38 +7403,40 @@ func projectVersionProviderRefreshExecutionPlan(steps []map[string]any, refreshP
 		executionState = "partial"
 	}
 	return map[string]any{
-		"mode":                          "provider_refresh_execution_plan_preview",
-		"execution_state":               executionState,
-		"refresh_plan_state":            refreshPlanState,
-		"execution_enabled":             plannedTotal > 0,
-		"external_call_made":            false,
-		"operation_enqueued":            false,
-		"worker_job_created":            false,
-		"git_fetch_performed":           false,
-		"provider_api_called":           false,
-		"argocd_api_called":             false,
-		"synced_state_written":          false,
-		"validation_reopened":           false,
-		"secret_included":               false,
-		"planned_step_count":            plannedTotal,
-		"blocked_step_count":            blockedTotal,
-		"unique_planned_kind_count":     len(plannedKinds),
-		"unique_blocked_kind_count":     len(blockedKinds),
-		"planned_refresh_kinds":         plannedKinds,
-		"blocked_refresh_kinds":         blockedKinds,
-		"required_controls":             []string{"operation_approval", "provider_account_binding", "git_remote_credential_review", "github_actions_scope_review", "argo_connection_review", "result_recording_audit", "validation_rerun"},
-		"disabled_backends":             []string{"provider_mutation", "raw_provider_response_recording", "automatic_validation_rerun"},
-		"suppressed_fields":             []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "github_actions_response", "argo_response", "commit_body", "workflow_logs"},
-		"blocked_reasons":               []string{"refresh_operations_not_enqueued", "validation_rerun_not_performed"},
-		"execution_sequence":            []string{"request_project_version_refresh", "enqueue_git_ref_refresh", "enqueue_github_actions_refresh", "enqueue_argocd_app_refresh", "worker_records_synced_state", "rerun_validation_preview"},
-		"git_ref_fetch_plan":            providerRefreshKindExecutionPlan("git_ref_fetch", plannedKinds, blockedKinds),
-		"github_actions_refresh_plan":   providerRefreshKindExecutionPlan("github_actions_api_refresh", plannedKinds, blockedKinds),
-		"argo_revision_refresh_plan":    providerRefreshKindExecutionPlan("argocd_app_refresh", plannedKinds, blockedKinds),
-		"result_recording_plan":         projectVersionProviderRefreshResultRecordingPlan(plannedKinds),
-		"message":                       "Provider refresh execution can enqueue fetch-only Git ref refresh, GitHub Actions sync, and Argo app sync worker jobs; this preview performs no external call and validation must be reopened after workers finish.",
-		"required_operator_action":      "Run ProjectVersion provider refresh, wait for queued operations to complete, then re-open ProjectVersion validation.",
-		"requires_project_visibility":   true,
-		"requires_manifest_consistency": true,
+		"mode":                             "provider_refresh_execution_plan_preview",
+		"execution_state":                  executionState,
+		"refresh_plan_state":               refreshPlanState,
+		"execution_enabled":                plannedTotal > 0,
+		"external_call_made":               false,
+		"operation_enqueued":               false,
+		"worker_job_created":               false,
+		"validation_auto_reload_supported": true,
+		"server_side_validation_rerun":     false,
+		"git_fetch_performed":              false,
+		"provider_api_called":              false,
+		"argocd_api_called":                false,
+		"synced_state_written":             false,
+		"validation_reopened":              false,
+		"secret_included":                  false,
+		"planned_step_count":               plannedTotal,
+		"blocked_step_count":               blockedTotal,
+		"unique_planned_kind_count":        len(plannedKinds),
+		"unique_blocked_kind_count":        len(blockedKinds),
+		"planned_refresh_kinds":            plannedKinds,
+		"blocked_refresh_kinds":            blockedKinds,
+		"required_controls":                []string{"operation_approval", "provider_account_binding", "git_remote_credential_review", "github_actions_scope_review", "argo_connection_review", "result_recording_audit", "ui_auto_validation_reload"},
+		"disabled_backends":                []string{"provider_mutation", "raw_provider_response_recording", "server_side_automatic_validation_rerun"},
+		"suppressed_fields":                []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "github_actions_response", "argo_response", "commit_body", "workflow_logs"},
+		"blocked_reasons":                  []string{"refresh_operations_not_enqueued", "validation_auto_reload_not_observed"},
+		"execution_sequence":               []string{"request_project_version_refresh", "enqueue_git_ref_refresh", "enqueue_github_actions_refresh", "enqueue_argocd_app_refresh", "worker_records_synced_state", "rerun_validation_preview"},
+		"git_ref_fetch_plan":               providerRefreshKindExecutionPlan("git_ref_fetch", plannedKinds, blockedKinds),
+		"github_actions_refresh_plan":      providerRefreshKindExecutionPlan("github_actions_api_refresh", plannedKinds, blockedKinds),
+		"argo_revision_refresh_plan":       providerRefreshKindExecutionPlan("argocd_app_refresh", plannedKinds, blockedKinds),
+		"result_recording_plan":            projectVersionProviderRefreshResultRecordingPlan(plannedKinds),
+		"message":                          "Provider refresh execution can enqueue fetch-only Git ref refresh, GitHub Actions sync, and Argo app sync worker jobs; this preview performs no external call and the UI can automatically reload validation after workers finish.",
+		"required_operator_action":         "Run ProjectVersion provider refresh and keep this validation panel open so the UI can reload validation until refresh operations finish.",
+		"requires_project_visibility":      true,
+		"requires_manifest_consistency":    true,
 	}
 }
 
@@ -7460,11 +7466,11 @@ func providerRefreshKindExecutionPlan(kind string, plannedKinds, blockedKinds []
 			"contains_git_credentials":   false,
 			"contains_commit_body":       false,
 			"required_controls":          []string{"git_remote_credential_review", "ref_validation_policy", "synced_state_write_audit"},
-			"disabled_backends":          []string{"git_push", "remote_mutation", "raw_git_output_recording", "automatic_validation_rerun"},
+			"disabled_backends":          []string{"git_push", "remote_mutation", "raw_git_output_recording", "server_side_automatic_validation_rerun"},
 			"suppressed_fields":          []string{"remote_url", "git_credentials", "authorization_header", "commit_body", "raw_git_output"},
 			"blocked_reasons":            providerRefreshKindBlockedReasons(state, "git_ref_fetch_not_enqueued"),
-			"execution_blockers":         []string{"git_ref_fetch_not_enqueued", "validation_rerun_not_performed"},
-			"message":                    "Git ref refresh can enqueue a fetch-only worker job; this preview does not fetch, expose remote URL, push refs, or rerun validation.",
+			"execution_blockers":         []string{"git_ref_fetch_not_enqueued", "server_side_validation_rerun_not_performed"},
+			"message":                    "Git ref refresh can enqueue a fetch-only worker job; this preview does not fetch, expose remote URL, push refs, or rerun validation server-side.",
 		}
 	case "github_actions_api_refresh":
 		return map[string]any{
@@ -7484,11 +7490,11 @@ func providerRefreshKindExecutionPlan(kind string, plannedKinds, blockedKinds []
 			"contains_remote_url":           false,
 			"contains_provider_response":    false,
 			"required_controls":             []string{"github_actions_scope_review", "provider_account_binding", "synced_state_write_audit"},
-			"disabled_backends":             []string{"provider_mutation", "raw_provider_response_recording", "automatic_validation_rerun"},
+			"disabled_backends":             []string{"provider_mutation", "raw_provider_response_recording", "server_side_automatic_validation_rerun"},
 			"suppressed_fields":             []string{"provider_token", "authorization_header", "remote_url", "github_actions_response", "workflow_logs", "provider_response_body", "provider_response_headers"},
 			"blocked_reasons":               providerRefreshKindBlockedReasons(state, "github_actions_api_refresh_not_enqueued"),
-			"execution_blockers":            []string{"github_actions_api_refresh_not_enqueued", "validation_rerun_not_performed"},
-			"message":                       "GitHub Actions refresh can enqueue the existing sync worker job; this preview does not call the provider, record raw responses, or rerun validation.",
+			"execution_blockers":            []string{"github_actions_api_refresh_not_enqueued", "server_side_validation_rerun_not_performed"},
+			"message":                       "GitHub Actions refresh can enqueue the existing sync worker job; this preview does not call the provider, record raw responses, or rerun validation server-side.",
 		}
 	case "argocd_app_refresh":
 		return map[string]any{
@@ -7507,11 +7513,11 @@ func providerRefreshKindExecutionPlan(kind string, plannedKinds, blockedKinds []
 			"contains_provider_token":      false,
 			"contains_argo_response":       false,
 			"required_controls":            []string{"argo_connection_review", "argo_revision_binding", "synced_state_write_audit"},
-			"disabled_backends":            []string{"provider_mutation", "raw_argo_response_recording", "automatic_validation_rerun"},
+			"disabled_backends":            []string{"provider_mutation", "raw_argo_response_recording", "server_side_automatic_validation_rerun"},
 			"suppressed_fields":            []string{"provider_token", "authorization_header", "argo_response", "raw_argo_response", "provider_response_body", "provider_response_headers"},
 			"blocked_reasons":              providerRefreshKindBlockedReasons(state, "argocd_app_refresh_not_enqueued"),
-			"execution_blockers":           []string{"argocd_app_refresh_not_enqueued", "validation_rerun_not_performed"},
-			"message":                      "Argo revision refresh can enqueue the existing Argo app sync worker job; this preview does not call Argo, record raw responses, or rerun validation.",
+			"execution_blockers":           []string{"argocd_app_refresh_not_enqueued", "server_side_validation_rerun_not_performed"},
+			"message":                      "Argo revision refresh can enqueue the existing Argo app sync worker job; this preview does not call Argo, record raw responses, or rerun validation server-side.",
 		}
 	default:
 		return map[string]any{
@@ -7552,7 +7558,7 @@ func projectVersionProviderRefreshResultRecordingPlan(plannedKinds []string) map
 		"planned_refresh_kinds":          plannedKinds,
 		"required_result_fields":         []string{"operation_run_id", "refresh_kind", "status", "started_at", "finished_at", "synced_entity_count", "git_ref_fetch_status", "github_actions_refresh_status", "argo_revision_refresh_status", "validation_rerun_status"},
 		"suppressed_fields":              []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
-		"blocked_reasons":                []string{"provider_refresh_execution_not_performed", "synced_state_write_not_performed", "validation_rerun_not_performed"},
+		"blocked_reasons":                []string{"provider_refresh_execution_not_performed", "synced_state_write_not_performed", "validation_auto_reload_not_observed"},
 		"message":                        "Refresh results are not recorded by this preview; future execution must write sanitized status, counts, and validation rerun state only.",
 		"raw_response_included":          false,
 		"raw_git_output_included":        false,

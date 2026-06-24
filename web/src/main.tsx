@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   ApiOutlined,
@@ -2653,6 +2653,8 @@ function ProjectDetail() {
   const [versionOpen, setVersionOpen] = useState(false);
   const [versionValidation, setVersionValidation] = useState<AnyRow>();
   const [versionRefreshResult, setVersionRefreshResult] = useState<AnyRow>();
+  const [versionValidationAutoReload, setVersionValidationAutoReload] = useState<AnyRow>();
+  const versionValidationAutoReloadAttempts = useRef(0);
   const [validatingVersionID, setValidatingVersionID] = useState<string>();
   const [refreshingVersionID, setRefreshingVersionID] = useState<string>();
   const [configInitializing, setConfigInitializing] = useState(false);
@@ -2715,6 +2717,15 @@ function ProjectDetail() {
     try {
       const result = await api(`/api/project-versions/${row.id}/refresh`, { method: 'POST', body: '{}' });
       setVersionRefreshResult(result);
+      setVersionValidationAutoReload({
+        version_id: row.id,
+        status: 'polling',
+        attempts: 0,
+        active_count: result.operation_count || 0,
+        operation_count: result.operation_count || 0,
+        validation_rerun_status: 'waiting_for_workers'
+      });
+      versionValidationAutoReloadAttempts.current = 0;
       message.success('Version refresh operations queued');
     } catch (error: any) {
       message.error(error.message || 'Request failed');
@@ -2722,6 +2733,87 @@ function ProjectDetail() {
       setRefreshingVersionID(undefined);
     }
   }
+  useEffect(() => {
+    const versionID = versionValidationAutoReload?.version_id;
+    if (!versionID || versionValidationAutoReload?.status !== 'polling') return;
+    let alive = true;
+    versionValidationAutoReloadAttempts.current = Math.max(versionValidationAutoReloadAttempts.current, Number(versionValidationAutoReload?.attempts || 0));
+    let timer: number | undefined;
+    const poll = async () => {
+      versionValidationAutoReloadAttempts.current += 1;
+      const attempts = versionValidationAutoReloadAttempts.current;
+      try {
+        const result = await api(`/api/project-versions/${versionID}/validation`);
+        if (!alive) return;
+        setVersionValidation(result);
+        const summary = result.provider_refresh_result_summary || {};
+        const activeCount = Number(summary.active_count || 0);
+        const operationCount = Number(summary.operation_count || 0);
+        const rerunStatus = summary.validation_rerun_status || 'not_requested';
+        if (operationCount > 0 && activeCount === 0) {
+          const finalStatus = rerunStatus === 'recorded' ? 'completed' : rerunStatus === 'refresh_failed' ? 'done_with_errors' : rerunStatus === 'refresh_canceled' ? 'canceled' : 'unknown';
+          setVersionValidationAutoReload({
+            version_id: versionID,
+            status: finalStatus,
+            attempts,
+            active_count: activeCount,
+            operation_count: operationCount,
+            validation_rerun_status: rerunStatus,
+            last_checked_at: new Date().toISOString()
+          });
+          if (rerunStatus === 'recorded') {
+            message.success('Version validation refreshed');
+          } else if (rerunStatus === 'refresh_failed') {
+            message.error('Version refresh finished with failed operations');
+          } else if (rerunStatus === 'refresh_canceled') {
+            message.warning('Version refresh was canceled');
+          }
+          if (timer !== undefined) window.clearInterval(timer);
+          return;
+        }
+        if (attempts >= 60) {
+          setVersionValidationAutoReload({
+            version_id: versionID,
+            status: 'timeout',
+            attempts,
+            active_count: activeCount,
+            operation_count: operationCount,
+            validation_rerun_status: rerunStatus,
+            last_checked_at: new Date().toISOString()
+          });
+          message.warning('Version refresh is still running. Validation was refreshed with the latest observed state.');
+          if (timer !== undefined) window.clearInterval(timer);
+          return;
+        }
+        setVersionValidationAutoReload({
+          version_id: versionID,
+          status: 'polling',
+          attempts,
+          active_count: activeCount,
+          operation_count: operationCount,
+          validation_rerun_status: rerunStatus,
+          last_checked_at: new Date().toISOString()
+        });
+      } catch (error: any) {
+        if (!alive) return;
+        setVersionValidationAutoReload({
+          version_id: versionID,
+          status: 'error',
+          attempts,
+          error: error.message || 'Request failed',
+          last_checked_at: new Date().toISOString()
+        });
+        message.error(error.message || 'Validation refresh failed');
+        if (timer !== undefined) window.clearInterval(timer);
+      }
+    };
+    poll();
+    timer = window.setInterval(poll, 2000);
+    return () => {
+      alive = false;
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [versionValidationAutoReload?.version_id, versionValidationAutoReload?.status]);
   return (
     <Space direction="vertical" size={16} className="full">
       <Typography.Title level={2}>Project Detail</Typography.Title>
@@ -2820,6 +2912,9 @@ function ProjectDetail() {
                   {versionValidation.provider_refresh_result_summary?.active_count ? <Tag color="blue">{versionValidation.provider_refresh_result_summary.active_count} active refresh ops</Tag> : null}
                   {versionValidation.provider_refresh_result_summary?.failed_count ? <Tag color="red">{versionValidation.provider_refresh_result_summary.failed_count} failed refresh ops</Tag> : null}
                   {versionValidation.provider_refresh_result_summary?.canceled_count ? <Tag color="orange">{versionValidation.provider_refresh_result_summary.canceled_count} canceled refresh ops</Tag> : null}
+                  {versionValidationAutoReload?.version_id === versionValidation.version_id ? <Tag color={versionValidationAutoReload.status === 'polling' ? 'blue' : versionValidationAutoReload.status === 'completed' ? 'green' : versionValidationAutoReload.status === 'done_with_errors' || versionValidationAutoReload.status === 'error' ? 'red' : 'gold'}>auto reload {versionValidationAutoReload.status}</Tag> : null}
+                  {versionValidationAutoReload?.version_id === versionValidation.version_id ? <Tag>{versionValidationAutoReload.attempts || 0} reload attempts</Tag> : null}
+                  {versionValidationAutoReload?.version_id === versionValidation.version_id ? <Tag>{versionValidationAutoReload.validation_rerun_status || 'not_requested'}</Tag> : null}
                 </Space>
                 {versionValidation.provider_refresh_plan?.execution_plan?.execution_enabled && (
                   <Space wrap>
@@ -2841,6 +2936,7 @@ function ProjectDetail() {
                     <Tag>{versionRefreshResult.external_call_made ? 'external call' : 'queued only'}</Tag>
                     <Tag>{versionRefreshResult.secret_included ? 'secrets included' : 'no secrets'}</Tag>
                     <Tag>{versionRefreshResult.result_recording_scope || 'sanitized result'}</Tag>
+                    <Tag>{versionRefreshResult.validation_auto_reload_supported ? 'auto reload supported' : 'manual reload'}</Tag>
                   </Space>
                 )}
                 <JSONBlock value={versionValidation} />

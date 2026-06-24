@@ -2235,12 +2235,12 @@ func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
 		t.Fatalf("refresh execution plan = %#v", executionPlan)
 	}
 	assertProviderRefreshExecutionPlanSafe(t, executionPlan)
-	for _, required := range []string{"operation_approval", "provider_account_binding", "result_recording_audit", "validation_rerun"} {
+	for _, required := range []string{"operation_approval", "provider_account_binding", "result_recording_audit", "ui_auto_validation_reload"} {
 		if !containsString(stringSliceFromAny(executionPlan["required_controls"]), required) {
 			t.Fatalf("execution plan required_controls missing %q: %#v", required, executionPlan)
 		}
 	}
-	for _, backend := range []string{"provider_mutation", "raw_provider_response_recording", "automatic_validation_rerun"} {
+	for _, backend := range []string{"provider_mutation", "raw_provider_response_recording", "server_side_automatic_validation_rerun"} {
 		if !containsString(stringSliceFromAny(executionPlan["disabled_backends"]), backend) {
 			t.Fatalf("execution plan disabled_backends missing %q: %#v", backend, executionPlan)
 		}
@@ -2338,6 +2338,8 @@ func TestProjectVersionValidationPreviewIncludesRefreshResultSummary(t *testing.
 	executionPlan := mapFromAny(refreshPlan["execution_plan"])
 	if executionPlan["operation_enqueued"] != true ||
 		executionPlan["worker_job_created"] != true ||
+		executionPlan["validation_auto_reload_supported"] != true ||
+		executionPlan["server_side_validation_rerun"] != false ||
 		executionPlan["validation_reopened"] != false {
 		t.Fatalf("refresh execution plan did not reflect observed operations: %#v", executionPlan)
 	}
@@ -2423,13 +2425,41 @@ func TestProjectVersionRefreshResultSummaryStatusCombinations(t *testing.T) {
 			wantCanceled: 1,
 		},
 		{
-			name:       "running and failed still waits",
+			name:       "running and failed still waits with failure evidence",
 			statuses:   []string{"running", "failed"},
 			wantStatus: "waiting_for_workers",
 			wantReason: "refresh_workers_still_running",
 			wantState:  "waiting",
 			wantActive: 1,
 			wantFailed: true,
+		},
+		{
+			name:         "running and canceled still waits",
+			statuses:     []string{"running", "canceled"},
+			wantStatus:   "waiting_for_workers",
+			wantReason:   "refresh_workers_still_running",
+			wantState:    "waiting",
+			wantActive:   1,
+			wantCanceled: 1,
+		},
+		{
+			name:         "running failed and canceled still waits with failure evidence",
+			statuses:     []string{"running", "failed", "canceled"},
+			wantStatus:   "waiting_for_workers",
+			wantReason:   "refresh_workers_still_running",
+			wantState:    "waiting",
+			wantActive:   1,
+			wantFailed:   true,
+			wantCanceled: 1,
+		},
+		{
+			name:         "failed and canceled reports failure",
+			statuses:     []string{"failed", "canceled"},
+			wantStatus:   "refresh_failed",
+			wantReason:   "refresh_worker_failed",
+			wantState:    "failed",
+			wantFailed:   true,
+			wantCanceled: 1,
 		},
 	}
 	for _, tt := range tests {
@@ -2559,6 +2589,8 @@ func TestRefreshProjectVersionProvidersQueuesPlannedOperations(t *testing.T) {
 	if got["mode"] != "project_version_provider_refresh_execution" ||
 		got["operation_enqueued"] != true ||
 		got["worker_job_created"] != true ||
+		got["validation_auto_reload_supported"] != true ||
+		got["server_side_validation_rerun"] != false ||
 		got["external_call_made"] != false ||
 		got["secret_included"] != false ||
 		got["raw_provider_response"] != false ||
@@ -2586,6 +2618,8 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 	t.Helper()
 	if executionPlan["operation_enqueued"] != false ||
 		executionPlan["worker_job_created"] != false ||
+		executionPlan["validation_auto_reload_supported"] != true ||
+		executionPlan["server_side_validation_rerun"] != false ||
 		executionPlan["git_fetch_performed"] != false ||
 		executionPlan["provider_api_called"] != false ||
 		executionPlan["argocd_api_called"] != false ||
@@ -2605,7 +2639,7 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 			kindPlan["external_call_made"] != false {
 			t.Fatalf("refresh kind plan should have state and keep external calls disabled: %s %#v", planKey, kindPlan)
 		}
-		for _, reason := range []string{"validation_rerun_not_performed"} {
+		for _, reason := range []string{"server_side_validation_rerun_not_performed"} {
 			if kindPlan["refresh_state"] != "not_required" && !containsString(stringSliceFromAny(kindPlan["execution_blockers"]), reason) {
 				t.Fatalf("refresh kind plan execution blockers missing %q: %s %#v", reason, planKey, kindPlan)
 			}
@@ -2625,7 +2659,7 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 	if gitFetchPlan["refresh_state"] == "planned" && gitFetchPlan["fetch_only_backend_enabled"] != true {
 		t.Fatalf("planned git fetch subplan should expose fetch-only backend readiness: %#v", gitFetchPlan)
 	}
-	for _, backend := range []string{"git_push", "remote_mutation", "raw_git_output_recording", "automatic_validation_rerun"} {
+	for _, backend := range []string{"git_push", "remote_mutation", "raw_git_output_recording", "server_side_automatic_validation_rerun"} {
 		if !containsString(stringSliceFromAny(gitFetchPlan["disabled_backends"]), backend) {
 			t.Fatalf("git fetch subplan disabled backend missing %q: %#v", backend, gitFetchPlan["disabled_backends"])
 		}
@@ -2649,7 +2683,7 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 	if actionsPlan["refresh_state"] == "planned" && actionsPlan["github_actions_sync_enabled"] != true {
 		t.Fatalf("planned GitHub Actions subplan should expose sync backend readiness: %#v", actionsPlan)
 	}
-	for _, backend := range []string{"provider_mutation", "raw_provider_response_recording", "automatic_validation_rerun"} {
+	for _, backend := range []string{"provider_mutation", "raw_provider_response_recording", "server_side_automatic_validation_rerun"} {
 		if !containsString(stringSliceFromAny(actionsPlan["disabled_backends"]), backend) {
 			t.Fatalf("GitHub Actions subplan disabled backend missing %q: %#v", backend, actionsPlan["disabled_backends"])
 		}
@@ -2667,7 +2701,7 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 	if argoPlan["refresh_state"] == "planned" && argoPlan["argocd_app_sync_enabled"] != true {
 		t.Fatalf("planned Argo subplan should expose sync backend readiness: %#v", argoPlan)
 	}
-	for _, backend := range []string{"provider_mutation", "raw_argo_response_recording", "automatic_validation_rerun"} {
+	for _, backend := range []string{"provider_mutation", "raw_argo_response_recording", "server_side_automatic_validation_rerun"} {
 		if !containsString(stringSliceFromAny(argoPlan["disabled_backends"]), backend) {
 			t.Fatalf("Argo subplan disabled backend missing %q: %#v", backend, argoPlan["disabled_backends"])
 		}
@@ -2707,7 +2741,7 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 			t.Fatalf("result plan suppressed_fields missing %q: %#v", field, resultPlan["suppressed_fields"])
 		}
 	}
-	for _, reason := range []string{"provider_refresh_execution_not_performed", "synced_state_write_not_performed", "validation_rerun_not_performed"} {
+	for _, reason := range []string{"provider_refresh_execution_not_performed", "synced_state_write_not_performed", "validation_auto_reload_not_observed"} {
 		if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), reason) {
 			t.Fatalf("result plan blocked_reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
 		}
