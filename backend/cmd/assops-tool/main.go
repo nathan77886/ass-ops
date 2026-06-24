@@ -1404,7 +1404,8 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	repoTagRuns := operationCounts["repo.tag"] + operationCounts["repo.create_tag"]
 	sshGraphLinks := countSSHGraphLinks(graph)
 	argoGraphLinks := countArgoGraphLinks(graph)
-	approvalGraphLinks := countApprovalGraphLinks(graph)
+	activeApprovalRuleIDs := activeAssetIDsByTypeStatus(assets, "operation_approval_rule", "active")
+	approvalGraphLinks := countApprovalGraphLinks(graph, activeApprovalRuleIDs)
 	contextGraphLinks := countContextGraphLinks(assets, graph)
 	argoEvidence := assetCounts["argo_connection"] + assetCounts["argo_app"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"] + argoGraphLinks.ConnectionApps + argoGraphLinks.AppTargets
 
@@ -1878,6 +1879,19 @@ func countAPITypeStatus(rows []map[string]any, typ, status string) int {
 	return count
 }
 
+func activeAssetIDsByTypeStatus(rows []map[string]any, typ, status string) map[string]bool {
+	ids := map[string]bool{}
+	for _, row := range rows {
+		if fmt.Sprint(row["asset_type"]) != typ || fmt.Sprint(row["status"]) != status {
+			continue
+		}
+		if assetID := apiAssetGraphID(row); assetID != "" {
+			ids[assetID] = true
+		}
+	}
+	return ids
+}
+
 func countAPITypeMetadata(rows []map[string]any, typ, key, value string) int {
 	count := 0
 	for _, row := range rows {
@@ -2295,14 +2309,14 @@ type approvalGraphLinkCounts struct {
 	ApprovalOperations int
 }
 
-func countApprovalGraphLinks(graph map[string]any) approvalGraphLinkCounts {
+func countApprovalGraphLinks(graph map[string]any, activeRuleIDs map[string]bool) approvalGraphLinkCounts {
 	counts := approvalGraphLinkCounts{}
 	for _, edge := range apiItemsByKey(graph, "edges") {
 		from := fmt.Sprint(edge["from_asset_id"])
 		to := fmt.Sprint(edge["to_asset_id"])
 		switch fmt.Sprint(edge["relation_type"]) {
 		case "governs":
-			if strings.HasPrefix(from, "operation_approval_rule:") && strings.HasPrefix(to, "operation_approval:") {
+			if activeRuleIDs[from] && strings.HasPrefix(to, "operation_approval:") {
 				counts.RuleApprovals++
 			}
 		case "gates_operation":

@@ -680,6 +680,13 @@ function countRowsByTypeStatus(rows: AnyRow[] = [], type: string, status: string
   return rows.filter((row) => String(row.asset_type || '') === type && String(row.status || '') === status).length;
 }
 
+function activeAssetIDsByTypeStatus(rows: AnyRow[] = [], type: string, status: string) {
+  return new Set(rows
+    .filter((row) => String(row.asset_type || '') === type && String(row.status || '') === status)
+    .map(apiAssetGraphID)
+    .filter(Boolean));
+}
+
 function countRowsByTypeMetadata(rows: AnyRow[] = [], type: string, key: string, value: string) {
   return rows.filter((row) => String(row.asset_type || '') === type && String(row.metadata?.[key] || '') === value).length;
 }
@@ -909,12 +916,12 @@ function countArgoGraphLinks(graph: AnyRow = {}) {
   return counts;
 }
 
-function countApprovalGraphLinks(graph: AnyRow = {}) {
+function countApprovalGraphLinks(graph: AnyRow = {}, activeRuleIDs = new Set<string>()) {
   return graphItems(graph, 'edges').reduce((counts, edge: AnyRow) => {
     const relation = String(edge.relation_type || '');
     const from = String(edge.from_asset_id || '');
     const to = String(edge.to_asset_id || '');
-    if (relation === 'governs' && from.startsWith('operation_approval_rule:') && to.startsWith('operation_approval:')) {
+    if (relation === 'governs' && activeRuleIDs.has(from) && to.startsWith('operation_approval:')) {
       counts.ruleApprovals += 1;
     }
     // Pending approvals can be ready before a gated operation exists; keep this as display/future execution evidence.
@@ -1140,7 +1147,8 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const repoTagRuns = (operationCounts['repo.tag'] || 0) + (operationCounts['repo.create_tag'] || 0);
   const sshGraphLinks = countSSHGraphLinks(graph);
   const argoGraphLinks = countArgoGraphLinks(graph);
-  const approvalGraphLinks = countApprovalGraphLinks(graph);
+  const activeApprovalRuleIDs = activeAssetIDsByTypeStatus(assets, 'operation_approval_rule', 'active');
+  const approvalGraphLinks = countApprovalGraphLinks(graph, activeApprovalRuleIDs);
   const contextGraphLinks = countContextGraphLinks(assets, graph);
   const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.argo_app || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0) + argoGraphLinks.connectionApps + argoGraphLinks.appTargets;
   const graphNodes = graphItems(graph, 'nodes').length;

@@ -1121,11 +1121,11 @@ func TestCountApprovalGraphLinks(t *testing.T) {
 		"edges": []any{
 			map[string]any{"from_asset_id": "operation_approval_rule:10", "to_asset_id": "operation_approval:20", "relation_type": "governs"},
 			map[string]any{"from_asset_id": "operation_approval:20", "to_asset_id": "operation_run:30", "relation_type": "gates_operation"},
-			map[string]any{"from_asset_id": "operation_approval_rule:11", "to_asset_id": "operation_run:31", "relation_type": "governs"},
+			map[string]any{"from_asset_id": "operation_approval_rule:11", "to_asset_id": "operation_approval:21", "relation_type": "governs"},
 			map[string]any{"from_asset_id": "operation_approval:21", "to_asset_id": "operation_approval_rule:12", "relation_type": "gates_operation"},
 		},
 	}
-	got := countApprovalGraphLinks(graph)
+	got := countApprovalGraphLinks(graph, map[string]bool{"operation_approval_rule:10": true})
 	if got.RuleApprovals != 1 || got.ApprovalOperations != 1 {
 		t.Fatalf("countApprovalGraphLinks = %#v, want one rule-approval and one approval-operation link", got)
 	}
@@ -1145,15 +1145,15 @@ func TestFirstVersionReadinessReportApprovalReadinessMatrix(t *testing.T) {
 	}
 
 	withRule := firstVersionReadinessReport([]map[string]any{
-		{"asset_type": "operation_approval_rule", "status": "active"},
+		{"asset_type": "operation_approval_rule", "source_id": "10", "status": "active"},
 	}, nil, map[string]any{"total": float64(1)})
 	if got := readinessByKey(t, withRule, "approval"); got.Status != "partial" || got.Evidence != "1 approvals / 0 approval assets / 0 pending ops / 1 active rules / 0 governed approvals" {
 		t.Fatalf("approval status from summary and rule without graph = %#v, want partial", got)
 	}
 
 	withGovernedApproval := firstVersionReadinessReportWithGraph([]map[string]any{
-		{"asset_type": "operation_approval", "status": "pending"},
-		{"asset_type": "operation_approval_rule", "status": "active"},
+		{"asset_type": "operation_approval", "source_id": "20", "status": "pending"},
+		{"asset_type": "operation_approval_rule", "source_id": "10", "status": "active"},
 	}, nil, map[string]any{"total": float64(1)}, map[string]any{
 		"edges": []any{
 			map[string]any{"from_asset_id": "operation_approval_rule:10", "to_asset_id": "operation_approval:20", "relation_type": "governs"},
@@ -1163,8 +1163,21 @@ func TestFirstVersionReadinessReportApprovalReadinessMatrix(t *testing.T) {
 		t.Fatalf("approval status from governed approval asset and active rule = %#v, want ready", got)
 	}
 
+	withDisabledRuleGovernedApproval := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "operation_approval", "source_id": "20", "status": "pending"},
+		{"asset_type": "operation_approval_rule", "source_id": "10", "status": "active"},
+		{"asset_type": "operation_approval_rule", "source_id": "11", "status": "disabled"},
+	}, nil, map[string]any{"total": float64(1)}, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "operation_approval_rule:11", "to_asset_id": "operation_approval:20", "relation_type": "governs"},
+		},
+	})
+	if got := readinessByKey(t, withDisabledRuleGovernedApproval, "approval"); got.Status != "partial" || got.Evidence != "1 approvals / 1 approval assets / 0 pending ops / 1 active rules / 0 governed approvals" {
+		t.Fatalf("approval status from disabled governed rule and separate active rule = %#v, want partial", got)
+	}
+
 	ruleOnly := firstVersionReadinessReport([]map[string]any{
-		{"asset_type": "operation_approval_rule", "status": "active"},
+		{"asset_type": "operation_approval_rule", "source_id": "10", "status": "active"},
 	}, nil, nil)
 	if got := readinessByKey(t, ruleOnly, "approval"); got.Status != "partial" || got.Evidence != "0 approvals / 0 approval assets / 0 pending ops / 1 active rules / 0 governed approvals" {
 		t.Fatalf("approval status from rule without request evidence = %#v, want partial", got)
@@ -1184,7 +1197,7 @@ func TestCountAPITypeStatus(t *testing.T) {
 
 func TestFirstVersionReadinessReportTreatsPendingApprovalOperationAsPartialEvidence(t *testing.T) {
 	report := firstVersionReadinessReport([]map[string]any{
-		{"asset_type": "operation_approval_rule", "status": "active"},
+		{"asset_type": "operation_approval_rule", "source_id": "10", "status": "active"},
 	}, []map[string]any{
 		{"operation_type": "ssh.exec", "status": "pending_approval"},
 	}, nil)
