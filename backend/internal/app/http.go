@@ -3247,7 +3247,12 @@ func (s *Server) getConfigRepositoryScaffold(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "could not load project versions")
 		return
 	}
-	writeJSON(w, http.StatusOK, configRepositoryScaffoldPreview(repo, remotes, versions))
+	workflowOperations, err := queryConfigRepositoryGitWorkflowOperations(r.Context(), s.store.DB, projectID, repoID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load config git workflow operations")
+		return
+	}
+	writeJSON(w, http.StatusOK, configRepositoryScaffoldPreview(repo, remotes, versions, workflowOperations))
 }
 
 func (s *Server) requestConfigRepositoryGitWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -3358,7 +3363,25 @@ func (s *Server) configRepositoryScaffoldPreviewForRequest(ctx context.Context, 
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	return repo, remotes, versions, configRepositoryScaffoldPreview(repo, remotes, versions), nil
+	workflowOperations, err := queryConfigRepositoryGitWorkflowOperations(ctx, s.store.DB, projectID, repoID)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return repo, remotes, versions, configRepositoryScaffoldPreview(repo, remotes, versions, workflowOperations), nil
+}
+
+func queryConfigRepositoryGitWorkflowOperations(ctx context.Context, db sqlx.ExtContext, projectID, repoID string) ([]map[string]any, error) {
+	return queryMaps(ctx, db, `
+		SELECT op.id, op.status, op.created_at, op.updated_at, op.started_at, op.finished_at,
+			COUNT(ol.id)::int AS operation_log_count
+		FROM operation_runs op
+		LEFT JOIN operation_logs ol ON ol.operation_run_id=op.id
+		WHERE op.project_id=$1
+			AND op.operation_type='config.git_commit'
+			AND op.input->>'project_git_repository_id'=$2
+		GROUP BY op.id, op.status, op.created_at, op.updated_at, op.started_at, op.finished_at
+		ORDER BY op.created_at DESC, op.id DESC
+		LIMIT 20`, projectID, repoID)
 }
 
 func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
@@ -3428,7 +3451,7 @@ func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
-func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]any, versionRows ...[]map[string]any) map[string]any {
+func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]any, optionalRows ...[]map[string]any) map[string]any {
 	repoRole := strings.ToLower(strings.TrimSpace(stringFromMap(repo, "repo_role")))
 	environments := []string{"dev", "test", "prod"}
 	files := make([]map[string]any, 0, len(environments)*3+1)
@@ -3485,11 +3508,16 @@ func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]a
 		scaffoldState = "blocked"
 	}
 	var versions []map[string]any
-	if len(versionRows) > 0 {
-		versions = versionRows[0]
+	if len(optionalRows) > 0 {
+		versions = optionalRows[0]
+	}
+	var workflowOperations []map[string]any
+	if len(optionalRows) > 1 {
+		workflowOperations = optionalRows[1]
 	}
 	pinEvidence := configRepositoryProjectVersionPinEvidence(repo, remoteSummaries, versions)
-	commitPlan := configRepositoryGitCommitPlan(repo, files, remoteSummaries, blockedReasons, pinEvidence)
+	workflowEvidence := configRepositoryGitWorkflowAuditEvidence(workflowOperations)
+	commitPlan := configRepositoryGitCommitPlan(repo, files, remoteSummaries, blockedReasons, pinEvidence, workflowEvidence)
 	return map[string]any{
 		"mode":                         "config_repository_scaffold_preview",
 		"scaffold_state":               scaffoldState,
@@ -3510,6 +3538,7 @@ func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]a
 		"file_content_included":        false,
 		"secret_included":              false,
 		"project_version_pin_evidence": pinEvidence,
+		"git_workflow_audit_evidence":  workflowEvidence,
 		"live_commit_validation":       "not_performed",
 		"live_commit_validation_state": pinEvidence["live_validation_state"],
 		"git_commit_plan":              commitPlan,
@@ -3518,7 +3547,119 @@ func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]a
 	}
 }
 
-func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[string]any, scaffoldBlockedReasons []string, pinEvidence map[string]any) map[string]any {
+func configRepositoryGitWorkflowAuditEvidence(operations []map[string]any) map[string]any {
+	items := make([]map[string]any, 0, len(operations))
+	statusCounts := map[string]int{}
+	logCount := 0
+	for _, operation := range operations {
+		status := strings.ToLower(strings.TrimSpace(fmt.Sprint(operation["status"])))
+		if status == "" || status == "<nil>" {
+			status = "unknown"
+		}
+		statusCounts[status]++
+		rowLogCount := intFromAny(operation["operation_log_count"], 0)
+		logCount += rowLogCount
+		items = append(items, map[string]any{
+			"operation_run_id":                  cleanOptionalID(fmt.Sprint(operation["id"])),
+			"status":                            status,
+			"created_at":                        operation["created_at"],
+			"updated_at":                        operation["updated_at"],
+			"started_at":                        operation["started_at"],
+			"finished_at":                       operation["finished_at"],
+			"operation_log_count":               rowLogCount,
+			"result_scope":                      "sanitized_config_git_workflow_intent",
+			"git_write_performed":               false,
+			"git_commit_created":                false,
+			"git_push_performed":                false,
+			"external_call_made":                false,
+			"file_content_included":             false,
+			"secret_included":                   false,
+			"raw_git_output_recorded":           false,
+			"raw_provider_response_recorded":    false,
+			"project_version_pin_written":       false,
+			"live_commit_validation_performed":  false,
+			"project_version_pin_write_allowed": false,
+		})
+	}
+	queued := statusCounts["queued"] + statusCounts["pending"]
+	running := statusCounts["running"]
+	completed := statusCounts["completed"] + statusCounts["succeeded"] + statusCounts["success"]
+	failed := statusCounts["failed"] + statusCounts["error"]
+	canceled := statusCounts["canceled"] + statusCounts["cancelled"]
+	active := queued + running
+	known := queued + running + completed + failed + canceled
+	unknown := len(operations) - known
+	if unknown < 0 {
+		unknown = 0
+	}
+	state := "not_requested"
+	switch {
+	case len(operations) == 0:
+		state = "not_requested"
+	case active > 0:
+		state = "waiting_for_worker"
+	case failed > 0 && canceled > 0:
+		state = "mixed_failed"
+	case failed > 0:
+		state = "failed"
+	case canceled > 0:
+		state = "canceled"
+	case unknown > 0:
+		state = "unknown"
+	default:
+		state = "recorded"
+	}
+	sanitizedRecorded := len(operations) > 0 && active == 0
+	return map[string]any{
+		"mode":                                      "config_repository_git_workflow_audit_evidence",
+		"evidence_state":                            state,
+		"has_audit_operations":                      len(operations) > 0,
+		"operation_count":                           len(operations),
+		"active_count":                              active,
+		"queued_count":                              queued,
+		"running_count":                             running,
+		"completed_count":                           completed,
+		"failed_count":                              failed,
+		"canceled_count":                            canceled,
+		"unknown_count":                             unknown,
+		"operation_log_count":                       logCount,
+		"sanitized_result_recorded":                 sanitizedRecorded,
+		"has_failures":                              failed > 0,
+		"has_cancellations":                         canceled > 0,
+		"has_unknown_status":                        unknown > 0,
+		"items":                                     items,
+		"git_write_performed":                       false,
+		"git_commit_created":                        false,
+		"git_push_performed":                        false,
+		"external_call_made":                        false,
+		"file_content_included":                     false,
+		"secret_included":                           false,
+		"raw_git_output_recorded":                   false,
+		"raw_provider_response_recorded":            false,
+		"project_version_pin_written":               false,
+		"live_commit_validation_performed":          false,
+		"live_remote_commit_validation_performed":   false,
+		"operation_result_contains_raw_git_output":  false,
+		"operation_result_contains_provider_body":   false,
+		"operation_result_contains_file_content":    false,
+		"operation_result_contains_secret_material": false,
+		"suppressed_fields": []string{
+			"file_content",
+			"secret_values",
+			"git_credentials",
+			"provider_token",
+			"remote_url",
+			"branch_name",
+			"commit_message",
+			"commit_sha",
+			"git_output",
+			"provider_response_body",
+			"provider_response_headers",
+		},
+	}
+}
+
+func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[string]any, scaffoldBlockedReasons []string, pinEvidence, workflowEvidence map[string]any) map[string]any {
 	planState := "planned"
 	blockedReasons := append([]string{}, scaffoldBlockedReasons...)
 	defaultBranch := strings.TrimSpace(stringFromMap(repo, "default_branch"))
@@ -3603,6 +3744,8 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		"live_commit_validation_performed":  false,
 		"project_version_pin_observed":      pinObserved,
 		"live_commit_validation_observed":   liveValidationObserved,
+		"audit_operation_observed":          boolOnlyFromAny(workflowEvidence["has_audit_operations"]),
+		"sanitized_result_observed":         boolOnlyFromAny(workflowEvidence["sanitized_result_recorded"]),
 		"file_content_materialized":         false,
 		"secret_scan_performed":             false,
 		"credential_bound":                  false,
@@ -3621,7 +3764,8 @@ func configRepositoryGitCommitPlan(repo map[string]any, files, remotes []map[str
 		"workspace_execution_plan":          workspacePlan,
 		"remote_review_plan":                remoteReviewPlan,
 		"project_version_pin_plan":          pinValidationPlan,
-		"result_recording_plan":             configRepositoryGitCommitResultRecordingPlan(pinEvidence),
+		"git_workflow_audit_evidence":       workflowEvidence,
+		"result_recording_plan":             configRepositoryGitCommitResultRecordingPlan(pinEvidence, workflowEvidence),
 		"message":                           "Config repository Git workflow can now enqueue an approval-gated audit job; file materialization, Git commit/push, provider requests, ProjectVersion pin writes, and live validation remain disabled.",
 	}
 }
@@ -3920,26 +4064,46 @@ func configRepositoryProjectVersionPinValidationPlan(defaultBranchConfigured, re
 	}
 }
 
-func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any) map[string]any {
+func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any, workflowEvidence map[string]any) map[string]any {
 	pinObserved := boolOnlyFromAny(evidence["config_commit_sha_recorded"])
 	liveObserved := boolOnlyFromAny(evidence["live_validation_recorded"])
+	workflowObserved := boolOnlyFromAny(workflowEvidence["has_audit_operations"])
+	workflowRecorded := boolOnlyFromAny(workflowEvidence["sanitized_result_recorded"])
+	workflowState := strings.TrimSpace(fmt.Sprint(workflowEvidence["evidence_state"]))
 	recordingState := "blocked"
 	recordingReason := "config_git_commit_execution_not_performed"
-	if pinObserved && liveObserved {
+	if workflowState == "waiting_for_worker" {
+		recordingState = "waiting_for_worker"
+		recordingReason = "config_git_commit_audit_operation_waiting_for_worker"
+	} else if workflowState == "failed" || workflowState == "mixed_failed" {
+		recordingState = "failed"
+		recordingReason = "config_git_commit_audit_operation_failed"
+	} else if workflowState == "canceled" {
+		recordingState = "canceled"
+		recordingReason = "config_git_commit_audit_operation_canceled"
+	} else if pinObserved && liveObserved && workflowRecorded {
+		recordingState = "recorded"
+		recordingReason = "audit_result_pin_and_live_validation_observed"
+	} else if pinObserved && liveObserved {
 		recordingState = "recorded"
 		recordingReason = "project_version_pin_and_live_validation_observed"
+	} else if workflowRecorded {
+		recordingState = "audit_recorded"
+		recordingReason = "sanitized_config_git_workflow_audit_result_observed"
 	} else if pinObserved {
 		recordingState = "partial"
 		recordingReason = "project_version_config_commit_pin_observed"
 	}
+	resultWritten := pinObserved || workflowRecorded
+	operationLogWritten := intFromAny(workflowEvidence["operation_log_count"], 0) > 0
 	return map[string]any{
 		"mode":                             "config_repository_git_commit_result_recording_plan",
 		"result_recording_state":           recordingState,
-		"result_recording_ready":           pinObserved,
+		"result_recording_ready":           resultWritten,
 		"result_recording_ready_reason":    recordingReason,
-		"recording_enabled":                pinObserved,
-		"result_written":                   pinObserved,
-		"operation_log_written":            false,
+		"recording_enabled":                resultWritten,
+		"result_written":                   resultWritten,
+		"operation_log_written":            operationLogWritten,
 		"scaffold_artifact_recorded":       false,
 		"commit_record_written":            false,
 		"push_record_written":              false,
@@ -3949,7 +4113,10 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any) map[s
 		"project_version_pin_observed":     pinObserved,
 		"config_commit_sha_recorded":       pinObserved,
 		"live_validation_recorded":         liveObserved,
+		"audit_operation_observed":         workflowObserved,
+		"sanitized_audit_result_recorded":  workflowRecorded,
 		"pin_evidence":                     evidence,
+		"git_workflow_audit_evidence":      workflowEvidence,
 		"raw_file_content_recorded":        false,
 		"raw_secret_value_recorded":        false,
 		"raw_git_output_recorded":          false,
@@ -3978,6 +4145,8 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any) map[s
 			"remote_review_state",
 			"config_commit_sha_present",
 			"live_validation_status",
+			"git_workflow_audit_status",
+			"operation_log_count",
 		},
 		"result_persisted_fields": []string{
 			"operation_status",
@@ -3986,6 +4155,7 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any) map[s
 			"review_request_status",
 			"project_version_pin_status",
 			"live_validation_status",
+			"sanitized_audit_result_status",
 		},
 		"suppressed_fields": []string{
 			"file_content",
@@ -4004,7 +4174,7 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any) map[s
 			"project_version_config_commit_pin_not_written",
 			"live_remote_commit_validation_not_performed",
 		},
-		"message": "Config Git workflow result recording is planned only; no scaffold artifact, Git result, provider review, ProjectVersion pin, or live validation record is persisted.",
+		"message": "Config Git workflow result recording only reconciles sanitized audit operation metadata; no scaffold artifact, Git result, provider review, ProjectVersion pin write, or live validation record is persisted.",
 	}
 }
 

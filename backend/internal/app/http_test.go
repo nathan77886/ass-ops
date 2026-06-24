@@ -1910,6 +1910,152 @@ func TestConfigRepositoryScaffoldPreviewReconcilesProjectVersionPinEvidence(t *t
 	}
 }
 
+func TestConfigRepositoryScaffoldPreviewReconcilesGitWorkflowAuditEvidence(t *testing.T) {
+	preview := configRepositoryScaffoldPreview(
+		map[string]any{
+			"id":             "repo-1",
+			"name":           "Config Repository",
+			"repo_key":       "config",
+			"repo_role":      "config",
+			"default_branch": "main",
+		},
+		[]map[string]any{{
+			"id":               "remote-1",
+			"name":             "origin",
+			"remote_key":       "github",
+			"provider_type":    "github",
+			"remote_role":      "target",
+			"default_branch":   "main",
+			"latest_sha":       "abc123",
+			"last_sync_status": "completed",
+		}},
+		nil,
+		[]map[string]any{{
+			"id":                  "op-config-1",
+			"status":              "completed",
+			"created_at":          time.Now(),
+			"updated_at":          time.Now(),
+			"started_at":          time.Now(),
+			"finished_at":         time.Now(),
+			"operation_log_count": int64(2),
+			"remote_url":          "https://token@example.com/repo.git",
+			"provider_token":      "Bearer secret",
+			"commit_sha":          "abc123",
+			"branch_name":         "main",
+			"git_output":          "secret output",
+		}},
+	)
+
+	evidence := mapFromAny(preview["git_workflow_audit_evidence"])
+	if evidence["mode"] != "config_repository_git_workflow_audit_evidence" ||
+		evidence["evidence_state"] != "recorded" ||
+		evidence["has_audit_operations"] != true ||
+		evidence["sanitized_result_recorded"] != true ||
+		intFromAny(evidence["operation_count"], 0) != 1 ||
+		intFromAny(evidence["completed_count"], 0) != 1 ||
+		intFromAny(evidence["operation_log_count"], 0) != 2 ||
+		evidence["git_write_performed"] != false ||
+		evidence["external_call_made"] != false ||
+		evidence["file_content_included"] != false ||
+		evidence["secret_included"] != false ||
+		evidence["raw_git_output_recorded"] != false ||
+		evidence["raw_provider_response_recorded"] != false ||
+		evidence["project_version_pin_written"] != false ||
+		evidence["live_commit_validation_performed"] != false {
+		t.Fatalf("unexpected workflow audit evidence: %#v", evidence)
+	}
+	items := sliceOfMapsFromAny(evidence["items"])
+	if len(items) != 1 ||
+		items[0]["operation_run_id"] != "op-config-1" ||
+		items[0]["status"] != "completed" ||
+		intFromAny(items[0]["operation_log_count"], 0) != 2 ||
+		items[0]["git_commit_created"] != false ||
+		items[0]["git_push_performed"] != false ||
+		items[0]["project_version_pin_written"] != false {
+		t.Fatalf("unexpected workflow audit evidence items: %#v", items)
+	}
+	commitPlan := mapFromAny(preview["git_commit_plan"])
+	if commitPlan["audit_operation_observed"] != true ||
+		commitPlan["sanitized_result_observed"] != true ||
+		commitPlan["git_commit_created"] != false ||
+		commitPlan["git_push_performed"] != false ||
+		commitPlan["project_version_pin_written"] != false {
+		t.Fatalf("unexpected commit plan audit evidence: %#v", commitPlan)
+	}
+	resultPlan := mapFromAny(commitPlan["result_recording_plan"])
+	if resultPlan["result_recording_state"] != "audit_recorded" ||
+		resultPlan["result_recording_ready"] != true ||
+		resultPlan["result_written"] != true ||
+		resultPlan["operation_log_written"] != true ||
+		resultPlan["sanitized_audit_result_recorded"] != true ||
+		resultPlan["project_version_pin_written"] != false ||
+		resultPlan["config_commit_sha_recorded"] != false ||
+		resultPlan["live_validation_recorded"] != false ||
+		resultPlan["raw_git_output_recorded"] != false ||
+		resultPlan["raw_provider_response_recorded"] != false {
+		t.Fatalf("unexpected result plan audit evidence: %#v", resultPlan)
+	}
+	encoded, _ := json.Marshal(preview)
+	for _, forbidden := range []string{"https://token@", "Bearer secret", "secret output"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("workflow audit evidence leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestConfigRepositoryGitWorkflowAuditEvidenceTakesPriorityOverExistingPin(t *testing.T) {
+	preview := configRepositoryScaffoldPreview(
+		map[string]any{
+			"id":             "repo-1",
+			"name":           "Config Repository",
+			"repo_key":       "config",
+			"repo_role":      "config",
+			"default_branch": "main",
+		},
+		[]map[string]any{{
+			"id":               "remote-1",
+			"name":             "origin",
+			"remote_key":       "github",
+			"provider_type":    "github",
+			"remote_role":      "target",
+			"default_branch":   "main",
+			"latest_sha":       "abc123",
+			"last_sync_status": "completed",
+		}},
+		[]map[string]any{{
+			"id":      "version-1",
+			"version": "v0.1.0",
+			"metadata": map[string]any{"repositories": []any{
+				map[string]any{
+					"repo_key":          "config",
+					"repo_role":         "config",
+					"remote_id":         "remote-1",
+					"config_commit_sha": "abc123",
+				},
+			}},
+		}},
+		[]map[string]any{{
+			"id":                  "op-config-1",
+			"status":              "failed",
+			"operation_log_count": int64(1),
+		}},
+	)
+
+	commitPlan := mapFromAny(preview["git_commit_plan"])
+	if commitPlan["project_version_pin_observed"] != true ||
+		commitPlan["live_commit_validation_observed"] != true {
+		t.Fatalf("expected existing pin/live evidence: %#v", commitPlan)
+	}
+	resultPlan := mapFromAny(commitPlan["result_recording_plan"])
+	if resultPlan["result_recording_state"] != "failed" ||
+		resultPlan["result_recording_ready_reason"] != "config_git_commit_audit_operation_failed" ||
+		resultPlan["result_written"] != true ||
+		resultPlan["operation_log_written"] != true ||
+		resultPlan["project_version_pin_written"] != false {
+		t.Fatalf("failed workflow audit should take priority over existing pin/live evidence: %#v", resultPlan)
+	}
+}
+
 func TestConfigRepositoryProjectVersionPinEvidenceBoundaries(t *testing.T) {
 	repo := map[string]any{"id": "repo-config-a", "repo_key": "config-a", "repo_role": "config", "default_branch": "main"}
 	remotes := []map[string]any{{"id": "remote-1", "latest_sha": "abc123"}}
@@ -2182,6 +2328,10 @@ func TestGetConfigRepositoryScaffoldHandler(t *testing.T) {
 		WithArgs("project-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "version", "metadata", "created_at"}).
 			AddRow("version-1", "v0.1.0", []byte(`{"repositories":[{"repo_key":"config","repo_role":"config","remote_id":"remote-1","config_commit_sha":"abc123"}]}`), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.started_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='config\.git_commit'\s+AND op\.input->>'project_git_repository_id'=\$2`).
+		WithArgs("project-1", "repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "started_at", "finished_at", "operation_log_count"}).
+			AddRow("op-config-1", "completed", time.Now(), time.Now(), time.Now(), time.Now(), 2))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/git-repositories/repo-1/config-scaffold", nil)
 	req = withRouteParam(req, "id", "repo-1")
@@ -2216,6 +2366,23 @@ func TestGetConfigRepositoryScaffoldHandler(t *testing.T) {
 		commitPlan["project_version_pin_observed"] != true ||
 		commitPlan["live_commit_validation_observed"] != true {
 		t.Fatalf("payload git_commit_plan = %#v", commitPlan)
+	}
+	evidence := mapFromAny(payload["git_workflow_audit_evidence"])
+	if evidence["evidence_state"] != "recorded" ||
+		intFromAny(evidence["operation_count"], 0) != 1 ||
+		intFromAny(evidence["operation_log_count"], 0) != 2 ||
+		evidence["git_write_performed"] != false ||
+		evidence["external_call_made"] != false ||
+		evidence["file_content_included"] != false ||
+		evidence["secret_included"] != false {
+		t.Fatalf("payload git workflow audit evidence = %#v", evidence)
+	}
+	resultPlan := mapFromAny(commitPlan["result_recording_plan"])
+	if resultPlan["result_recording_state"] != "recorded" ||
+		resultPlan["sanitized_audit_result_recorded"] != true ||
+		resultPlan["operation_log_written"] != true ||
+		resultPlan["project_version_pin_written"] != false {
+		t.Fatalf("payload result plan = %#v", resultPlan)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

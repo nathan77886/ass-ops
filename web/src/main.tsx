@@ -223,6 +223,23 @@ function operationStatusColor(status: any) {
   }
 }
 
+function configWorkflowAuditEvidenceColor(status: any) {
+  switch (String(status || '').toLowerCase()) {
+    case 'recorded':
+      return 'green';
+    case 'waiting_for_worker':
+      return 'blue';
+    case 'failed':
+    case 'mixed_failed':
+      return 'red';
+    case 'canceled':
+    case 'cancelled':
+      return 'orange';
+    default:
+      return 'default';
+  }
+}
+
 function rowOptions(rows: AnyRow[] = [], labelKey = 'name') {
   return rows.map((row) => ({ value: row.id, label: row[labelKey] || row.name || row.id }));
 }
@@ -2880,6 +2897,11 @@ function ProjectDetail() {
                   {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag color="gold">result {configScaffold.data.git_commit_plan.result_recording_plan.result_recording_state || 'blocked'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.result_written ? 'result recorded' : 'no result record'}</Tag> : null}
                   {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.project_version_pin_written ? 'pin recorded' : 'no pin record'}</Tag> : null}
+                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag color={configWorkflowAuditEvidenceColor(configScaffold.data.git_workflow_audit_evidence.evidence_state)}>workflow audit {configScaffold.data.git_workflow_audit_evidence.evidence_state || 'unknown'}</Tag> : null}
+                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.git_workflow_audit_evidence.operation_count || 0} audit ops</Tag> : null}
+                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.git_workflow_audit_evidence.operation_log_count || 0} audit logs</Tag> : null}
+                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.active_count || 0) > 0 ? <Tag color="blue">{configScaffold.data.git_workflow_audit_evidence.active_count || 0} active audits</Tag> : null}
+                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.failed_count || 0) > 0 ? <Tag color="red">{configScaffold.data.git_workflow_audit_evidence.failed_count || 0} failed audits</Tag> : null}
                   {configScaffold.data.project_version_pin_evidence ? <Tag color={configScaffold.data.project_version_pin_evidence.pin_state === 'recorded' ? 'green' : 'default'}>pin evidence {configScaffold.data.project_version_pin_evidence.pin_state || 'not_recorded'}</Tag> : null}
                   {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.pinned_version_count || 0} pinned versions</Tag> : null}
                   {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.validated_version_count || 0} validated versions</Tag> : null}
