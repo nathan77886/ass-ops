@@ -254,6 +254,19 @@ function callbackEvidenceColor(status: any) {
   }
 }
 
+function tagResultEvidenceColor(status: any) {
+  switch (String(status || '').toLowerCase()) {
+    case 'recorded':
+      return 'green';
+    case 'failed':
+      return 'red';
+    case 'waiting_for_worker':
+      return 'blue';
+    default:
+      return 'default';
+  }
+}
+
 function rowOptions(rows: AnyRow[] = [], labelKey = 'name') {
   return rows.map((row) => ({ value: row.id, label: row[labelKey] || row.name || row.id }));
 }
@@ -3475,12 +3488,16 @@ function GitRemotes() {
             const liveResultPlan = plan.live_result_plan || {};
             const actionsRefreshPlan = plan.actions_refresh_plan || {};
             const resultPlan = plan.result_recording_plan || {};
+            const tagResultEvidence = plan.tag_result_evidence || resultPlan.tag_result_evidence || {};
             return <Space size={4} wrap>
               <Tag color={plan.rehearsal_state === 'observed' ? 'green' : plan.rehearsal_state === 'blocked' || plan.rehearsal_state === 'failed' ? 'red' : 'gold'}>{plan.rehearsal_state || 'planned'}</Tag>
               <Tag>{plan.live_remote_tag_success_observed ? 'remote success' : 'no remote success'}</Tag>
               <Tag color={liveResultPlan.live_result_state === 'planned' ? 'gold' : 'red'}>{liveResultPlan.repo_tag_run_result_written ? 'tag result saved' : liveResultPlan.live_result_state === 'failed' ? 'tag result failed' : 'tag result pending'}</Tag>
               <Tag color={actionsRefreshPlan.refresh_state === 'planned' ? 'gold' : 'red'}>{actionsRefreshPlan.github_actions_refresh_performed ? 'actions refreshed' : actionsRefreshPlan.refresh_state === 'failed' ? 'actions refresh failed' : 'actions refresh pending'}</Tag>
               <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
+              {resultPlan.result_recording_state ? <Tag color={tagResultEvidenceColor(resultPlan.result_recording_state)}>recording {resultPlan.result_recording_state}</Tag> : null}
+              {tagResultEvidence.waiting_for_worker ? <Tag color="blue">tag worker pending</Tag> : null}
+              {tagResultEvidence.live_remote_tag_failed_observed ? <Tag color="red">tag failure observed</Tag> : null}
             </Space>;
           } },
           { title: 'Tag', dataIndex: 'tag_name' },

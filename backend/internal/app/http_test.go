@@ -2503,7 +2503,11 @@ func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
 			"tag_name":         "v1.0.0",
 			"target_sha":       "abc123",
 			"target_remote_id": "remote-1",
+			"operation_run_id": "op-1",
 			"tag_message":      "do-not-serialize",
+			"remote_url":       "https://token@example.com/repo.git",
+			"provider_token":   "Bearer secret",
+			"git_output":       "secret git output",
 		},
 		{
 			"id":               "run-2",
@@ -2549,6 +2553,17 @@ func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
 		observedPlan["live_remote_tag_success_observed"] != true {
 		t.Fatalf("observed tag rehearsal plan = %#v", observedPlan)
 	}
+	observedEvidence := mapFromAny(observedPlan["tag_result_evidence"])
+	if observedEvidence["mode"] != "repo_tag_remote_result_evidence" ||
+		observedEvidence["evidence_state"] != "recorded" ||
+		observedEvidence["sanitized_result_recorded"] != true ||
+		observedEvidence["operation_run_bound"] != true ||
+		observedEvidence["git_tag_created"] != false ||
+		observedEvidence["git_push_performed"] != false ||
+		observedEvidence["remote_tag_lookup_performed"] != false ||
+		observedEvidence["github_actions_refresh_performed"] != false {
+		t.Fatalf("observed tag result evidence = %#v", observedEvidence)
+	}
 	assertRepoTagRemoteRehearsalPlanSafe(t, observedPlan)
 	plannedPlan := mapFromAny(items[1]["remote_rehearsal_plan"])
 	if plannedPlan["rehearsal_state"] != "planned" ||
@@ -2582,6 +2597,12 @@ func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
 		!containsString(stringSliceFromAny(failedPlan["blocked_reasons"]), "live_remote_tag_failed_observed") {
 		t.Fatalf("failed tag rehearsal plan = %#v", failedPlan)
 	}
+	failedEvidence := mapFromAny(failedPlan["tag_result_evidence"])
+	if failedEvidence["evidence_state"] != "failed" ||
+		failedEvidence["sanitized_result_recorded"] != true ||
+		failedEvidence["live_remote_tag_failed_observed"] != true {
+		t.Fatalf("failed tag result evidence = %#v", failedEvidence)
+	}
 	assertRepoTagRemoteRehearsalPlanSafe(t, failedPlan)
 	unknownPlan := mapFromAny(items[5]["remote_rehearsal_plan"])
 	if unknownPlan["rehearsal_state"] != "planned" ||
@@ -2590,10 +2611,12 @@ func TestRepoTagRemoteRehearsalPlan(t *testing.T) {
 		t.Fatalf("unknown status tag rehearsal plan = %#v", unknownPlan)
 	}
 	assertRepoTagRemoteRehearsalPlanSafe(t, unknownPlan)
-	encodedPlan, _ := json.Marshal(observedPlan)
-	for _, forbidden := range []string{"do-not-serialize", "git@github.com", "https://token@", "Bearer", "password"} {
-		if strings.Contains(string(encodedPlan), forbidden) {
-			t.Fatalf("tag rehearsal plan leaked %q: %s", forbidden, encodedPlan)
+	for _, plan := range []map[string]any{observedPlan, failedPlan} {
+		encodedPlan, _ := json.Marshal(plan)
+		for _, forbidden := range []string{"do-not-serialize", "git@github.com", "https://token@", "Bearer", "password", "abc123", "v1.0.0", "secret git output"} {
+			if strings.Contains(string(encodedPlan), forbidden) {
+				t.Fatalf("tag rehearsal plan leaked %q: %s", forbidden, encodedPlan)
+			}
 		}
 	}
 }
@@ -2606,7 +2629,6 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 		plan["git_push_performed"] != false ||
 		plan["github_actions_refresh_performed"] != false ||
 		plan["remote_tag_lookup_performed"] != false ||
-		plan["result_written"] != false ||
 		plan["contains_token"] != false ||
 		plan["contains_remote_url"] != false ||
 		plan["contains_ref_name"] != false ||
@@ -2636,6 +2658,22 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 	}
 	if tagFailed {
 		wantSubplanState = "failed"
+	}
+	wantResultState := "blocked"
+	wantResultReady := false
+	if tagObserved {
+		wantResultState = "recorded"
+		wantResultReady = true
+	}
+	if tagFailed {
+		wantResultState = "failed"
+		wantResultReady = true
+	}
+	if !tagObserved && !tagFailed && plan["tag_name_configured"] == true && plan["target_sha_configured"] == true && plan["target_remote_bound"] == true {
+		wantResultState = "waiting_for_worker"
+	}
+	if plan["result_written"] != wantResultReady {
+		t.Fatalf("tag rehearsal result_written = %v, want %v: %#v", plan["result_written"], wantResultReady, plan)
 	}
 	wantLiveResultReason := "live_remote_tag_success_not_observed"
 	if tagObserved {
@@ -2700,14 +2738,14 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 	}
 	resultPlan := mapFromAny(plan["result_recording_plan"])
 	if resultPlan["mode"] != "repo_tag_remote_rehearsal_result_recording_plan" ||
-		resultPlan["result_recording_state"] != "blocked" ||
-		resultPlan["result_recording_ready"] != false ||
-		resultPlan["recording_enabled"] != false ||
-		resultPlan["result_written"] != false ||
+		resultPlan["result_recording_state"] != wantResultState ||
+		resultPlan["result_recording_ready"] != wantResultReady ||
+		resultPlan["recording_enabled"] != wantResultReady ||
+		resultPlan["result_written"] != wantResultReady ||
 		resultPlan["repo_tag_run_updated"] != false ||
 		resultPlan["github_action_runs_synced"] != false ||
-		resultPlan["remote_tag_success_recorded"] != false ||
-		resultPlan["live_result_subplan_recorded"] != false ||
+		resultPlan["remote_tag_success_recorded"] != tagObserved ||
+		resultPlan["live_result_subplan_recorded"] != wantResultReady ||
 		resultPlan["actions_refresh_result_recorded"] != false ||
 		resultPlan["raw_git_output_recorded"] != false ||
 		resultPlan["raw_provider_response_recorded"] != false ||
@@ -2716,6 +2754,18 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 		resultPlan["contains_ref_name"] != false ||
 		resultPlan["contains_tag_message"] != false {
 		t.Fatalf("tag rehearsal result plan should stay disabled and redacted: %#v", resultPlan)
+	}
+	resultEvidence := mapFromAny(resultPlan["tag_result_evidence"])
+	if resultEvidence["mode"] != "repo_tag_remote_result_evidence" ||
+		resultEvidence["evidence_state"] != wantResultState && !(wantResultState == "blocked" && resultEvidence["evidence_state"] == "blocked") ||
+		resultEvidence["external_call_made"] != false ||
+		resultEvidence["raw_git_output_recorded"] != false ||
+		resultEvidence["raw_provider_response_recorded"] != false ||
+		resultEvidence["contains_token"] != false ||
+		resultEvidence["contains_remote_url"] != false ||
+		resultEvidence["contains_ref_name"] != false ||
+		resultEvidence["contains_tag_message"] != false {
+		t.Fatalf("tag result evidence should stay redacted: %#v", resultEvidence)
 	}
 	for _, field := range []string{"tag_run_status", "tag_name_configured", "target_sha_configured", "target_remote_bound", "live_remote_tag_success_observed", "live_remote_tag_failed_observed", "live_result_state", "github_actions_refresh_status", "github_actions_refresh_state"} {
 		if !containsString(stringSliceFromAny(resultPlan["result_diagnostic_fields"]), field) {
