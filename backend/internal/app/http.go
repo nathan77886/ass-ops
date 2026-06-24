@@ -18966,6 +18966,12 @@ func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]an
 	if auditReady {
 		executionState = "ready_for_approval"
 	}
+	kubeconfigBindingPlan := argoPodLogKubeconfigBindingPlan(prerequisiteState, namespaceReady, clusterReady)
+	kubeconfigReadinessPlan := argoPodLogNamespaceKubeconfigReadinessPlan(query, target, prerequisiteState, auditEvidence)
+	podScopePlan := argoPodLogPodScopePlan(query, target, prerequisiteState)
+	logCapturePlan := argoPodLogCapturePlan(prerequisiteState)
+	resultRecordingPlan := argoPodLogResultRecordingPlan(auditReady, auditEvidence, query, target, prerequisiteState)
+	liveLogStreamPlan := argoPodLogLiveLogStreamReviewPlan(query, target, prerequisiteState, auditEvidence, kubeconfigReadinessPlan, podScopePlan, logCapturePlan, resultRecordingPlan)
 	return map[string]any{
 		"mode":                          "pod_log_execution_plan_preview",
 		"execution_state":               executionState,
@@ -18999,12 +19005,104 @@ func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]an
 		"disabled_backends":             []string{"kubeconfig_binding", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "raw_log_body_recording"},
 		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret"},
 		"execution_sequence":            []string{"request_operation_approval", "bind_namespace_scoped_kubeconfig", "verify_target_scope", "confirm_pod_identity", "open_pod_log_stream", "redact_log_body", "record_sanitized_result"},
-		"kubeconfig_binding_plan":       argoPodLogKubeconfigBindingPlan(prerequisiteState, namespaceReady, clusterReady),
-		"kubeconfig_readiness_plan":     argoPodLogNamespaceKubeconfigReadinessPlan(query, target, prerequisiteState, auditEvidence),
-		"pod_scope_plan":                argoPodLogPodScopePlan(query, target, prerequisiteState),
-		"log_capture_plan":              argoPodLogCapturePlan(prerequisiteState),
-		"result_recording_plan":         argoPodLogResultRecordingPlan(auditReady, auditEvidence, query, target, prerequisiteState),
+		"kubeconfig_binding_plan":       kubeconfigBindingPlan,
+		"kubeconfig_readiness_plan":     kubeconfigReadinessPlan,
+		"pod_scope_plan":                podScopePlan,
+		"log_capture_plan":              logCapturePlan,
+		"live_log_stream_plan":          liveLogStreamPlan,
+		"result_recording_plan":         resultRecordingPlan,
 		"message":                       "Pod log live execution remains disabled; metadata-ready requests can create an approval-gated audit job with sanitized result only.",
+	}
+}
+
+func argoPodLogLiveLogStreamReviewPlan(query, target map[string]any, prerequisiteState string, auditEvidence, kubeconfigReadinessPlan, podScopePlan, logCapturePlan, resultRecordingPlan map[string]any) map[string]any {
+	evidenceState := cleanPreviewString(auditEvidence["evidence_state"])
+	if evidenceState == "" {
+		evidenceState = "not_requested"
+	}
+	streamState := "metadata_blocked"
+	if prerequisiteState == "metadata_available" {
+		streamState = "ready_for_approval"
+	}
+	switch evidenceState {
+	case "waiting_for_worker", "failed", "canceled", "unknown":
+		streamState = "audit_" + evidenceState
+	case "recorded":
+		if prerequisiteState == "metadata_available" {
+			streamState = "ready_for_operator_review"
+		}
+	}
+	streamReadyForReview := streamState == "ready_for_operator_review" &&
+		boolOnlyFromAny(auditEvidence["sanitized_result_recorded"]) &&
+		kubeconfigReadinessPlan["readiness_state"] == "audit_result_ready_for_binding_review" &&
+		podScopePlan["scope_state"] == "planned" &&
+		logCapturePlan["capture_state"] == "planned" &&
+		boolOnlyFromAny(resultRecordingPlan["result_written"])
+	blockedReasons := []string{"live_log_backend_disabled", "namespace_scoped_kubeconfig_not_bound", "live_log_stream_not_opened"}
+	if prerequisiteState != "metadata_available" {
+		blockedReasons = append(blockedReasons, "metadata_incomplete")
+	}
+	if evidenceState == "not_requested" {
+		blockedReasons = append(blockedReasons, "pod_log_audit_not_requested")
+	}
+	if evidenceState == "waiting_for_worker" {
+		blockedReasons = append(blockedReasons, "pod_log_audit_worker_still_running")
+	}
+	if evidenceState == "failed" {
+		blockedReasons = append(blockedReasons, "pod_log_audit_worker_failed")
+	}
+	if evidenceState == "canceled" {
+		blockedReasons = append(blockedReasons, "pod_log_audit_worker_canceled")
+	}
+	if evidenceState == "unknown" {
+		blockedReasons = append(blockedReasons, "pod_log_audit_worker_status_unknown")
+	}
+	if !boolOnlyFromAny(auditEvidence["sanitized_result_recorded"]) {
+		blockedReasons = append(blockedReasons, "sanitized_log_result_not_recorded")
+	}
+	return map[string]any{
+		"mode":                              "pod_log_live_log_stream_review_plan",
+		"stream_state":                      streamState,
+		"stream_ready_for_review":           streamReadyForReview,
+		"metadata_ready":                    prerequisiteState == "metadata_available",
+		"audit_operation_observed":          boolOnlyFromAny(auditEvidence["has_audit_operations"]),
+		"sanitized_result_observed":         boolOnlyFromAny(auditEvidence["sanitized_result_recorded"]),
+		"kubeconfig_binding_review_ready":   kubeconfigReadinessPlan["readiness_ready"] == true,
+		"namespace_scope_ready":             kubeconfigReadinessPlan["namespace_scope_ready"] == true,
+		"pod_identity_present":              kubeconfigReadinessPlan["pod_identity_present"] == true,
+		"pod_scope_review_ready":            podScopePlan["scope_state"] == "planned",
+		"log_capture_review_ready":          logCapturePlan["capture_state"] == "planned",
+		"result_recording_observed":         boolOnlyFromAny(resultRecordingPlan["result_written"]),
+		"namespace_scoped_kubeconfig_bound": false,
+		"kubeconfig_secret_read":            false,
+		"kubeconfig_bound":                  false,
+		"kubernetes_client_created":         false,
+		"token_subject_review_performed":    false,
+		"rbac_read_logs_review_performed":   false,
+		"kubernetes_api_call":               false,
+		"argocd_api_call":                   false,
+		"kubectl_command_invoked":           false,
+		"live_log_stream_opened":            false,
+		"log_stream_opened":                 false,
+		"log_body_included":                 false,
+		"redacted_log_body_included":        false,
+		"raw_response_recorded":             false,
+		"result_write_enabled":              false,
+		"external_call_made":                false,
+		"contains_kubeconfig":               false,
+		"contains_cluster_token":            false,
+		"contains_authorization_header":     false,
+		"contains_log_body":                 false,
+		"contains_redacted_log_body":        false,
+		"contains_raw_kubernetes_response":  false,
+		"required_review_fields":            []string{"operation_run_id", "approval_request_id", "deployment_target_id", "cluster_name", "namespace", "pod_name", "container_name", "tail_lines", "since_seconds", "kubeconfig_binding_status", "pod_scope_status", "log_redaction_status", "operator_review_status"},
+		"required_controls":                 []string{"operation_approval", "namespace_scoped_kubeconfig_secret", "token_subject_review", "rbac_read_logs_review", "namespace_confirmation", "pod_identity_confirmation", "container_scope_confirmation", "log_line_redaction", "result_redaction_review"},
+		"disabled_backends":                 []string{"kubeconfig_secret_binding", "kubernetes_client_create", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "live_log_stream_open", "log_body_storage", "redacted_log_body_storage"},
+		"suppressed_fields":                 []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "log_body", "redacted_log_body", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret", "pod_annotations"},
+		"blocked_reasons":                   blockedReasons,
+		"execution_blockers":                []string{"live_log_backend_disabled", "namespace_scoped_kubeconfig_not_bound", "pod_scope_not_verified", "result_redaction_review_not_approved"},
+		"target_ref":                        map[string]any{"deployment_target_id": target["id"], "cluster_name": target["cluster_name"], "namespace": target["namespace"], "pod_name": query["pod_name"], "container_name": query["container_name"], "tail_lines": query["tail_lines"], "since_seconds": query["since_seconds"]},
+		"message":                           "Live pod-log stream review is metadata-only; no kubeconfig, Kubernetes client, log stream, raw body, redacted body, or result row is produced here.",
 	}
 }
 
@@ -19247,7 +19345,7 @@ func argoPodLogResultRecordingPlan(auditReady bool, evidence, query, target map[
 		recordingState = "planned"
 		readyReason = "sanitized_audit_result_ready_after_worker"
 	}
-	if boolOnlyFromAny(evidence["has_audit_operations"]) {
+	if auditReady && boolOnlyFromAny(evidence["has_audit_operations"]) {
 		recordingState = cleanPreviewString(evidence["evidence_state"])
 		if recordingState == "waiting_for_worker" {
 			readyReason = "pod_log_audit_worker_still_running"
@@ -19261,7 +19359,7 @@ func argoPodLogResultRecordingPlan(auditReady bool, evidence, query, target map[
 			readyReason = "pod_log_audit_worker_status_unknown"
 		}
 	}
-	resultObserved := boolOnlyFromAny(evidence["sanitized_result_recorded"])
+	resultObserved := auditReady && boolOnlyFromAny(evidence["sanitized_result_recorded"])
 	blockedReasons := []string{"live_log_backend_disabled", "sanitized_log_result_not_recorded"}
 	if resultObserved {
 		blockedReasons = []string{"live_log_backend_disabled"}
@@ -19273,7 +19371,7 @@ func argoPodLogResultRecordingPlan(auditReady bool, evidence, query, target map[
 		"recording_ready_reason":        readyReason,
 		"recording_enabled":             auditReady,
 		"result_written":                resultObserved,
-		"operation_log_written":         intFromAny(evidence["operation_log_count"], 0) > 0,
+		"operation_log_written":         auditReady && intFromAny(evidence["operation_log_count"], 0) > 0,
 		"canonical_asset_sync_queued":   auditReady,
 		"status_snapshot_written":       auditReady,
 		"audit_operation_observed":      boolOnlyFromAny(evidence["has_audit_operations"]),
@@ -19309,7 +19407,7 @@ func argoPodLogNamespaceKubeconfigReadinessPlan(query, target map[string]any, pr
 		readinessState = "ready_for_approval"
 		readinessReason = "namespace_scoped_kubeconfig_binding_ready_for_operator_approval"
 	}
-	if hasAudit {
+	if metadataReady && hasAudit {
 		switch evidenceState {
 		case "waiting_for_worker":
 			readinessState = "waiting_for_worker"

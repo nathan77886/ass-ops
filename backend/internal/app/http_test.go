@@ -599,6 +599,26 @@ func TestArgoPodLogQueryPreviewReportsMissingTargetMetadata(t *testing.T) {
 	assertPodLogExecutionPlanSafe(t, executionPlan)
 }
 
+func TestArgoPodLogQueryPreviewKeepsRecordedEvidenceMetadataBlocked(t *testing.T) {
+	preview := argoPodLogQueryPreview("", "", 0, 60, map[string]any{"id": "target-1", "name": "prod"}, []map[string]any{
+		{
+			"id":                  "op-pod-logs",
+			"status":              "completed",
+			"operation_log_count": int64(1),
+		},
+	})
+	executionPlan := mapFromAny(mapFromAny(preview["retrieval_plan"])["execution_plan"])
+	liveStreamPlan := mapFromAny(executionPlan["live_log_stream_plan"])
+	if executionPlan["prerequisite_state"] != "metadata_blocked" ||
+		liveStreamPlan["stream_state"] != "metadata_blocked" ||
+		liveStreamPlan["stream_ready_for_review"] != false ||
+		liveStreamPlan["sanitized_result_observed"] != true ||
+		!containsString(stringSliceFromAny(liveStreamPlan["blocked_reasons"]), "metadata_incomplete") {
+		t.Fatalf("recorded evidence with missing metadata should not make live stream review ready: execution=%#v live=%#v", executionPlan, liveStreamPlan)
+	}
+	assertPodLogExecutionPlanSafe(t, executionPlan)
+}
+
 func TestArgoPodLogQueryPreviewReconcilesAuditEvidence(t *testing.T) {
 	preview := argoPodLogQueryPreview("api-7d9f", "web", 500, 30, map[string]any{
 		"id":           "target-1",
@@ -646,6 +666,18 @@ func TestArgoPodLogQueryPreviewReconcilesAuditEvidence(t *testing.T) {
 		resultPlan["log_body_included"] != false ||
 		resultPlan["raw_response_included"] != false {
 		t.Fatalf("unexpected pod log result plan: %#v", resultPlan)
+	}
+	liveStreamPlan := mapFromAny(executionPlan["live_log_stream_plan"])
+	if liveStreamPlan["stream_state"] != "ready_for_operator_review" ||
+		liveStreamPlan["stream_ready_for_review"] != true ||
+		liveStreamPlan["audit_operation_observed"] != true ||
+		liveStreamPlan["sanitized_result_observed"] != true ||
+		liveStreamPlan["result_recording_observed"] != true ||
+		liveStreamPlan["live_log_stream_opened"] != false ||
+		liveStreamPlan["log_body_included"] != false ||
+		liveStreamPlan["redacted_log_body_included"] != false ||
+		liveStreamPlan["contains_kubeconfig"] != false {
+		t.Fatalf("unexpected pod log live stream review plan: %#v", liveStreamPlan)
 	}
 	assertPodLogExecutionPlanSafe(t, executionPlan)
 	encoded, _ := json.Marshal(preview)
@@ -1017,7 +1049,7 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		t.Fatalf("pod log kubeconfig readiness plan should stay disabled and redacted: %#v", kubeconfigReadinessPlan)
 	}
 	evidence := mapFromAny(executionPlan["audit_evidence"])
-	if boolOnlyFromAny(evidence["has_audit_operations"]) {
+	if boolOnlyFromAny(evidence["has_audit_operations"]) && executionPlan["prerequisite_state"] == "metadata_available" {
 		if evidence["evidence_state"] == "recorded" {
 			if kubeconfigReadinessPlan["readiness_state"] != "audit_result_ready_for_binding_review" || kubeconfigReadinessPlan["readiness_ready"] != true {
 				t.Fatalf("recorded audit evidence should be ready for binding review: %#v", kubeconfigReadinessPlan)
@@ -1111,6 +1143,78 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 			t.Fatalf("log capture suppressed field missing %q: %#v", field, logCapturePlan["suppressed_fields"])
 		}
 	}
+	hasAuditEvidence := boolOnlyFromAny(evidence["has_audit_operations"])
+	hasSanitizedResult := boolOnlyFromAny(evidence["sanitized_result_recorded"])
+	liveStreamPlan := mapFromAny(executionPlan["live_log_stream_plan"])
+	if liveStreamPlan["mode"] != "pod_log_live_log_stream_review_plan" ||
+		liveStreamPlan["namespace_scoped_kubeconfig_bound"] != false ||
+		liveStreamPlan["kubeconfig_secret_read"] != false ||
+		liveStreamPlan["kubeconfig_bound"] != false ||
+		liveStreamPlan["kubernetes_client_created"] != false ||
+		liveStreamPlan["token_subject_review_performed"] != false ||
+		liveStreamPlan["rbac_read_logs_review_performed"] != false ||
+		liveStreamPlan["kubernetes_api_call"] != false ||
+		liveStreamPlan["argocd_api_call"] != false ||
+		liveStreamPlan["kubectl_command_invoked"] != false ||
+		liveStreamPlan["live_log_stream_opened"] != false ||
+		liveStreamPlan["log_stream_opened"] != false ||
+		liveStreamPlan["log_body_included"] != false ||
+		liveStreamPlan["redacted_log_body_included"] != false ||
+		liveStreamPlan["raw_response_recorded"] != false ||
+		liveStreamPlan["result_write_enabled"] != false ||
+		liveStreamPlan["external_call_made"] != false ||
+		liveStreamPlan["contains_kubeconfig"] != false ||
+		liveStreamPlan["contains_cluster_token"] != false ||
+		liveStreamPlan["contains_authorization_header"] != false ||
+		liveStreamPlan["contains_log_body"] != false ||
+		liveStreamPlan["contains_redacted_log_body"] != false ||
+		liveStreamPlan["contains_raw_kubernetes_response"] != false {
+		t.Fatalf("pod log live stream review plan should stay disabled and redacted: %#v", liveStreamPlan)
+	}
+	if executionPlan["prerequisite_state"] == "metadata_available" {
+		if hasSanitizedResult {
+			if liveStreamPlan["stream_state"] != "ready_for_operator_review" ||
+				liveStreamPlan["stream_ready_for_review"] != true ||
+				liveStreamPlan["audit_operation_observed"] != true ||
+				liveStreamPlan["sanitized_result_observed"] != true ||
+				liveStreamPlan["result_recording_observed"] != true {
+				t.Fatalf("recorded sanitized evidence should make live stream review ready: %#v", liveStreamPlan)
+			}
+		} else if boolOnlyFromAny(evidence["has_audit_operations"]) {
+			if liveStreamPlan["stream_ready_for_review"] != false {
+				t.Fatalf("non-recorded audit evidence should not make live stream review ready: %#v", liveStreamPlan)
+			}
+		} else if liveStreamPlan["stream_state"] != "ready_for_approval" || liveStreamPlan["stream_ready_for_review"] != false {
+			t.Fatalf("metadata-ready live stream review should wait for approval/audit evidence: %#v", liveStreamPlan)
+		}
+	} else if liveStreamPlan["stream_state"] != "metadata_blocked" || liveStreamPlan["stream_ready_for_review"] != false || liveStreamPlan["metadata_ready"] != false {
+		t.Fatalf("metadata-blocked live stream review should stay blocked: %#v", liveStreamPlan)
+	}
+	for _, backend := range []string{"kubeconfig_secret_binding", "kubernetes_client_create", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "live_log_stream_open", "log_body_storage", "redacted_log_body_storage"} {
+		if !containsString(stringSliceFromAny(liveStreamPlan["disabled_backends"]), backend) {
+			t.Fatalf("live stream review disabled backend missing %q: %#v", backend, liveStreamPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "log_body", "redacted_log_body", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret", "pod_annotations"} {
+		if !containsString(stringSliceFromAny(liveStreamPlan["suppressed_fields"]), field) {
+			t.Fatalf("live stream review suppressed field missing %q: %#v", field, liveStreamPlan["suppressed_fields"])
+		}
+	}
+	for _, field := range []string{"operation_run_id", "approval_request_id", "deployment_target_id", "cluster_name", "namespace", "pod_name", "container_name", "tail_lines", "since_seconds", "kubeconfig_binding_status", "pod_scope_status", "log_redaction_status", "operator_review_status"} {
+		if !containsString(stringSliceFromAny(liveStreamPlan["required_review_fields"]), field) {
+			t.Fatalf("live stream review required field missing %q: %#v", field, liveStreamPlan["required_review_fields"])
+		}
+	}
+	for _, control := range []string{"operation_approval", "namespace_scoped_kubeconfig_secret", "token_subject_review", "rbac_read_logs_review", "namespace_confirmation", "pod_identity_confirmation", "container_scope_confirmation", "log_line_redaction", "result_redaction_review"} {
+		if !containsString(stringSliceFromAny(liveStreamPlan["required_controls"]), control) {
+			t.Fatalf("live stream review required control missing %q: %#v", control, liveStreamPlan["required_controls"])
+		}
+	}
+	for _, reason := range []string{"live_log_backend_disabled", "namespace_scoped_kubeconfig_not_bound", "live_log_stream_not_opened"} {
+		if !containsString(stringSliceFromAny(liveStreamPlan["blocked_reasons"]), reason) {
+			t.Fatalf("live stream review blocked reason missing %q: %#v", reason, liveStreamPlan["blocked_reasons"])
+		}
+	}
 	approvalPlan := mapFromAny(executionPlan["approval_request_plan"])
 	if approvalPlan["mode"] != "pod_log_approval_request_plan" ||
 		approvalPlan["operation_created"] != false ||
@@ -1148,8 +1252,6 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		}
 	}
 	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
-	hasAuditEvidence := boolOnlyFromAny(evidence["has_audit_operations"])
-	hasSanitizedResult := boolOnlyFromAny(evidence["sanitized_result_recorded"])
 	if resultPlan["log_body_included"] != false ||
 		resultPlan["redacted_log_body_included"] != false ||
 		resultPlan["kubeconfig_binding_recorded"] != false ||
@@ -1160,12 +1262,19 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		resultPlan["authorization_header_included"] != false {
 		t.Fatalf("pod log result recording plan should keep all result flags false: %#v", resultPlan)
 	}
-	if hasAuditEvidence {
+	if hasAuditEvidence && executionPlan["prerequisite_state"] == "metadata_available" {
 		if resultPlan["audit_operation_observed"] != true ||
 			resultPlan["result_written"] != hasSanitizedResult ||
 			resultPlan["sanitized_result_observed"] != hasSanitizedResult ||
 			resultPlan["recording_state"] != evidence["evidence_state"] {
 			t.Fatalf("pod log result recording plan should reflect sanitized evidence only: result=%#v evidence=%#v", resultPlan, evidence)
+		}
+	} else if hasAuditEvidence {
+		if resultPlan["result_written"] != false ||
+			resultPlan["operation_log_written"] != false ||
+			resultPlan["sanitized_result_observed"] != false ||
+			resultPlan["recording_state"] != "blocked" {
+			t.Fatalf("metadata-blocked pod log result recording plan should not promote audit evidence into result state: %#v", resultPlan)
 		}
 	} else if resultPlan["result_written"] != false || resultPlan["operation_log_written"] != false {
 		t.Fatalf("pod log result recording plan should not report writes without evidence: %#v", resultPlan)
