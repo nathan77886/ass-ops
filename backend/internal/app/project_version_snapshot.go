@@ -251,7 +251,11 @@ func projectVersionValidationPreviewFromDB(ctx context.Context, db sqlx.ExtConte
 	if err != nil {
 		return nil, fmt.Errorf("loading project version refresh operations: %w", err)
 	}
-	return projectVersionValidationPreview(version, remotes, tagRuns, actionRuns, argoApps, argoConnections, refreshOperations), nil
+	backgroundOperations, err := queryProjectVersionValidationRerunOperations(ctx, db, versionID)
+	if err != nil {
+		return nil, fmt.Errorf("loading project version validation rerun operations: %w", err)
+	}
+	return projectVersionValidationPreview(version, remotes, tagRuns, actionRuns, argoApps, argoConnections, refreshOperations, backgroundOperations), nil
 }
 
 func projectVersionAssetID(ctx context.Context, db sqlx.ExtContext, versionID string) (string, error) {

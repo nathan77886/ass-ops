@@ -240,7 +240,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "ssh.exec", "ssh.verify", "argo.apps.sync", "argo.pod_logs", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute", "config.git_commit":
+	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "ssh.exec", "ssh.verify", "argo.apps.sync", "argo.pod_logs", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute", "config.git_commit", "project_version.validation_rerun":
 		return true
 	default:
 		return false
@@ -611,6 +611,21 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 			return fmt.Errorf("syncing canonical assets for running config Git workflow audit: %w", err)
 		}
 		return nil
+	case "project_version.validation_rerun":
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
+			VALUES ($1, $2, 'info', 'project version validation rerun worker started', jsonb_build_object(
+				'validation_source', 'local_synced_database_state',
+				'external_call_made', false,
+				'provider_api_called', false,
+				'raw_provider_response_recorded', false
+			))`, opID, job["id"]); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+			return fmt.Errorf("syncing canonical assets for running project version validation rerun: %w", err)
+		}
+		return nil
 	case "project.create_from_template":
 		_, err := db.ExecContext(ctx, "UPDATE project_template_runs SET status='running', started_at=COALESCE(started_at, now()), updated_at=now() WHERE operation_run_id=$1", opID)
 		return err
@@ -690,6 +705,8 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 		return w.executeArgoPodLogAudit(ctx, opID, result)
 	case "config.git_commit":
 		return w.executeConfigGitWorkflowAudit(ctx, opID, result)
+	case "project_version.validation_rerun":
+		return w.executeProjectVersionValidationRerun(ctx, opID, result)
 	case "ssh.exec", "ssh.verify":
 		execution, err := NewSSHExecutor().Execute(ctx, w.store.DB, opID)
 		mergeSSHExecutionResult(result, execution)
@@ -855,6 +872,26 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed config Git workflow audit: %w", err)
+		}
+		return nil
+	case "project_version.validation_rerun":
+		safeError := "project version validation rerun worker failed; details are withheld from operation logs"
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
+			VALUES ($1, $2, 'error', 'project version validation rerun worker failed', jsonb_build_object(
+				'error', $3,
+				'validation_source', 'local_synced_database_state',
+				'external_call_made', false,
+				'provider_api_called', false,
+				'git_fetch_performed', false,
+				'argocd_api_called', false,
+				'raw_provider_response_recorded', false,
+				'secret_included', false
+			))`, opID, job["id"], safeError); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed project version validation rerun: %w", err)
 		}
 		return nil
 	case "ssh.exec", "ssh.verify":
@@ -1108,6 +1145,32 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 			return fmt.Errorf("syncing canonical assets for completed config Git workflow audit: %w", err)
 		}
 		return nil
+	case "project_version.validation_rerun":
+		data, err := jsonParam(map[string]any{
+			"project_version_id":             result["project_version_id"],
+			"recording_state":                result["recording_state"],
+			"validation_snapshot_written":    result["validation_snapshot_written"],
+			"asset_status_snapshot_written":  result["asset_status_snapshot_written"],
+			"validation_source":              "local_synced_database_state",
+			"external_call_made":             false,
+			"provider_api_called":            false,
+			"git_fetch_performed":            false,
+			"argocd_api_called":              false,
+			"raw_provider_response_recorded": false,
+			"secret_included":                false,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
+			VALUES ($1, $2, 'info', 'project version validation rerun completed from local synced state', $3::jsonb)`, opID, job["id"], data); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed project version validation rerun: %w", err)
+		}
+		return nil
 	case "ssh.exec", "ssh.verify":
 		stdout, stderr := gitExecutionOutputFromMap(result)
 		exitCode := nullableIntFromMap(result, "exit_code")
@@ -1289,6 +1352,45 @@ func (w *ControlWorker) executeConfigGitWorkflowAudit(ctx context.Context, opID 
 	result["suppressed_fields"] = []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "commit_sha", "provider_response_body", "provider_response_headers"}
 	result["disabled_backends"] = []string{"git_clone", "git_fetch", "file_write", "git_commit", "git_push", "pull_request_create", "project_version_update", "live_commit_validation"}
 	result["message"] = "config git workflow audit completed without Git mutation"
+	return result, nil
+}
+
+func (w *ControlWorker) executeProjectVersionValidationRerun(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
+	op, err := queryOne(ctx, w.store.DB, `
+		SELECT input
+		FROM operation_runs
+		WHERE id=$1 AND operation_type='project_version.validation_rerun'`, opID)
+	if err != nil {
+		return result, fmt.Errorf("loading project version validation rerun operation: %w", err)
+	}
+	input := mapFromAny(op["input"])
+	versionID := cleanOptionalID(stringFromMap(input, "project_version_id"))
+	if versionID == "" {
+		return result, fmt.Errorf("project version validation rerun operation is missing project_version_id")
+	}
+	recording, err := RecordProjectVersionValidationSnapshot(ctx, w.store, ProjectVersionValidationSnapshotOptions{
+		ProjectVersionID:       versionID,
+		RequireRecordedRefresh: true,
+		RecordingTrigger:       "standalone_background_validation_rerun",
+	})
+	if err != nil {
+		return result, err
+	}
+	for key, value := range recording {
+		result[key] = value
+	}
+	result["project_version_id"] = versionID
+	result["operation_id"] = opID
+	result["operation_result"] = recording
+	result["validation_source"] = "local_synced_database_state"
+	result["standalone_background_worker"] = true
+	result["external_call_made"] = false
+	result["provider_api_called"] = false
+	result["git_fetch_performed"] = false
+	result["argocd_api_called"] = false
+	result["raw_provider_response_recorded"] = false
+	result["secret_included"] = false
+	result["suppressed_fields"] = []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"}
 	return result, nil
 }
 

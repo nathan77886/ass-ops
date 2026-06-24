@@ -2914,10 +2914,12 @@ function ProjectDetail() {
   const [versionOpen, setVersionOpen] = useState(false);
   const [versionValidation, setVersionValidation] = useState<AnyRow>();
   const [versionRefreshResult, setVersionRefreshResult] = useState<AnyRow>();
+  const [versionValidationRerunResult, setVersionValidationRerunResult] = useState<AnyRow>();
   const [versionValidationAutoReload, setVersionValidationAutoReload] = useState<AnyRow>();
   const versionValidationAutoReloadAttempts = useRef(0);
   const [validatingVersionID, setValidatingVersionID] = useState<string>();
   const [refreshingVersionID, setRefreshingVersionID] = useState<string>();
+  const [rerunningValidationID, setRerunningValidationID] = useState<string>();
   const [recordingValidationSnapshotID, setRecordingValidationSnapshotID] = useState<string>();
   const [configPinningVersionID, setConfigPinningVersionID] = useState<string>();
   const [configInitializing, setConfigInitializing] = useState(false);
@@ -3012,6 +3014,31 @@ function ProjectDetail() {
       message.error(error.message || 'Request failed');
     } finally {
       setRefreshingVersionID(undefined);
+    }
+  }
+  async function requestValidationRerun(row: AnyRow) {
+    setRerunningValidationID(row.id);
+    try {
+      const result = await api(`/api/project-versions/${row.id}/validation-rerun`, { method: 'POST', body: '{}' });
+      setVersionValidationRerunResult(result);
+      setVersionValidationAutoReload({
+        version_id: row.id,
+        status: 'polling',
+        attempts: 0,
+        active_count: result.background_worker_enqueued ? 1 : 0,
+        operation_count: result.operation_enqueued ? 1 : 0,
+        validation_rerun_status: result.background_worker_enqueued ? 'waiting_for_workers' : 'not_requested'
+      });
+      versionValidationAutoReloadAttempts.current = 0;
+      if (versionValidation?.version_id === row.id) {
+        const validation = await api(`/api/project-versions/${row.id}/validation`);
+        setVersionValidation(validation);
+      }
+      message.success(result.background_worker_enqueued ? 'Validation rerun queued' : 'Validation rerun reviewed');
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setRerunningValidationID(undefined);
     }
   }
   async function pinConfigCommit(row: AnyRow) {
@@ -3337,8 +3364,18 @@ function ProjectDetail() {
                     <Tag>{versionRefreshResult.validation_auto_reload_supported ? 'auto reload supported' : 'manual reload'}</Tag>
                   </Space>
                 )}
+                {versionValidationRerunResult && (
+                  <Space wrap>
+                    <Tag color={versionValidationRerunResult.background_worker_enqueued ? 'blue' : 'default'}>{versionValidationRerunResult.background_worker_enqueued ? 'validation rerun queued' : 'validation rerun not queued'}</Tag>
+                    <Tag>{versionValidationRerunResult.operation_run_id || 'no operation'}</Tag>
+                    <Tag>{versionValidationRerunResult.validation_snapshot_write_requested ? 'snapshot requested' : 'snapshot not requested'}</Tag>
+                    <Tag>{versionValidationRerunResult.external_call_made ? 'external call' : 'local synced state'}</Tag>
+                    <Tag>{versionValidationRerunResult.raw_provider_response_recorded ? 'raw response recorded' : 'no raw response'}</Tag>
+                  </Space>
+                )}
                 <JSONBlock value={versionValidation} />
                 {versionRefreshResult ? <JSONBlock value={versionRefreshResult} /> : null}
+                {versionValidationRerunResult ? <JSONBlock value={versionValidationRerunResult} /> : null}
                 {configPinResult ? <JSONBlock value={configPinResult} /> : null}
                 {versionSnapshotResult ? <JSONBlock value={versionSnapshotResult} /> : null}
               </Space>
@@ -3359,6 +3396,7 @@ function ProjectDetail() {
                 render: (_, row) => (
                   <Space>
                     <Button size="small" loading={validatingVersionID === row.id} onClick={() => validateVersion(row)}>Validate</Button>
+                    <Button size="small" loading={rerunningValidationID === row.id} onClick={() => requestValidationRerun(row)}>Background rerun</Button>
                     <Button size="small" disabled={!configRepo} loading={configPinningVersionID === row.id} onClick={() => pinConfigCommit(row)}>Pin config</Button>
                   </Space>
                 )

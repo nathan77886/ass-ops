@@ -100,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/project-versions/{id}", s.getProjectVersion)
 		r.Get("/api/project-versions/{id}/validation", s.getProjectVersionValidation)
 		r.Post("/api/project-versions/{id}/refresh", s.refreshProjectVersionProviders)
+		r.Post("/api/project-versions/{id}/validation-rerun", s.requestProjectVersionValidationRerun)
 		r.Post("/api/project-versions/{id}/validation-snapshot", s.recordProjectVersionValidationSnapshot)
 		r.Post("/api/project-versions/{id}/validation-rerun-snapshot", s.recordProjectVersionValidationRerunSnapshot)
 		r.Post("/api/project-versions/{id}/pin-config-commit", s.pinProjectVersionConfigCommit)
@@ -2405,7 +2406,12 @@ func (s *Server) getProjectVersionValidation(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "could not load project version refresh operations")
 		return
 	}
-	writeJSON(w, http.StatusOK, projectVersionValidationPreview(version, remotes, tagRuns, actionRuns, argoApps, argoConnections, refreshOperations))
+	backgroundOperations, err := queryProjectVersionValidationRerunOperations(r.Context(), s.store.DB, fmt.Sprint(version["id"]))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load project version validation rerun operations")
+		return
+	}
+	writeJSON(w, http.StatusOK, projectVersionValidationPreview(version, remotes, tagRuns, actionRuns, argoApps, argoConnections, refreshOperations, backgroundOperations))
 }
 
 func (s *Server) refreshProjectVersionProviders(w http.ResponseWriter, r *http.Request) {
@@ -2450,6 +2456,49 @@ func (s *Server) refreshProjectVersionProviders(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusCreated, result)
+}
+
+func (s *Server) requestProjectVersionValidationRerun(w http.ResponseWriter, r *http.Request) {
+	versionID := chi.URLParam(r, "id")
+	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: projectID}, "project_version.refresh") {
+		return
+	}
+	version, err := queryOne(r.Context(), s.store.DB, `
+		SELECT id, project_id, version
+		FROM project_versions
+		WHERE id=$1`, versionID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start validation rerun transaction")
+		return
+	}
+	defer tx.Rollback()
+	result, err := s.enqueueProjectVersionValidationRerunTx(r.Context(), tx, version, currentUser(r).ID)
+	if errors.Is(err, errProjectVersionRefreshAlreadyQueued) {
+		writeError(w, http.StatusConflict, "project version validation rerun is already queued or running")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not enqueue validation rerun")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project_version.validation_rerun") {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit validation rerun request")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, result)
 }
 
 func (s *Server) pinProjectVersionConfigCommit(w http.ResponseWriter, r *http.Request) {
@@ -2682,6 +2731,69 @@ func (s *Server) enqueueProjectVersionRefreshOperationsTx(ctx context.Context, t
 	}, nil
 }
 
+func (s *Server) enqueueProjectVersionValidationRerunTx(ctx context.Context, tx *sqlx.Tx, version map[string]any, actorID string) (map[string]any, error) {
+	projectID := strings.TrimSpace(fmt.Sprint(version["project_id"]))
+	versionID := strings.TrimSpace(fmt.Sprint(version["id"]))
+	if projectID == "" || projectID == "<nil>" || versionID == "" || versionID == "<nil>" {
+		return nil, fmt.Errorf("project version metadata is incomplete")
+	}
+	existing, err := queryMaps(ctx, tx, `
+		SELECT id
+		FROM operation_runs
+		WHERE status IN ('queued', 'running')
+			AND operation_type='project_version.validation_rerun'
+			AND input->>'project_version_id'=$1
+		LIMIT 1`, versionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) > 0 {
+		return nil, errProjectVersionRefreshAlreadyQueued
+	}
+	input := map[string]any{
+		"project_version_id":             versionID,
+		"validation_source":              "local_synced_database_state",
+		"recording_trigger":              "standalone_background_validation_rerun",
+		"require_recorded_refresh":       true,
+		"external_call_made":             false,
+		"provider_api_called":            false,
+		"git_fetch_performed":            false,
+		"argocd_api_called":              false,
+		"raw_provider_response_recorded": false,
+		"actor_user_id":                  actorID,
+	}
+	op, err := enqueueOperationTx(ctx, tx, projectID, "", "project_version.validation_rerun", "rerun validation for project version "+fmt.Sprint(version["version"]), input, []string{"validation"}, "control-worker")
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"mode":                                   "project_version_background_validation_rerun_request",
+		"project_version_id":                     versionID,
+		"version":                                version["version"],
+		"operation":                              op,
+		"operation_run_id":                       op["id"],
+		"operation_enqueued":                     true,
+		"worker_job_created":                     true,
+		"background_worker_enqueued":             true,
+		"automatic_background_rerun":             true,
+		"validation_snapshot_write_requested":    true,
+		"validation_source":                      "local_synced_database_state",
+		"requires_recorded_refresh":              true,
+		"external_call_made":                     false,
+		"provider_api_called":                    false,
+		"git_fetch_performed":                    false,
+		"argocd_api_called":                      false,
+		"raw_provider_response_recorded":         false,
+		"secret_included":                        false,
+		"result_recording_scope":                 "sanitized_validation_snapshot_metadata",
+		"suppressed_fields":                      []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
+		"required_operator_action":               "Wait for the control worker to rerun local validation and record a sanitized ProjectVersion validation snapshot.",
+		"provider_refresh_operation_performed":   false,
+		"standalone_background_worker_enabled":   true,
+		"control_worker_auto_snapshot_supported": true,
+	}, nil
+}
+
 func sanitizedProjectVersionRefreshStep(step map[string]any) map[string]any {
 	return map[string]any{
 		"kind":       step["kind"],
@@ -2706,6 +2818,20 @@ func queryProjectVersionRefreshOperations(ctx context.Context, db sqlx.ExtContex
 			AND operation_type IN ('git.refs.refresh', 'github.actions.sync', 'argo.apps.sync')
 		ORDER BY created_at DESC
 		LIMIT 50`, versionID)
+}
+
+func queryProjectVersionValidationRerunOperations(ctx context.Context, db sqlx.ExtContext, versionID string) ([]map[string]any, error) {
+	versionID = strings.TrimSpace(versionID)
+	if versionID == "" || versionID == "<nil>" {
+		return nil, nil
+	}
+	return queryMaps(ctx, db, `
+		SELECT id, operation_type, status, error, input, result, started_at, finished_at, created_at, updated_at
+		FROM operation_runs
+		WHERE input->>'project_version_id'=$1
+			AND operation_type='project_version.validation_rerun'
+		ORDER BY created_at DESC
+		LIMIT 20`, versionID)
 }
 
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -8935,7 +9061,12 @@ func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, a
 	if len(argoConnections) > 1 {
 		refreshOperationRows = argoConnections[1]
 	}
+	var backgroundOperationRows []map[string]any
+	if len(argoConnections) > 2 {
+		backgroundOperationRows = argoConnections[2]
+	}
 	refreshSummary := projectVersionRefreshResultSummary(refreshOperationRows)
+	backgroundSummary := projectVersionValidationRerunOperationSummary(backgroundOperationRows)
 	refreshPlan := projectVersionProviderRefreshPlan(repositories, remotes, argoConnectionRows)
 	overall := "blocked"
 	switch {
@@ -8945,29 +9076,30 @@ func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, a
 		overall = "partial"
 	}
 	rerunEvidence := projectVersionValidationRerunEvidence(refreshSummary, overall, len(items), ready, partial, blocked)
-	backgroundRerunPlan := projectVersionBackgroundValidationRerunPlan(refreshSummary, rerunEvidence)
+	backgroundRerunPlan := projectVersionBackgroundValidationRerunPlan(refreshSummary, rerunEvidence, backgroundSummary)
 	attachProjectVersionRefreshResultSummary(refreshPlan, refreshSummary, rerunEvidence)
 	attachProjectVersionBackgroundValidationRerunPlan(refreshPlan, backgroundRerunPlan)
 	return map[string]any{
-		"version_id":                       version["id"],
-		"version":                          version["version"],
-		"mode":                             "synced_state_validation_preview",
-		"validation_state":                 overall,
-		"external_call_made":               false,
-		"provider_api_called":              false,
-		"git_fetch_performed":              false,
-		"argocd_api_called":                false,
-		"validation_source":                "local_synced_database_state",
-		"repository_count":                 len(items),
-		"ready_count":                      ready,
-		"partial_count":                    partial,
-		"blocked_count":                    blocked,
-		"items":                            items,
-		"provider_refresh_plan":            refreshPlan,
-		"provider_refresh_result_summary":  refreshSummary,
-		"validation_rerun_evidence":        rerunEvidence,
-		"background_validation_rerun_plan": backgroundRerunPlan,
-		"required_live_rehearsal":          stringSliceFromAny(refreshPlan["required_live_rehearsal"]),
+		"version_id":                          version["id"],
+		"version":                             version["version"],
+		"mode":                                "synced_state_validation_preview",
+		"validation_state":                    overall,
+		"external_call_made":                  false,
+		"provider_api_called":                 false,
+		"git_fetch_performed":                 false,
+		"argocd_api_called":                   false,
+		"validation_source":                   "local_synced_database_state",
+		"repository_count":                    len(items),
+		"ready_count":                         ready,
+		"partial_count":                       partial,
+		"blocked_count":                       blocked,
+		"items":                               items,
+		"provider_refresh_plan":               refreshPlan,
+		"provider_refresh_result_summary":     refreshSummary,
+		"background_validation_rerun_summary": backgroundSummary,
+		"validation_rerun_evidence":           rerunEvidence,
+		"background_validation_rerun_plan":    backgroundRerunPlan,
+		"required_live_rehearsal":             stringSliceFromAny(refreshPlan["required_live_rehearsal"]),
 	}
 }
 
@@ -9105,18 +9237,112 @@ func projectVersionValidationRerunEvidence(summary map[string]any, validationSta
 		"raw_response_included":                  false,
 		"secret_included":                        false,
 		"suppressed_fields":                      []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
-		"message":                                "This validation response is a server-side recheck of local synced database state; the control worker can auto-record a sanitized snapshot after terminal refresh workers, while standalone background rerun and raw provider response binding remain disabled.",
+		"message":                                "This validation response is a server-side recheck of local synced database state; the control worker can auto-record a sanitized snapshot after terminal refresh workers, and standalone background rerun can enqueue the same local-only snapshot recorder without raw provider response binding.",
 	}
 }
 
-func projectVersionBackgroundValidationRerunPlan(summary map[string]any, rerunEvidence map[string]any) map[string]any {
+func projectVersionValidationRerunOperationSummary(operations []map[string]any) map[string]any {
+	queued, running, completed, failed, canceled := 0, 0, 0, 0, 0
+	items := make([]map[string]any, 0, len(operations))
+	latestState := "not_requested"
+	snapshotWritten := false
+	for _, operation := range operations {
+		status := cleanPreviewString(operation["status"])
+		if status == "" {
+			status = "unknown"
+		}
+		switch status {
+		case "queued":
+			queued++
+		case "running":
+			running++
+		case "completed":
+			completed++
+		case "failed":
+			failed++
+		case "canceled":
+			canceled++
+		}
+		result := mapFromAny(operation["result"])
+		operationResult := mapFromAny(result["operation_result"])
+		validationSnapshotWritten := boolOnlyFromAny(result["validation_snapshot_written"]) ||
+			boolOnlyFromAny(operationResult["validation_snapshot_written"])
+		if validationSnapshotWritten {
+			snapshotWritten = true
+		}
+		item := map[string]any{
+			"operation_run_id":               operation["id"],
+			"status":                         status,
+			"created_at":                     operation["created_at"],
+			"updated_at":                     operation["updated_at"],
+			"started_at":                     operation["started_at"],
+			"finished_at":                    operation["finished_at"],
+			"validation_snapshot_written":    validationSnapshotWritten,
+			"recording_state":                firstNonEmptyString(cleanPreviewString(result["recording_state"]), cleanPreviewString(operationResult["recording_state"])),
+			"raw_response_included":          false,
+			"secret_included":                false,
+			"external_call_made":             false,
+			"provider_api_called":            false,
+			"raw_provider_response_recorded": false,
+		}
+		if status == "failed" {
+			item["error_recorded"] = cleanOptionalText(fmt.Sprint(operation["error"])) != ""
+		}
+		items = append(items, item)
+	}
+	activeCount := queued + running
+	operationCount := len(operations)
+	switch {
+	case operationCount == 0:
+		latestState = "not_requested"
+	case activeCount > 0:
+		latestState = "waiting_for_worker"
+	case failed > 0:
+		latestState = "failed"
+	case canceled > 0:
+		latestState = "canceled"
+	default:
+		latestState = "recorded"
+	}
+	return map[string]any{
+		"mode":                        "project_version_background_validation_rerun_summary",
+		"operation_count":             operationCount,
+		"queued_count":                queued,
+		"running_count":               running,
+		"completed_count":             completed,
+		"failed_count":                failed,
+		"canceled_count":              canceled,
+		"active_count":                activeCount,
+		"terminal_count":              completed + failed + canceled,
+		"background_rerun_state":      latestState,
+		"background_worker_enqueued":  operationCount > 0,
+		"automatic_background_rerun":  operationCount > 0,
+		"validation_snapshot_written": snapshotWritten,
+		"raw_response_included":       false,
+		"secret_included":             false,
+		"external_call_made":          false,
+		"provider_api_called":         false,
+		"suppressed_fields":           []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
+		"items":                       items,
+	}
+}
+
+func projectVersionBackgroundValidationRerunPlan(summary map[string]any, rerunEvidence map[string]any, backgroundSummaries ...map[string]any) map[string]any {
 	rerunStatus := strings.TrimSpace(fmt.Sprint(summary["validation_rerun_status"]))
 	if rerunStatus == "" || rerunStatus == "<nil>" {
 		rerunStatus = "not_requested"
 	}
+	backgroundSummary := map[string]any{}
+	if len(backgroundSummaries) > 0 {
+		backgroundSummary = backgroundSummaries[0]
+	}
 	operationCount := intFromAny(summary["operation_count"], 0)
 	activeCount := intFromAny(summary["active_count"], 0)
 	terminal := operationCount > 0 && activeCount == 0
+	backgroundOperationCount := intFromAny(backgroundSummary["operation_count"], 0)
+	backgroundActiveCount := intFromAny(backgroundSummary["active_count"], 0)
+	backgroundState := cleanPreviewString(backgroundSummary["background_rerun_state"])
+	backgroundSnapshotWritten := boolOnlyFromAny(backgroundSummary["validation_snapshot_written"])
 	snapshotWritePlan := projectVersionValidationSnapshotWritePlan(summary, rerunEvidence, terminal)
 	planState := "blocked"
 	blockedReasons := []string{"provider_refresh_execution_not_performed", "background_validation_rerun_disabled"}
@@ -9134,17 +9360,37 @@ func projectVersionBackgroundValidationRerunPlan(summary map[string]any, rerunEv
 		planState = "blocked"
 		blockedReasons = []string{"refresh_worker_canceled", "background_validation_rerun_disabled"}
 	}
+	if backgroundOperationCount > 0 {
+		switch backgroundState {
+		case "waiting_for_worker":
+			planState = "waiting_for_worker"
+			blockedReasons = []string{"background_validation_worker_running"}
+		case "recorded":
+			planState = "recorded"
+			blockedReasons = []string{}
+		case "failed":
+			planState = "failed"
+			blockedReasons = []string{"background_validation_worker_failed"}
+		case "canceled":
+			planState = "canceled"
+			blockedReasons = []string{"background_validation_worker_canceled"}
+		}
+	}
 	return map[string]any{
 		"mode":                                    "project_version_background_validation_rerun_plan",
 		"plan_state":                              planState,
 		"rerun_status":                            rerunStatus,
 		"background_rerun_ready_for_review":       rerunStatus == "recorded" && terminal,
-		"automatic_background_rerun":              false,
-		"background_worker_enqueued":              false,
+		"automatic_background_rerun":              backgroundOperationCount > 0,
+		"background_worker_enqueued":              backgroundOperationCount > 0,
+		"standalone_background_worker_enabled":    true,
+		"background_worker_active":                backgroundActiveCount > 0,
+		"background_rerun_state":                  backgroundState,
+		"background_validation_rerun_summary":     backgroundSummary,
 		"control_worker_auto_snapshot_supported":  true,
 		"control_worker_auto_snapshot_ready":      rerunStatus == "recorded" && terminal,
 		"control_worker_auto_snapshot_trigger":    "refresh_worker_completion",
-		"validation_snapshot_written":             false,
+		"validation_snapshot_written":             backgroundSnapshotWritten,
 		"validation_snapshot_write_plan":          snapshotWritePlan,
 		"validation_rerun_recorded":               boolOnlyFromAny(summary["validation_rerun_recorded"]),
 		"server_side_validation_recheck_observed": boolOnlyFromAny(rerunEvidence["server_side_validation_recheck"]),
@@ -9173,13 +9419,10 @@ func projectVersionBackgroundValidationRerunPlan(summary map[string]any, rerunEv
 			"control_worker_auto_record_validation_snapshot",
 			"publish_background_rerun_result",
 		},
-		"disabled_backends": []string{
-			"standalone_background_validation_worker",
-			"raw_provider_response_recording",
-		},
+		"disabled_backends": []string{"raw_provider_response_recording"},
 		"suppressed_fields": []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
 		"blocked_reasons":   blockedReasons,
-		"message":           "Control-worker auto snapshot recording can run after terminal refresh workers using local synced state only; standalone background validation workers and raw provider response recording remain disabled.",
+		"message":           "Standalone background validation rerun can now enqueue a control-worker job that rereads local synced state and records a sanitized ProjectVersion validation snapshot without provider calls.",
 	}
 }
 
@@ -9226,6 +9469,7 @@ func projectVersionValidationSnapshotWritePlan(summary map[string]any, rerunEvid
 		"operation_log_written":                   false,
 		"background_worker_enqueued":              false,
 		"automatic_background_rerun":              false,
+		"standalone_background_worker_enabled":    true,
 		"control_worker_auto_snapshot_supported":  true,
 		"control_worker_auto_snapshot_ready":      reviewReady,
 		"server_side_validation_recheck_observed": boolOnlyFromAny(rerunEvidence["server_side_validation_recheck"]),
@@ -9249,10 +9493,10 @@ func projectVersionValidationSnapshotWritePlan(summary map[string]any, rerunEvid
 		"secret_included":                         false,
 		"required_snapshot_fields":                []string{"project_version_id", "validation_state", "repository_count", "ready_count", "partial_count", "blocked_count", "provider_refresh_status", "operation_count", "server_side_validation_recheck_status"},
 		"required_controls":                       []string{"terminal_refresh_workers", "server_side_validation_recheck", "snapshot_schema_review", "snapshot_operator_review", "asset_status_snapshot_audit", "operation_log_redaction_review"},
-		"disabled_backends":                       []string{"operation_log_write", "standalone_background_validation_worker", "raw_provider_response_recording"},
+		"disabled_backends":                       []string{"operation_log_write", "raw_provider_response_recording"},
 		"suppressed_fields":                       []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body", "repository_ref"},
 		"blocked_reasons":                         blockedReasons,
-		"message":                                 "Metadata-only validation snapshot write preflight; no asset status snapshot, operation log, raw provider response, Git output, Argo response, URL, credential, or workflow log is written.",
+		"message":                                 "Metadata-only validation snapshot write preflight; standalone background workers may record asset status snapshots, but no operation log raw output, raw provider response, Git output, Argo response, URL, credential, or workflow log is written.",
 	}
 }
 
