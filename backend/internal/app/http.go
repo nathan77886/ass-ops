@@ -7183,7 +7183,6 @@ func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, a
 	}
 	refreshSummary := projectVersionRefreshResultSummary(refreshOperationRows)
 	refreshPlan := projectVersionProviderRefreshPlan(repositories, remotes, argoConnectionRows)
-	attachProjectVersionRefreshResultSummary(refreshPlan, refreshSummary)
 	overall := "blocked"
 	switch {
 	case len(items) > 0 && blocked == 0 && partial == 0:
@@ -7191,6 +7190,8 @@ func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, a
 	case ready > 0 || partial > 0:
 		overall = "partial"
 	}
+	rerunEvidence := projectVersionValidationRerunEvidence(refreshSummary, overall, len(items), ready, partial, blocked)
+	attachProjectVersionRefreshResultSummary(refreshPlan, refreshSummary, rerunEvidence)
 	return map[string]any{
 		"version_id":                      version["id"],
 		"version":                         version["version"],
@@ -7208,6 +7209,7 @@ func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, a
 		"items":                           items,
 		"provider_refresh_plan":           refreshPlan,
 		"provider_refresh_result_summary": refreshSummary,
+		"validation_rerun_evidence":       rerunEvidence,
 		"required_live_rehearsal":         stringSliceFromAny(refreshPlan["required_live_rehearsal"]),
 	}
 }
@@ -7310,11 +7312,51 @@ func projectVersionRefreshResultSummary(operations []map[string]any) map[string]
 	}
 }
 
-func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summary map[string]any) {
+func projectVersionValidationRerunEvidence(summary map[string]any, validationState string, repositoryCount, readyCount, partialCount, blockedCount int) map[string]any {
+	rerunStatus := strings.TrimSpace(fmt.Sprint(summary["validation_rerun_status"]))
+	operationCount := intFromAny(summary["operation_count"], 0)
+	activeCount := intFromAny(summary["active_count"], 0)
+	serverSideRecheck := operationCount > 0
+	if rerunStatus == "" || rerunStatus == "<nil>" {
+		rerunStatus = "not_requested"
+	}
+	return map[string]any{
+		"mode":                                 "project_version_validation_rerun_evidence",
+		"rerun_state":                          rerunStatus,
+		"rerun_source":                         "validation_preview_request",
+		"server_side_validation_recheck":       serverSideRecheck,
+		"server_side_validation_recheck_ready": operationCount > 0 && activeCount == 0,
+		"automatic_background_rerun":           false,
+		"validation_rerun_recorded":            rerunStatus == "recorded",
+		"provider_refresh_operation_observed":  operationCount > 0,
+		"provider_refresh_active":              activeCount > 0,
+		"provider_refresh_terminal":            operationCount > 0 && activeCount == 0,
+		"provider_refresh_status":              rerunStatus,
+		"operation_count":                      operationCount,
+		"active_count":                         activeCount,
+		"validation_state":                     validationState,
+		"repository_count":                     repositoryCount,
+		"ready_count":                          readyCount,
+		"partial_count":                        partialCount,
+		"blocked_count":                        blockedCount,
+		"validation_source":                    "local_synced_database_state",
+		"external_call_made":                   false,
+		"provider_api_called":                  false,
+		"git_fetch_performed":                  false,
+		"argocd_api_called":                    false,
+		"raw_response_included":                false,
+		"secret_included":                      false,
+		"suppressed_fields":                    []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
+		"message":                              "This validation response is a server-side recheck of local synced database state; automatic background rerun and raw provider response binding remain disabled.",
+	}
+}
+
+func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summary map[string]any, rerunEvidence map[string]any) {
 	if refreshPlan == nil || summary == nil {
 		return
 	}
 	refreshPlan["result_summary"] = summary
+	refreshPlan["validation_rerun_evidence"] = rerunEvidence
 	executionPlan := mapFromAny(refreshPlan["execution_plan"])
 	if len(executionPlan) == 0 {
 		return
@@ -7325,6 +7367,9 @@ func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summar
 	executionPlan["worker_job_created"] = operationCount > 0
 	executionPlan["validation_reopened"] = validationRecorded
 	executionPlan["refresh_result_summary"] = summary
+	executionPlan["server_side_validation_recheck_observed"] = boolOnlyFromAny(rerunEvidence["server_side_validation_recheck"])
+	executionPlan["automatic_background_rerun"] = boolOnlyFromAny(rerunEvidence["automatic_background_rerun"])
+	executionPlan["validation_rerun_evidence"] = rerunEvidence
 	if resultPlan := mapFromAny(executionPlan["result_recording_plan"]); len(resultPlan) > 0 {
 		resultPlan["result_recording_state"] = projectVersionRefreshResultRecordingState(summary)
 		resultPlan["result_recording_ready"] = operationCount > 0
@@ -7339,6 +7384,9 @@ func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summar
 		resultPlan["github_actions_result_recorded"] = projectVersionRefreshKindObserved(summary, "github_actions_api_refresh")
 		resultPlan["argo_revision_result_recorded"] = projectVersionRefreshKindObserved(summary, "argocd_app_refresh")
 		resultPlan["refresh_result_summary"] = summary
+		resultPlan["server_side_validation_recheck_observed"] = boolOnlyFromAny(rerunEvidence["server_side_validation_recheck"])
+		resultPlan["automatic_background_rerun"] = boolOnlyFromAny(rerunEvidence["automatic_background_rerun"])
+		resultPlan["validation_rerun_evidence"] = rerunEvidence
 		resultPlan["blocked_reasons"] = projectVersionRefreshResultBlockedReasons(summary)
 	}
 }

@@ -2674,6 +2674,16 @@ func TestProjectVersionValidationPreviewIncludesRefreshResultSummary(t *testing.
 		!containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), "refresh_workers_still_running") {
 		t.Fatalf("refresh result recording plan = %#v", resultPlan)
 	}
+	rerunEvidence := mapFromAny(preview["validation_rerun_evidence"])
+	if rerunEvidence["rerun_state"] != "waiting_for_workers" ||
+		rerunEvidence["server_side_validation_recheck"] != true ||
+		rerunEvidence["server_side_validation_recheck_ready"] != false ||
+		rerunEvidence["automatic_background_rerun"] != false ||
+		rerunEvidence["provider_refresh_active"] != true ||
+		rerunEvidence["raw_response_included"] != false ||
+		rerunEvidence["secret_included"] != false {
+		t.Fatalf("validation rerun evidence = %#v", rerunEvidence)
+	}
 	encoded, _ := json.Marshal(preview)
 	for _, forbidden := range []string{"secret-token", "Bearer secret", "https://token@", "raw_provider_response\":true", "raw_git_output\":\""} {
 		if strings.Contains(string(encoded), forbidden) {
@@ -2696,6 +2706,92 @@ func TestProjectVersionRefreshResultSummaryRecordsValidationRerunWhenTerminal(t 
 	}
 	if reasons := projectVersionRefreshResultBlockedReasons(summary); len(reasons) != 0 {
 		t.Fatalf("terminal refresh summary should not have blocked reasons: %#v", reasons)
+	}
+}
+
+func TestProjectVersionValidationRerunEvidenceRecordsServerSideRecheck(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       string
+		wantState    string
+		wantRecorded bool
+	}{
+		{name: "recorded terminal", status: "completed", wantState: "recorded", wantRecorded: true},
+		{name: "failed terminal", status: "failed", wantState: "refresh_failed"},
+		{name: "canceled terminal", status: "canceled", wantState: "refresh_canceled"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			preview := projectVersionValidationPreview(
+				map[string]any{
+					"id":      "version-1",
+					"version": "v0.1.0",
+					"metadata": map[string]any{"repositories": []any{
+						map[string]any{"repo_key": "service", "remote_id": "remote-1", "commit_sha": "abc123"},
+					}},
+				},
+				[]map[string]any{{"id": "remote-1", "provider_type": "github", "latest_sha": "abc123"}},
+				nil,
+				nil,
+				nil,
+				nil,
+				[]map[string]any{
+					{"id": "op-git", "operation_type": "git.refs.refresh", "status": tt.status, "input": map[string]any{"refresh_kind": "git_ref_fetch", "remote_url": "https://token@example.com/repo.git"}},
+				},
+			)
+			evidence := mapFromAny(preview["validation_rerun_evidence"])
+			if evidence["mode"] != "project_version_validation_rerun_evidence" ||
+				evidence["rerun_state"] != tt.wantState ||
+				evidence["rerun_source"] != "validation_preview_request" ||
+				evidence["server_side_validation_recheck"] != true ||
+				evidence["server_side_validation_recheck_ready"] != true ||
+				evidence["automatic_background_rerun"] != false ||
+				evidence["validation_rerun_recorded"] != tt.wantRecorded ||
+				evidence["provider_refresh_terminal"] != true ||
+				evidence["external_call_made"] != false ||
+				evidence["provider_api_called"] != false ||
+				evidence["raw_response_included"] != false ||
+				evidence["secret_included"] != false {
+				t.Fatalf("validation rerun evidence = %#v", evidence)
+			}
+			executionPlan := mapFromAny(mapFromAny(preview["provider_refresh_plan"])["execution_plan"])
+			if executionPlan["server_side_validation_recheck_observed"] != true ||
+				executionPlan["automatic_background_rerun"] != false {
+				t.Fatalf("execution plan should surface server-side recheck evidence only: %#v", executionPlan)
+			}
+			resultPlan := mapFromAny(executionPlan["result_recording_plan"])
+			if resultPlan["validation_rerun_recorded"] != tt.wantRecorded ||
+				resultPlan["server_side_validation_recheck_observed"] != true ||
+				resultPlan["automatic_background_rerun"] != false {
+				t.Fatalf("result plan should reflect validation recheck evidence: %#v", resultPlan)
+			}
+			encoded, _ := json.Marshal(preview)
+			for _, forbidden := range []string{"https://token@example.com", "Bearer secret", "raw_provider_response\":true", "raw_git_output\":\""} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("validation rerun evidence leaked %q: %s", forbidden, encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectVersionValidationRerunEvidenceWithoutOperations(t *testing.T) {
+	summary := projectVersionRefreshResultSummary(nil)
+	evidence := projectVersionValidationRerunEvidence(summary, "blocked", 0, 0, 0, 0)
+	if evidence["rerun_state"] != "not_requested" ||
+		evidence["server_side_validation_recheck"] != false ||
+		evidence["server_side_validation_recheck_ready"] != false ||
+		evidence["automatic_background_rerun"] != false ||
+		evidence["provider_refresh_operation_observed"] != false ||
+		evidence["raw_response_included"] != false ||
+		evidence["secret_included"] != false {
+		t.Fatalf("empty validation rerun evidence = %#v", evidence)
+	}
+	encoded, _ := json.Marshal(evidence)
+	for _, forbidden := range []string{"Bearer secret", "raw_provider_response\":true", "raw_git_output\":\""} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("empty validation rerun evidence leaked %q: %s", forbidden, encoded)
+		}
 	}
 }
 
