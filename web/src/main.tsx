@@ -3568,6 +3568,15 @@ function agentReadinessGateTags(value: any) {
   );
 }
 
+function agentAuditEvidenceColor(state?: string) {
+  if (state === 'recorded') return 'green';
+  if (state === 'failed' || state === 'mixed_failed') return 'red';
+  if (state === 'waiting_for_worker') return 'blue';
+  if (state === 'canceled') return 'orange';
+  if (state === 'unknown' || state === 'absent') return 'purple';
+  return 'default';
+}
+
 function parsePostgresTextArray(value: string): string[] {
   const body = value.slice(1, -1);
   const items: string[] = [];
@@ -4263,6 +4272,7 @@ function AgentTasks() {
       const claimPlan = plan.worker_claim_plan || {};
       const toolPlan = plan.tool_invocation_plan || {};
       const callbackPlan = plan.result_callback_plan || {};
+      const evidence = plan.tool_call_audit_evidence || {};
       return <Space size={4} wrap>
         <Tag color="gold">{plan.dispatch_state || 'blocked'}</Tag>
         <Tag color={plan.prerequisite_state === 'metadata_available' ? 'blue' : 'red'}>{plan.prerequisite_state || 'metadata_blocked'}</Tag>
@@ -4273,6 +4283,8 @@ function AgentTasks() {
         <Tag color={plan.tool_invocation_enabled === true ? 'red' : 'green'}>{plan.tool_invocation_enabled === true ? 'Tools enabled' : 'Tools blocked'}</Tag>
         <Tag color="gold">callback {callbackPlan.callback_state || 'blocked'}</Tag>
         <Tag color={plan.result_callback_enabled === true ? 'blue' : 'green'}>{plan.result_callback_enabled === true ? 'Callback wired' : 'Callback blocked'}</Tag>
+        {evidence.tool_call_count ? <Tag color={agentAuditEvidenceColor(evidence.evidence_state)}>audit {evidence.evidence_state}</Tag> : null}
+        {evidence.tool_call_count ? <Tag>{evidence.tool_call_count} audit calls</Tag> : null}
         {callbackPlan.callback_scope ? <Tag>{callbackPlan.callback_scope}</Tag> : null}
         <Typography.Text>{capabilities.length} worker capabilit{capabilities.length === 1 ? 'y' : 'ies'}</Typography.Text>
         <Typography.Text>{backends.length} disabled backend{backends.length === 1 ? '' : 's'}</Typography.Text>
@@ -4309,6 +4321,15 @@ function AgentTasks() {
             { title: 'Plan', render: (_, row) => <Typography.Paragraph className="mono-pre">{row.content}</Typography.Paragraph> }
           ]} />
           <Typography.Title level={5}>Tool-call audit</Typography.Title>
+          {taskDetail.data.tool_call_audit_evidence?.tool_call_count ? (
+            <Space wrap>
+              <Tag color={agentAuditEvidenceColor(taskDetail.data.tool_call_audit_evidence.evidence_state)}>audit {taskDetail.data.tool_call_audit_evidence.evidence_state || 'not_recorded'}</Tag>
+              <Tag>{taskDetail.data.tool_call_audit_evidence.tool_call_count || 0} calls</Tag>
+              {taskDetail.data.tool_call_audit_evidence.active_count ? <Tag color="blue">{taskDetail.data.tool_call_audit_evidence.active_count} active</Tag> : null}
+              {taskDetail.data.tool_call_audit_evidence.failed_count ? <Tag color="red">{taskDetail.data.tool_call_audit_evidence.failed_count} failed</Tag> : null}
+              <Tag>{taskDetail.data.tool_call_audit_evidence.sanitized_result_recorded ? 'sanitized result recorded' : 'sanitized result pending'}</Tag>
+            </Space>
+          ) : null}
           <Table<AnyRow> rowKey="id" size="small" dataSource={taskDetail.data.tool_calls || []} pagination={{ pageSize: 5 }} columns={[
             { title: 'Tool', dataIndex: 'tool_name' },
             { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{row.status}</Tag> },

@@ -14458,6 +14458,60 @@ func TestOperationLogsMigrationUsesUUIDIDs(t *testing.T) {
 	}
 }
 
+func TestGetAgentTaskIncludesToolCallAuditEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`SELECT \* FROM agent_tasks WHERE id=\$1`).
+		WithArgs("task-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "title", "prompt", "status"}).
+			AddRow("task-1", "project-1", "Audit task", "check status", "running"))
+	mock.ExpectQuery(`SELECT \* FROM agent_plans WHERE agent_task_id=\$1 ORDER BY created_at DESC`).
+		WithArgs("task-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "agent_task_id", "status"}))
+	mock.ExpectQuery(`(?s)SELECT \*\s+FROM agent_tool_calls\s+WHERE agent_task_id=\$1\s+ORDER BY created_at DESC, id DESC\s+LIMIT 100`).
+		WithArgs("task-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "agent_task_id", "operation_run_id", "tool_name", "status", "input", "output"}).
+			AddRow("call-1", "task-1", "op-1", "runtime.check", "completed", []byte(`{"token":"do-not-serialize"}`), []byte(`{"raw":"actual tool output"}`)))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agent/tasks/task-1", nil)
+	req = withRouteParam(req, "id", "task-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.getAgentTask(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	evidence := mapFromAny(body["tool_call_audit_evidence"])
+	if evidence["evidence_state"] != "recorded" ||
+		evidence["sanitized_result_recorded"] != true ||
+		intFromAny(evidence["tool_call_count"], 0) != 1 ||
+		intFromAny(evidence["completed_count"], 0) != 1 ||
+		evidence["input_included"] != false ||
+		evidence["output_included"] != false ||
+		evidence["raw_tool_output_recorded"] != false {
+		t.Fatalf("unexpected handler audit evidence: %#v", evidence)
+	}
+	encoded, _ := json.Marshal(evidence)
+	for _, forbidden := range []string{"do-not-serialize", "actual tool output"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("tool call audit evidence leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestAgentExecutionAuditSteps(t *testing.T) {
 	steps := agentExecutionAuditSteps(
 		map[string]any{"id": "task-1"},
@@ -14798,6 +14852,106 @@ func TestAgentWorkerDispatchPlan(t *testing.T) {
 	}
 }
 
+func TestAgentWorkerDispatchPlanReconcilesToolCallAuditEvidence(t *testing.T) {
+	evidence := agentToolCallAuditEvidence([]map[string]any{
+		{"id": "call-runtime", "operation_run_id": "op-1", "tool_name": "runtime.check", "status": "completed", "input": map[string]any{"token": "do-not-serialize"}, "output": map[string]any{"raw": "actual tool output"}},
+		{"id": "call-patch", "operation_run_id": "op-1", "tool_name": "patch.prepare", "status": "completed"},
+	})
+	if evidence["evidence_state"] != "recorded" ||
+		evidence["has_tool_call_audit"] != true ||
+		evidence["sanitized_result_recorded"] != true ||
+		intFromAny(evidence["tool_call_count"], 0) != 2 ||
+		evidence["input_included"] != false ||
+		evidence["output_included"] != false ||
+		evidence["raw_tool_output_recorded"] != false ||
+		evidence["secret_included"] != false {
+		t.Fatalf("tool call audit evidence = %#v", evidence)
+	}
+	got := agentWorkerDispatchPlan(map[string]any{
+		"name":         "Demo Codex",
+		"runtime_type": "codex-cli",
+		"codex_binary": "codex",
+		"status":       "verified",
+	}, evidence)
+	if got["result_written"] != true ||
+		got["tool_invocation_enabled"] != false ||
+		got["tool_invoked"] != false ||
+		got["external_call_made"] != false ||
+		got["repository_mutation_allowed"] != false {
+		t.Fatalf("dispatch plan should reflect audit evidence without enabling tools: %#v", got)
+	}
+	callbackPlan := mapFromAny(got["result_callback_plan"])
+	if callbackPlan["callback_state"] != "recorded" ||
+		callbackPlan["callback_ready_reason"] != "sanitized_agent_audit_result_observed" ||
+		callbackPlan["result_written"] != true ||
+		callbackPlan["operation_log_written"] != true ||
+		callbackPlan["tool_call_status_written"] != true ||
+		callbackPlan["raw_tool_output_recorded"] != false ||
+		callbackPlan["contains_tool_output"] != false ||
+		callbackPlan["contains_runtime_config"] != false {
+		t.Fatalf("callback plan should reflect sanitized audit evidence only: %#v", callbackPlan)
+	}
+	assertAgentWorkerDispatchSubplansSafe(t, got)
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"do-not-serialize", "actual tool output", "Bearer secret", "PRIVATE KEY"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("worker dispatch evidence leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestAgentToolCallAuditEvidenceStatusCombinations(t *testing.T) {
+	tests := []struct {
+		name       string
+		statuses   []string
+		wantState  string
+		wantActive int
+	}{
+		{name: "empty", wantState: "not_recorded"},
+		{name: "queued waits", statuses: []string{"queued", "completed"}, wantState: "waiting_for_worker", wantActive: 1},
+		{name: "failed terminal", statuses: []string{"failed", "completed"}, wantState: "failed"},
+		{name: "mixed failed and canceled terminal", statuses: []string{"failed", "canceled", "completed"}, wantState: "mixed_failed"},
+		{name: "canceled terminal", statuses: []string{"canceled"}, wantState: "canceled"},
+		{name: "unknown terminal", statuses: []string{"mystery"}, wantState: "unknown"},
+		{name: "absent terminal", statuses: []string{""}, wantState: "absent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows := make([]map[string]any, 0, len(tt.statuses))
+			for index, status := range tt.statuses {
+				rows = append(rows, map[string]any{
+					"id":               fmt.Sprintf("call-%d", index),
+					"operation_run_id": "op-1",
+					"tool_name":        "runtime.check",
+					"status":           status,
+					"input":            map[string]any{"token": "do-not-serialize"},
+					"output":           map[string]any{"raw": "actual tool output"},
+				})
+			}
+			evidence := agentToolCallAuditEvidence(rows)
+			if evidence["evidence_state"] != tt.wantState ||
+				intFromAny(evidence["active_count"], 0) != tt.wantActive ||
+				evidence["input_included"] != false ||
+				evidence["output_included"] != false ||
+				evidence["raw_tool_output_recorded"] != false ||
+				evidence["secret_included"] != false {
+				t.Fatalf("tool call audit evidence = %#v", evidence)
+			}
+			for _, field := range []string{"token", "api_key", "bearer_token"} {
+				if !containsString(stringSliceFromAny(evidence["suppressed_fields"]), field) {
+					t.Fatalf("tool call evidence suppressed_fields missing %q: %#v", field, evidence["suppressed_fields"])
+				}
+			}
+			encoded, _ := json.Marshal(evidence)
+			for _, forbidden := range []string{"do-not-serialize", "actual tool output", "Bearer secret", "PRIVATE KEY"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("tool call evidence leaked %q: %s", forbidden, encoded)
+				}
+			}
+		})
+	}
+}
+
 func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 	t.Helper()
 	claimPlan := mapFromAny(got["worker_claim_plan"])
@@ -14870,16 +15024,13 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 	}
 
 	callbackPlan := mapFromAny(got["result_callback_plan"])
+	evidence := mapFromAny(got["tool_call_audit_evidence"])
+	hasAuditEvidence := boolOnlyFromAny(evidence["has_tool_call_audit"])
 	if callbackPlan["mode"] != "redacted_agent_result_callback_plan" ||
-		callbackPlan["callback_state"] != "planned" ||
 		callbackPlan["callback_ready"] != true ||
-		callbackPlan["callback_ready_reason"] != "sanitized_agent_audit_result_callback_wired" ||
 		callbackPlan["callback_enabled"] != true ||
 		callbackPlan["callback_scope"] != "sanitized_audit_status_only" ||
-		callbackPlan["result_written"] != false ||
-		callbackPlan["operation_log_written"] != false ||
 		callbackPlan["agent_task_status_written"] != false ||
-		callbackPlan["tool_call_status_written"] != false ||
 		callbackPlan["canonical_asset_sync_queued"] != false ||
 		callbackPlan["status_snapshot_written"] != false ||
 		callbackPlan["raw_tool_output_recorded"] != false ||
@@ -14891,6 +15042,21 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 		callbackPlan["requires_human_result_review"] != true {
 		t.Fatalf("result callback plan should stay disabled and redacted: %#v", callbackPlan)
 	}
+	if hasAuditEvidence {
+		if callbackPlan["callback_state"] != evidence["evidence_state"] ||
+			callbackPlan["result_written"] != true ||
+			callbackPlan["operation_log_written"] != true ||
+			callbackPlan["tool_call_status_written"] != true ||
+			callbackPlan["callback_ready_reason"] != "sanitized_agent_audit_result_observed" {
+			t.Fatalf("result callback plan should reflect sanitized audit evidence only: callback=%#v evidence=%#v", callbackPlan, evidence)
+		}
+	} else if callbackPlan["callback_state"] != "planned" ||
+		callbackPlan["callback_ready_reason"] != "sanitized_agent_audit_result_callback_wired" ||
+		callbackPlan["result_written"] != false ||
+		callbackPlan["operation_log_written"] != false ||
+		callbackPlan["tool_call_status_written"] != false {
+		t.Fatalf("result callback plan without evidence should stay planned and unwritten: %#v", callbackPlan)
+	}
 	for _, field := range []string{"operation_run_id", "agent_task_id", "tool_call_id", "tool_name", "status", "sanitization_status", "started_at", "finished_at"} {
 		if !containsString(stringSliceFromAny(callbackPlan["required_result_fields"]), field) {
 			t.Fatalf("result callback required fields missing %q: %#v", field, callbackPlan["required_result_fields"])
@@ -14901,7 +15067,11 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 			t.Fatalf("result callback suppressed_fields missing %q: %#v", field, callbackPlan["suppressed_fields"])
 		}
 	}
-	for _, reason := range []string{"sanitized_tool_result_not_recorded_yet", "canonical_asset_sync_pending"} {
+	expectedReasons := []string{"sanitized_tool_result_not_recorded_yet", "canonical_asset_sync_pending"}
+	if hasAuditEvidence {
+		expectedReasons = []string{"canonical_asset_sync_pending"}
+	}
+	for _, reason := range expectedReasons {
 		if !containsString(stringSliceFromAny(callbackPlan["blocked_reasons"]), reason) {
 			t.Fatalf("result callback blocked reasons missing %q: %#v", reason, callbackPlan["blocked_reasons"])
 		}

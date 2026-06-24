@@ -15511,6 +15511,7 @@ func (s *Server) getAgentTask(w http.ResponseWriter, r *http.Request) {
 		ORDER BY created_at DESC, id DESC
 		LIMIT 100`, chi.URLParam(r, "id"))
 	task["tool_calls"] = toolCalls
+	task["tool_call_audit_evidence"] = agentToolCallAuditEvidence(toolCalls)
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -16204,7 +16205,7 @@ func agentCodeModificationResultRecordingPlan() map[string]any {
 	}
 }
 
-func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
+func agentWorkerDispatchPlan(runtime map[string]any, auditEvidenceRows ...map[string]any) map[string]any {
 	cliReadiness := agentCodexCLIReadiness(runtime)
 	runtimeReady := strings.TrimSpace(fmt.Sprint(cliReadiness["readiness"])) == "metadata_ready"
 	dispatchPrerequisite := "metadata_blocked"
@@ -16214,7 +16215,12 @@ func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
 	claimPlan := agentWorkerClaimPlan(dispatchPrerequisite)
 	allowedToolNames := agentWorkerAllowedToolNames()
 	toolInvocationPlan := agentWorkerToolInvocationPlan(allowedToolNames)
-	resultCallbackPlan := agentWorkerResultCallbackPlan()
+	auditEvidence := map[string]any{}
+	if len(auditEvidenceRows) > 0 {
+		auditEvidence = auditEvidenceRows[0]
+	}
+	resultCallbackPlan := agentWorkerResultCallbackPlan(auditEvidence)
+	resultObserved := boolOnlyFromAny(auditEvidence["has_tool_call_audit"])
 	return map[string]any{
 		"mode":                           "redacted_agent_worker_dispatch_plan",
 		"dispatch_state":                 "audit_queued",
@@ -16231,8 +16237,9 @@ func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
 		"external_call_made":             false,
 		"repository_mutation_allowed":    false,
 		"result_callback_enabled":        true,
-		"result_written":                 false,
+		"result_written":                 resultObserved,
 		"context_snapshot_materialized":  true,
+		"tool_call_audit_evidence":       auditEvidence,
 		"worker_claim_plan":              claimPlan,
 		"tool_invocation_plan":           toolInvocationPlan,
 		"result_callback_plan":           resultCallbackPlan,
@@ -16289,6 +16296,8 @@ func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
 			"patch_content",
 			"diff_content",
 			"token",
+			"api_key",
+			"bearer_token",
 		},
 		"dispatch_sequence": []string{
 			"verify_operation_run",
@@ -16302,6 +16311,119 @@ func agentWorkerDispatchPlan(runtime map[string]any) map[string]any {
 		},
 		"runtime_readiness": cliReadiness,
 		"message":           "Agent worker dispatch now enqueues a real audit worker job and sanitized result callback; allowlisted tool invocation, Codex CLI, patch, git, and pull request mutations remain disabled.",
+	}
+}
+
+func agentToolCallAuditEvidence(toolCalls []map[string]any) map[string]any {
+	statusCounts := map[string]any{}
+	toolCounts := map[string]any{}
+	toolNames := []string{}
+	queued, running, completed, failed, canceled, unknown, absent := 0, 0, 0, 0, 0, 0, 0
+	items := make([]map[string]any, 0, len(toolCalls))
+	for _, call := range toolCalls {
+		status := cleanPreviewString(call["status"])
+		if status == "" {
+			status = "absent"
+		}
+		toolName := cleanPreviewString(call["tool_name"])
+		if toolName == "" {
+			toolName = "unknown"
+		}
+		if !stringInSlice(toolNames, toolName) {
+			toolNames = append(toolNames, toolName)
+		}
+		statusCounts[status] = intFromAny(statusCounts[status], 0) + 1
+		toolCounts[toolName] = intFromAny(toolCounts[toolName], 0) + 1
+		switch status {
+		case "queued":
+			queued++
+		case "running":
+			running++
+		case "completed":
+			completed++
+		case "failed":
+			failed++
+		case "canceled":
+			canceled++
+		case "absent":
+			absent++
+		default:
+			unknown++
+		}
+		items = append(items, map[string]any{
+			"tool_call_id":                call["id"],
+			"operation_run_id":            call["operation_run_id"],
+			"tool_name":                   toolName,
+			"status":                      status,
+			"started_at":                  call["started_at"],
+			"finished_at":                 call["finished_at"],
+			"created_at":                  call["created_at"],
+			"updated_at":                  call["updated_at"],
+			"input_included":              false,
+			"output_included":             false,
+			"raw_tool_output_recorded":    false,
+			"raw_runtime_output_recorded": false,
+			"secret_included":             false,
+		})
+	}
+	operationCount := len(toolCalls)
+	activeCount := queued + running
+	terminalCount := completed + failed + canceled + unknown + absent
+	evidenceState := "not_recorded"
+	if operationCount > 0 {
+		evidenceState = "waiting_for_worker"
+		if activeCount == 0 {
+			if failed > 0 && canceled > 0 {
+				evidenceState = "mixed_failed"
+			} else if failed > 0 {
+				evidenceState = "failed"
+			} else if canceled > 0 {
+				evidenceState = "canceled"
+			} else if absent > 0 {
+				evidenceState = "absent"
+			} else if unknown > 0 {
+				evidenceState = "unknown"
+			} else {
+				evidenceState = "recorded"
+			}
+		}
+	}
+	return map[string]any{
+		"mode":                        "agent_tool_call_audit_evidence",
+		"evidence_state":              evidenceState,
+		"tool_call_count":             operationCount,
+		"queued_count":                queued,
+		"running_count":               running,
+		"completed_count":             completed,
+		"failed_count":                failed,
+		"canceled_count":              canceled,
+		"unknown_count":               unknown,
+		"absent_count":                absent,
+		"active_count":                activeCount,
+		"terminal_count":              terminalCount,
+		"has_tool_call_audit":         operationCount > 0,
+		"sanitized_result_recorded":   operationCount > 0 && activeCount == 0,
+		"has_failures":                failed > 0,
+		"has_cancellations":           canceled > 0,
+		"has_unknown_status":          unknown > 0,
+		"has_absent_status":           absent > 0,
+		"tool_names":                  toolNames,
+		"status_counts":               statusCounts,
+		"tool_counts":                 toolCounts,
+		"items":                       items,
+		"external_call_made":          false,
+		"tool_invocation_enabled":     false,
+		"tool_invoked":                false,
+		"repository_mutation_allowed": false,
+		"raw_tool_output_recorded":    false,
+		"raw_runtime_output_recorded": false,
+		"raw_patch_recorded":          false,
+		"raw_diff_recorded":           false,
+		"input_included":              false,
+		"output_included":             false,
+		"secret_included":             false,
+		"suppressed_fields":           []string{"runtime_config", "environment_variables", "authorization_header", "workspace_path", "repository_url", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "token", "api_key", "bearer_token"},
+		"message":                     "Agent tool-call audit evidence records sanitized status metadata only; raw tool input, output, runtime config, patch, diff, and credentials remain suppressed.",
 	}
 }
 
@@ -16360,18 +16482,31 @@ func agentWorkerToolInvocationPlan(allowedToolNames []string) map[string]any {
 	}
 }
 
-func agentWorkerResultCallbackPlan() map[string]any {
+func agentWorkerResultCallbackPlan(auditEvidence map[string]any) map[string]any {
+	resultObserved := boolOnlyFromAny(auditEvidence["has_tool_call_audit"])
+	resultRecorded := boolOnlyFromAny(auditEvidence["sanitized_result_recorded"])
+	callbackState := "planned"
+	readyReason := "sanitized_agent_audit_result_callback_wired"
+	blockedReasons := []string{"sanitized_tool_result_not_recorded_yet", "canonical_asset_sync_pending"}
+	if resultObserved {
+		callbackState = cleanPreviewString(auditEvidence["evidence_state"])
+		readyReason = "sanitized_agent_audit_result_observed"
+		blockedReasons = []string{"canonical_asset_sync_pending"}
+		if !resultRecorded {
+			blockedReasons = append(blockedReasons, "agent_tool_call_audit_not_terminal")
+		}
+	}
 	return map[string]any{
 		"mode":                         "redacted_agent_result_callback_plan",
-		"callback_state":               "planned",
+		"callback_state":               callbackState,
 		"callback_ready":               true,
-		"callback_ready_reason":        "sanitized_agent_audit_result_callback_wired",
+		"callback_ready_reason":        readyReason,
 		"callback_enabled":             true,
 		"callback_scope":               "sanitized_audit_status_only",
-		"result_written":               false,
-		"operation_log_written":        false,
+		"result_written":               resultObserved,
+		"operation_log_written":        resultObserved,
 		"agent_task_status_written":    false,
-		"tool_call_status_written":     false,
+		"tool_call_status_written":     resultObserved,
 		"canonical_asset_sync_queued":  false,
 		"status_snapshot_written":      false,
 		"raw_tool_output_recorded":     false,
@@ -16381,9 +16516,10 @@ func agentWorkerResultCallbackPlan() map[string]any {
 		"contains_tool_output":         false,
 		"contains_runtime_config":      false,
 		"requires_human_result_review": true,
+		"tool_call_audit_evidence":     auditEvidence,
 		"required_result_fields":       []string{"operation_run_id", "agent_task_id", "tool_call_id", "tool_name", "status", "sanitization_status", "started_at", "finished_at"},
-		"suppressed_fields":            []string{"runtime_config", "environment_variables", "authorization_header", "workspace_path", "repository_url", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "token"},
-		"blocked_reasons":              []string{"sanitized_tool_result_not_recorded_yet", "canonical_asset_sync_pending"},
+		"suppressed_fields":            []string{"runtime_config", "environment_variables", "authorization_header", "workspace_path", "repository_url", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "token", "api_key", "bearer_token"},
+		"blocked_reasons":              blockedReasons,
 		"message":                      "Agent worker completion records sanitized audit status metadata; raw tool output, runtime output, patch, diff, and config material remain suppressed.",
 	}
 }
