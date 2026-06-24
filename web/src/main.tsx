@@ -1746,7 +1746,7 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
   );
 }
 
-function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, claimLoading, optimisticallyClaimedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; claimLoading?: boolean; optimisticallyClaimedAttemptID?: string }) {
+function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, claimLoading, resultLoading, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; claimLoading?: boolean; resultLoading?: boolean; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
   if (!value || value.kind !== 'project_template_provider_review_execute') return null;
   const request = value.execution_request || {};
   const guardrail = value.execution_guardrail || {};
@@ -1841,7 +1841,11 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
   const claimableAttempt = attemptOperations.find((operation: AnyRow) => String(operation.name || '') === String(attemptExecutionCandidate.next_operation || ''));
   const claimableAttemptID = String(claimableAttempt?.id || '');
   const claimOptimistic = Boolean(claimableAttemptID) && optimisticallyClaimedAttemptID === claimableAttemptID;
+  const resultRecordableAttempt = attemptOperations.find((operation: AnyRow) => operation.claim_recorded === true && String(operation.status || '') === 'running');
+  const resultRecordableAttemptID = String(resultRecordableAttempt?.id || '');
+  const resultOptimistic = Boolean(resultRecordableAttemptID) && optimisticallyRecordedAttemptID === resultRecordableAttemptID;
   const canClaimAttempt = Boolean(claimableAttemptID) && attemptClaimPlan.claim_metadata_ready === true && attemptClaimPlan.claim_recorded !== true && !claimOptimistic;
+  const canRecordAttemptResult = Boolean(resultRecordableAttemptID) && !resultOptimistic;
   const claimBlockedReason = claimOptimistic
     ? 'claim already requested'
     : attemptClaimPlan.claim_recorded === true
@@ -1849,6 +1853,11 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
       : attemptClaimPlan.claim_metadata_ready !== true
         ? String((Array.isArray(attemptClaimPlan.blocked_reasons) && attemptClaimPlan.blocked_reasons[0]) || 'claim metadata not ready')
         : '';
+  const resultBlockedReason = resultOptimistic
+    ? 'result already requested'
+    : !resultRecordableAttemptID
+      ? 'claim a running attempt first'
+      : '';
   return (
     <Space direction="vertical" size={8} className="full">
       <Space size={4} wrap>
@@ -2167,6 +2176,27 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
             <Tooltip title={!canClaimAttempt ? claimBlockedReason : ''}>
               <Button size="small" loading={claimLoading && claimOptimistic} disabled={!canClaimAttempt} onClick={() => onClaimAttempt(claimableAttemptID)}>
                 Claim attempt
+              </Button>
+            </Tooltip>
+          ) : null}
+          {onRecordAttemptResult ? (
+            <Tooltip title={!canRecordAttemptResult ? resultBlockedReason : ''}>
+              <Button size="small" loading={resultLoading && resultOptimistic} disabled={!canRecordAttemptResult || resultLoading} onClick={() => onRecordAttemptResult(resultRecordableAttemptID, 'success')}>
+                Record local success
+              </Button>
+            </Tooltip>
+          ) : null}
+          {onRecordAttemptResult ? (
+            <Tooltip title={!canRecordAttemptResult ? resultBlockedReason : ''}>
+              <Button size="small" disabled={!canRecordAttemptResult || resultLoading} onClick={() => onRecordAttemptResult(resultRecordableAttemptID, 'retryable')}>
+                Record retryable
+              </Button>
+            </Tooltip>
+          ) : null}
+          {onRecordAttemptResult ? (
+            <Tooltip title={!canRecordAttemptResult ? resultBlockedReason : ''}>
+              <Button size="small" danger disabled={!canRecordAttemptResult || resultLoading} onClick={() => onRecordAttemptResult(resultRecordableAttemptID, 'failed')}>
+                Record failure
               </Button>
             </Tooltip>
           ) : null}
@@ -4332,7 +4362,9 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [delegateEmail, setDelegateEmail] = useState('');
   const [delegateReason, setDelegateReason] = useState('');
   const [providerReviewClaimLoading, setProviderReviewClaimLoading] = useState(false);
+  const [providerReviewResultLoading, setProviderReviewResultLoading] = useState(false);
   const [optimisticallyClaimedProviderReviewAttemptID, setOptimisticallyClaimedProviderReviewAttemptID] = useState<string>();
+  const [optimisticallyRecordedProviderReviewAttemptID, setOptimisticallyRecordedProviderReviewAttemptID] = useState<string>();
   const [ruleForm] = Form.useForm();
   const approvalAudit = useLoad(() => approvalAuditID ? api(`/api/operation-approvals/${approvalAuditID}`) : Promise.resolve({}), [approvalAuditID]);
   const ruleAudits = useLoad(() => ruleAuditID ? api(`/api/operation-approval-rules/${ruleAuditID}/audits`) : Promise.resolve({ items: [] }), [ruleAuditID]);
@@ -4348,6 +4380,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   }, [ruleOpen, editingRule?.id]);
   useEffect(() => {
     setOptimisticallyClaimedProviderReviewAttemptID(undefined);
+    setOptimisticallyRecordedProviderReviewAttemptID(undefined);
   }, [approvalAuditID]);
   const approvalActionOptions = Array.from(new Set([
     'repo.tag',
@@ -4506,6 +4539,25 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     } finally {
       setOptimisticallyClaimedProviderReviewAttemptID(undefined);
       setProviderReviewClaimLoading(false);
+    }
+  }
+  async function recordProviderReviewAttemptResult(id: string, result: 'success' | 'retryable' | 'failed') {
+    if (!id || providerReviewResultLoading) return;
+    setOptimisticallyRecordedProviderReviewAttemptID(id);
+    setProviderReviewResultLoading(true);
+    try {
+      const response = await api(`/api/provider-review-attempts/${id}/local-result`, { method: 'POST', body: JSON.stringify({ result }) });
+      if (response.result_recorded === true) {
+        message.success('Provider review local result recorded');
+      } else {
+        message.warning(String(response.result_state || 'Provider review result not recordable'));
+      }
+      approvalAudit.reload();
+    } catch (error: any) {
+      message.error(error.message || 'Could not record provider review result');
+    } finally {
+      setOptimisticallyRecordedProviderReviewAttemptID(undefined);
+      setProviderReviewResultLoading(false);
     }
   }
   return (
@@ -4683,8 +4735,11 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             value={approvalAudit.data?.approval_payload_audit}
             persistedAttemptLedger={approvalAudit.data?.provider_review_attempt_ledger}
             onClaimAttempt={claimProviderReviewAttempt}
+            onRecordAttemptResult={recordProviderReviewAttemptResult}
             claimLoading={providerReviewClaimLoading}
+            resultLoading={providerReviewResultLoading}
             optimisticallyClaimedAttemptID={optimisticallyClaimedProviderReviewAttemptID}
+            optimisticallyRecordedAttemptID={optimisticallyRecordedProviderReviewAttemptID}
           />
           {approvalAudit.data?.approval && approvalStillActive(approvalAudit.data.approval) && canActOnApproval(approvalAudit.data.approval, currentRole) && (
             <Space wrap>

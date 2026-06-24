@@ -17506,6 +17506,7 @@ func TestClaimProviderReviewAttemptHandlerClaimsReadyAttempt(t *testing.T) {
 	}
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
 	mock.ExpectBegin()
 	expectProviderReviewAttemptClaimSelect(mock, "planned", "independent")
 	expectProviderReviewAttemptClaimUpdate(mock)
@@ -17563,6 +17564,7 @@ func TestClaimProviderReviewAttemptHandlerBlocksDependencyNotReady(t *testing.T)
 	}
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
 	mock.ExpectBegin()
 	expectProviderReviewAttemptClaimSelect(mock, "planned", "waiting_for_dependency")
 
@@ -17601,6 +17603,7 @@ func TestClaimProviderReviewAttemptHandlerBlocksUnapprovedApproval(t *testing.T)
 	}
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
 	mock.ExpectBegin()
 	expectProviderReviewAttemptClaimSelectWithApproval(mock, providerReviewAttemptClaimSelectOptions{
 		Status:         "planned",
@@ -17637,6 +17640,7 @@ func TestClaimProviderReviewAttemptHandlerRejectsWrongApprovalAction(t *testing.
 	}
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
 	mock.ExpectBegin()
 	expectProviderReviewAttemptClaimSelectWithApproval(mock, providerReviewAttemptClaimSelectOptions{
 		Status:         "planned",
@@ -17663,6 +17667,7 @@ func TestClaimProviderReviewAttemptHandlerReturnsConflictWhenUpdateDoesNotMatch(
 	}
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
 	mock.ExpectBegin()
 	expectProviderReviewAttemptClaimSelect(mock, "planned", "independent")
 	mock.ExpectQuery(`(?s)UPDATE provider_review_attempts\s+SET status='running'.*RETURNING`).
@@ -17703,6 +17708,187 @@ func TestClaimProviderReviewAttemptHandlerRequiresUpdateBeforeLock(t *testing.T)
 	rr := httptest.NewRecorder()
 
 	server.claimProviderReviewAttempt(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("viewer should be rejected before DB lock: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLocalResultHandlerRecordsSuccessAndUnlocksDependency(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	claimedAt := time.Now()
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectBegin()
+	expectProviderReviewAttemptLocalResultSelect(mock, providerReviewAttemptClaimSelectOptions{
+		Status:     "running",
+		Dependency: "independent",
+		ClaimedAt:  claimedAt,
+	})
+	expectProviderReviewAttemptLocalResultUpdate(mock, "completed", "success", claimedAt)
+	expectProviderReviewAttemptDependencyLock(mock, "approval-1", "create_branch_ref")
+	mock.ExpectExec(`(?s)UPDATE provider_review_attempts\s+SET dependency_status=\$3`).
+		WithArgs("approval-1", "create_branch_ref", "dependency_satisfied").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "completed", Dependency: "independent", Order: 10, ClaimedAt: claimedAt},
+		{ID: "attempt-2", Operation: "commit_starter_files", Endpoint: "github.commit_files", Status: "planned", Dependency: "dependency_satisfied", Order: 20, DependsOn: "create_branch_ref"},
+	})
+	mock.ExpectCommit()
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLocalResult(rr, newProviderReviewAttemptLocalResultRequest(`{"result":"success"}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["result_recorded"] != true ||
+		got["result_state"] != "recorded" ||
+		got["result_status"] != "success" ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["response_body_included"] != false ||
+		got["headers_included"] != false ||
+		got["contains_token"] != false ||
+		got["contains_provider_url"] != false ||
+		got["contains_repository_ref"] != false ||
+		got["contains_branch_name"] != false ||
+		got["contains_file_content"] != false {
+		t.Fatalf("unexpected local result response: %#v", got)
+	}
+	resultPlan := mapFromAny(got["result_recording_plan"])
+	if resultPlan["result_recording_metadata_ready"] != true ||
+		resultPlan["mapped_attempt_status"] != "completed" ||
+		resultPlan["mapped_dependency_status"] != "dependency_satisfied" ||
+		resultPlan["local_result_recording_enabled"] != true {
+		t.Fatalf("unexpected result recording plan: %#v", resultPlan)
+	}
+	ledger := mapFromAny(got["ledger"])
+	orchestration := mapFromAny(ledger["orchestration"])
+	if orchestration["next_operation"] != "commit_starter_files" ||
+		orchestration["dependency_chain_status"] != "ready" {
+		t.Fatalf("local result should unlock the next attempt: %#v", orchestration)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLocalResultHandlerReleasesClaimForRetryable(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	claimedAt := time.Now()
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectBegin()
+	expectProviderReviewAttemptLocalResultSelect(mock, providerReviewAttemptClaimSelectOptions{
+		Status:     "running",
+		Dependency: "independent",
+		ClaimedAt:  claimedAt,
+	})
+	expectProviderReviewAttemptLocalResultUpdate(mock, "planned", "retryable", nil)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+		{ID: "attempt-2", Operation: "commit_starter_files", Endpoint: "github.commit_files", Status: "planned", Dependency: "waiting_for_dependency", Order: 20, DependsOn: "create_branch_ref"},
+	})
+	mock.ExpectCommit()
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLocalResult(rr, newProviderReviewAttemptLocalResultRequest(`{"result":"retryable"}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["result_recorded"] != true || got["result_status"] != "retryable" {
+		t.Fatalf("unexpected retryable response: %#v", got)
+	}
+	ledger := mapFromAny(got["ledger"])
+	operations := mapSliceFromAny(ledger["operations"])
+	if len(operations) == 0 || operations[0]["status"] != "planned" || operations[0]["claim_recorded"] != false {
+		t.Fatalf("retryable result should release claim and return to planned: %#v", operations)
+	}
+	orchestration := mapFromAny(ledger["orchestration"])
+	if orchestration["dependency_chain_status"] != "waiting_for_dependency" ||
+		orchestration["next_operation"] != "create_branch_ref" ||
+		orchestration["ready_count"] != float64(1) && orchestration["ready_count"] != 1 {
+		t.Fatalf("retryable result should make the same attempt claimable again: %#v", orchestration)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLocalResultHandlerBlocksUnclaimedAttempt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectBegin()
+	expectProviderReviewAttemptLocalResultSelect(mock, providerReviewAttemptClaimSelectOptions{
+		Status:     "running",
+		Dependency: "independent",
+	})
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLocalResult(rr, newProviderReviewAttemptLocalResultRequest(`{"result":"success"}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["result_recorded"] != false ||
+		got["result_state"] != "provider_review_attempt_result_metadata_not_ready" ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" {
+		t.Fatalf("unexpected blocked local result response: %#v", got)
+	}
+	resultPlan := mapFromAny(got["result_recording_plan"])
+	if resultPlan["claim_recorded"] != false ||
+		!containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), "provider_review_attempt_claim_not_recorded") {
+		t.Fatalf("blocked local result should require claim: %#v", resultPlan)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLocalResultHandlerRequiresUpdateBeforeLock(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/local-result", strings.NewReader(`{"result":"success"}`))
+	req = withRouteParam(req, "id", "attempt-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "viewer-1", Role: "viewer"}))
+	rr := httptest.NewRecorder()
+
+	server.recordProviderReviewAttemptLocalResult(rr, req)
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
@@ -21592,6 +21778,12 @@ func newProviderReviewAttemptClaimRequest() *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
 
+func newProviderReviewAttemptLocalResultRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/local-result", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
 func newAgentCodeAuditSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/agent/tasks/task-1/code-audit-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "task-1")
@@ -21704,6 +21896,7 @@ type providerReviewAttemptClaimSelectOptions struct {
 	Dependency     string
 	ApprovalAction string
 	ApprovalStatus string
+	ClaimedAt      any
 }
 
 func expectProviderReviewAttemptClaimSelect(mock sqlmock.Sqlmock, status, dependency string) {
@@ -21768,7 +21961,7 @@ func expectProviderReviewAttemptClaimSelectWithApproval(mock sqlmock.Sqlmock, op
 		false,
 		"disabled",
 		false,
-		nil,
+		opts.ClaimedAt,
 		nil,
 		"approval-1",
 		"project-1",
@@ -21778,6 +21971,23 @@ func expectProviderReviewAttemptClaimSelectWithApproval(mock sqlmock.Sqlmock, op
 	mock.ExpectQuery(`(?s)SELECT\s+pra\.id,.*FROM provider_review_attempts pra.*FOR UPDATE OF pra`).
 		WithArgs("attempt-1").
 		WillReturnRows(rows)
+}
+
+func expectProviderReviewAttemptUpdatePolicy(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(`(?s)SELECT\s+oa\.id AS approval_id,\s+oa\.project_id AS approval_project_id\s+FROM provider_review_attempts pra\s+JOIN operation_approvals oa ON oa\.id=pra\.operation_approval_id\s+WHERE pra\.id=\$1`).
+		WithArgs("attempt-1").
+		WillReturnRows(sqlmock.NewRows([]string{"approval_id", "approval_project_id"}).
+			AddRow("approval-1", "project-1"))
+}
+
+func expectProviderReviewAttemptLocalResultSelect(mock sqlmock.Sqlmock, opts providerReviewAttemptClaimSelectOptions) {
+	if opts.ApprovalAction == "" {
+		opts.ApprovalAction = templateProviderReviewExecuteApprovalAction
+	}
+	if opts.ApprovalStatus == "" {
+		opts.ApprovalStatus = "approved"
+	}
+	expectProviderReviewAttemptClaimSelectWithApproval(mock, opts)
 }
 
 func expectProviderReviewAttemptClaimUpdate(mock sqlmock.Sqlmock) {
@@ -21794,6 +22004,48 @@ func expectProviderReviewAttemptClaimUpdate(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(`(?s)UPDATE provider_review_attempts\s+SET status='running'.*RETURNING`).
 		WithArgs("attempt-1", "admin-1").
 		WillReturnRows(rows)
+}
+
+func expectProviderReviewAttemptLocalResultUpdate(mock sqlmock.Sqlmock, attemptStatus, resultStatus string, claimedAt any) {
+	rows := providerReviewAttemptRows()
+	diagnostics, _ := json.Marshal(map[string]any{
+		"mode":                  "redacted_attempt_response_diagnostics",
+		"endpoint_key":          "github.create_branch_ref",
+		"status":                resultStatus,
+		"local_result_recorded": true,
+	})
+	rows.AddRow(
+		"attempt-1",
+		"approval-1",
+		"run-1",
+		"github",
+		"pull_request",
+		"create_branch_ref",
+		"github.create_branch_ref",
+		attemptStatus,
+		"detect_existing_branch_ref",
+		"treat_existing_matching_ref_as_success",
+		"retry_only_after_response_diagnostics",
+		10,
+		"",
+		"independent",
+		providerReviewAttemptRequestSummaryJSON("create_branch_ref", "github.create_branch_ref"),
+		diagnostics,
+		false,
+		"disabled",
+		false,
+		claimedAt,
+		nil,
+	)
+	mock.ExpectQuery(`(?s)UPDATE provider_review_attempts\s+SET status=\$2,\s+response_diagnostics=\$3::jsonb.*RETURNING`).
+		WithArgs("attempt-1", attemptStatus, sqlmock.AnyArg()).
+		WillReturnRows(rows)
+}
+
+func expectProviderReviewAttemptDependencyLock(mock sqlmock.Sqlmock, approvalID, operationName string) {
+	mock.ExpectQuery(`(?s)SELECT id\s+FROM provider_review_attempts\s+WHERE operation_approval_id=\$1\s+AND depends_on_operation=\$2\s+AND dependency_status='waiting_for_dependency'\s+FOR UPDATE`).
+		WithArgs(approvalID, operationName).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("attempt-2"))
 }
 
 func expectProviderReviewAttemptLedgerQuery(mock sqlmock.Sqlmock, approvalID string, items []providerReviewAttemptMockRow) {
