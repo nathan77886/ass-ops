@@ -3626,6 +3626,7 @@ function GitRemotes() {
   const [recordingTagSnapshotID, setRecordingTagSnapshotID] = useState<string>();
   const [recordingTagActionsSnapshotID, setRecordingTagActionsSnapshotID] = useState<string>();
   const [runningTagLookupID, setRunningTagLookupID] = useState<string>();
+  const [refreshingTagActionsID, setRefreshingTagActionsID] = useState<string>();
   const [tagSnapshotResults, setTagSnapshotResults] = useState<Record<string, AnyRow>>({});
   const [tagActionsSnapshotResults, setTagActionsSnapshotResults] = useState<Record<string, AnyRow>>({});
   const syncAssetDetail = useLoad(() => syncAssetID ? api(`/api/repo-sync-assets/${syncAssetID}`) : Promise.resolve(null), [syncAssetID]);
@@ -3894,6 +3895,19 @@ function GitRemotes() {
       setRecordingTagActionsSnapshotID(undefined);
     }
   }
+  async function refreshTagActions(id: string) {
+    setRefreshingTagActionsID(id);
+    try {
+      const result = await api(`/api/repo-tag-runs/${id}/actions-refresh`, { method: 'POST', body: '{}' });
+      message.success(result.idempotent ? 'Actions refresh already queued' : 'Actions refresh queued');
+      tagRuns.reload();
+      actions.reload();
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setRefreshingTagActionsID(undefined);
+    }
+  }
   async function syncGitHubActions() {
     if (!sourcePick.selectedID) {
       message.error('Select a GitHub remote first');
@@ -4084,9 +4098,11 @@ function GitRemotes() {
               {lookupPreflight.mode ? <Tag color={lookupPreflight.lookup_state === 'observed' ? 'green' : lookupPreflight.lookup_state === 'failed' || lookupPreflight.lookup_state === 'blocked' ? 'red' : 'gold'}>lookup {lookupPreflight.lookup_state || 'blocked'}</Tag> : null}
               {lookupPreflight.mode ? <Tag>{lookupPreflight.remote_tag_lookup_performed ? 'remote lookup' : 'no remote lookup'}</Tag> : null}
               {row.lookup_operation_status ? <Tag color={row.lookup_operation_status === 'completed' ? 'green' : row.lookup_operation_status === 'failed' ? 'red' : 'blue'}>op {row.lookup_operation_status}</Tag> : null}
-              {row.lookup_operation_result?.remote_tag_found !== undefined ? <Tag color={row.lookup_operation_result.remote_tag_found ? 'green' : 'default'}>{row.lookup_operation_result.remote_tag_found ? `found ${row.lookup_operation_result.matched_count || 0}` : 'not found'}</Tag> : null}
+              {lookupPreflight.remote_tag_found !== undefined ? <Tag color={lookupPreflight.remote_tag_found ? 'green' : 'default'}>{lookupPreflight.remote_tag_found ? `found ${lookupPreflight.matched_count || 0}` : 'not found'}</Tag> : null}
               <Tag color={liveResultPlan.live_result_state === 'planned' ? 'gold' : 'red'}>{liveResultPlan.repo_tag_run_result_written ? 'tag result saved' : liveResultPlan.live_result_state === 'failed' ? 'tag result failed' : 'tag result pending'}</Tag>
               <Tag color={actionsRefreshPlan.refresh_state === 'planned' ? 'gold' : 'red'}>{actionsRefreshPlan.github_actions_refresh_performed ? 'actions refreshed' : actionsRefreshPlan.refresh_state === 'failed' ? 'actions refresh failed' : 'actions refresh pending'}</Tag>
+              {actionsRefreshPlan.refresh_operation_status ? <Tag color={actionsRefreshPlan.refresh_operation_status === 'completed' ? 'green' : actionsRefreshPlan.refresh_operation_status === 'failed' ? 'red' : 'blue'}>actions op {actionsRefreshPlan.refresh_operation_status}</Tag> : null}
+              {actionsRefreshPlan.github_action_runs_synced ? <Tag color="green">{actionsRefreshPlan.github_action_runs_synced_count || 0} action runs</Tag> : null}
               <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
               {resultPlan.result_recording_state ? <Tag color={tagResultEvidenceColor(resultPlan.result_recording_state)}>recording {resultPlan.result_recording_state}</Tag> : null}
               {snapshotResult ? <Tag color={snapshotResult.tag_result_snapshot_written ? 'green' : snapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>snapshot {snapshotResult.recording_state || 'unknown'}</Tag> : null}
@@ -4124,14 +4140,24 @@ function GitRemotes() {
           { title: 'Actions', render: (_, row) => {
             const plan = row.remote_rehearsal_plan || {};
             const actionsPlan = plan.actions_refresh_plan || {};
-            return <Button
-              size="small"
-              onClick={() => recordTagActionsRefreshSnapshot(row.id)}
-              disabled={plan.rehearsal_state !== 'observed' || actionsPlan.refresh_state === 'failed'}
-              loading={recordingTagActionsSnapshotID === row.id}
-            >
-              Record actions snapshot
-            </Button>;
+            return <Space size={6} wrap>
+              <Button
+                size="small"
+                onClick={() => refreshTagActions(row.id)}
+                disabled={!actionsPlan.github_actions_sync_enabled || actionsPlan.refresh_state === 'running'}
+                loading={refreshingTagActionsID === row.id}
+              >
+                Refresh Actions
+              </Button>
+              <Button
+                size="small"
+                onClick={() => recordTagActionsRefreshSnapshot(row.id)}
+                disabled={plan.rehearsal_state !== 'observed' || actionsPlan.refresh_state === 'failed'}
+                loading={recordingTagActionsSnapshotID === row.id}
+              >
+                Record actions snapshot
+              </Button>
+            </Space>;
           } }
         ]} /> },
         { key: 'actions', label: 'GitHub Actions', children: <Space direction="vertical" size={12} className="full">
