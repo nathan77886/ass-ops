@@ -16584,6 +16584,25 @@ func TestAgentWorkerDispatchPlanReconcilesToolCallAuditEvidence(t *testing.T) {
 		armingPlan["contains_tool_output"] != false {
 		t.Fatalf("tool execution arming should reconcile audit evidence without enabling invocation: %#v", armingPlan)
 	}
+	reviewPlan := mapFromAny(got["tool_invocation_review_plan"])
+	if reviewPlan["review_state"] != "ready_for_operator_review" ||
+		reviewPlan["review_ready"] != true ||
+		reviewPlan["metadata_ready"] != true ||
+		reviewPlan["allowlist_ready"] != true ||
+		reviewPlan["audit_evidence_observed"] != true ||
+		reviewPlan["terminal_audit_observed"] != true ||
+		reviewPlan["sanitized_result_recorded"] != true ||
+		reviewPlan["result_callback_wired"] != true ||
+		reviewPlan["result_callback_observed"] != true ||
+		reviewPlan["arming_ready_for_operator_review"] != true ||
+		reviewPlan["live_tool_invocation_allowed"] != false ||
+		reviewPlan["tool_invocation_enabled"] != false ||
+		reviewPlan["allowlisted_tool_invoked"] != false ||
+		reviewPlan["raw_tool_input_materialized"] != false ||
+		reviewPlan["raw_tool_output_recorded"] != false ||
+		reviewPlan["operator_review_recorded"] != false {
+		t.Fatalf("tool invocation review should reconcile audit evidence without enabling invocation: %#v", reviewPlan)
+	}
 	callbackPlan := mapFromAny(got["result_callback_plan"])
 	if callbackPlan["callback_state"] != "recorded" ||
 		callbackPlan["callback_ready_reason"] != "sanitized_agent_audit_result_observed" ||
@@ -16601,6 +16620,34 @@ func TestAgentWorkerDispatchPlanReconcilesToolCallAuditEvidence(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("worker dispatch evidence leaked %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestAgentToolInvocationReviewRequiresCallbackBeforeTerminalWait(t *testing.T) {
+	evidence := map[string]any{
+		"has_tool_call_audit":       true,
+		"sanitized_result_recorded": false,
+	}
+	armingPlan := map[string]any{
+		"metadata_ready":           true,
+		"allowlist_ready":          true,
+		"audit_evidence_observed":  true,
+		"terminal_audit_observed":  false,
+		"result_callback_wired":    false,
+		"result_callback_observed": false,
+		"arming_ready":             false,
+	}
+
+	got := agentWorkerToolInvocationReviewPlan(agentWorkerAllowedToolNames(), evidence, armingPlan)
+
+	if got["review_state"] != "callback_blocked" ||
+		got["review_ready"] != false ||
+		got["review_ready_reason"] != "agent_result_callback_not_wired" ||
+		!containsString(stringSliceFromAny(got["missing_evidence"]), "result_callback") ||
+		got["live_tool_invocation_allowed"] != false ||
+		got["raw_tool_output_recorded"] != false ||
+		got["external_call_made"] != false {
+		t.Fatalf("tool invocation review should require callback before waiting for terminal audit: %#v", got)
 	}
 }
 
@@ -16779,6 +16826,54 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 		}
 	}
 
+	reviewPlan := mapFromAny(got["tool_invocation_review_plan"])
+	if reviewPlan["mode"] != "redacted_agent_tool_invocation_review_plan" ||
+		reviewPlan["live_tool_invocation_allowed"] != false ||
+		reviewPlan["tool_invocation_enabled"] != false ||
+		reviewPlan["allowlisted_tool_invoked"] != false ||
+		reviewPlan["tool_input_materialized"] != false ||
+		reviewPlan["tool_output_recorded"] != false ||
+		reviewPlan["raw_tool_input_materialized"] != false ||
+		reviewPlan["raw_tool_output_recorded"] != false ||
+		reviewPlan["runtime_config_materialized"] != false ||
+		reviewPlan["codex_cli_process_started"] != false ||
+		reviewPlan["repository_mutation_allowed"] != false ||
+		reviewPlan["external_call_made"] != false ||
+		reviewPlan["operator_review_recorded"] != false {
+		t.Fatalf("tool invocation review plan should stay disabled and redacted: %#v", reviewPlan)
+	}
+	if got["prerequisite_state"] == "metadata_available" && reviewPlan["metadata_ready"] != true {
+		t.Fatalf("metadata-available dispatch should mark tool invocation review metadata ready: %#v", reviewPlan)
+	}
+	if got["prerequisite_state"] == "metadata_blocked" && (reviewPlan["metadata_ready"] != false || reviewPlan["review_state"] != "blocked") {
+		t.Fatalf("metadata-blocked dispatch should block tool invocation review: %#v", reviewPlan)
+	}
+	for _, tool := range []string{"context.generate", "runtime.check", "codex.execution.plan", "patch.prepare"} {
+		if !containsString(stringSliceFromAny(reviewPlan["allowed_tool_names"]), tool) {
+			t.Fatalf("tool invocation review allowed tool missing %q: %#v", tool, reviewPlan["allowed_tool_names"])
+		}
+	}
+	for _, field := range []string{"operation_run_id", "agent_task_id", "tool_name", "tool_call_id", "allowlist_entry", "input_schema_key", "output_schema_key", "sanitization_status", "operator_review_status"} {
+		if !containsString(stringSliceFromAny(reviewPlan["required_review_fields"]), field) {
+			t.Fatalf("tool invocation review required field missing %q: %#v", field, reviewPlan["required_review_fields"])
+		}
+	}
+	for _, control := range []string{"agent_execute_approval", "verified_runtime_metadata", "allowlisted_tool_review", "terminal_audit_review", "result_callback_review", "raw_io_redaction_review"} {
+		if !containsString(stringSliceFromAny(reviewPlan["required_operator_controls"]), control) {
+			t.Fatalf("tool invocation review operator control missing %q: %#v", control, reviewPlan["required_operator_controls"])
+		}
+	}
+	for _, backend := range []string{"worker_tool_invoke", "tool_input_materialization", "tool_output_recording", "codex_cli_process", "patch_apply", "repository_mutation", "provider_call"} {
+		if !containsString(stringSliceFromAny(reviewPlan["disabled_backends"]), backend) {
+			t.Fatalf("tool invocation review disabled backend missing %q: %#v", backend, reviewPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"runtime_config", "environment_variables", "authorization_header", "workspace_path", "repository_url", "prompt_body", "tool_input", "tool_output", "raw_tool_input", "raw_tool_output", "patch_content", "diff_content", "file_content", "token", "api_key", "bearer_token"} {
+		if !containsString(stringSliceFromAny(reviewPlan["suppressed_fields"]), field) {
+			t.Fatalf("tool invocation review suppressed field missing %q: %#v", field, reviewPlan["suppressed_fields"])
+		}
+	}
+
 	callbackPlan := mapFromAny(got["result_callback_plan"])
 	evidence := mapFromAny(got["tool_call_audit_evidence"])
 	hasAuditEvidence := boolOnlyFromAny(evidence["has_tool_call_audit"])
@@ -16792,6 +16887,18 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 		}
 	} else if armingPlan["arming_ready"] == true {
 		t.Fatalf("tool arming cannot be ready without metadata and terminal audit evidence: %#v", armingPlan)
+	}
+	if hasAuditEvidence && boolOnlyFromAny(evidence["sanitized_result_recorded"]) && got["prerequisite_state"] == "metadata_available" {
+		if reviewPlan["review_state"] != "ready_for_operator_review" ||
+			reviewPlan["review_ready"] != true ||
+			reviewPlan["audit_evidence_observed"] != true ||
+			reviewPlan["terminal_audit_observed"] != true ||
+			reviewPlan["result_callback_wired"] != true ||
+			len(stringSliceFromAny(reviewPlan["missing_evidence"])) != 0 {
+			t.Fatalf("terminal audit evidence should make tool invocation review ready only for operator review: %#v", reviewPlan)
+		}
+	} else if reviewPlan["review_ready"] == true {
+		t.Fatalf("tool invocation review cannot be ready without metadata, terminal audit, and callback evidence: %#v", reviewPlan)
 	}
 	if callbackPlan["mode"] != "redacted_agent_result_callback_plan" ||
 		callbackPlan["callback_ready"] != true ||

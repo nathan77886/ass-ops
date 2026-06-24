@@ -17630,6 +17630,7 @@ func agentWorkerDispatchPlan(runtime map[string]any, auditEvidenceRows ...map[st
 	}
 	resultCallbackPlan := agentWorkerResultCallbackPlan(auditEvidence)
 	toolExecutionArmingPlan := agentWorkerToolExecutionArmingPlan(dispatchPrerequisite, allowedToolNames, auditEvidence, resultCallbackPlan)
+	toolInvocationReviewPlan := agentWorkerToolInvocationReviewPlan(allowedToolNames, auditEvidence, toolExecutionArmingPlan)
 	resultObserved := boolOnlyFromAny(auditEvidence["has_tool_call_audit"])
 	return map[string]any{
 		"mode":                           "redacted_agent_worker_dispatch_plan",
@@ -17653,6 +17654,7 @@ func agentWorkerDispatchPlan(runtime map[string]any, auditEvidenceRows ...map[st
 		"worker_claim_plan":              claimPlan,
 		"tool_invocation_plan":           toolInvocationPlan,
 		"tool_execution_arming_plan":     toolExecutionArmingPlan,
+		"tool_invocation_review_plan":    toolInvocationReviewPlan,
 		"result_callback_plan":           resultCallbackPlan,
 		"requires_operation_run":         true,
 		"requires_approved_plan":         true,
@@ -17722,6 +17724,96 @@ func agentWorkerDispatchPlan(runtime map[string]any, auditEvidenceRows ...map[st
 		},
 		"runtime_readiness": cliReadiness,
 		"message":           "Agent worker dispatch now enqueues a real audit worker job and sanitized result callback; allowlisted tool invocation, Codex CLI, patch, git, and pull request mutations remain disabled.",
+	}
+}
+
+func agentWorkerToolInvocationReviewPlan(allowedToolNames []string, auditEvidence, armingPlan map[string]any) map[string]any {
+	metadataReady := boolOnlyFromAny(armingPlan["metadata_ready"])
+	allowlistReady := boolOnlyFromAny(armingPlan["allowlist_ready"])
+	terminalAuditObserved := boolOnlyFromAny(armingPlan["terminal_audit_observed"])
+	callbackWired := boolOnlyFromAny(armingPlan["result_callback_wired"])
+	callbackObserved := boolOnlyFromAny(armingPlan["result_callback_observed"])
+	armingReady := boolOnlyFromAny(armingPlan["arming_ready"])
+	hasAudit := boolOnlyFromAny(auditEvidence["has_tool_call_audit"])
+	sanitizedResultRecorded := boolOnlyFromAny(auditEvidence["sanitized_result_recorded"])
+	readyForOperatorReview := metadataReady && allowlistReady && hasAudit && callbackObserved && sanitizedResultRecorded && armingReady
+
+	reviewState := "blocked"
+	reviewReason := "agent_tool_invocation_review_metadata_not_ready"
+	switch {
+	case readyForOperatorReview:
+		reviewState = "ready_for_operator_review"
+		reviewReason = "allowlisted_tool_invocation_preflight_ready_for_operator_review"
+	case metadataReady && allowlistReady && hasAudit && callbackWired && !terminalAuditObserved:
+		reviewState = "waiting_for_terminal_audit"
+		reviewReason = "agent_tool_call_audit_not_terminal"
+	case metadataReady && allowlistReady && callbackWired:
+		reviewState = "audit_ready"
+		reviewReason = "allowlisted_tool_invocation_audit_boundary_ready"
+	case metadataReady && allowlistReady:
+		reviewState = "callback_blocked"
+		reviewReason = "agent_result_callback_not_wired"
+	case metadataReady:
+		reviewState = "allowlist_blocked"
+		reviewReason = "agent_tool_allowlist_missing"
+	}
+
+	missing := []string{}
+	if !metadataReady {
+		missing = append(missing, "runtime_metadata")
+	}
+	if !allowlistReady {
+		missing = append(missing, "tool_allowlist")
+	}
+	if !callbackWired {
+		missing = append(missing, "result_callback")
+	}
+	if !hasAudit {
+		missing = append(missing, "tool_call_audit_evidence")
+	}
+	if hasAudit && !terminalAuditObserved {
+		missing = append(missing, "terminal_tool_call_audit")
+	}
+	if hasAudit && !callbackObserved {
+		missing = append(missing, "result_callback_observation")
+	}
+	if hasAudit && !sanitizedResultRecorded {
+		missing = append(missing, "sanitized_result_recording")
+	}
+
+	return map[string]any{
+		"mode":                             "redacted_agent_tool_invocation_review_plan",
+		"review_state":                     reviewState,
+		"review_ready":                     readyForOperatorReview,
+		"review_ready_reason":              reviewReason,
+		"metadata_ready":                   metadataReady,
+		"allowlist_ready":                  allowlistReady,
+		"allowed_tool_count":               len(allowedToolNames),
+		"audit_evidence_observed":          hasAudit,
+		"terminal_audit_observed":          terminalAuditObserved,
+		"sanitized_result_recorded":        sanitizedResultRecorded,
+		"result_callback_wired":            callbackWired,
+		"result_callback_observed":         callbackObserved,
+		"arming_ready_for_operator_review": armingReady,
+		"live_tool_invocation_allowed":     false,
+		"tool_invocation_enabled":          false,
+		"allowlisted_tool_invoked":         false,
+		"tool_input_materialized":          false,
+		"tool_output_recorded":             false,
+		"raw_tool_input_materialized":      false,
+		"raw_tool_output_recorded":         false,
+		"runtime_config_materialized":      false,
+		"codex_cli_process_started":        false,
+		"repository_mutation_allowed":      false,
+		"external_call_made":               false,
+		"operator_review_recorded":         false,
+		"allowed_tool_names":               allowedToolNames,
+		"required_review_fields":           []string{"operation_run_id", "agent_task_id", "tool_name", "tool_call_id", "allowlist_entry", "input_schema_key", "output_schema_key", "sanitization_status", "operator_review_status"},
+		"required_operator_controls":       []string{"agent_execute_approval", "verified_runtime_metadata", "allowlisted_tool_review", "terminal_audit_review", "result_callback_review", "raw_io_redaction_review"},
+		"missing_evidence":                 missing,
+		"disabled_backends":                []string{"worker_tool_invoke", "tool_input_materialization", "tool_output_recording", "codex_cli_process", "patch_apply", "repository_mutation", "provider_call"},
+		"suppressed_fields":                []string{"runtime_config", "environment_variables", "authorization_header", "workspace_path", "repository_url", "prompt_body", "tool_input", "tool_output", "raw_tool_input", "raw_tool_output", "patch_content", "diff_content", "file_content", "token", "api_key", "bearer_token"},
+		"message":                          "Allowlisted tool invocation review is a redacted preflight only; live tool calls, raw tool I/O, Codex CLI, patch application, repository mutation, and provider calls remain disabled.",
 	}
 }
 
