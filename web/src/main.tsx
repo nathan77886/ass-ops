@@ -764,7 +764,7 @@ function countRepositoryGraphLinks(graph: AnyRow = {}, repositoryAssetIDs = new 
   return counts;
 }
 
-function countRepoSyncGraphLinks(graph: AnyRow = {}) {
+function countRepoSyncGraphLinks(graph: AnyRow = {}, repoSyncAssetIDs = new Set<string>(), remoteAssetIDs = new Set<string>()) {
   const bySync: Record<string, { repository?: boolean; sources: Record<string, boolean>; targets: Record<string, boolean> }> = {};
   const syncEntry = (assetID: string) => {
     bySync[assetID] ||= { sources: {}, targets: {} };
@@ -787,10 +787,15 @@ function countRepoSyncGraphLinks(graph: AnyRow = {}) {
       syncEntry(from).targets[to] = true;
     }
     return nextCounts;
-  }, { repositorySync: 0, sourceRemotes: 0, targetRemotes: 0, completeSyncs: 0 });
+  }, { repositorySync: 0, sourceRemotes: 0, targetRemotes: 0, completeSyncs: 0, completeSyncAssets: 0 });
   counts.completeSyncs = Object.values(bySync).filter((entry) => (
     entry.repository &&
     Object.keys(entry.sources).some((source) => Object.keys(entry.targets).some((target) => source !== target))
+  )).length;
+  counts.completeSyncAssets = Object.entries(bySync).filter(([syncID, entry]) => (
+    entry.repository &&
+    repoSyncAssetIDs.has(syncID) &&
+    Object.keys(entry.sources).some((source) => remoteAssetIDs.has(source) && Object.keys(entry.targets).some((target) => source !== target && remoteAssetIDs.has(target)))
   )).length;
   return counts;
 }
@@ -1197,7 +1202,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
   const contextGenerations = countContextGenerationEvidence(assets);
   const repositoryGraphLinks = countRepositoryGraphLinks(graph, assetIDsByType(assets, 'repository'), assetIDsByType(assets, 'git_remote'));
-  const repoSyncGraphLinks = countRepoSyncGraphLinks(graph);
+  const repoSyncGraphLinks = countRepoSyncGraphLinks(graph, assetIDsByType(assets, 'repo_sync'), assetIDsByType(assets, 'git_remote'));
   const webhookSyncGraphLinks = countWebhookSyncGraphLinks(graph);
   const githubActionLinks = countGitHubActionGraphLinks(graph);
   const repoTagRuns = (operationCounts['repo.tag'] || 0) + (operationCounts['repo.create_tag'] || 0);
@@ -1239,7 +1244,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'repo_sync',
       label: 'Define RepoSyncAsset',
       next: 'Create a RepoSyncAsset between source and mirror remotes.',
-      ...readinessState((assetCounts.repo_sync || 0) > 0 && repoSyncGraphLinks.completeSyncs > 0, `${assetCounts.repo_sync || 0} repo syncs / ${repoSyncGraphLinks.completeSyncs} complete syncs / ${repoSyncGraphLinks.repositorySync} repository links / ${repoSyncGraphLinks.sourceRemotes} source links / ${repoSyncGraphLinks.targetRemotes} target links`, (assetCounts.repo_sync || 0) > 0 || repoSyncGraphLinks.repositorySync > 0 || repoSyncGraphLinks.sourceRemotes > 0 || repoSyncGraphLinks.targetRemotes > 0)
+      ...readinessState((assetCounts.repo_sync || 0) > 0 && repoSyncGraphLinks.completeSyncAssets > 0, `${assetCounts.repo_sync || 0} repo syncs / ${repoSyncGraphLinks.completeSyncs} complete syncs / ${repoSyncGraphLinks.completeSyncAssets} sync asset paths / ${repoSyncGraphLinks.repositorySync} repository links / ${repoSyncGraphLinks.sourceRemotes} source links / ${repoSyncGraphLinks.targetRemotes} target links`, (assetCounts.repo_sync || 0) > 0 || repoSyncGraphLinks.repositorySync > 0 || repoSyncGraphLinks.sourceRemotes > 0 || repoSyncGraphLinks.targetRemotes > 0 || repoSyncGraphLinks.completeSyncAssets > 0)
     },
     {
       key: 'sync_trigger',
