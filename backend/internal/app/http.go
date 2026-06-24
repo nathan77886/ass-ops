@@ -16236,6 +16236,7 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 			"dependency_status":        safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(attempt, "dependency_status")),
 			"request_summary":          sanitizedProviderReviewAttemptRequestSummary(mapFromAny(attempt["request_summary"])),
 			"response_diagnostics":     sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(attempt["response_diagnostics"])),
+			"result_recording_plan":    providerReviewAttemptLedgerResultRecordingPlan(attempt),
 			"claim_recorded":           providerReviewAttemptClaimRecorded(attempt),
 			"claimed_at":               claimedAt,
 			"external_call_made":       false,
@@ -16316,6 +16317,14 @@ func sanitizedProviderReviewAttemptResponseDiagnostics(value map[string]any) map
 		"provider_api_mutation":    "disabled",
 		"external_call_made":       false,
 	}
+}
+
+func providerReviewAttemptLedgerResultRecordingPlan(attempt map[string]any) map[string]any {
+	plan := providerReviewAttemptLocalResultPlanFromAttempt(attempt, "success")
+	plan["plan_context"] = "ledger_metadata_readiness"
+	plan["result_status_probe"] = "success"
+	plan["accepted_result_statuses"] = []string{"success", "retryable", "failed"}
+	return plan
 }
 
 func safeProviderReviewAttemptResponseStatus(value string) string {

@@ -17775,6 +17775,20 @@ func TestRecordProviderReviewAttemptLocalResultHandlerRecordsSuccessAndUnlocksDe
 		t.Fatalf("unexpected result recording plan: %#v", resultPlan)
 	}
 	ledger := mapFromAny(got["ledger"])
+	operations := mapSliceFromAny(ledger["operations"])
+	if len(operations) < 2 {
+		t.Fatalf("ledger operations missing: %#v", ledger)
+	}
+	ledgerResultPlan := mapFromAny(operations[1]["result_recording_plan"])
+	if ledgerResultPlan["result_recording_metadata_ready"] != false ||
+		ledgerResultPlan["plan_context"] != "ledger_metadata_readiness" ||
+		ledgerResultPlan["result_status_probe"] != "success" ||
+		!containsString(stringSliceFromAny(ledgerResultPlan["accepted_result_statuses"]), "success") ||
+		!containsString(stringSliceFromAny(ledgerResultPlan["accepted_result_statuses"]), "retryable") ||
+		!containsString(stringSliceFromAny(ledgerResultPlan["accepted_result_statuses"]), "failed") ||
+		!containsString(stringSliceFromAny(ledgerResultPlan["blocked_reasons"]), "provider_review_attempt_claim_not_recorded") {
+		t.Fatalf("waiting dependent attempt should expose blocked result plan: %#v", ledgerResultPlan)
+	}
 	orchestration := mapFromAny(ledger["orchestration"])
 	if orchestration["next_operation"] != "commit_starter_files" ||
 		orchestration["dependency_chain_status"] != "ready" {
@@ -17830,6 +17844,55 @@ func TestRecordProviderReviewAttemptLocalResultHandlerReleasesClaimForRetryable(
 		orchestration["next_operation"] != "create_branch_ref" ||
 		orchestration["ready_count"] != float64(1) && orchestration["ready_count"] != 1 {
 		t.Fatalf("retryable result should make the same attempt claimable again: %#v", orchestration)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLocalResultHandlerReturnsConflictWhenUpdateDoesNotMatch(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	claimedAt := time.Now()
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectBegin()
+	expectProviderReviewAttemptLocalResultSelect(mock, providerReviewAttemptClaimSelectOptions{
+		Status:     "running",
+		Dependency: "independent",
+		ClaimedAt:  claimedAt,
+	})
+	mock.ExpectQuery(`(?s)UPDATE provider_review_attempts\s+SET status=\$2,\s+response_diagnostics=\$3::jsonb.*RETURNING`).
+		WithArgs("attempt-1", "completed", sqlmock.AnyArg()).
+		WillReturnRows(providerReviewAttemptRows())
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLocalResult(rr, newProviderReviewAttemptLocalResultRequest(`{"result":"success"}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["result_recorded"] != false ||
+		got["result_state"] != "provider_review_attempt_result_conflict" ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["contains_token"] != false ||
+		got["contains_provider_url"] != false {
+		t.Fatalf("unexpected conflict local result response: %#v", got)
+	}
+	resultPlan := mapFromAny(got["result_recording_plan"])
+	if resultPlan["result_recording_metadata_ready"] != true ||
+		resultPlan["mapped_attempt_status"] != "completed" ||
+		resultPlan["mapped_dependency_status"] != "dependency_satisfied" ||
+		resultPlan["local_result_recording_enabled"] != true {
+		t.Fatalf("unexpected conflict result plan: %#v", resultPlan)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

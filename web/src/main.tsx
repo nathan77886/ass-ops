@@ -1843,9 +1843,10 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
   const claimOptimistic = Boolean(claimableAttemptID) && optimisticallyClaimedAttemptID === claimableAttemptID;
   const resultRecordableAttempt = attemptOperations.find((operation: AnyRow) => operation.claim_recorded === true && String(operation.status || '') === 'running');
   const resultRecordableAttemptID = String(resultRecordableAttempt?.id || '');
+  const resultRecordablePlan = resultRecordableAttempt?.result_recording_plan || {};
   const resultOptimistic = Boolean(resultRecordableAttemptID) && optimisticallyRecordedAttemptID === resultRecordableAttemptID;
   const canClaimAttempt = Boolean(claimableAttemptID) && attemptClaimPlan.claim_metadata_ready === true && attemptClaimPlan.claim_recorded !== true && !claimOptimistic;
-  const canRecordAttemptResult = Boolean(resultRecordableAttemptID) && !resultOptimistic;
+  const canRecordAttemptResult = Boolean(resultRecordableAttemptID) && resultRecordablePlan.result_recording_metadata_ready === true && !resultOptimistic;
   const claimBlockedReason = claimOptimistic
     ? 'claim already requested'
     : attemptClaimPlan.claim_recorded === true
@@ -1857,6 +1858,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
     ? 'result already requested'
     : !resultRecordableAttemptID
       ? 'claim a running attempt first'
+      : resultRecordablePlan.result_recording_metadata_ready !== true
+        ? String((Array.isArray(resultRecordablePlan.blocked_reasons) && resultRecordablePlan.blocked_reasons[0]) || 'result metadata not ready')
       : '';
   return (
     <Space direction="vertical" size={8} className="full">
