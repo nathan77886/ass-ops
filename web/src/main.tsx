@@ -5174,6 +5174,8 @@ function ConfigPage() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [sshSnapshotLoading, setSSHSnapshotLoading] = useState(false);
   const [sshSnapshotResult, setSSHSnapshotResult] = useState<AnyRow>();
+  const [sshProofLoading, setSSHProofLoading] = useState(false);
+  const [sshProofResult, setSSHProofResult] = useState<AnyRow>();
   const argoConnections = useLoad(() => project ? api(`/api/projects/${project.id}/argo/connections`) : Promise.resolve({ items: [] }), [project?.id]);
   const argoRows = argoConnections.data?.items || [];
   const argoPick = useSelectedRow(argoRows);
@@ -5209,6 +5211,10 @@ function ConfigPage() {
     environment_proof_ready: sshRehearsal.data.environment_proof_ready,
     target_environment_attestation_plan: sshRehearsal.data.target_environment_attestation_plan,
     target_environment_attestation_ready: sshRehearsal.data.target_environment_attestation_ready,
+    target_environment_proof_registration: sshRehearsal.data.target_environment_proof_registration,
+    target_environment_proof_registered: sshRehearsal.data.target_environment_proof_registered,
+    target_environment_proof_state: sshRehearsal.data.target_environment_proof_state,
+    target_environment_proof_registered_at: sshRehearsal.data.target_environment_proof_registered_at,
     operator_approved_proof_recorded: sshRehearsal.data.operator_approved_proof_recorded,
     required_live_rehearsal: sshRehearsal.data.required_live_rehearsal,
     required_controls: sshRehearsal.data.required_controls,
@@ -5218,6 +5224,7 @@ function ConfigPage() {
   const sshRuns = useLoad(() => project ? api(`/api/ssh-command-runs?project_id=${project.id}`) : Promise.resolve({ items: [] }), [project?.id]);
   useEffect(() => {
     setSSHSnapshotResult(undefined);
+    setSSHProofResult(undefined);
   }, [sshPick.selectedID]);
   const deploymentPosture = buildDeploymentPosture(
     deploymentTargets.data?.items || [],
@@ -5444,6 +5451,31 @@ function ConfigPage() {
       setSSHSnapshotLoading(false);
     }
   }
+  async function recordSSHTargetEnvironmentProof() {
+    if (!sshPick.selectedID) {
+      message.error('Select an SSH machine first');
+      return;
+    }
+    setSSHProofLoading(true);
+    try {
+      const result = await api(`/api/ssh-machines/${sshPick.selectedID}/target-environment-proof`, {
+        method: 'POST',
+        body: '{}'
+      });
+      setSSHProofResult(result);
+      sshRehearsal.reload();
+      if (result.recording_ready === false) {
+        message.warning(result.message || 'SSH target environment proof is not ready yet');
+      } else {
+        message.success(result.proof_registered ? 'SSH target environment proof recorded' : 'SSH target environment proof already current');
+      }
+    } catch (error: any) {
+      setSSHProofResult(undefined);
+      message.error(error.message || 'Request failed');
+    } finally {
+      setSSHProofLoading(false);
+    }
+  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Typography.Title level={2}>Argo / SSH</Typography.Title>
@@ -5456,6 +5488,7 @@ function ConfigPage() {
             <Button onClick={verifySSHMachine} disabled={!sshPick.selectedID}>Verify</Button>
             <Button type="primary" onClick={() => setCommandOpen(true)} disabled={!sshPick.selectedID}>Run command</Button>
             <Button onClick={() => { sshRuns.reload(); sshRehearsal.reload(); }} loading={sshRehearsal.loading} disabled={!project}>Refresh runs</Button>
+            <Button onClick={recordSSHTargetEnvironmentProof} loading={sshProofLoading} disabled={!sshPick.selectedID || sshRehearsalView?.rehearsal_state !== 'ready' || !sshRehearsalView?.target_environment_attestation_ready}>Record proof</Button>
             <Button onClick={recordSSHRehearsalSnapshot} loading={sshSnapshotLoading} disabled={!sshPick.selectedID || !sshRehearsalView?.target_environment_attestation_ready}>Record snapshot</Button>
           </Space>
           {sshRehearsal.error && <Alert showIcon type="warning" message="SSH rehearsal preview unavailable" description={sshRehearsal.error} />}
@@ -5488,6 +5521,8 @@ function ConfigPage() {
                   {sshRehearsalView.target_environment_attestation_plan ? <Tag>{sshRehearsalView.target_environment_attestation_plan.environment_probe_performed ? 'env probed' : 'no env probe'}</Tag> : null}
                   {sshRehearsalView.target_environment_attestation_plan ? <Tag>{sshRehearsalView.target_environment_attestation_plan.raw_output_recorded ? 'raw output recorded' : 'no raw output'}</Tag> : null}
                   {sshRehearsalView.target_environment_attestation_ready ? <Tag color="green">target proof review ready</Tag> : <Tag>target proof pending</Tag>}
+                  {sshRehearsalView.target_environment_proof_registered ? <Tag color="green">target proof registered</Tag> : <Tag>target proof unregistered</Tag>}
+                  {sshRehearsalView.target_environment_proof_registration ? <Tag color={sshRehearsalView.target_environment_proof_registration.proof_state === 'recorded' ? 'green' : sshRehearsalView.target_environment_proof_registration.proof_state === 'lookup_failed' ? 'red' : 'gold'}>proof {sshRehearsalView.target_environment_proof_registration.proof_state || 'not_recorded'}</Tag> : null}
                   {sshRehearsalView.recent_evidence?.evidence_state ? <Tag color={sshRehearsalView.recent_evidence.evidence_state === 'recorded' ? 'green' : sshRehearsalView.recent_evidence.evidence_state === 'failed' ? 'red' : 'gold'}>evidence {sshRehearsalView.recent_evidence.evidence_state}</Tag> : null}
                   <Tag>{sshRehearsalView.recent_evidence?.verify_runs || 0} verify runs</Tag>
                   <Tag>{sshRehearsalView.recent_evidence?.exec_runs || 0} exec runs</Tag>
@@ -5496,6 +5531,15 @@ function ConfigPage() {
                   <Tag>{sshRehearsalView.recent_evidence?.failed_runs || 0} failed runs</Tag>
                   <Tag>{sshRehearsalView.recent_evidence?.canceled_runs || 0} canceled runs</Tag>
                 </Space>
+                {sshProofResult && (
+                  <Space wrap>
+                    <Tag color={sshProofResult.recording_state === 'recorded' ? 'green' : sshProofResult.recording_state === 'asset_missing' ? 'red' : 'gold'}>proof {sshProofResult.recording_state || 'pending'}</Tag>
+                    <Tag>{sshProofResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
+                    <Tag>{sshProofResult.proof_registered ? 'proof registered' : 'proof not written'}</Tag>
+                    <Tag>{sshProofResult.stdout_included || sshProofResult.stderr_included ? 'output included' : 'no command output'}</Tag>
+                    <Tag>{sshProofResult.private_key_included ? 'key included' : 'no key material'}</Tag>
+                  </Space>
+                )}
                 {sshSnapshotResult && (
                   <Space wrap>
                     <Tag color={sshSnapshotResult.recording_state === 'recorded' ? 'green' : sshSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'gold'}>snapshot {sshSnapshotResult.recording_state || 'pending'}</Tag>

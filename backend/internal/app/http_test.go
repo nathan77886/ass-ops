@@ -6696,6 +6696,7 @@ func TestGetSSHMachineRehearsalHandlerReturnsReadOnlyPlan(t *testing.T) {
 		WithArgs("machine-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "exit_code", "created_at", "finished_at", "operation_type"}).
 			AddRow("run-1", "completed", 0, now, now, "ssh.verify"))
+	expectSSHRehearsalSnapshotAsset(mock, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/ssh-machines/machine-1/rehearsal", nil)
 	req = withRouteParam(req, "id", "machine-1")
@@ -6722,6 +6723,10 @@ func TestGetSSHMachineRehearsalHandlerReturnsReadOnlyPlan(t *testing.T) {
 	resultPlan := mapFromAny(payload["result_recording_plan"])
 	if resultPlan["recording_state"] != "partial_recorded" || resultPlan["verify_result_recorded"] != true || resultPlan["exec_result_recorded"] != false {
 		t.Fatalf("unexpected result recording plan: %#v", resultPlan)
+	}
+	proofRegistration := mapFromAny(payload["target_environment_proof_registration"])
+	if proofRegistration["proof_state"] != "asset_missing" || proofRegistration["proof_registered"] != false {
+		t.Fatalf("unexpected proof registration state: %#v", proofRegistration)
 	}
 	if strings.Contains(rr.Body.String(), `"command":`) || strings.Contains(rr.Body.String(), `"stdout":`) || strings.Contains(rr.Body.String(), `"stderr":`) || strings.Contains(rr.Body.String(), "/etc/assops/ssh/prod-api") {
 		t.Fatalf("response leaked suppressed fields: %s", rr.Body.String())
@@ -7403,6 +7408,285 @@ func TestRecordSSHMachineRehearsalSnapshotHandlerAssetMissing(t *testing.T) {
 	}
 }
 
+func TestRecordSSHMachineTargetEnvironmentProofHandlerBlockedByReadiness(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{{id: "run-1", status: "completed", operationType: "ssh.verify"}})
+	expectSSHRehearsalSnapshotAsset(mock, true)
+
+	req := newSSHTargetEnvironmentProofRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineTargetEnvironmentProof(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_ready"] != false ||
+		got["proof_registered"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["stdout_included"] != false ||
+		got["private_key_included"] != false {
+		t.Fatalf("unexpected blocked proof response: %#v", got)
+	}
+	if !containsString(stringSliceFromAny(got["missing_evidence"]), "completed_ssh_exec_missing") ||
+		!containsString(stringSliceFromAny(got["missing_evidence"]), "target_environment_attestation_not_ready") {
+		t.Fatalf("blocked proof missing expected evidence: %#v", got["missing_evidence"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordSSHMachineTargetEnvironmentProofHandlerWritesSanitizedPayload(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{
+		{id: "run-2", status: "completed", operationType: "ssh.exec"},
+		{id: "run-1", status: "completed", operationType: "ssh.verify"},
+	})
+	expectSSHRehearsalSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-ssh-1", sshTargetEnvironmentProofStatus).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-ssh-1", sshTargetEnvironmentProofStatus, "ok", jsonEvidenceArg(func(payload map[string]any) bool {
+			encoded, _ := json.Marshal(payload)
+			for _, forbidden := range []string{"10.0.0.12", "deploy", "/etc/assops/ssh/prod-api", "runbooks.example.com", "fixture-prod-api-1", "alice@example.com", "approved for production rehearsal", "env-proof-1", "BEGIN OPENSSH PRIVATE KEY", "secret output", "secret error", "cat /etc/passwd"} {
+				if strings.Contains(string(encoded), forbidden) {
+					return false
+				}
+			}
+			return payload["mode"] == "ssh_target_environment_proof_approval" &&
+				payload["operator_approved_target_environment_proof_registered"] == true &&
+				payload["target_environment_attestation_ready"] == true &&
+				payload["completed_verify"] == true &&
+				payload["completed_exec"] == true &&
+				payload["sanitized_metadata_only"] == true &&
+				payload["external_call_made"] == false &&
+				payload["ssh_process_started"] == false &&
+				payload["stdout_included"] == false &&
+				payload["private_key_included"] == false &&
+				payload["operator_identity_included"] == false &&
+				payload["environment_identifier_included"] == false
+		})).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	req := newSSHTargetEnvironmentProofRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineTargetEnvironmentProof(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["recording_ready"] != true ||
+		got["proof_registered"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["external_call_made"] != false ||
+		got["ssh_process_started"] != false ||
+		got["command_executed"] != false ||
+		got["stdout_included"] != false ||
+		got["private_key_included"] != false {
+		t.Fatalf("unexpected ready proof response: %#v", got)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"10.0.0.12", "deploy", "/etc/assops/ssh/prod-api", "runbooks.example.com", "fixture-prod-api-1", "alice@example.com", "approved for production rehearsal", "env-proof-1", "BEGIN OPENSSH PRIVATE KEY", "secret output", "secret error", "cat /etc/passwd"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("proof response leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordSSHMachineTargetEnvironmentProofHandlerDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{
+		{id: "run-2", status: "completed", operationType: "ssh.exec"},
+		{id: "run-1", status: "completed", operationType: "ssh.verify"},
+	})
+	expectSSHRehearsalSnapshotAsset(mock, true)
+
+	req := newSSHTargetEnvironmentProofRequest(`{"dry_run":true}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineTargetEnvironmentProof(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "ready_to_record" ||
+		got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["proof_registered"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run proof response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordSSHMachineTargetEnvironmentProofHandlerAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{
+		{id: "run-2", status: "completed", operationType: "ssh.exec"},
+		{id: "run-1", status: "completed", operationType: "ssh.verify"},
+	})
+	expectSSHRehearsalSnapshotAsset(mock, false)
+
+	req := newSSHTargetEnvironmentProofRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineTargetEnvironmentProof(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["ssh_machine_asset_observed"] != false ||
+		got["proof_registered"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected asset-missing proof response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestGetSSHMachineRehearsalHandlerShowsRegisteredTargetEnvironmentProof(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{
+		{id: "run-2", status: "completed", operationType: "ssh.exec"},
+		{id: "run-1", status: "completed", operationType: "ssh.verify"},
+	})
+	expectSSHRehearsalSnapshotAsset(mock, true)
+	now := time.Now()
+	mock.ExpectQuery(`(?s)SELECT status, health, collected_at\s+FROM asset_status_snapshots\s+WHERE asset_id=\$1\s+AND status=\$2`).
+		WithArgs("asset-ssh-1", sshTargetEnvironmentProofStatus).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "health", "collected_at"}).
+			AddRow(sshTargetEnvironmentProofStatus, "ok", now))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ssh-machines/machine-1/rehearsal", nil)
+	req = withRouteParam(req, "id", "machine-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+	server.getSSHMachineRehearsal(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	registration := mapFromAny(got["target_environment_proof_registration"])
+	if got["target_environment_proof_registered"] != true ||
+		got["target_environment_proof_state"] != "recorded" ||
+		registration["proof_registered"] != true ||
+		registration["proof_state"] != "recorded" ||
+		registration["external_call_made"] != false ||
+		registration["ssh_process_started"] != false ||
+		registration["raw_output_recorded"] != false ||
+		registration["private_key_included"] != false {
+		t.Fatalf("unexpected target proof registration: top=%#v registration=%#v", got, registration)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"/etc/assops/ssh/prod-api", "runbooks.example.com", "fixture-prod-api-1", "alice@example.com", "approved for production rehearsal", "env-proof-1", "BEGIN OPENSSH PRIVATE KEY"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("rehearsal proof registration leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestGetSSHMachineRehearsalHandlerReturnsErrorWhenProofLookupFails(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{
+		{id: "run-2", status: "completed", operationType: "ssh.exec"},
+		{id: "run-1", status: "completed", operationType: "ssh.verify"},
+	})
+	expectSSHRehearsalSnapshotAsset(mock, true)
+	mock.ExpectQuery(`(?s)SELECT status, health, collected_at\s+FROM asset_status_snapshots\s+WHERE asset_id=\$1\s+AND status=\$2`).
+		WithArgs("asset-ssh-1", sshTargetEnvironmentProofStatus).
+		WillReturnError(fmt.Errorf("proof lookup failed"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ssh-machines/machine-1/rehearsal", nil)
+	req = withRouteParam(req, "id", "machine-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+	server.getSSHMachineRehearsal(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "could not load SSH target environment proof evidence") {
+		t.Fatalf("unexpected error body: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 type sshSnapshotRun struct {
 	id            string
 	status        string
@@ -7451,6 +7735,12 @@ func expectSSHRehearsalSnapshotAsset(mock sqlmock.Sqlmock, found bool) {
 
 func newSSHRehearsalSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/ssh-machines/machine-1/rehearsal-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "machine-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newSSHTargetEnvironmentProofRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/ssh-machines/machine-1/target-environment-proof", strings.NewReader(body))
 	req = withRouteParam(req, "id", "machine-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
