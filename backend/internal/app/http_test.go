@@ -3645,6 +3645,71 @@ func TestProjectVersionValidationRerunEvidenceWithoutOperations(t *testing.T) {
 	}
 }
 
+func TestProjectVersionValidationSnapshotPayloadIsAllowlisted(t *testing.T) {
+	preview := projectVersionValidationPreview(
+		map[string]any{
+			"id":      "version-1",
+			"version": "v0.1.0",
+			"metadata": map[string]any{"repositories": []any{
+				map[string]any{
+					"repo_key":             "service",
+					"remote_id":            "remote-1",
+					"commit_sha":           "abc123",
+					"github_action_run_id": "run-1",
+				},
+			}},
+		},
+		[]map[string]any{{"id": "remote-1", "provider_type": "github", "latest_sha": "abc123", "remote_url": "https://token@example.com/repo.git"}},
+		nil,
+		[]map[string]any{{"id": "run-1", "git_remote_id": "remote-1", "commit_sha": "abc123", "workflow_logs": "secret logs"}},
+		nil,
+		nil,
+		[]map[string]any{
+			{"id": "op-git", "operation_type": "git.refs.refresh", "status": "completed", "input": map[string]any{"refresh_kind": "git_ref_fetch", "remote_url": "https://token@example.com/repo.git"}, "error": "Bearer secret"},
+		},
+	)
+	snapshot := projectVersionValidationSnapshotPayload(preview, true)
+	if snapshot["mode"] != "project_version_validation_snapshot" ||
+		snapshot["project_version_id"] != "version-1" ||
+		snapshot["validation_state"] != "ready" ||
+		snapshot["repository_count"] != 1 ||
+		snapshot["ready_count"] != 1 ||
+		snapshot["operation_count"] != 1 ||
+		snapshot["server_side_validation_recheck"] != true ||
+		snapshot["server_side_validation_recheck_ready"] != true ||
+		snapshot["project_version_asset_observed"] != true ||
+		snapshot["external_call_made"] != false ||
+		snapshot["provider_api_called"] != false ||
+		snapshot["git_fetch_performed"] != false ||
+		snapshot["argocd_api_called"] != false ||
+		snapshot["raw_response_included"] != false ||
+		snapshot["secret_included"] != false ||
+		snapshot["operation_log_written"] != false ||
+		snapshot["background_worker_enqueued"] != false {
+		t.Fatalf("ProjectVersion validation snapshot payload = %#v", snapshot)
+	}
+	if missing := stringSliceFromAny(snapshot["missing_required_evidence"]); len(missing) != 0 {
+		t.Fatalf("snapshot should not report missing evidence after terminal local recheck: %#v", missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, forbidden := range []string{
+		"https://token@example.com",
+		"Bearer secret",
+		"secret logs",
+		"abc123",
+		"remote_url",
+		"workflow_logs",
+		"raw_provider_response",
+		"raw_git_output",
+		"provider_token",
+		"authorization_header",
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("ProjectVersion validation snapshot leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestProjectVersionRefreshResultSummaryReportsFailures(t *testing.T) {
 	summary := projectVersionRefreshResultSummary([]map[string]any{
 		{"id": "op-git", "operation_type": "git.refs.refresh", "status": "failed", "error": "sanitized failure", "input": map[string]any{"refresh_kind": "git_ref_fetch"}},
