@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
@@ -3318,6 +3319,136 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 	for _, field := range []string{"remote_url", "git_credentials", "provider_token", "authorization_header", "tag_message", "git_output", "github_actions_response", "provider_response_body", "provider_response_headers"} {
 		if !containsString(stringSliceFromAny(resultPlan["suppressed_fields"]), field) {
 			t.Fatalf("result suppressed fields missing %q: %#v", field, resultPlan["suppressed_fields"])
+		}
+	}
+}
+
+func TestRecordRepoTagRunResultSnapshotWritesSanitizedSnapshot(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	runID := "11111111-1111-1111-1111-111111111111"
+	mock.ExpectQuery(`(?s)SELECT rtr\.id,.*FROM repo_tag_runs rtr.*WHERE rtr\.id=\$1`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_run_id", "project_id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "error_message", "started_at", "finished_at", "created_at", "provider_type", "remote_role", "repo_key", "repo_role",
+		}).AddRow(runID, "op-1", "project-1", "repo-1", "remote-1", "remote-1", "v1.0.0", "abc123", "completed", "", now, now, now, "github", "target", "service", "service"))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='repo_tag_run'`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-1", "recorded", "low", jsonEvidenceArg(func(payload map[string]any) bool {
+			return payload["mode"] == "repo_tag_run_result_snapshot" &&
+				payload["repo_tag_run_id"] == runID &&
+				payload["tag_run_status"] == "completed" &&
+				payload["result_recording_state"] == "recorded" &&
+				payload["live_remote_lookup_state"] == "observed" &&
+				payload["tag_name_included"] == false &&
+				payload["target_sha_included"] == false &&
+				payload["remote_url_included"] == false &&
+				payload["secret_included"] == false &&
+				payload["contains_ref_name"] == false &&
+				payload["raw_git_output_recorded"] == false &&
+				payload["raw_provider_response_recorded"] == false &&
+				payload["external_call_made"] == false
+		})).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordRepoTagRunResultSnapshot(context.Background(), store, RepoTagRunResultSnapshotOptions{RepoTagRunID: runID})
+	if err != nil {
+		t.Fatalf("RecordRepoTagRunResultSnapshot: %v", err)
+	}
+	if got["mode"] != "repo_tag_run_result_snapshot_recording" ||
+		got["recording_state"] != "recorded" ||
+		got["tag_result_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["external_call_made"] != false ||
+		got["remote_tag_lookup_performed"] != false {
+		t.Fatalf("unexpected repo tag snapshot result: %#v", got)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"v1.0.0", "abc123", "git@github.com", "Bearer", "secret git output"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("repo tag snapshot leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordRepoTagRunResultSnapshotDryRunAllowsMissingAsset(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	runID := "11111111-1111-1111-1111-111111111111"
+	mock.ExpectQuery(`(?s)SELECT rtr\.id,.*FROM repo_tag_runs rtr.*WHERE rtr\.id=\$1`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_run_id", "project_id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "error_message", "started_at", "finished_at", "created_at", "provider_type", "remote_role", "repo_key", "repo_role",
+		}).AddRow(runID, "op-1", "project-1", "repo-1", "remote-1", "remote-1", "v1.0.0", "abc123", "queued", "", nil, nil, now, "github", "target", "service", "service"))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='repo_tag_run'`).
+		WithArgs(runID).
+		WillReturnError(sql.ErrNoRows)
+
+	got, err := RecordRepoTagRunResultSnapshot(context.Background(), store, RepoTagRunResultSnapshotOptions{RepoTagRunID: runID, DryRun: true})
+	if err != nil {
+		t.Fatalf("RecordRepoTagRunResultSnapshot dry run: %v", err)
+	}
+	if got["dry_run"] != true ||
+		got["recording_enabled"] != false ||
+		got["repo_tag_run_asset_observed"] != false ||
+		got["tag_result_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run repo tag snapshot result: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["result_recording_state"] != "waiting_for_worker" ||
+		snapshot["tag_name_included"] != false ||
+		snapshot["target_sha_included"] != false {
+		t.Fatalf("unexpected dry-run snapshot: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordRepoTagRunResultSnapshotRejectsInvalidIDBeforeDB(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+
+	if _, err := RecordRepoTagRunResultSnapshot(context.Background(), store, RepoTagRunResultSnapshotOptions{RepoTagRunID: "tag-run-1"}); err == nil {
+		t.Fatalf("expected invalid repo tag run id error")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestAssetInventoryIncludesRepoTagRunAsset(t *testing.T) {
+	sql := assetInventorySQL()
+	for _, token := range []string{
+		"'repo_tag_run:' || rtr.id::text",
+		"'repo_tag_run'",
+		"'repo_tag_runs'",
+		"'tag_name_configured', rtr.tag_name <> ''",
+		"'target_sha_configured', rtr.target_sha <> ''",
+	} {
+		if !strings.Contains(sql, token) {
+			t.Fatalf("asset inventory missing repo tag run token %q", token)
 		}
 	}
 }

@@ -139,6 +139,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/repo-sync-assets/{id}/restore", s.restoreRepoSyncAsset)
 		r.Post("/api/repo-sync-assets/{id}/run", s.runRepoSyncAsset)
 		r.Get("/api/repo-tag-runs", s.listRepoTagRuns)
+		r.Post("/api/repo-tag-runs/{id}/result-snapshot", s.recordRepoTagRunResultSnapshot)
 		r.Get("/api/operation-approvals", s.listOperationApprovals)
 		r.Get("/api/operation-approvals/summary", s.getOperationApprovalSummary)
 		r.Get("/api/operation-approvals/reminder-candidates", s.listOperationApprovalReminderCandidates)
@@ -8086,6 +8087,30 @@ func repoTagRunsWithRemoteRehearsal(items []map[string]any) []map[string]any {
 	return items
 }
 
+func (s *Server) recordRepoTagRunResultSnapshot(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	projectID, err := repoTagRunProjectID(r.Context(), s.store.DB, runID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_tag_run", ID: runID, ProjectID: projectID}, "update") {
+		return
+	}
+	var req struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := RecordRepoTagRunResultSnapshot(r.Context(), s.store, RepoTagRunResultSnapshotOptions{RepoTagRunID: runID, DryRun: req.DryRun})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "record repo tag result snapshot failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func repoTagRemoteRehearsalPlan(run map[string]any) map[string]any {
 	status := strings.TrimSpace(stringFromMap(run, "status"))
 	if status == "" {
@@ -9910,6 +9935,40 @@ func assetInventorySQL() string {
 			rsa.created_at,
 			rsa.updated_at
 		FROM repo_sync_assets rsa
+		UNION ALL
+		SELECT
+			'repo_tag_run:' || rtr.id::text,
+			COALESCE(rtr.project_id::text, pgr.project_id::text, ''),
+			'repo_tag_run',
+			COALESCE(NULLIF(gr.name, ''), 'target remote') || ' tag run',
+			COALESCE(NULLIF(gr.name, ''), 'target remote') || ' tag run',
+			COALESCE(gr.name, 'target remote'),
+			'repo_tag',
+			rtr.id::text,
+			rtr.status,
+			CASE
+				WHEN rtr.status IN ('failed', 'error', 'canceled', 'cancelled') THEN 'high'
+				WHEN rtr.status IN ('queued', 'running', 'pending') THEN 'warning'
+				ELSE 'normal'
+			END,
+			'repo_tag_runs',
+			rtr.id::text,
+			jsonb_build_object(
+				'operation_run_id', rtr.operation_run_id,
+				'project_git_repository_id', rtr.project_git_repository_id,
+				'target_remote_id', COALESCE(rtr.target_remote_id, rtr.git_remote_id),
+				'status', rtr.status,
+				'tag_name_configured', rtr.tag_name <> '',
+				'target_sha_configured', rtr.target_sha <> '',
+				'started_at', rtr.started_at,
+				'finished_at', rtr.finished_at,
+				'has_error', rtr.error_message <> ''
+			),
+			rtr.created_at,
+			COALESCE(rtr.finished_at, rtr.started_at, rtr.created_at)
+		FROM repo_tag_runs rtr
+		LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
+		LEFT JOIN git_remotes gr ON gr.id=COALESCE(rtr.target_remote_id, rtr.git_remote_id)
 		UNION ALL
 		SELECT
 			'webhook_connection:' || wc.id::text,

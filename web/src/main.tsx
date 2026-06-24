@@ -3429,6 +3429,8 @@ function GitRemotes() {
   const [syncAssetEditOpen, setSyncAssetEditOpen] = useState(false);
   const [webhookOpen, setWebhookOpen] = useState(false);
   const [recordingThresholdAuditID, setRecordingThresholdAuditID] = useState<string>();
+  const [recordingTagSnapshotID, setRecordingTagSnapshotID] = useState<string>();
+  const [tagSnapshotResults, setTagSnapshotResults] = useState<Record<string, AnyRow>>({});
   const syncAssetDetail = useLoad(() => syncAssetID ? api(`/api/repo-sync-assets/${syncAssetID}`) : Promise.resolve(null), [syncAssetID]);
   useEffect(() => {
     const defaultBranch = sourceRemote?.default_branch || repo?.default_branch || '';
@@ -3620,6 +3622,22 @@ function GitRemotes() {
     tagRuns.reload();
     remotes.reload();
   }
+  async function recordTagResultSnapshot(id: string) {
+    setRecordingTagSnapshotID(id);
+    try {
+      const result = await api(`/api/repo-tag-runs/${id}/result-snapshot`, {
+        method: 'POST',
+        body: JSON.stringify({ dry_run: false })
+      });
+      setTagSnapshotResults((current) => ({ ...current, [id]: result }));
+      tagRuns.reload();
+      message.success(result.tag_result_snapshot_written ? 'Tag result snapshot recorded' : 'Tag result snapshot already current');
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setRecordingTagSnapshotID(undefined);
+    }
+  }
   async function syncGitHubActions() {
     if (!sourcePick.selectedID) {
       message.error('Select a GitHub remote first');
@@ -3780,6 +3798,7 @@ function GitRemotes() {
             const resultPlan = plan.result_recording_plan || {};
             const lookupPreflight = plan.live_remote_lookup_preflight || liveResultPlan.live_remote_lookup_preflight || {};
             const tagResultEvidence = plan.tag_result_evidence || resultPlan.tag_result_evidence || {};
+            const snapshotResult = tagSnapshotResults[row.id];
             return <Space size={4} wrap>
               <Tag color={plan.rehearsal_state === 'observed' ? 'green' : plan.rehearsal_state === 'blocked' || plan.rehearsal_state === 'failed' ? 'red' : 'gold'}>{plan.rehearsal_state || 'planned'}</Tag>
               <Tag>{plan.live_remote_tag_success_observed ? 'remote success' : 'no remote success'}</Tag>
@@ -3789,6 +3808,7 @@ function GitRemotes() {
               <Tag color={actionsRefreshPlan.refresh_state === 'planned' ? 'gold' : 'red'}>{actionsRefreshPlan.github_actions_refresh_performed ? 'actions refreshed' : actionsRefreshPlan.refresh_state === 'failed' ? 'actions refresh failed' : 'actions refresh pending'}</Tag>
               <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
               {resultPlan.result_recording_state ? <Tag color={tagResultEvidenceColor(resultPlan.result_recording_state)}>recording {resultPlan.result_recording_state}</Tag> : null}
+              {snapshotResult ? <Tag color={snapshotResult.tag_result_snapshot_written ? 'green' : snapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>snapshot {snapshotResult.recording_state || 'unknown'}</Tag> : null}
               {tagResultEvidence.waiting_for_worker ? <Tag color="blue">tag worker pending</Tag> : null}
               {tagResultEvidence.live_remote_tag_failed_observed ? <Tag color="red">tag failure observed</Tag> : null}
             </Space>;
@@ -3796,7 +3816,18 @@ function GitRemotes() {
           { title: 'Tag', dataIndex: 'tag_name' },
           { title: 'Target SHA', dataIndex: 'target_sha' },
           { title: 'Target', dataIndex: 'target_remote_id' },
-          { title: 'Created', dataIndex: 'created_at' }
+          { title: 'Created', dataIndex: 'created_at' },
+          { title: 'Action', render: (_, row) => {
+            const resultPlan = row.remote_rehearsal_plan?.result_recording_plan || {};
+            return <Button
+              size="small"
+              onClick={() => recordTagResultSnapshot(row.id)}
+              disabled={!resultPlan.result_recording_ready}
+              loading={recordingTagSnapshotID === row.id}
+            >
+              Record result snapshot
+            </Button>;
+          } }
         ]} /> },
         { key: 'actions', label: 'GitHub Actions', children: <Space direction="vertical" size={12} className="full">
           <Alert
