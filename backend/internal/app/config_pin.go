@@ -93,7 +93,7 @@ func PinConfigCommit(ctx context.Context, store *Store, opts ConfigCommitPinOpti
 	}
 	if !changed {
 		result["project_version_metadata_written"] = false
-		result["config_commit_sha_written"] = true
+		result["config_commit_sha_written"] = false
 		return result, nil
 	}
 	metadataJSON, err := json.Marshal(nextMetadata)

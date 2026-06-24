@@ -1182,6 +1182,34 @@ function JSONBlock({ value }: { value: any }) {
   return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(value || {}, null, 2)}</pre>;
 }
 
+function sanitizedConfigPinResult(result: AnyRow = {}) {
+  const keys = [
+    'mode',
+    'project_version_id',
+    'repository_id',
+    'remote_id',
+    'dry_run',
+    'pin_state',
+    'metadata_changed',
+    'project_version_metadata_written',
+    'config_commit_sha_written',
+    'config_commit_sha_present',
+    'external_call_made',
+    'git_fetch_performed',
+    'git_push_performed',
+    'provider_api_called',
+    'operation_log_written',
+    'commit_sha_included',
+    'remote_url_included',
+    'secret_included',
+    'message'
+  ];
+  return keys.reduce((out: AnyRow, key) => {
+    if (Object.prototype.hasOwnProperty.call(result, key)) out[key] = result[key];
+    return out;
+  }, {});
+}
+
 function parseJSONField(value?: string) {
   const text = (value || '').trim();
   if (!text) return {};
@@ -2813,9 +2841,11 @@ function ProjectDetail() {
   const versionValidationAutoReloadAttempts = useRef(0);
   const [validatingVersionID, setValidatingVersionID] = useState<string>();
   const [refreshingVersionID, setRefreshingVersionID] = useState<string>();
+  const [configPinningVersionID, setConfigPinningVersionID] = useState<string>();
   const [configInitializing, setConfigInitializing] = useState(false);
   const [configWorkflowRequesting, setConfigWorkflowRequesting] = useState(false);
   const [configWorkflowResult, setConfigWorkflowResult] = useState<AnyRow>();
+  const [configPinResult, setConfigPinResult] = useState<AnyRow>();
   const configRepo = repoRows.find((row: AnyRow) => row.repo_role === 'config');
   const configScaffold = useLoad(() => configRepo ? api(`/api/git-repositories/${configRepo.id}/config-scaffold`) : Promise.resolve(undefined), [configRepo?.id]);
   async function initializeConfigRepo() {
@@ -2903,6 +2933,29 @@ function ProjectDetail() {
       message.error(error.message || 'Request failed');
     } finally {
       setRefreshingVersionID(undefined);
+    }
+  }
+  async function pinConfigCommit(row: AnyRow) {
+    if (!configRepo || configPinningVersionID) return;
+    setConfigPinningVersionID(row.id);
+    try {
+      const result = await api(`/api/project-versions/${row.id}/pin-config-commit`, {
+        method: 'POST',
+        body: JSON.stringify({ repository_id: configRepo.id })
+      });
+      const safeResult = sanitizedConfigPinResult(result);
+      setConfigPinResult(safeResult);
+      versions.reload();
+      configScaffold.reload();
+      if (versionValidation?.version_id === row.id) {
+        const validation = await api(`/api/project-versions/${row.id}/validation`);
+        setVersionValidation(validation);
+      }
+      message.success(safeResult.project_version_metadata_written ? 'Config pin written' : 'Config pin already recorded');
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setConfigPinningVersionID(undefined);
     }
   }
   useEffect(() => {
@@ -3056,6 +3109,10 @@ function ProjectDetail() {
                   {configWorkflowResult?.operation ? <Tag color="blue">operation queued</Tag> : null}
                   {configWorkflowResult?.operation_request_result ? <Tag>{configWorkflowResult.operation_request_result.git_write_performed ? 'git write' : 'no git write'}</Tag> : null}
                   {configWorkflowResult?.operation_request_result ? <Tag>{configWorkflowResult.operation_request_result.sanitized_result_expected ? 'sanitized result expected' : 'result blocked'}</Tag> : null}
+                  {configPinResult ? <Tag color={configPinResult.project_version_metadata_written ? 'green' : 'default'}>pin {configPinResult.pin_state || 'recorded'}</Tag> : null}
+                  {configPinResult ? <Tag>{configPinResult.project_version_metadata_written ? 'metadata written' : 'no metadata write'}</Tag> : null}
+                  {configPinResult ? <Tag>{configPinResult.external_call_made ? 'external call' : 'no external call'}</Tag> : null}
+                  {configPinResult ? <Tag>{configPinResult.commit_sha_included ? 'sha included' : 'sha hidden'}</Tag> : null}
                 </Space>
                 {Array.isArray(configScaffold.data.blocked_reasons) && configScaffold.data.blocked_reasons.length > 0 && (
                   <Alert showIcon type="warning" message={configScaffold.data.blocked_reasons.join(', ')} />
@@ -3143,6 +3200,7 @@ function ProjectDetail() {
                 )}
                 <JSONBlock value={versionValidation} />
                 {versionRefreshResult ? <JSONBlock value={versionRefreshResult} /> : null}
+                {configPinResult ? <JSONBlock value={configPinResult} /> : null}
               </Space>
             </Card>
           )}
@@ -3156,7 +3214,15 @@ function ProjectDetail() {
               { title: 'Source', render: (_, row) => <Tag>{row.source || 'manual'}</Tag> },
               { title: 'Repositories', render: (_, row) => Array.isArray(row.metadata?.repositories) ? row.metadata.repositories.length : 0 },
               { title: 'Created', render: (_, row) => shortText(row.created_at, 24) },
-              { title: 'Validate', render: (_, row) => <Button size="small" loading={validatingVersionID === row.id} onClick={() => validateVersion(row)}>Validate</Button> }
+              {
+                title: 'Actions',
+                render: (_, row) => (
+                  <Space>
+                    <Button size="small" loading={validatingVersionID === row.id} onClick={() => validateVersion(row)}>Validate</Button>
+                    <Button size="small" disabled={!configRepo} loading={configPinningVersionID === row.id} onClick={() => pinConfigCommit(row)}>Pin config</Button>
+                  </Space>
+                )
+              }
             ]}
           />
           <VersionManifestModal open={versionOpen} setOpen={setVersionOpen} repos={repoRows} remotes={projectRemotes.data?.items || []} onSubmit={createVersion} />

@@ -3350,6 +3350,188 @@ func TestCreateProjectVersionRejectsOverlongVersion(t *testing.T) {
 	}
 }
 
+func TestPinProjectVersionConfigCommitHandlerWritesSanitizedPin(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	metadata := []byte(`{"repositories":[{"repository_id":"repo-1","repo_key":"config"}]}`)
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id, project_id, version, source, metadata, created_at\s+FROM project_versions\s+WHERE id=\$1\s+FOR UPDATE`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
+			AddRow("version-1", "project-1", "v0.1.0", "manual", metadata, time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, repo_key, repo_role, default_branch\s+FROM project_git_repositories\s+WHERE id=\$1 AND project_id=\$2`).
+		WithArgs("repo-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "repo_key", "repo_role", "default_branch"}).
+			AddRow("repo-1", "project-1", "Config", "config", "config", "main"))
+	mock.ExpectQuery(`(?s)SELECT id, project_git_repository_id, name, remote_key, provider_type, remote_role, latest_sha, last_sync_status\s+FROM git_remotes\s+WHERE id=\$1 AND project_git_repository_id=\$2`).
+		WithArgs("remote-1", "repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "name", "remote_key", "provider_type", "remote_role", "latest_sha", "last_sync_status"}).
+			AddRow("remote-1", "repo-1", "origin", "github", "github", "target", "abc123", "completed"))
+	mock.ExpectExec(`(?s)UPDATE project_versions\s+SET metadata=\$2::jsonb\s+WHERE id=\$1`).
+		WithArgs("version-1", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	body := strings.NewReader(`{"repository_id":"repo-1","remote_id":"remote-1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/project-versions/version-1/pin-config-commit", body)
+	req = withRouteParam(req, "id", "version-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.pinProjectVersionConfigCommit(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["mode"] != "project_version_config_commit_pin" ||
+		got["project_version_id"] != "version-1" ||
+		got["repository_id"] != "repo-1" ||
+		got["remote_id"] != "remote-1" ||
+		got["project_version_metadata_written"] != true ||
+		got["config_commit_sha_written"] != true ||
+		got["external_call_made"] != false ||
+		got["provider_api_called"] != false ||
+		got["operation_log_written"] != false ||
+		got["commit_sha_included"] != false ||
+		got["remote_url_included"] != false ||
+		got["secret_included"] != false {
+		t.Fatalf("unexpected pin response: %#v", got)
+	}
+	if strings.Contains(rr.Body.String(), "abc123") {
+		t.Fatalf("response leaked raw commit sha: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestPinProjectVersionConfigCommitHandlerDryRunDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	metadata := []byte(`{"repositories":[{"repository_id":"repo-1","repo_key":"config"}]}`)
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id, project_id, version, source, metadata, created_at\s+FROM project_versions\s+WHERE id=\$1\s+FOR UPDATE`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
+			AddRow("version-1", "project-1", "v0.1.0", "manual", metadata, time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, repo_key, repo_role, default_branch\s+FROM project_git_repositories\s+WHERE id=\$1 AND project_id=\$2`).
+		WithArgs("repo-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "repo_key", "repo_role", "default_branch"}).
+			AddRow("repo-1", "project-1", "Config", "config", "config", "main"))
+	mock.ExpectQuery(`(?s)SELECT id, project_git_repository_id, name, remote_key, provider_type, remote_role, latest_sha, last_sync_status\s+FROM git_remotes\s+WHERE id=\$1 AND project_git_repository_id=\$2`).
+		WithArgs("remote-1", "repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "name", "remote_key", "provider_type", "remote_role", "latest_sha", "last_sync_status"}).
+			AddRow("remote-1", "repo-1", "origin", "github", "github", "target", "abc123", "completed"))
+	mock.ExpectRollback()
+
+	body := strings.NewReader(`{"repository_id":"repo-1","remote_id":"remote-1","dry_run":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/project-versions/version-1/pin-config-commit", body)
+	req = withRouteParam(req, "id", "version-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.pinProjectVersionConfigCommit(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["pin_state"] != "dry_run_update" ||
+		got["dry_run"] != true ||
+		got["project_version_metadata_written"] != false ||
+		got["config_commit_sha_written"] != false ||
+		got["commit_sha_included"] != false ||
+		got["remote_url_included"] != false ||
+		got["secret_included"] != false {
+		t.Fatalf("unexpected dry-run pin response: %#v", got)
+	}
+	if strings.Contains(rr.Body.String(), "abc123") {
+		t.Fatalf("dry-run response leaked raw commit sha: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestPinProjectVersionConfigCommitHandlerAlreadyPinnedDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	metadata := []byte(`{"repositories":[{"repository_id":"repo-1","repo_key":"config","repo_role":"config","remote_id":"remote-1","remote_key":"github","remote_role":"target","provider_type":"github","config_commit_sha":"abc123","validation_status":"local_synced_remote_latest_sha"}]}`)
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id, project_id, version, source, metadata, created_at\s+FROM project_versions\s+WHERE id=\$1\s+FOR UPDATE`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
+			AddRow("version-1", "project-1", "v0.1.0", "manual", metadata, time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, repo_key, repo_role, default_branch\s+FROM project_git_repositories\s+WHERE id=\$1 AND project_id=\$2`).
+		WithArgs("repo-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "repo_key", "repo_role", "default_branch"}).
+			AddRow("repo-1", "project-1", "Config", "config", "config", "main"))
+	mock.ExpectQuery(`(?s)SELECT id, project_git_repository_id, name, remote_key, provider_type, remote_role, latest_sha, last_sync_status\s+FROM git_remotes\s+WHERE id=\$1 AND project_git_repository_id=\$2`).
+		WithArgs("remote-1", "repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "name", "remote_key", "provider_type", "remote_role", "latest_sha", "last_sync_status"}).
+			AddRow("remote-1", "repo-1", "origin", "github", "github", "target", "abc123", "completed"))
+	mock.ExpectRollback()
+
+	body := strings.NewReader(`{"repository_id":"repo-1","remote_id":"remote-1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/project-versions/version-1/pin-config-commit", body)
+	req = withRouteParam(req, "id", "version-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.pinProjectVersionConfigCommit(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["pin_state"] != "already_pinned" ||
+		got["metadata_changed"] != false ||
+		got["project_version_metadata_written"] != false ||
+		got["config_commit_sha_written"] != false ||
+		got["commit_sha_included"] != false ||
+		got["remote_url_included"] != false ||
+		got["secret_included"] != false {
+		t.Fatalf("unexpected already-pinned response: %#v", got)
+	}
+	if strings.Contains(rr.Body.String(), "abc123") {
+		t.Fatalf("already-pinned response leaked raw commit sha: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
 	preview := projectVersionValidationPreview(
 		map[string]any{
