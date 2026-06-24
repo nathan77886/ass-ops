@@ -3565,6 +3565,7 @@ function GitRemotes() {
               const thresholdPlan = providerPlan.threshold_tuning_plan || {};
               const thresholdVolume = thresholdPlan.volume_evidence || {};
               const thresholdConfig = thresholdPlan.threshold_configuration_plan || {};
+              const thresholdAudit = thresholdConfig.threshold_decision_audit_plan || {};
               const metricsComparison = thresholdPlan.provider_metrics_comparison_plan || thresholdConfig.provider_metrics_comparison_plan || {};
               const resultPlan = providerPlan.result_recording_plan || {};
               const callbackEvidence = readiness.callback_evidence || {};
@@ -3580,6 +3581,8 @@ function GitRemotes() {
                 {metricsComparison.mode ? <Tag color={metricsComparison.comparison_ready_for_review ? 'gold' : metricsComparison.comparison_state === 'needs_failure_review' ? 'red' : 'default'}>metrics {metricsComparison.comparison_state || 'blocked'}</Tag> : null}
                 {metricsComparison.mode ? <Tag>{metricsComparison.provider_metrics_fetched ? 'provider metrics' : 'no provider metrics'}</Tag> : null}
                 {thresholdConfig.mode ? <Tag color={thresholdConfig.configuration_review_ready === true ? 'gold' : 'default'}>{thresholdConfig.configuration_review_ready === true ? 'config review ready' : `config ${thresholdConfig.configuration_state || 'blocked'}`}</Tag> : null}
+                {thresholdAudit.mode ? <Tag color={thresholdAudit.decision_ready_for_review ? 'gold' : thresholdAudit.decision_state === 'needs_failure_review' ? 'red' : 'default'}>threshold audit {thresholdAudit.decision_state || 'blocked'}</Tag> : null}
+                {thresholdAudit.mode ? <Tag>{thresholdAudit.audit_insert_enabled ? 'audit write enabled' : 'no audit write'}</Tag> : null}
                 <Tag>{providerPlan.external_call_made ? 'provider call' : 'no provider call'}</Tag>
                 <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
                 <Tag color={replayProof.proof_state === 'recorded' ? 'green' : replayProof.proof_state === 'failed' ? 'red' : replayProof.operator_replay_observed ? 'gold' : 'default'}>{replayProof.operator_replay_observed ? `replay proof ${replayProof.proof_state || 'observed'}` : 'replay proof pending'}</Tag>

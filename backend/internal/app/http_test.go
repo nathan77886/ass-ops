@@ -14663,6 +14663,16 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 			if len(sliceOfMapsFromAny(configurationPlan["current_thresholds"])) != 6 {
 				t.Fatalf("provider callback threshold configuration should expose current non-secret thresholds: %#v", configurationPlan["current_thresholds"])
 			}
+			decisionAuditPlan := mapFromAny(configurationPlan["threshold_decision_audit_plan"])
+			if decisionAuditPlan["mode"] != "provider_callback_threshold_decision_audit_plan" ||
+				decisionAuditPlan["decision_state"] != "waiting_for_volume" ||
+				decisionAuditPlan["decision_ready_for_review"] != false ||
+				decisionAuditPlan["threshold_configuration_audit_inserted"] != false ||
+				decisionAuditPlan["audit_insert_enabled"] != false ||
+				decisionAuditPlan["threshold_configuration_written"] != false {
+				t.Fatalf("provider callback threshold decision audit plan should stay waiting and disabled: %#v", decisionAuditPlan)
+			}
+			assertWebhookThresholdDecisionAuditPlanSafe(t, decisionAuditPlan)
 			for _, field := range []string{"provider_pair", "threshold_key", "warning_at", "danger_at", "unit", "reviewed_by", "reviewed_at", "evidence_window"} {
 				if !containsString(stringSliceFromAny(configurationPlan["required_persisted_fields"]), field) {
 					t.Fatalf("provider callback threshold persisted fields missing %q: %#v", field, configurationPlan["required_persisted_fields"])
@@ -14908,6 +14918,17 @@ func TestWebhookCallbackRehearsalReadinessReconcilesObservedEvidence(t *testing.
 	if !containsString(stringSliceFromAny(configurationPlan["blocked_reasons"]), "threshold_configuration_write_disabled") {
 		t.Fatalf("ready threshold configuration should keep write disabled: %#v", configurationPlan["blocked_reasons"])
 	}
+	decisionAuditPlan := mapFromAny(configurationPlan["threshold_decision_audit_plan"])
+	if decisionAuditPlan["decision_state"] != "metadata_review_ready" ||
+		decisionAuditPlan["decision_ready_for_review"] != true ||
+		decisionAuditPlan["threshold_configuration_audit_inserted"] != false ||
+		decisionAuditPlan["audit_insert_enabled"] != false ||
+		decisionAuditPlan["capacity_signals_recomputed"] != false ||
+		intFromAny(decisionAuditPlan["delivery_count_7d"], 0) != 2 ||
+		intFromAny(decisionAuditPlan["operation_run_count_7d"], 0) != 1 {
+		t.Fatalf("ready threshold decision audit should expose metadata review only: %#v", decisionAuditPlan)
+	}
+	assertWebhookThresholdDecisionAuditPlanSafe(t, decisionAuditPlan)
 	encoded, _ := json.Marshal(got)
 	for _, forbidden := range []string{"secret-token", "payload-body", "provider-response", "password", "Bearer secret", "delivery-secret", "provider.example.com", "asset-secret"} {
 		if strings.Contains(string(encoded), forbidden) {
@@ -14998,6 +15019,16 @@ func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T)
 	if !containsString(stringSliceFromAny(configurationPlan["blocked_reasons"]), "webhook_failures_need_operator_threshold_review") {
 		t.Fatalf("failed threshold configuration blocked reasons missing failure indicator: %#v", configurationPlan["blocked_reasons"])
 	}
+	decisionAuditPlan := mapFromAny(configurationPlan["threshold_decision_audit_plan"])
+	if decisionAuditPlan["decision_state"] != "needs_failure_review" ||
+		decisionAuditPlan["decision_ready_for_review"] != false ||
+		decisionAuditPlan["threshold_configuration_audit_inserted"] != false ||
+		decisionAuditPlan["audit_insert_enabled"] != false ||
+		intFromAny(decisionAuditPlan["failed_count_7d"], 0) != 1 ||
+		!containsString(stringSliceFromAny(decisionAuditPlan["blocked_reasons"]), "webhook_failures_need_operator_threshold_review") {
+		t.Fatalf("failed threshold decision audit should require failure review without writes: %#v", decisionAuditPlan)
+	}
+	assertWebhookThresholdDecisionAuditPlanSafe(t, decisionAuditPlan)
 	resultPlan := mapFromAny(plan["result_recording_plan"])
 	if resultPlan["result_recording_state"] != "failed" ||
 		resultPlan["result_recording_ready_reason"] != "provider_callback_delivery_failed" ||
@@ -15012,6 +15043,90 @@ func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T)
 	for _, forbidden := range []string{"secret-token", "payload-body", "provider-response", "password", "Bearer secret", "delivery-secret", "provider.example.com"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("failed callback rehearsal evidence leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestWebhookCallbackThresholdDecisionAuditUsesMetadataNotReadyReason(t *testing.T) {
+	got := webhookCallbackRehearsalReadiness(map[string]any{
+		"provider":                   "gitea",
+		"webhook_url":                "https://assops.example.com/api/webhooks/gitea/hook-1",
+		"enabled":                    true,
+		"source_remote_id":           "remote-1",
+		"event_types":                []any{"push"},
+		"deliveries_7d":              int64(1),
+		"processed_7d":               int64(0),
+		"matched_repo_sync_asset_7d": int64(0),
+		"operation_run_7d":           int64(0),
+		"last_event_status":          "received",
+	}, "https://assops.example.com")
+
+	plan := mapFromAny(got["provider_rehearsal_plan"])
+	thresholdPlan := mapFromAny(plan["threshold_tuning_plan"])
+	volumeEvidence := mapFromAny(thresholdPlan["volume_evidence"])
+	if volumeEvidence["threshold_review_state"] != "volume_observed" ||
+		volumeEvidence["threshold_review_ready"] != false {
+		t.Fatalf("threshold volume should be observed but not ready: %#v", volumeEvidence)
+	}
+	configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
+	decisionAuditPlan := mapFromAny(configurationPlan["threshold_decision_audit_plan"])
+	if decisionAuditPlan["decision_state"] != "blocked" ||
+		decisionAuditPlan["decision_ready_for_review"] != false ||
+		!containsString(stringSliceFromAny(decisionAuditPlan["blocked_reasons"]), "threshold_review_metadata_not_ready") ||
+		containsString(stringSliceFromAny(decisionAuditPlan["blocked_reasons"]), "operator_threshold_review_not_recorded") {
+		t.Fatalf("metadata-not-ready threshold decision audit should avoid operator-review blocker: %#v", decisionAuditPlan)
+	}
+	assertWebhookThresholdDecisionAuditPlanSafe(t, decisionAuditPlan)
+}
+
+func assertWebhookThresholdDecisionAuditPlanSafe(t *testing.T, plan map[string]any) {
+	t.Helper()
+	if plan["mode"] != "provider_callback_threshold_decision_audit_plan" ||
+		plan["threshold_configuration_written"] != false ||
+		plan["threshold_configuration_audit_inserted"] != false ||
+		plan["configuration_write_enabled"] != false ||
+		plan["audit_insert_enabled"] != false ||
+		plan["capacity_signals_recomputed"] != false ||
+		plan["provider_metrics_fetched"] != false ||
+		plan["provider_pair_limits_compared"] != false ||
+		plan["proposed_threshold_delta_persisted"] != false ||
+		plan["operator_threshold_review_recorded"] != false ||
+		plan["external_call_made"] != false ||
+		plan["contains_token"] != false ||
+		plan["contains_secret"] != false ||
+		plan["contains_payload"] != false ||
+		plan["contains_provider_url"] != false {
+		t.Fatalf("threshold decision audit plan should stay disabled and redacted: %#v", plan)
+	}
+	for _, field := range []string{"provider_pair", "threshold_key", "current_warning_at", "current_danger_at", "proposed_warning_at", "proposed_danger_at", "evidence_window", "operator_decision", "reviewed_at"} {
+		if !containsString(stringSliceFromAny(plan["required_decision_fields"]), field) {
+			t.Fatalf("threshold decision audit required_decision_fields missing %q: %#v", field, plan["required_decision_fields"])
+		}
+	}
+	for _, control := range []string{"operator_threshold_review", "provider_metrics_comparison_review", "threshold_delta_schema_review", "audit_row_redaction_review", "capacity_signal_recompute_review"} {
+		if !containsString(stringSliceFromAny(plan["required_controls"]), control) {
+			t.Fatalf("threshold decision audit required_controls missing %q: %#v", control, plan["required_controls"])
+		}
+	}
+	for _, backend := range []string{"threshold_configuration_audit_insert", "threshold_configuration_write", "threshold_delta_persist", "sync_capacity_signal_recompute", "provider_metrics_fetch"} {
+		if !containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
+			t.Fatalf("threshold decision audit disabled_backends missing %q: %#v", backend, plan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"operator_identity", "operator_notes", "provider_token", "provider_url", "authorization_header", "request_headers", "provider_response_body", "provider_response_headers", "delivery_id", "payload"} {
+		if !containsString(stringSliceFromAny(plan["suppressed_fields"]), field) {
+			t.Fatalf("threshold decision audit suppressed_fields missing %q: %#v", field, plan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"threshold_configuration_audit_insert_disabled", "threshold_configuration_write_disabled"} {
+		if !containsString(stringSliceFromAny(plan["blocked_reasons"]), reason) {
+			t.Fatalf("threshold decision audit blocked_reasons missing %q: %#v", reason, plan["blocked_reasons"])
+		}
+	}
+	encoded, _ := json.Marshal(plan)
+	for _, forbidden := range []string{"secret-token", "Bearer secret", "payload-body", "provider-response", "provider.example.com", "operator@example.com"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("threshold decision audit plan leaked %q: %s", forbidden, encoded)
 		}
 	}
 }

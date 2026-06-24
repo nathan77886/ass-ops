@@ -5830,6 +5830,7 @@ func webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence, metricsCo
 		configurationState = "ready_for_operator_review"
 		blockedReasons = []string{"operator_threshold_review_not_recorded", "threshold_configuration_write_disabled"}
 	}
+	decisionAuditPlan := webhookProviderCallbackThresholdDecisionAuditPlan(volumeEvidence, metricsComparisonPlan, configurationState)
 	return map[string]any{
 		"mode":                               "provider_callback_threshold_configuration_plan",
 		"configuration_state":                configurationState,
@@ -5838,6 +5839,7 @@ func webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence, metricsCo
 		"threshold_configuration_written":    false,
 		"configuration_write_enabled":        false,
 		"operator_threshold_review_recorded": false,
+		"threshold_decision_audit_plan":      decisionAuditPlan,
 		"provider_metrics_fetched":           false,
 		"provider_pair_limits_compared":      false,
 		"provider_metrics_comparison_plan":   metricsComparisonPlan,
@@ -5887,6 +5889,70 @@ func webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence, metricsCo
 		},
 		"blocked_reasons": blockedReasons,
 		"message":         "Threshold configuration persistence is review-only; current thresholds are exposed as non-secret constants and no provider metrics or configuration writes are performed.",
+	}
+}
+
+func webhookProviderCallbackThresholdDecisionAuditPlan(volumeEvidence, metricsComparisonPlan map[string]any, configurationState string) map[string]any {
+	reviewState := cleanPreviewString(volumeEvidence["threshold_review_state"])
+	if reviewState == "" {
+		reviewState = "waiting_for_volume"
+	}
+	decisionState := "blocked"
+	switch {
+	case reviewState == "waiting_for_volume":
+		decisionState = "waiting_for_volume"
+	case reviewState == "review_failed_volume":
+		decisionState = "needs_failure_review"
+	case configurationState == "ready_for_operator_review" && boolOnlyFromAny(volumeEvidence["threshold_review_ready"]):
+		decisionState = "metadata_review_ready"
+	}
+	decisionReady := decisionState == "metadata_review_ready" &&
+		boolOnlyFromAny(metricsComparisonPlan["comparison_ready_for_review"])
+	blockedReasons := []string{"threshold_configuration_audit_insert_disabled", "threshold_configuration_write_disabled"}
+	if reviewState == "waiting_for_volume" {
+		blockedReasons = append(blockedReasons, "real_provider_volume_not_observed")
+	}
+	if reviewState == "review_failed_volume" {
+		blockedReasons = append(blockedReasons, "webhook_failures_need_operator_threshold_review")
+	}
+	if decisionState == "blocked" {
+		blockedReasons = append(blockedReasons, "threshold_review_metadata_not_ready")
+	} else if !decisionReady {
+		blockedReasons = append(blockedReasons, "operator_threshold_review_not_recorded")
+	}
+	if !boolOnlyFromAny(metricsComparisonPlan["comparison_ready_for_review"]) {
+		blockedReasons = append(blockedReasons, "provider_metrics_comparison_not_review_ready")
+	}
+	return map[string]any{
+		"mode":                                   "provider_callback_threshold_decision_audit_plan",
+		"decision_state":                         decisionState,
+		"decision_ready_for_review":              decisionReady,
+		"threshold_review_state":                 reviewState,
+		"configuration_state":                    configurationState,
+		"threshold_configuration_written":        false,
+		"threshold_configuration_audit_inserted": false,
+		"configuration_write_enabled":            false,
+		"audit_insert_enabled":                   false,
+		"capacity_signals_recomputed":            false,
+		"provider_metrics_fetched":               false,
+		"provider_pair_limits_compared":          false,
+		"proposed_threshold_delta_persisted":     false,
+		"operator_threshold_review_recorded":     false,
+		"external_call_made":                     false,
+		"contains_token":                         false,
+		"contains_secret":                        false,
+		"contains_payload":                       false,
+		"contains_provider_url":                  false,
+		"delivery_count_7d":                      intFromAny(volumeEvidence["delivery_count_7d"], 0),
+		"failed_count_7d":                        intFromAny(volumeEvidence["failed_count_7d"], 0),
+		"operation_run_count_7d":                 intFromAny(volumeEvidence["operation_run_count_7d"], 0),
+		"matched_repo_sync_asset_count_7d":       intFromAny(volumeEvidence["matched_repo_sync_asset_count_7d"], 0),
+		"required_decision_fields":               []string{"provider_pair", "threshold_key", "current_warning_at", "current_danger_at", "proposed_warning_at", "proposed_danger_at", "evidence_window", "operator_decision", "reviewed_at"},
+		"required_controls":                      []string{"operator_threshold_review", "provider_metrics_comparison_review", "threshold_delta_schema_review", "audit_row_redaction_review", "capacity_signal_recompute_review"},
+		"disabled_backends":                      []string{"threshold_configuration_audit_insert", "threshold_configuration_write", "threshold_delta_persist", "sync_capacity_signal_recompute", "provider_metrics_fetch"},
+		"suppressed_fields":                      []string{"operator_identity", "operator_notes", "provider_token", "provider_url", "authorization_header", "request_headers", "provider_response_body", "provider_response_headers", "delivery_id", "payload"},
+		"blocked_reasons":                        blockedReasons,
+		"message":                                "Threshold decision audit is metadata-only; no threshold configuration, audit row, provider metric, capacity recompute, URL, token, payload, or operator note is written.",
 	}
 }
 
