@@ -3428,6 +3428,7 @@ function GitRemotes() {
   const [syncAssetOpen, setSyncAssetOpen] = useState(false);
   const [syncAssetEditOpen, setSyncAssetEditOpen] = useState(false);
   const [webhookOpen, setWebhookOpen] = useState(false);
+  const [recordingThresholdAuditID, setRecordingThresholdAuditID] = useState<string>();
   const syncAssetDetail = useLoad(() => syncAssetID ? api(`/api/repo-sync-assets/${syncAssetID}`) : Promise.resolve(null), [syncAssetID]);
   useEffect(() => {
     const defaultBranch = sourceRemote?.default_branch || repo?.default_branch || '';
@@ -3525,6 +3526,17 @@ function GitRemotes() {
     webhookConnections.reload();
     webhookEvents.reload();
     syncAssetDetail.reload();
+  }
+  async function recordWebhookThresholdDecisionAudit(id: string) {
+    setRecordingThresholdAuditID(id);
+    try {
+      const result = await api(`/api/webhook-connections/${id}/threshold-decision-audit`, { method: 'POST', body: '{}' });
+      const audit = result.audit || {};
+      message.success(audit.id ? 'Threshold decision audit recorded' : 'Threshold audit reviewed');
+      webhookConnections.reload();
+    } finally {
+      setRecordingThresholdAuditID(undefined);
+    }
   }
   async function runRepoSyncAsset(id: string) {
     await api(`/api/repo-sync-assets/${id}/run`, { method: 'POST', body: '{}' });
@@ -3714,6 +3726,7 @@ function GitRemotes() {
                 {thresholdConfig.mode ? <Tag color={thresholdConfig.configuration_review_ready === true ? 'gold' : 'default'}>{thresholdConfig.configuration_review_ready === true ? 'config review ready' : `config ${thresholdConfig.configuration_state || 'blocked'}`}</Tag> : null}
                 {thresholdAudit.mode ? <Tag color={thresholdAudit.decision_ready_for_review ? 'gold' : thresholdAudit.decision_state === 'needs_failure_review' ? 'red' : 'default'}>threshold audit {thresholdAudit.decision_state || 'blocked'}</Tag> : null}
                 {thresholdAudit.mode ? <Tag>{thresholdAudit.audit_insert_enabled ? 'audit write enabled' : 'no audit write'}</Tag> : null}
+                {thresholdAudit.threshold_decision_audit_count ? <Tag color="green">{thresholdAudit.threshold_decision_audit_count} audit rows</Tag> : null}
                 <Tag>{providerPlan.external_call_made ? 'provider call' : 'no provider call'}</Tag>
                 <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
                 <Tag color={replayProof.proof_state === 'recorded' ? 'green' : replayProof.proof_state === 'failed' ? 'red' : replayProof.operator_replay_observed ? 'gold' : 'default'}>{replayProof.operator_replay_observed ? `replay proof ${replayProof.proof_state || 'observed'}` : 'replay proof pending'}</Tag>
@@ -3724,7 +3737,21 @@ function GitRemotes() {
                 <Typography.Text>{shortText(readiness.message, 56)}</Typography.Text>
               </Space>;
             } },
-            { title: 'Action', render: (_, row) => <Button size="small" onClick={() => rotateWebhookSecret(row.id)}>Rotate secret</Button> }
+            { title: 'Action', render: (_, row) => {
+              const thresholdPlan = row.callback_rehearsal?.provider_rehearsal_plan?.threshold_tuning_plan || {};
+              const thresholdAudit = thresholdPlan.threshold_configuration_plan?.threshold_decision_audit_plan || {};
+              return <Space size={4} wrap>
+                <Button size="small" onClick={() => rotateWebhookSecret(row.id)}>Rotate secret</Button>
+                <Button
+                  size="small"
+                  onClick={() => recordWebhookThresholdDecisionAudit(row.id)}
+                  disabled={!thresholdAudit.decision_ready_for_review || Boolean(thresholdAudit.threshold_decision_audit_count)}
+                  loading={recordingThresholdAuditID === row.id}
+                >
+                  {thresholdAudit.threshold_decision_audit_count ? 'Audit recorded' : 'Record threshold audit'}
+                </Button>
+              </Space>;
+            } }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={webhookEvents.data?.items || []} pagination={{ pageSize: 6 }} columns={[
             { title: 'Status', render: (_, row) => <Tag color={row.status === 'queued' ? 'green' : row.status === 'failed' || row.status === 'rejected' ? 'red' : 'default'}>{row.status}</Tag> },

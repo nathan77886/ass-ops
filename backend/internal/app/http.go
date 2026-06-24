@@ -185,6 +185,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/projects/{id}/webhook-connections", s.createWebhookConnection)
 		r.Get("/api/projects/{id}/webhook-connections", s.listWebhookConnections)
 		r.Get("/api/projects/{id}/webhook-events", s.listWebhookEvents)
+		r.Post("/api/webhook-connections/{id}/threshold-decision-audit", s.recordWebhookThresholdDecisionAudit)
 		r.Post("/api/webhook-connections/{id}/rotate-secret", s.rotateWebhookConnectionSecret)
 		r.Post("/api/webhook-events/{id}/replay", s.replayWebhookEvent)
 		r.Post("/api/projects/{id}/ssh-machines", s.createSSHMachine)
@@ -5501,6 +5502,8 @@ func (s *Server) listWebhookConnections(w http.ResponseWriter, r *http.Request) 
 			stats.last_event_status,
 			stats.last_event_type,
 			stats.last_event_signature_valid,
+			COALESCE(audit_stats.threshold_decision_audit_count, 0)::int AS threshold_decision_audit_count,
+			audit_stats.last_threshold_decision_audit_at,
 			('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_path,
 			$2 || ('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_url
 		FROM webhook_connections wc
@@ -5540,11 +5543,101 @@ func (s *Server) listWebhookConnections(w http.ResponseWriter, r *http.Request) 
 			FROM webhook_events we
 			WHERE we.webhook_connection_id=wc.id
 		) stats ON true
+		LEFT JOIN LATERAL (
+			SELECT count(*) AS threshold_decision_audit_count,
+				max(wtda.created_at) AS last_threshold_decision_audit_at
+			FROM webhook_threshold_decision_audits wtda
+			WHERE wtda.webhook_connection_id=wc.id
+		) audit_stats ON true
 		WHERE wc.project_id=$1
 		ORDER BY wc.created_at DESC`, projectID, baseURL)
 	annotateWebhookConnectionHealth(items)
 	annotateWebhookCallbackReadiness(items, baseURL)
+	annotateWebhookThresholdDecisionAuditEvidence(items)
 	writeQueryResult(w, items, err)
+}
+
+func webhookConnectionWithCallbackReadiness(ctx context.Context, db sqlx.ExtContext, connectionID, baseURL string) (map[string]any, error) {
+	item, err := queryOne(ctx, db, `
+		SELECT wc.id,
+			wc.project_id,
+			wc.provider,
+			wc.name,
+			wc.source_remote_id,
+			wc.enabled,
+			wc.event_types,
+			wc.last_delivery_status,
+			wc.metadata,
+			wc.created_at,
+			wc.updated_at,
+			gr.name AS source_remote_name,
+			COALESCE(stats.deliveries_7d, 0)::int AS deliveries_7d,
+			COALESCE(stats.failures_7d, 0)::int AS failures_7d,
+			COALESCE(stats.processed_7d, 0)::int AS processed_7d,
+			COALESCE(stats.ignored_7d, 0)::int AS ignored_7d,
+			COALESCE(stats.replayed_7d, 0)::int AS replayed_7d,
+			COALESCE(stats.signature_valid_7d, 0)::int AS signature_valid_7d,
+			COALESCE(stats.matched_repo_sync_asset_7d, 0)::int AS matched_repo_sync_asset_7d,
+			COALESCE(stats.operation_run_7d, 0)::int AS operation_run_7d,
+			stats.last_event_at,
+			stats.last_event_status,
+			stats.last_event_type,
+			stats.last_event_signature_valid,
+			COALESCE(audit_stats.threshold_decision_audit_count, 0)::int AS threshold_decision_audit_count,
+			audit_stats.last_threshold_decision_audit_at,
+			('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_path,
+			$2 || ('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_url
+		FROM webhook_connections wc
+		LEFT JOIN git_remotes gr ON gr.id=wc.source_remote_id
+		LEFT JOIN LATERAL (
+			SELECT
+				count(*) FILTER (WHERE we.received_at >= now() - interval '7 days') AS deliveries_7d,
+				count(*) FILTER (WHERE we.status IN ('failed', 'rejected') AND we.received_at >= now() - interval '7 days') AS failures_7d,
+				count(*) FILTER (WHERE we.status='processed' AND we.received_at >= now() - interval '7 days') AS processed_7d,
+				count(*) FILTER (WHERE we.status='ignored' AND we.received_at >= now() - interval '7 days') AS ignored_7d,
+				count(*) FILTER (WHERE we.delivery_id ILIKE '%:replay:%' AND we.received_at >= now() - interval '7 days') AS replayed_7d,
+				count(*) FILTER (WHERE we.signature_valid AND we.received_at >= now() - interval '7 days') AS signature_valid_7d,
+				count(*) FILTER (WHERE we.matched_repo_sync_asset_id IS NOT NULL AND we.received_at >= now() - interval '7 days') AS matched_repo_sync_asset_7d,
+				count(*) FILTER (WHERE we.operation_run_id IS NOT NULL AND we.received_at >= now() - interval '7 days') AS operation_run_7d,
+				max(we.received_at) AS last_event_at,
+				(
+					SELECT recent.status
+					FROM webhook_events recent
+					WHERE recent.webhook_connection_id=wc.id
+					ORDER BY recent.received_at DESC
+					LIMIT 1
+				) AS last_event_status,
+				(
+					SELECT recent.event_type
+					FROM webhook_events recent
+					WHERE recent.webhook_connection_id=wc.id
+					ORDER BY recent.received_at DESC
+					LIMIT 1
+				) AS last_event_type,
+				(
+					SELECT recent.signature_valid
+					FROM webhook_events recent
+					WHERE recent.webhook_connection_id=wc.id
+					ORDER BY recent.received_at DESC
+					LIMIT 1
+				) AS last_event_signature_valid
+			FROM webhook_events we
+			WHERE we.webhook_connection_id=wc.id
+		) stats ON true
+		LEFT JOIN LATERAL (
+			SELECT count(*) AS threshold_decision_audit_count,
+				max(wtda.created_at) AS last_threshold_decision_audit_at
+			FROM webhook_threshold_decision_audits wtda
+			WHERE wtda.webhook_connection_id=wc.id
+		) audit_stats ON true
+		WHERE wc.id=$1`, connectionID, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	annotateWebhookConnectionHealth([]map[string]any{item})
+	annotateWebhookCallbackReadiness([]map[string]any{item}, baseURL)
+	annotateWebhookThresholdDecisionAuditEvidence([]map[string]any{item})
+	return item, nil
 }
 
 func annotateWebhookConnectionHealth(items []map[string]any) {
@@ -5581,6 +5674,30 @@ func webhookConnectionHealth(row map[string]any) (string, string) {
 func annotateWebhookCallbackReadiness(items []map[string]any, baseURL string) {
 	for _, item := range items {
 		item["callback_rehearsal"] = webhookCallbackRehearsalReadiness(item, baseURL)
+	}
+}
+
+func annotateWebhookThresholdDecisionAuditEvidence(items []map[string]any) {
+	for _, item := range items {
+		count := intFromAny(item["threshold_decision_audit_count"], 0)
+		if count <= 0 {
+			continue
+		}
+		readiness := mapFromAny(item["callback_rehearsal"])
+		providerPlan := mapFromAny(readiness["provider_rehearsal_plan"])
+		thresholdPlan := mapFromAny(providerPlan["threshold_tuning_plan"])
+		configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
+		decisionAuditPlan := mapFromAny(configurationPlan["threshold_decision_audit_plan"])
+		decisionAuditPlan["threshold_configuration_audit_inserted"] = true
+		decisionAuditPlan["operator_threshold_review_recorded"] = true
+		decisionAuditPlan["threshold_decision_audit_count"] = count
+		decisionAuditPlan["last_threshold_decision_audit_at"] = item["last_threshold_decision_audit_at"]
+		configurationPlan["operator_threshold_review_recorded"] = true
+		configurationPlan["threshold_decision_audit_plan"] = decisionAuditPlan
+		thresholdPlan["threshold_configuration_plan"] = configurationPlan
+		providerPlan["threshold_tuning_plan"] = thresholdPlan
+		readiness["provider_rehearsal_plan"] = providerPlan
+		item["callback_rehearsal"] = readiness
 	}
 }
 
@@ -6025,7 +6142,10 @@ func webhookProviderCallbackThresholdDecisionAuditPlan(volumeEvidence, metricsCo
 	}
 	decisionReady := decisionState == "metadata_review_ready" &&
 		boolOnlyFromAny(metricsComparisonPlan["comparison_ready_for_review"])
-	blockedReasons := []string{"threshold_configuration_audit_insert_disabled", "threshold_configuration_write_disabled"}
+	blockedReasons := []string{"threshold_configuration_write_disabled"}
+	if !decisionReady {
+		blockedReasons = append(blockedReasons, "threshold_configuration_audit_insert_disabled")
+	}
 	if reviewState == "waiting_for_volume" {
 		blockedReasons = append(blockedReasons, "real_provider_volume_not_observed")
 	}
@@ -6040,6 +6160,10 @@ func webhookProviderCallbackThresholdDecisionAuditPlan(volumeEvidence, metricsCo
 	if !boolOnlyFromAny(metricsComparisonPlan["comparison_ready_for_review"]) {
 		blockedReasons = append(blockedReasons, "provider_metrics_comparison_not_review_ready")
 	}
+	disabledBackends := []string{"threshold_configuration_write", "threshold_delta_persist", "sync_capacity_signal_recompute", "provider_metrics_fetch"}
+	if !decisionReady {
+		disabledBackends = append([]string{"threshold_configuration_audit_insert"}, disabledBackends...)
+	}
 	return map[string]any{
 		"mode":                                   "provider_callback_threshold_decision_audit_plan",
 		"decision_state":                         decisionState,
@@ -6049,7 +6173,7 @@ func webhookProviderCallbackThresholdDecisionAuditPlan(volumeEvidence, metricsCo
 		"threshold_configuration_written":        false,
 		"threshold_configuration_audit_inserted": false,
 		"configuration_write_enabled":            false,
-		"audit_insert_enabled":                   false,
+		"audit_insert_enabled":                   decisionReady,
 		"capacity_signals_recomputed":            false,
 		"provider_metrics_fetched":               false,
 		"provider_pair_limits_compared":          false,
@@ -6066,10 +6190,10 @@ func webhookProviderCallbackThresholdDecisionAuditPlan(volumeEvidence, metricsCo
 		"matched_repo_sync_asset_count_7d":       intFromAny(volumeEvidence["matched_repo_sync_asset_count_7d"], 0),
 		"required_decision_fields":               []string{"provider_pair", "threshold_key", "current_warning_at", "current_danger_at", "proposed_warning_at", "proposed_danger_at", "evidence_window", "operator_decision", "reviewed_at"},
 		"required_controls":                      []string{"operator_threshold_review", "provider_metrics_comparison_review", "threshold_delta_schema_review", "audit_row_redaction_review", "capacity_signal_recompute_review"},
-		"disabled_backends":                      []string{"threshold_configuration_audit_insert", "threshold_configuration_write", "threshold_delta_persist", "sync_capacity_signal_recompute", "provider_metrics_fetch"},
+		"disabled_backends":                      disabledBackends,
 		"suppressed_fields":                      []string{"operator_identity", "operator_notes", "provider_token", "provider_url", "authorization_header", "request_headers", "provider_response_body", "provider_response_headers", "delivery_id", "payload"},
 		"blocked_reasons":                        blockedReasons,
-		"message":                                "Threshold decision audit is metadata-only; no threshold configuration, audit row, provider metric, capacity recompute, URL, token, payload, or operator note is written.",
+		"message":                                "Threshold decision audit can record sanitized local callback-volume metadata when review-ready; no threshold configuration, provider metric, capacity recompute, URL, token, payload, raw provider response, or operator note is written.",
 	}
 }
 
@@ -6529,6 +6653,133 @@ func (s *Server) rotateWebhookConnectionSecret(w http.ResponseWriter, r *http.Re
 		item["secret_token_once"] = secret
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) recordWebhookThresholdDecisionAudit(w http.ResponseWriter, r *http.Request) {
+	connectionID := chi.URLParam(r, "id")
+	connection, err := webhookConnectionWithCallbackReadiness(r.Context(), s.store.DB, connectionID, s.publicBaseURL())
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	projectID := strings.TrimSpace(fmt.Sprint(connection["project_id"]))
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "webhook_connection", ID: connectionID, ProjectID: projectID}, "update") {
+		return
+	}
+	var req struct {
+		OperatorDecision string `json:"operator_decision"`
+		EvidenceWindow   string `json:"evidence_window"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	operatorDecision := strings.TrimSpace(req.OperatorDecision)
+	if operatorDecision == "" {
+		operatorDecision = "record_metadata_review"
+	}
+	evidenceWindow := strings.TrimSpace(req.EvidenceWindow)
+	if evidenceWindow == "" {
+		evidenceWindow = "7d"
+	}
+	readiness := mapFromAny(connection["callback_rehearsal"])
+	providerPlan := mapFromAny(readiness["provider_rehearsal_plan"])
+	thresholdPlan := mapFromAny(providerPlan["threshold_tuning_plan"])
+	volumeEvidence := mapFromAny(thresholdPlan["volume_evidence"])
+	configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
+	decisionAuditPlan := mapFromAny(configurationPlan["threshold_decision_audit_plan"])
+	if !boolOnlyFromAny(decisionAuditPlan["decision_ready_for_review"]) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":     "threshold decision audit requires review-ready callback volume evidence",
+			"readiness": readiness,
+		})
+		return
+	}
+	metricsComparisonPlan := mapFromAny(thresholdPlan["provider_metrics_comparison_plan"])
+	evidence := map[string]any{
+		"mode":                                     "provider_callback_threshold_decision_audit_evidence",
+		"webhook_connection_id":                    connectionID,
+		"provider":                                 strings.TrimSpace(fmt.Sprint(connection["provider"])),
+		"operator_decision":                        operatorDecision,
+		"evidence_window":                          evidenceWindow,
+		"threshold_review_state":                   cleanPreviewString(decisionAuditPlan["threshold_review_state"]),
+		"configuration_state":                      cleanPreviewString(decisionAuditPlan["configuration_state"]),
+		"decision_state":                           cleanPreviewString(decisionAuditPlan["decision_state"]),
+		"comparison_state":                         cleanPreviewString(metricsComparisonPlan["comparison_state"]),
+		"delivery_count_7d":                        intFromAny(decisionAuditPlan["delivery_count_7d"], 0),
+		"processed_count_7d":                       intFromAny(volumeEvidence["processed_count_7d"], 0),
+		"failed_count_7d":                          intFromAny(decisionAuditPlan["failed_count_7d"], 0),
+		"operation_run_count_7d":                   intFromAny(decisionAuditPlan["operation_run_count_7d"], 0),
+		"matched_repo_sync_asset_count_7d":         intFromAny(decisionAuditPlan["matched_repo_sync_asset_count_7d"], 0),
+		"local_volume_observed":                    boolOnlyFromAny(volumeEvidence["local_volume_observed"]),
+		"repo_sync_volume_observed":                boolOnlyFromAny(volumeEvidence["repo_sync_volume_observed"]),
+		"processed_or_bound_volume_observed":       boolOnlyFromAny(volumeEvidence["processed_or_bound_volume_observed"]),
+		"provider_metrics_comparison_review_ready": boolOnlyFromAny(metricsComparisonPlan["comparison_ready_for_review"]),
+		"threshold_configuration_written":          false,
+		"provider_metrics_fetched":                 false,
+		"provider_pair_limits_compared":            false,
+		"external_call_made":                       false,
+		"contains_token":                           false,
+		"contains_secret":                          false,
+		"contains_payload":                         false,
+		"contains_provider_url":                    false,
+		"raw_request_headers_recorded":             false,
+		"raw_request_body_recorded":                false,
+		"raw_provider_response_recorded":           false,
+		"suppressed_fields":                        decisionAuditPlan["suppressed_fields"],
+	}
+	evidenceJSON, err := jsonParam(evidence)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not serialize threshold decision audit evidence")
+		return
+	}
+	actorID := ""
+	if user := currentUser(r); user != nil {
+		actorID = strings.TrimSpace(user.ID)
+	}
+	audit, err := queryOne(r.Context(), s.store.DB, `
+		INSERT INTO webhook_threshold_decision_audits(
+			project_id,
+			webhook_connection_id,
+			provider,
+			threshold_review_state,
+			decision_state,
+			operator_decision,
+			evidence_window,
+			evidence,
+			created_by
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NULLIF($9, '')::uuid)
+		ON CONFLICT (webhook_connection_id, decision_state, evidence_window)
+		DO UPDATE SET
+			provider=EXCLUDED.provider,
+			threshold_review_state=EXCLUDED.threshold_review_state,
+			operator_decision=EXCLUDED.operator_decision,
+			evidence=EXCLUDED.evidence,
+			created_by=COALESCE(EXCLUDED.created_by, webhook_threshold_decision_audits.created_by)
+		RETURNING id, project_id, webhook_connection_id, provider, threshold_review_state,
+			decision_state, operator_decision, evidence_window, evidence, created_by, created_at`,
+		projectID,
+		connectionID,
+		strings.TrimSpace(fmt.Sprint(connection["provider"])),
+		cleanPreviewString(decisionAuditPlan["threshold_review_state"]),
+		cleanPreviewString(decisionAuditPlan["decision_state"]),
+		operatorDecision,
+		evidenceWindow,
+		evidenceJSON,
+		actorID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not record threshold decision audit")
+		return
+	}
+	decisionAuditPlan["threshold_configuration_audit_inserted"] = true
+	decisionAuditPlan["audit_insert_enabled"] = true
+	decisionAuditPlan["operator_threshold_review_recorded"] = true
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"audit":                         audit,
+		"readiness":                     readiness,
+		"threshold_decision_audit_plan": decisionAuditPlan,
+	})
 }
 
 func (s *Server) listWebhookEvents(w http.ResponseWriter, r *http.Request) {

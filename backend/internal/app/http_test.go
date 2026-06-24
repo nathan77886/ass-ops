@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,25 @@ type approvalRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f approvalRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+type jsonEvidenceArg func(map[string]any) bool
+
+func (fn jsonEvidenceArg) Match(value driver.Value) bool {
+	var raw []byte
+	switch v := value.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return false
+	}
+	return fn(payload)
 }
 
 func withRouteParam(r *http.Request, key, value string) *http.Request {
@@ -5652,6 +5672,37 @@ func TestProjectVersionsUniqueMigrationAndFreshInit(t *testing.T) {
 		}
 		if !strings.Contains(string(content), "016_project_versions_unique.sql") {
 			t.Fatalf("%s missing 016_project_versions_unique.sql init mount", path)
+		}
+	}
+}
+
+func TestWebhookThresholdDecisionAuditMigrationAndFreshInit(t *testing.T) {
+	migration, err := os.ReadFile("../../migrations/017_webhook_threshold_decision_audits.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	for _, token := range []string{
+		"CREATE TABLE IF NOT EXISTS webhook_threshold_decision_audits",
+		"project_id UUID NOT NULL REFERENCES projects(id) ON DELETE RESTRICT",
+		"webhook_connection_id UUID NOT NULL REFERENCES webhook_connections(id) ON DELETE RESTRICT",
+		"evidence JSONB NOT NULL DEFAULT '{}'::jsonb",
+		"created_by UUID REFERENCES users(id)",
+		"idx_webhook_threshold_decision_audits_connection",
+		"idx_webhook_threshold_decision_audits_project",
+		"idx_webhook_threshold_decision_audits_once",
+		"ON webhook_threshold_decision_audits(webhook_connection_id, decision_state, evidence_window)",
+	} {
+		if !strings.Contains(string(migration), token) {
+			t.Fatalf("webhook threshold decision audit migration missing %q", token)
+		}
+	}
+	for _, path := range []string{"../../../deploy/docker-compose.yml", "../../../deploy/compose.prod.yml"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(content), "017_webhook_threshold_decision_audits.sql") {
+			t.Fatalf("%s missing 017_webhook_threshold_decision_audits.sql init mount", path)
 		}
 	}
 }
@@ -15550,7 +15601,7 @@ func TestWebhookCallbackRehearsalReadinessReconcilesObservedEvidence(t *testing.
 	if decisionAuditPlan["decision_state"] != "metadata_review_ready" ||
 		decisionAuditPlan["decision_ready_for_review"] != true ||
 		decisionAuditPlan["threshold_configuration_audit_inserted"] != false ||
-		decisionAuditPlan["audit_insert_enabled"] != false ||
+		decisionAuditPlan["audit_insert_enabled"] != true ||
 		decisionAuditPlan["capacity_signals_recomputed"] != false ||
 		intFromAny(decisionAuditPlan["delivery_count_7d"], 0) != 2 ||
 		intFromAny(decisionAuditPlan["operation_run_count_7d"], 0) != 1 {
@@ -15675,6 +15726,210 @@ func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T)
 	}
 }
 
+func TestAnnotateWebhookThresholdDecisionAuditEvidenceMarksPersistedAudit(t *testing.T) {
+	item := map[string]any{
+		"callback_rehearsal": map[string]any{
+			"provider_rehearsal_plan": map[string]any{
+				"threshold_tuning_plan": map[string]any{
+					"threshold_configuration_plan": map[string]any{
+						"operator_threshold_review_recorded": false,
+						"threshold_decision_audit_plan": map[string]any{
+							"threshold_configuration_audit_inserted": false,
+							"operator_threshold_review_recorded":     false,
+						},
+					},
+				},
+			},
+		},
+		"threshold_decision_audit_count":     int64(2),
+		"last_threshold_decision_audit_at":   "2026-06-24T10:00:00Z",
+		"raw_request_body_should_not_appear": "payload-body",
+	}
+	annotateWebhookThresholdDecisionAuditEvidence([]map[string]any{item})
+	readiness := mapFromAny(item["callback_rehearsal"])
+	providerPlan := mapFromAny(readiness["provider_rehearsal_plan"])
+	thresholdPlan := mapFromAny(providerPlan["threshold_tuning_plan"])
+	configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
+	decisionAuditPlan := mapFromAny(configurationPlan["threshold_decision_audit_plan"])
+	if configurationPlan["operator_threshold_review_recorded"] != true ||
+		decisionAuditPlan["threshold_configuration_audit_inserted"] != true ||
+		decisionAuditPlan["operator_threshold_review_recorded"] != true ||
+		intFromAny(decisionAuditPlan["threshold_decision_audit_count"], 0) != 2 ||
+		decisionAuditPlan["last_threshold_decision_audit_at"] != "2026-06-24T10:00:00Z" {
+		t.Fatalf("persisted threshold audit evidence was not merged into readiness: %#v", readiness)
+	}
+	encoded, _ := json.Marshal(readiness)
+	if strings.Contains(string(encoded), "payload-body") {
+		t.Fatalf("annotated threshold audit evidence leaked unrelated raw field: %s", encoded)
+	}
+}
+
+func TestRecordWebhookThresholdDecisionAuditHandlerWritesSanitizedEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
+		WithArgs("conn-1", "https://assops.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "project_id", "provider", "name", "source_remote_id", "enabled", "event_types", "last_delivery_status", "metadata", "created_at", "updated_at", "source_remote_name",
+			"deliveries_7d", "failures_7d", "processed_7d", "ignored_7d", "replayed_7d", "signature_valid_7d", "matched_repo_sync_asset_7d", "operation_run_7d",
+			"last_event_at", "last_event_status", "last_event_type", "last_event_signature_valid", "threshold_decision_audit_count", "last_threshold_decision_audit_at", "webhook_path", "webhook_url",
+		}).AddRow(
+			"conn-1", "project-1", "gitea", "main webhook", "remote-1", true, []byte(`["push"]`), "processed", []byte(`{}`), now, now, "source",
+			2, 0, 1, 0, 1, 2, 1, 1,
+			now, "processed", "push", true, 0, nil, "/api/webhooks/gitea/conn-1", "https://assops.example.com/api/webhooks/gitea/conn-1",
+		))
+	mock.ExpectQuery(`(?s)INSERT INTO webhook_threshold_decision_audits.*ON CONFLICT \(webhook_connection_id, decision_state, evidence_window\)`).
+		WithArgs("project-1", "conn-1", "gitea", "ready_for_review", "metadata_review_ready", "record_metadata_review", "7d", jsonEvidenceArg(func(payload map[string]any) bool {
+			if payload["volume_evidence"] != nil || payload["provider_metrics_comparison_plan"] != nil {
+				return false
+			}
+			return payload["mode"] == "provider_callback_threshold_decision_audit_evidence" &&
+				payload["webhook_connection_id"] == "conn-1" &&
+				payload["provider"] == "gitea" &&
+				payload["operator_decision"] == "record_metadata_review" &&
+				payload["decision_state"] == "metadata_review_ready" &&
+				payload["comparison_state"] == "ready_for_operator_review" &&
+				boolOnlyFromAny(payload["local_volume_observed"]) &&
+				boolOnlyFromAny(payload["provider_metrics_comparison_review_ready"]) &&
+				intFromAny(payload["delivery_count_7d"], 0) == 2 &&
+				intFromAny(payload["operation_run_count_7d"], 0) == 1 &&
+				payload["contains_secret"] == false &&
+				payload["contains_payload"] == false &&
+				payload["contains_provider_url"] == false
+		}), "admin-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "project_id", "webhook_connection_id", "provider", "threshold_review_state", "decision_state", "operator_decision", "evidence_window", "evidence", "created_by", "created_at",
+		}).AddRow("audit-1", "project-1", "conn-1", "gitea", "ready_for_review", "metadata_review_ready", "record_metadata_review", "7d", []byte(`{"contains_secret":false}`), "admin-1", now))
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := httptest.NewRequest(http.MethodPost, "/api/webhook-connections/conn-1/threshold-decision-audit", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "conn-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+	server.recordWebhookThresholdDecisionAudit(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	audit := mapFromAny(body["audit"])
+	if audit["id"] != "audit-1" || audit["webhook_connection_id"] != "conn-1" {
+		t.Fatalf("audit response = %#v", audit)
+	}
+	plan := mapFromAny(body["threshold_decision_audit_plan"])
+	if plan["threshold_configuration_audit_inserted"] != true ||
+		plan["operator_threshold_review_recorded"] != true ||
+		plan["audit_insert_enabled"] != true {
+		t.Fatalf("threshold audit response plan should reflect persisted audit row: %#v", plan)
+	}
+	encoded := rr.Body.String()
+	for _, forbidden := range []string{"secret-token", "payload-body", "provider-response", "Bearer"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("threshold decision audit response leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordWebhookThresholdDecisionAuditHandlerUpsertsDuplicateDecision(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	expectThresholdAuditReadyConnection := func(deliveries int) {
+		mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
+			WithArgs("conn-1", "https://assops.example.com").
+			WillReturnRows(sqlmock.NewRows([]string{
+				"id", "project_id", "provider", "name", "source_remote_id", "enabled", "event_types", "last_delivery_status", "metadata", "created_at", "updated_at", "source_remote_name",
+				"deliveries_7d", "failures_7d", "processed_7d", "ignored_7d", "replayed_7d", "signature_valid_7d", "matched_repo_sync_asset_7d", "operation_run_7d",
+				"last_event_at", "last_event_status", "last_event_type", "last_event_signature_valid", "threshold_decision_audit_count", "last_threshold_decision_audit_at", "webhook_path", "webhook_url",
+			}).AddRow(
+				"conn-1", "project-1", "gitea", "main webhook", "remote-1", true, []byte(`["push"]`), "processed", []byte(`{}`), now, now, "source",
+				deliveries, 0, 1, 0, 1, deliveries, 1, 1,
+				now, "processed", "push", true, 0, nil, "/api/webhooks/gitea/conn-1", "https://assops.example.com/api/webhooks/gitea/conn-1",
+			))
+	}
+	expectUpsert := func(wantDeliveries int) {
+		mock.ExpectQuery(`(?s)INSERT INTO webhook_threshold_decision_audits.*ON CONFLICT \(webhook_connection_id, decision_state, evidence_window\)\s+DO UPDATE SET`).
+			WithArgs("project-1", "conn-1", "gitea", "ready_for_review", "metadata_review_ready", "record_metadata_review", "7d", jsonEvidenceArg(func(payload map[string]any) bool {
+				return payload["volume_evidence"] == nil &&
+					payload["provider_metrics_comparison_plan"] == nil &&
+					intFromAny(payload["delivery_count_7d"], 0) == wantDeliveries &&
+					boolOnlyFromAny(payload["local_volume_observed"]) &&
+					payload["contains_secret"] == false
+			}), "admin-1").
+			WillReturnRows(sqlmock.NewRows([]string{
+				"id", "project_id", "webhook_connection_id", "provider", "threshold_review_state", "decision_state", "operator_decision", "evidence_window", "evidence", "created_by", "created_at",
+			}).AddRow("audit-1", "project-1", "conn-1", "gitea", "ready_for_review", "metadata_review_ready", "record_metadata_review", "7d", []byte(fmt.Sprintf(`{"delivery_count_7d":%d}`, wantDeliveries)), "admin-1", now))
+	}
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	for _, deliveries := range []int{2, 3} {
+		expectThresholdAuditReadyConnection(deliveries)
+		expectUpsert(deliveries)
+		req := httptest.NewRequest(http.MethodPost, "/api/webhook-connections/conn-1/threshold-decision-audit", strings.NewReader(`{}`))
+		req = withRouteParam(req, "id", "conn-1")
+		req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+		rr := httptest.NewRecorder()
+		server.recordWebhookThresholdDecisionAudit(rr, req)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), fmt.Sprintf(`"delivery_count_7d":%d`, deliveries)) {
+			t.Fatalf("upsert response should return latest evidence, deliveries=%d body=%s", deliveries, rr.Body.String())
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordWebhookThresholdDecisionAuditHandlerBlocksWithoutReadyEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
+		WithArgs("conn-1", "https://assops.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "project_id", "provider", "name", "source_remote_id", "enabled", "event_types", "last_delivery_status", "metadata", "created_at", "updated_at", "source_remote_name",
+			"deliveries_7d", "failures_7d", "processed_7d", "ignored_7d", "replayed_7d", "signature_valid_7d", "matched_repo_sync_asset_7d", "operation_run_7d",
+			"last_event_at", "last_event_status", "last_event_type", "last_event_signature_valid", "threshold_decision_audit_count", "last_threshold_decision_audit_at", "webhook_path", "webhook_url",
+		}).AddRow(
+			"conn-1", "project-1", "gitea", "main webhook", "remote-1", true, []byte(`["push"]`), "never", []byte(`{}`), now, now, "source",
+			0, 0, 0, 0, 0, 0, 0, 0,
+			nil, "", "", false, 0, nil, "/api/webhooks/gitea/conn-1", "https://assops.example.com/api/webhooks/gitea/conn-1",
+		))
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := httptest.NewRequest(http.MethodPost, "/api/webhook-connections/conn-1/threshold-decision-audit", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "conn-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+	server.recordWebhookThresholdDecisionAudit(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "threshold decision audit requires review-ready callback volume evidence") {
+		t.Fatalf("blocked audit response = %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestWebhookCallbackThresholdDecisionAuditUsesMetadataNotReadyReason(t *testing.T) {
 	got := webhookCallbackRehearsalReadiness(map[string]any{
 		"provider":                   "gitea",
@@ -15713,7 +15968,6 @@ func assertWebhookThresholdDecisionAuditPlanSafe(t *testing.T, plan map[string]a
 		plan["threshold_configuration_written"] != false ||
 		plan["threshold_configuration_audit_inserted"] != false ||
 		plan["configuration_write_enabled"] != false ||
-		plan["audit_insert_enabled"] != false ||
 		plan["capacity_signals_recomputed"] != false ||
 		plan["provider_metrics_fetched"] != false ||
 		plan["provider_pair_limits_compared"] != false ||
@@ -15736,20 +15990,26 @@ func assertWebhookThresholdDecisionAuditPlanSafe(t *testing.T, plan map[string]a
 			t.Fatalf("threshold decision audit required_controls missing %q: %#v", control, plan["required_controls"])
 		}
 	}
-	for _, backend := range []string{"threshold_configuration_audit_insert", "threshold_configuration_write", "threshold_delta_persist", "sync_capacity_signal_recompute", "provider_metrics_fetch"} {
+	for _, backend := range []string{"threshold_configuration_write", "threshold_delta_persist", "sync_capacity_signal_recompute", "provider_metrics_fetch"} {
 		if !containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
 			t.Fatalf("threshold decision audit disabled_backends missing %q: %#v", backend, plan["disabled_backends"])
 		}
+	}
+	if plan["audit_insert_enabled"] != true && !containsString(stringSliceFromAny(plan["disabled_backends"]), "threshold_configuration_audit_insert") {
+		t.Fatalf("threshold decision audit disabled_backends missing audit insert while disabled: %#v", plan["disabled_backends"])
 	}
 	for _, field := range []string{"operator_identity", "operator_notes", "provider_token", "provider_url", "authorization_header", "request_headers", "provider_response_body", "provider_response_headers", "delivery_id", "payload"} {
 		if !containsString(stringSliceFromAny(plan["suppressed_fields"]), field) {
 			t.Fatalf("threshold decision audit suppressed_fields missing %q: %#v", field, plan["suppressed_fields"])
 		}
 	}
-	for _, reason := range []string{"threshold_configuration_audit_insert_disabled", "threshold_configuration_write_disabled"} {
+	for _, reason := range []string{"threshold_configuration_write_disabled"} {
 		if !containsString(stringSliceFromAny(plan["blocked_reasons"]), reason) {
 			t.Fatalf("threshold decision audit blocked_reasons missing %q: %#v", reason, plan["blocked_reasons"])
 		}
+	}
+	if plan["audit_insert_enabled"] != true && !containsString(stringSliceFromAny(plan["blocked_reasons"]), "threshold_configuration_audit_insert_disabled") {
+		t.Fatalf("threshold decision audit blocked_reasons missing audit insert while disabled: %#v", plan["blocked_reasons"])
 	}
 	encoded, _ := json.Marshal(plan)
 	for _, forbidden := range []string{"secret-token", "Bearer secret", "payload-body", "provider-response", "provider.example.com", "operator@example.com"} {
