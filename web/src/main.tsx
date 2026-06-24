@@ -659,6 +659,10 @@ function operationIDsByType(rows: AnyRow[] = [], type: string) {
     .filter(Boolean));
 }
 
+function mergeSets<T>(...sets: Set<T>[]) {
+  return new Set(sets.flatMap((set) => Array.from(set)));
+}
+
 function countContextGenerationEvidence(assets: AnyRow[] = []) {
   return assets.filter((row) =>
     String(row.asset_type || '') === 'agent_tool_call' &&
@@ -866,11 +870,11 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}) {
   return counts;
 }
 
-function countWebhookSyncGraphLinks(graph: AnyRow = {}) {
-  const byEvent: Record<string, { connection?: boolean; repoSyncs: Record<string, boolean>; operations: Record<string, boolean> }> = {};
+function countWebhookSyncGraphLinks(graph: AnyRow = {}, connectionAssetIDs = new Set<string>(), eventAssetIDs = new Set<string>(), repoSyncAssetIDs = new Set<string>(), syncOperationIDs = new Set<string>()) {
+  const byEvent: Record<string, { connections: Record<string, boolean>; repoSyncs: Record<string, boolean>; operations: Record<string, boolean> }> = {};
   const operationRepoSyncs: Record<string, Record<string, boolean>> = {};
   const eventEntry = (assetID: string) => {
-    byEvent[assetID] ??= { repoSyncs: {}, operations: {} };
+    byEvent[assetID] ??= { connections: {}, repoSyncs: {}, operations: {} };
     return byEvent[assetID];
   };
   const addOperationRepoSync = (operationID: string, repoSyncID: string) => {
@@ -883,7 +887,7 @@ function countWebhookSyncGraphLinks(graph: AnyRow = {}) {
     const to = String(edge.to_asset_id || '');
     if (relation === 'received_webhook_event' && from.startsWith('webhook_connection:') && to.startsWith('webhook_event:')) {
       nextCounts.connectionEvents += 1;
-      eventEntry(to).connection = true;
+      eventEntry(to).connections[from] = true;
     }
     if (relation === 'matched_repo_sync' && from.startsWith('webhook_event:') && to.startsWith('repo_sync:')) {
       nextCounts.eventRepoSyncs += 1;
@@ -898,11 +902,18 @@ function countWebhookSyncGraphLinks(graph: AnyRow = {}) {
       addOperationRepoSync(from, to);
     }
     return nextCounts;
-  }, { connectionEvents: 0, eventRepoSyncs: 0, eventOperations: 0, completeChains: 0 });
+  }, { connectionEvents: 0, eventRepoSyncs: 0, eventOperations: 0, completeChains: 0, completeChainAssets: 0 });
   counts.completeChains = Object.values(byEvent).filter((entry) => (
-    entry.connection &&
+    Object.keys(entry.connections).length > 0 &&
     Object.keys(entry.operations).some((operationID) => (
       Object.keys(entry.repoSyncs).some((repoSyncID) => operationRepoSyncs[operationID]?.[repoSyncID])
+    ))
+  )).length;
+  counts.completeChainAssets = Object.entries(byEvent).filter(([eventID, entry]) => (
+    eventAssetIDs.has(eventID) &&
+    Object.keys(entry.connections).some((connectionID) => connectionAssetIDs.has(connectionID)) &&
+    Object.keys(entry.operations).some((operationID) => syncOperationIDs.has(operationID) && (
+      Object.keys(entry.repoSyncs).some((repoSyncID) => repoSyncAssetIDs.has(repoSyncID) && operationRepoSyncs[operationID]?.[repoSyncID])
     ))
   )).length;
   return counts;
@@ -1203,7 +1214,14 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const contextGenerations = countContextGenerationEvidence(assets);
   const repositoryGraphLinks = countRepositoryGraphLinks(graph, assetIDsByType(assets, 'repository'), assetIDsByType(assets, 'git_remote'));
   const repoSyncGraphLinks = countRepoSyncGraphLinks(graph, assetIDsByType(assets, 'repo_sync'), assetIDsByType(assets, 'git_remote'));
-  const webhookSyncGraphLinks = countWebhookSyncGraphLinks(graph);
+  const syncOperationIDs = mergeSets(operationIDsByType(operations, 'repo.sync'), operationIDsByType(operations, 'repo.sync_remote'));
+  const webhookSyncGraphLinks = countWebhookSyncGraphLinks(
+    graph,
+    assetIDsByType(assets, 'webhook_connection'),
+    assetIDsByType(assets, 'webhook_event'),
+    assetIDsByType(assets, 'repo_sync'),
+    syncOperationIDs
+  );
   const githubActionLinks = countGitHubActionGraphLinks(graph);
   const repoTagRuns = (operationCounts['repo.tag'] || 0) + (operationCounts['repo.create_tag'] || 0);
   const sshGraphLinks = countSSHGraphLinks(graph, assetIDsByType(assets, 'ssh_command_run'));
@@ -1219,6 +1237,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const contextGraphLinks = countContextGraphLinks(assets, graph);
   const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.argo_app || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0) + argoGraphLinks.connectionApps + argoGraphLinks.appTargets + argoGraphLinks.completeAppAssets;
   const argoEvidenceText = `${assetCounts.deployment_target || 0} targets / ${assetCounts.argo_connection || 0} Argo connections / ${assetCounts.argo_app || 0} apps / ${operationCounts['argo.apps.sync'] || 0} sync ops / ${argoGraphLinks.completeApps} complete app links / ${argoGraphLinks.completeAppAssets} app asset chains${argoGraphLinks.completeApps > 0 && argoGraphLinks.completeAppAssets === 0 ? ' / canonical evidence missing' : ''}`;
+  const syncTriggerEvidenceText = `${syncTriggered} sync ops / ${giteaWebhooks} Gitea webhooks / ${giteaWebhookEvents} Gitea events / ${webhookSyncGraphLinks.completeChains} complete webhook chains / ${webhookSyncGraphLinks.completeChainAssets} webhook asset chains${webhookSyncGraphLinks.completeChains > 0 && webhookSyncGraphLinks.completeChainAssets === 0 ? ' / canonical evidence missing' : ''}`;
   const graphNodes = graphItems(graph, 'nodes').length;
   const graphEdges = graphItems(graph, 'edges').length;
   const graphEvidence = graphNodes + graphEdges;
@@ -1250,7 +1269,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'sync_trigger',
       label: 'Trigger sync manually and from webhook',
       next: 'Run a manual sync and receive or replay a Gitea webhook event.',
-      ...readinessState(syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0 && webhookSyncGraphLinks.completeChains > 0, `${syncTriggered} sync ops / ${giteaWebhooks} Gitea webhooks / ${giteaWebhookEvents} Gitea events / ${webhookSyncGraphLinks.completeChains} complete webhook chains`, syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0 || webhookSyncGraphLinks.connectionEvents > 0 || webhookSyncGraphLinks.eventRepoSyncs > 0 || webhookSyncGraphLinks.eventOperations > 0)
+      ...readinessState(syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0 && webhookSyncGraphLinks.completeChainAssets > 0, syncTriggerEvidenceText, syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0 || webhookSyncGraphLinks.connectionEvents > 0 || webhookSyncGraphLinks.eventRepoSyncs > 0 || webhookSyncGraphLinks.eventOperations > 0 || webhookSyncGraphLinks.completeChainAssets > 0)
     },
     {
       key: 'github_actions',
