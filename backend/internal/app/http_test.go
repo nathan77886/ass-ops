@@ -13915,6 +13915,8 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 			thresholdPlan := mapFromAny(plan["threshold_tuning_plan"])
 			if thresholdPlan["mode"] != "provider_callback_threshold_tuning_plan" ||
 				thresholdPlan["live_volume_observed"] != false ||
+				thresholdPlan["threshold_review_state"] != "waiting_for_volume" ||
+				thresholdPlan["threshold_review_ready"] != false ||
 				thresholdPlan["provider_pair_thresholds_tuned"] != false ||
 				thresholdPlan["sync_capacity_thresholds_tuned"] != false ||
 				thresholdPlan["webhook_delivery_thresholds_tuned"] != false ||
@@ -13930,6 +13932,23 @@ func TestWebhookCallbackRehearsalReadiness(t *testing.T) {
 			}
 			if thresholdPlan["threshold_state"] != wantSubplanState {
 				t.Fatalf("provider callback threshold state = %#v, want %s", thresholdPlan, wantSubplanState)
+			}
+			if !containsString(stringSliceFromAny(thresholdPlan["execution_blockers"]), "provider_pair_thresholds_need_live_volume_tuning") {
+				t.Fatalf("provider callback threshold execution blockers should wait for volume: %#v", thresholdPlan["execution_blockers"])
+			}
+			volumeEvidence := mapFromAny(thresholdPlan["volume_evidence"])
+			if volumeEvidence["mode"] != "provider_callback_threshold_volume_evidence" ||
+				volumeEvidence["local_volume_observed"] != false ||
+				volumeEvidence["provider_volume_observed"] != false ||
+				volumeEvidence["provider_metrics_fetched"] != false ||
+				volumeEvidence["provider_pair_limits_compared"] != false ||
+				volumeEvidence["threshold_configuration_written"] != false ||
+				volumeEvidence["external_call_made"] != false ||
+				volumeEvidence["contains_token"] != false ||
+				volumeEvidence["contains_secret"] != false ||
+				volumeEvidence["contains_payload"] != false ||
+				volumeEvidence["contains_provider_url"] != false {
+				t.Fatalf("provider callback threshold volume evidence should stay redacted and no-call: %#v", volumeEvidence)
 			}
 			resultPlan := mapFromAny(plan["result_recording_plan"])
 			if resultPlan["mode"] != "provider_callback_rehearsal_result_recording_plan" ||
@@ -14077,6 +14096,23 @@ func TestWebhookCallbackRehearsalReadinessReconcilesObservedEvidence(t *testing.
 		resultPlan["raw_provider_response_recorded"] != false {
 		t.Fatalf("unexpected callback result plan: %#v", resultPlan)
 	}
+	thresholdPlan := mapFromAny(plan["threshold_tuning_plan"])
+	volumeEvidence := mapFromAny(thresholdPlan["volume_evidence"])
+	if thresholdPlan["live_volume_observed"] != true ||
+		thresholdPlan["threshold_review_state"] != "ready_for_review" ||
+		thresholdPlan["threshold_review_ready"] != true ||
+		thresholdPlan["threshold_configuration_written"] != false ||
+		volumeEvidence["local_volume_observed"] != true ||
+		volumeEvidence["repo_sync_volume_observed"] != true ||
+		volumeEvidence["provider_volume_observed"] != false ||
+		volumeEvidence["provider_metrics_fetched"] != false ||
+		intFromAny(volumeEvidence["delivery_count_7d"], 0) != 2 ||
+		intFromAny(volumeEvidence["operation_run_count_7d"], 0) != 1 {
+		t.Fatalf("unexpected threshold volume evidence: threshold=%#v volume=%#v", thresholdPlan, volumeEvidence)
+	}
+	if !containsString(stringSliceFromAny(thresholdPlan["execution_blockers"]), "operator_threshold_review_not_recorded") {
+		t.Fatalf("ready threshold volume should wait for operator threshold review: %#v", thresholdPlan["execution_blockers"])
+	}
 	encoded, _ := json.Marshal(got)
 	for _, forbidden := range []string{"secret-token", "payload-body", "provider-response", "password", "Bearer secret", "delivery-secret", "provider.example.com", "asset-secret"} {
 		if strings.Contains(string(encoded), forbidden) {
@@ -14128,6 +14164,18 @@ func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T)
 		t.Fatalf("unexpected failed operator replay proof: %#v", replayProof)
 	}
 	plan := mapFromAny(got["provider_rehearsal_plan"])
+	thresholdPlan := mapFromAny(plan["threshold_tuning_plan"])
+	volumeEvidence := mapFromAny(thresholdPlan["volume_evidence"])
+	if thresholdPlan["live_volume_observed"] != true ||
+		thresholdPlan["threshold_review_state"] != "review_failed_volume" ||
+		thresholdPlan["threshold_review_ready"] != false ||
+		volumeEvidence["webhook_failure_volume_observed"] != true ||
+		intFromAny(volumeEvidence["failed_count_7d"], 0) != 1 {
+		t.Fatalf("unexpected failed threshold volume evidence: threshold=%#v volume=%#v", thresholdPlan, volumeEvidence)
+	}
+	if !containsString(stringSliceFromAny(thresholdPlan["execution_blockers"]), "webhook_failures_need_operator_threshold_review") {
+		t.Fatalf("failed threshold volume should expose failure review blocker: %#v", thresholdPlan["execution_blockers"])
+	}
 	resultPlan := mapFromAny(plan["result_recording_plan"])
 	if resultPlan["result_recording_state"] != "failed" ||
 		resultPlan["result_recording_ready_reason"] != "provider_callback_delivery_failed" ||
@@ -14226,6 +14274,84 @@ func TestWebhookCallbackRehearsalResultRecordingPlanDefaultsMissingReplayProof(t
 	encoded, _ := json.Marshal(resultPlan)
 	if strings.Contains(string(encoded), "<nil>") {
 		t.Fatalf("missing replay proof leaked nil sentinel: %s", encoded)
+	}
+}
+
+func TestWebhookProviderCallbackThresholdVolumeEvidenceBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		evidence   map[string]any
+		wantState  string
+		wantReady  bool
+		wantReason string
+	}{
+		{
+			name:       "delivery volume without processing is visible but not review ready",
+			evidence:   map[string]any{"delivery_count_7d": int64(3)},
+			wantState:  "volume_observed",
+			wantReady:  false,
+			wantReason: "processed_or_repo_sync_volume_not_observed",
+		},
+		{
+			name:       "failures override operation volume",
+			evidence:   map[string]any{"delivery_count_7d": int64(5), "failed_count_7d": int64(1), "operation_run_count_7d": int64(3)},
+			wantState:  "review_failed_volume",
+			wantReady:  false,
+			wantReason: "webhook_failures_need_operator_threshold_review",
+		},
+		{
+			name:       "processed volume is review ready",
+			evidence:   map[string]any{"delivery_count_7d": int64(5), "processed_count_7d": int64(5)},
+			wantState:  "ready_for_review",
+			wantReady:  true,
+			wantReason: "operator_threshold_review_not_recorded",
+		},
+		{
+			name:       "operation run volume is review ready",
+			evidence:   map[string]any{"operation_run_count_7d": int64(2)},
+			wantState:  "ready_for_review",
+			wantReady:  true,
+			wantReason: "operator_threshold_review_not_recorded",
+		},
+		{
+			name:       "matched repo sync asset volume is review ready",
+			evidence:   map[string]any{"matched_repo_sync_asset_count_7d": int64(2)},
+			wantState:  "ready_for_review",
+			wantReady:  true,
+			wantReason: "operator_threshold_review_not_recorded",
+		},
+		{
+			name:       "replay only volume is visible but not review ready",
+			evidence:   map[string]any{"replayed_count_7d": int64(1)},
+			wantState:  "volume_observed",
+			wantReady:  false,
+			wantReason: "processed_or_repo_sync_volume_not_observed",
+		},
+		{
+			name:       "nil evidence waits for volume",
+			evidence:   nil,
+			wantState:  "waiting_for_volume",
+			wantReady:  false,
+			wantReason: "real_provider_volume_not_observed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := webhookProviderCallbackThresholdVolumeEvidence(tt.evidence)
+			if got["threshold_review_state"] != tt.wantState ||
+				got["threshold_review_ready"] != tt.wantReady ||
+				!containsString(stringSliceFromAny(got["blocked_reasons"]), tt.wantReason) {
+				t.Fatalf("threshold volume evidence = %#v, want state=%s ready=%v reason=%s", got, tt.wantState, tt.wantReady, tt.wantReason)
+			}
+			if got["external_call_made"] != false ||
+				got["provider_metrics_fetched"] != false ||
+				got["threshold_configuration_written"] != false ||
+				got["contains_token"] != false ||
+				got["contains_payload"] != false ||
+				got["contains_provider_url"] != false {
+				t.Fatalf("threshold volume evidence must stay no-call and redacted: %#v", got)
+			}
+		})
 	}
 }
 

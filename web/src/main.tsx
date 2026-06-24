@@ -254,6 +254,13 @@ function callbackEvidenceColor(status: any) {
   }
 }
 
+function thresholdVolumeColor(plan: any, volume: any) {
+  if (plan?.threshold_review_ready) return 'green';
+  if (volume?.webhook_failure_volume_observed) return 'red';
+  if (volume?.local_volume_observed) return 'gold';
+  return 'default';
+}
+
 function tagResultEvidenceColor(status: any) {
   switch (String(status || '').toLowerCase()) {
     case 'recorded':
@@ -3445,6 +3452,7 @@ function GitRemotes() {
               const publicEndpointPlan = providerPlan.public_endpoint_plan || {};
               const deliveryPlan = providerPlan.provider_delivery_plan || {};
               const thresholdPlan = providerPlan.threshold_tuning_plan || {};
+              const thresholdVolume = thresholdPlan.volume_evidence || {};
               const resultPlan = providerPlan.result_recording_plan || {};
               const callbackEvidence = readiness.callback_evidence || {};
               const replayProof = callbackEvidence.operator_replay_proof || providerPlan.operator_replay_proof || {};
@@ -3455,6 +3463,7 @@ function GitRemotes() {
                 <Tag color={publicEndpointPlan.public_origin_ready ? 'green' : 'red'}>{publicEndpointPlan.public_origin_ready ? 'public origin' : 'no public origin'}</Tag>
                 <Tag color={deliveryPlan.delivery_state === 'planned' ? 'gold' : 'red'}>{deliveryPlan.provider_test_delivery_sent ? 'test delivered' : 'no test delivery'}</Tag>
                 <Tag color={thresholdPlan.threshold_state === 'planned' ? 'gold' : 'red'}>{thresholdPlan.provider_pair_thresholds_tuned ? 'thresholds tuned' : 'thresholds pending'}</Tag>
+                <Tag color={thresholdVolumeColor(thresholdPlan, thresholdVolume)}>{thresholdVolume.local_volume_observed ? `volume ${thresholdPlan.threshold_review_state || 'observed'}` : 'volume pending'}</Tag>
                 <Tag>{providerPlan.external_call_made ? 'provider call' : 'no provider call'}</Tag>
                 <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
                 <Tag color={replayProof.proof_state === 'recorded' ? 'green' : replayProof.proof_state === 'failed' ? 'red' : replayProof.operator_replay_observed ? 'gold' : 'default'}>{replayProof.operator_replay_observed ? `replay proof ${replayProof.proof_state || 'observed'}` : 'replay proof pending'}</Tag>

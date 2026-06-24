@@ -5631,7 +5631,7 @@ func webhookProviderCallbackRehearsalPlan(readinessStatus string, readinessReaso
 		"public_endpoint_plan":   webhookProviderCallbackPublicEndpointPlan(planState, readinessReasons),
 		"provider_delivery_plan": webhookProviderCallbackDeliveryPlan(planState),
 		"operator_replay_proof":  replayProof,
-		"threshold_tuning_plan":  webhookProviderCallbackThresholdTuningPlan(planState),
+		"threshold_tuning_plan":  webhookProviderCallbackThresholdTuningPlan(planState, evidence),
 		"result_recording_plan":  webhookProviderCallbackRehearsalResultRecordingPlan(evidence),
 		"message":                "Provider callback rehearsal is audit-only; no provider settings write or provider test delivery is performed, while existing webhook event evidence is reconciled as sanitized metadata.",
 	}
@@ -5708,28 +5708,98 @@ func webhookProviderCallbackDeliveryPlan(planState string) map[string]any {
 	}
 }
 
-func webhookProviderCallbackThresholdTuningPlan(planState string) map[string]any {
+func webhookProviderCallbackThresholdTuningPlan(planState string, evidence map[string]any) map[string]any {
 	thresholdState := "blocked"
 	if planState == "planned" {
 		thresholdState = "planned"
 	}
+	volumeEvidence := webhookProviderCallbackThresholdVolumeEvidence(evidence)
+	thresholdReviewReady := boolOnlyFromAny(volumeEvidence["threshold_review_ready"])
+	executionBlockers := []string{"provider_pair_thresholds_need_live_volume_tuning"}
+	switch cleanPreviewString(volumeEvidence["threshold_review_state"]) {
+	case "ready_for_review":
+		executionBlockers = []string{"operator_threshold_review_not_recorded"}
+	case "review_failed_volume":
+		executionBlockers = []string{"webhook_failures_need_operator_threshold_review"}
+	case "volume_observed":
+		executionBlockers = []string{"processed_or_repo_sync_volume_not_observed"}
+	}
 	return map[string]any{
 		"mode":                              "provider_callback_threshold_tuning_plan",
 		"threshold_state":                   thresholdState,
-		"live_volume_observed":              false,
+		"live_volume_observed":              boolOnlyFromAny(volumeEvidence["local_volume_observed"]),
+		"threshold_review_state":            volumeEvidence["threshold_review_state"],
+		"threshold_review_ready":            thresholdReviewReady,
 		"provider_pair_thresholds_tuned":    false,
 		"sync_capacity_thresholds_tuned":    false,
 		"webhook_delivery_thresholds_tuned": false,
 		"github_actions_thresholds_tuned":   false,
 		"threshold_configuration_written":   false,
 		"external_call_made":                false,
+		"volume_evidence":                   volumeEvidence,
 		"required_observations":             []string{"provider_pair_active_runs", "provider_pair_recent_failures", "webhook_delivery_failures", "github_actions_run_volume"},
 		"threshold_review_sequence":         []string{"collect_live_sync_volume", "compare_provider_limits", "adjust_warning_thresholds", "adjust_danger_thresholds", "record_threshold_review"},
 		"disabled_backends":                 []string{"provider_metrics_fetch", "threshold_configuration_write", "sync_capacity_backfill"},
 		"suppressed_fields":                 []string{"provider_token", "provider_url", "request_headers", "provider_response_body"},
-		"blocked_reasons":                   []string{"real_provider_volume_not_observed"},
-		"execution_blockers":                []string{"provider_pair_thresholds_need_live_volume_tuning"},
-		"message":                           "Provider-pair threshold tuning is planned only; current thresholds stay unchanged until real rehearsal volume is observed.",
+		"blocked_reasons":                   stringSliceFromAny(volumeEvidence["blocked_reasons"]),
+		"execution_blockers":                executionBlockers,
+		"message":                           "Provider-pair threshold tuning is planned only; local webhook volume evidence is redacted and current thresholds stay unchanged until an operator reviews real rehearsal volume.",
+	}
+}
+
+func webhookProviderCallbackThresholdVolumeEvidence(evidence map[string]any) map[string]any {
+	if evidence == nil {
+		evidence = map[string]any{}
+	}
+	deliveries := intFromAny(evidence["delivery_count_7d"], 0)
+	failures := intFromAny(evidence["failed_count_7d"], 0)
+	processed := intFromAny(evidence["processed_count_7d"], 0)
+	replayed := intFromAny(evidence["replayed_count_7d"], 0)
+	operationRuns := intFromAny(evidence["operation_run_count_7d"], 0)
+	matchedRepoSyncAsset := intFromAny(evidence["matched_repo_sync_asset_count_7d"], 0)
+	localVolumeObserved := deliveries > 0 || replayed > 0 || operationRuns > 0 || matchedRepoSyncAsset > 0
+	processedOrBoundVolume := operationRuns > 0 || matchedRepoSyncAsset > 0 || processed > 0
+	reviewState := "waiting_for_volume"
+	var blockedReasons []string
+	switch {
+	case !localVolumeObserved:
+		reviewState = "waiting_for_volume"
+		blockedReasons = []string{"real_provider_volume_not_observed"}
+	case failures > 0:
+		reviewState = "review_failed_volume"
+		blockedReasons = []string{"webhook_failures_need_operator_threshold_review"}
+	case processedOrBoundVolume:
+		reviewState = "ready_for_review"
+		blockedReasons = []string{"operator_threshold_review_not_recorded"}
+	default:
+		reviewState = "volume_observed"
+		blockedReasons = []string{"processed_or_repo_sync_volume_not_observed"}
+	}
+	return map[string]any{
+		"mode":                               "provider_callback_threshold_volume_evidence",
+		"threshold_review_state":             reviewState,
+		"threshold_review_ready":             localVolumeObserved && failures == 0 && processedOrBoundVolume,
+		"local_volume_observed":              localVolumeObserved,
+		"provider_volume_observed":           false,
+		"provider_metrics_fetched":           false,
+		"provider_pair_limits_compared":      false,
+		"threshold_configuration_written":    false,
+		"delivery_count_7d":                  deliveries,
+		"processed_count_7d":                 processed,
+		"failed_count_7d":                    failures,
+		"replayed_count_7d":                  replayed,
+		"operation_run_count_7d":             operationRuns,
+		"matched_repo_sync_asset_count_7d":   matchedRepoSyncAsset,
+		"repo_sync_volume_observed":          operationRuns > 0 || matchedRepoSyncAsset > 0,
+		"processed_or_bound_volume_observed": processedOrBoundVolume,
+		"webhook_failure_volume_observed":    failures > 0,
+		"external_call_made":                 false,
+		"contains_token":                     false,
+		"contains_secret":                    false,
+		"contains_payload":                   false,
+		"contains_provider_url":              false,
+		"suppressed_fields":                  []string{"delivery_id", "source_delivery_id", "provider_token", "provider_url", "request_headers", "request_body", "payload", "provider_response_body", "provider_response_headers", "repo_url", "branch_name"},
+		"blocked_reasons":                    blockedReasons,
 	}
 }
 
