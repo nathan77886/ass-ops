@@ -11572,6 +11572,47 @@ func assetInventorySQL() string {
 		FROM operation_approval_rules oar
 		UNION ALL
 		SELECT
+			'provider_review_attempt:' || pra.id::text,
+			COALESCE(oa.project_id::text, ptr.project_id::text, ''),
+			'provider_review_attempt',
+			pra.operation_name,
+			pra.operation_name,
+			pra.endpoint_key,
+			'provider_review',
+			pra.id::text,
+			pra.status,
+			CASE
+				WHEN pra.status IN ('failed', 'blocked') THEN 'high'
+				WHEN pra.status IN ('planned', 'running') THEN 'warning'
+				ELSE 'normal'
+			END,
+			'provider_review_attempts',
+			pra.id::text,
+			jsonb_build_object(
+				'operation_approval_id', pra.operation_approval_id,
+				'project_template_run_id', pra.project_template_run_id,
+				'provider_type', pra.provider_type,
+				'review_kind', pra.review_kind,
+				'operation_name', pra.operation_name,
+				'endpoint_key', pra.endpoint_key,
+				'operation_order', pra.operation_order,
+				'depends_on_operation', pra.depends_on_operation,
+				'dependency_status', pra.dependency_status,
+				'replay_check', pra.replay_check,
+				'conflict_policy', pra.conflict_policy,
+				'retry_policy', pra.retry_policy,
+				'provider_api_mutation', pra.provider_api_mutation,
+				'provider_api_call_made', pra.provider_api_call_made,
+				'external_call_made', pra.external_call_made,
+				'claim_recorded', pra.claimed_at IS NOT NULL
+			),
+			pra.created_at,
+			pra.updated_at
+		FROM provider_review_attempts pra
+		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
+		LEFT JOIN project_template_runs ptr ON ptr.id=pra.project_template_run_id
+		UNION ALL
+		SELECT
 			'repo_sync:' || rsa.id::text,
 			rsa.project_id::text,
 			'repo_sync',
@@ -12171,6 +12212,45 @@ func assetRelationInventorySQL() string {
 			oa.created_at
 		FROM operation_approval_rules oar
 		JOIN operation_approvals oa ON oa.approval_rule_id=oar.id
+		UNION ALL
+		SELECT
+			'operation_approval:' || oa.id::text || ':gates_provider_review_attempt:provider_review_attempt:' || pra.id::text,
+			COALESCE(oa.project_id::text, ptr.project_id::text, ''),
+			'operation_approval:' || oa.id::text,
+			'provider_review_attempt:' || pra.id::text,
+			'gates_provider_review_attempt',
+			jsonb_build_object('operation_name', pra.operation_name, 'status', pra.status, 'dependency_status', pra.dependency_status),
+			pra.created_at
+		FROM provider_review_attempts pra
+		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
+		LEFT JOIN project_template_runs ptr ON ptr.id=pra.project_template_run_id
+		UNION ALL
+		SELECT
+			'project_template_run:' || ptr.id::text || ':records_provider_review_attempt:provider_review_attempt:' || pra.id::text,
+			COALESCE(ptr.project_id::text, oa.project_id::text, ''),
+			'project_template_run:' || ptr.id::text,
+			'provider_review_attempt:' || pra.id::text,
+			'records_provider_review_attempt',
+			jsonb_build_object('operation_name', pra.operation_name, 'status', pra.status, 'operation_order', pra.operation_order),
+			pra.created_at
+		FROM provider_review_attempts pra
+		JOIN project_template_runs ptr ON ptr.id=pra.project_template_run_id
+		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
+		UNION ALL
+		SELECT
+			'provider_review_attempt:' || dependency.id::text || ':unlocks_provider_review_attempt:provider_review_attempt:' || dependent.id::text,
+			COALESCE(oa.project_id::text, ptr.project_id::text, ''),
+			'provider_review_attempt:' || dependency.id::text,
+			'provider_review_attempt:' || dependent.id::text,
+			'unlocks_provider_review_attempt',
+			jsonb_build_object('dependency_status', dependent.dependency_status),
+			dependent.created_at
+		FROM provider_review_attempts dependent
+		JOIN provider_review_attempts dependency ON dependency.operation_approval_id=dependent.operation_approval_id
+			AND dependency.operation_name=dependent.depends_on_operation
+		JOIN operation_approvals oa ON oa.id=dependent.operation_approval_id
+		LEFT JOIN project_template_runs ptr ON ptr.id=dependent.project_template_run_id
+		WHERE dependent.depends_on_operation <> ''
 		UNION ALL
 		SELECT
 			'operation_approval:' || oa.id::text || ':targets:' || approval_resource.asset_id,
@@ -14609,6 +14689,9 @@ func (s *Server) claimProviderReviewAttempt(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "could not reload provider review attempt ledger")
 		return
 	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_review_attempt.claim") {
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit provider review attempt claim")
 		return
@@ -14781,6 +14864,9 @@ func (s *Server) recordProviderReviewAttemptLocalResult(w http.ResponseWriter, r
 	ledger, err := s.providerReviewAttemptLedgerForApprovalDB(r.Context(), tx, cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not reload provider review attempt ledger")
+		return
+	}
+	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_review_attempt.local_result") {
 		return
 	}
 	if err := tx.Commit(); err != nil {

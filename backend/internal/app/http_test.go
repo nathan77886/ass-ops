@@ -1234,6 +1234,11 @@ func TestRequestArgoPodLogRetrievalCreatesApprovalForDeveloper(t *testing.T) {
 	}
 }
 
+func expectCanonicalAssetSync(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).
+		WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
+}
+
 func TestRequestArgoPodLogRetrievalRejectsWhenAuditWorkerDisabled(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -18641,6 +18646,7 @@ func TestClaimProviderReviewAttemptHandlerClaimsReadyAttempt(t *testing.T) {
 		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "running", Dependency: "independent", Order: 10, ClaimedAt: claimedAt},
 		{ID: "attempt-2", Operation: "commit_starter_files", Endpoint: "github.commit_files", Status: "planned", Dependency: "waiting_for_dependency", Order: 20, DependsOn: "create_branch_ref"},
 	})
+	expectCanonicalAssetSync(mock)
 	mock.ExpectCommit()
 
 	rr := httptest.NewRecorder()
@@ -18867,6 +18873,7 @@ func TestRecordProviderReviewAttemptLocalResultHandlerRecordsSuccessAndUnlocksDe
 		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "completed", Dependency: "independent", Order: 10, ClaimedAt: claimedAt},
 		{ID: "attempt-2", Operation: "commit_starter_files", Endpoint: "github.commit_files", Status: "planned", Dependency: "dependency_satisfied", Order: 20, DependsOn: "create_branch_ref"},
 	})
+	expectCanonicalAssetSync(mock)
 	mock.ExpectCommit()
 
 	rr := httptest.NewRecorder()
@@ -18945,6 +18952,7 @@ func TestRecordProviderReviewAttemptLocalResultHandlerReleasesClaimForRetryable(
 		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
 		{ID: "attempt-2", Operation: "commit_starter_files", Endpoint: "github.commit_files", Status: "planned", Dependency: "waiting_for_dependency", Order: 20, DependsOn: "create_branch_ref"},
 	})
+	expectCanonicalAssetSync(mock)
 	mock.ExpectCommit()
 
 	rr := httptest.NewRecorder()
@@ -22104,6 +22112,8 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.reject")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.delegation.create")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.delegation.revoke")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "provider_review_attempt.claim")`,
+		`syncCanonicalAssetsInTransaction(w, r, tx, "provider_review_attempt.local_result")`,
 		`syncCanonicalAssetsInTransaction(w, r, tx, "operation.cancel")`,
 		`syncing canonical assets for expired operation approvals`,
 		`could not sync canonical assets after approval notification`,
@@ -22172,6 +22182,33 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 	} {
 		if !strings.Contains(string(workerSource), token) {
 			t.Fatalf("worker.go missing canonical asset refresh hook %q", token)
+		}
+	}
+}
+
+func TestProviderReviewAttemptsAreCanonicalAssetsAndRelations(t *testing.T) {
+	inventorySQL := assetInventorySQL()
+	for _, token := range []string{
+		`'provider_review_attempt:' || pra.id::text`,
+		`'provider_review_attempt'`,
+		`'provider_review_attempts'`,
+		`'claim_recorded', pra.claimed_at IS NOT NULL`,
+		`JOIN operation_approvals oa ON oa.id=pra.operation_approval_id`,
+	} {
+		if !strings.Contains(inventorySQL, token) {
+			t.Fatalf("asset inventory missing provider review attempt token %q", token)
+		}
+	}
+
+	relationSQL := assetRelationInventorySQL()
+	for _, token := range []string{
+		`'gates_provider_review_attempt'`,
+		`'records_provider_review_attempt'`,
+		`'unlocks_provider_review_attempt'`,
+		`dependency.operation_name=dependent.depends_on_operation`,
+	} {
+		if !strings.Contains(relationSQL, token) {
+			t.Fatalf("asset relation inventory missing provider review attempt token %q", token)
 		}
 	}
 }
