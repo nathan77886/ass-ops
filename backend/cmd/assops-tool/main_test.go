@@ -1229,25 +1229,34 @@ func TestFirstVersionReadinessReportRequiresOperationLogs(t *testing.T) {
 	}
 
 	withoutLogs := firstVersionReadinessReport([]map[string]any{
-		{"asset_type": "operation_run"},
+		{"asset_type": "operation_run", "source_id": "op-1"},
 	}, []map[string]any{
-		{"operation_type": "repo.sync", "log_count": 0},
+		{"id": "op-1", "operation_type": "repo.sync", "log_count": 0},
 	}, nil)
 	if got := readinessByKey(t, withoutLogs, "operations"); got.Status != "partial" || got.Evidence != "1 operation assets / 1 listed runs / 0 with logs" {
 		t.Fatalf("operations readiness without logs = %#v, want partial with log evidence", got)
 	}
 
 	withoutAsset := firstVersionReadinessReport(nil, []map[string]any{
-		{"operation_type": "repo.sync", "log_count": 2},
+		{"id": "op-1", "operation_type": "repo.sync", "log_count": 2},
 	}, nil)
-	if got := readinessByKey(t, withoutAsset, "operations"); got.Status != "partial" || got.Evidence != "0 operation assets / 1 listed runs / 1 with logs" {
+	if got := readinessByKey(t, withoutAsset, "operations"); got.Status != "partial" || got.Evidence != "0 operation assets / 1 listed runs / 0 with logs" {
 		t.Fatalf("operations readiness without operation asset = %#v, want partial with asset evidence", got)
 	}
 
-	withAssetAndLogs := firstVersionReadinessReport([]map[string]any{
-		{"asset_type": "operation_run"},
+	withMismatchedAssetAndLogs := firstVersionReadinessReport([]map[string]any{
+		{"asset_type": "operation_run", "source_id": "op-1"},
 	}, []map[string]any{
-		{"operation_type": "repo.sync", "log_count": 2},
+		{"id": "op-2", "operation_type": "repo.sync", "log_count": 2},
+	}, nil)
+	if got := readinessByKey(t, withMismatchedAssetAndLogs, "operations"); got.Status != "partial" || got.Evidence != "1 operation assets / 1 listed runs / 0 with logs" {
+		t.Fatalf("operations readiness with mismatched asset and logged run = %#v, want partial without canonical log evidence", got)
+	}
+
+	withAssetAndLogs := firstVersionReadinessReport([]map[string]any{
+		{"asset_type": "operation_run", "source_id": "op-1"},
+	}, []map[string]any{
+		{"id": "op-1", "operation_type": "repo.sync", "log_count": 2},
 	}, nil)
 	if got := readinessByKey(t, withAssetAndLogs, "operations"); got.Status != "ready" || got.Evidence != "1 operation assets / 1 listed runs / 1 with logs" {
 		t.Fatalf("operations readiness with operation asset and logs = %#v, want ready", got)
@@ -1385,10 +1394,45 @@ func TestAssetGraphPayloadAvailableRequiresNodesOrEdgesKey(t *testing.T) {
 func TestCountOperationRowsWithLogsHandlesMissingLogCount(t *testing.T) {
 	rows := []map[string]any{
 		{"operation_type": "repo.sync"},
-		{"operation_type": "ssh.exec", "log_count": 1},
+		{"id": "op-1", "operation_type": "ssh.exec", "log_count": 1},
 	}
-	if got := countOperationRowsWithLogs(rows); got != 1 {
+	operationAssetIDs := map[string]bool{"operation_run:op-1": true}
+	if got := countOperationRowsWithLogs(rows, operationAssetIDs); got != 1 {
 		t.Fatalf("countOperationRowsWithLogs with missing log_count = %d, want 1", got)
+	}
+}
+
+func TestCountOperationRowsWithLogsRequiresMatchingCanonicalAsset(t *testing.T) {
+	rows := []map[string]any{
+		{"id": "op-1", "operation_type": "repo.sync", "log_count": 2},
+		{"asset_id": "operation_run:op-2", "operation_type": "ssh.exec", "log_count": 1},
+		{"id": "op-3", "operation_type": "argo.apps.sync", "log_count": 4},
+	}
+	operationAssetIDs := map[string]bool{
+		"operation_run:op-1": true,
+		"operation_run:op-2": true,
+	}
+	if got := countOperationRowsWithLogs(rows, operationAssetIDs); got != 2 {
+		t.Fatalf("countOperationRowsWithLogs with mixed canonical assets = %d, want 2", got)
+	}
+}
+
+func TestAssetIDsByTypeUsesCanonicalOperationSourceID(t *testing.T) {
+	rows := []map[string]any{
+		{"id": "asset-row-1", "asset_type": "operation_run", "source_id": "op-1"},
+		{"id": "op-2", "asset_type": "operation_run"},
+		{"asset_id": "operation_run:op-3", "asset_type": "operation_run"},
+		{"asset_id": "<nil>", "asset_type": "operation_run", "source_id": "<nil>"},
+		{"id": "asset-row-4", "asset_type": "repository", "source_id": "repo-1"},
+	}
+	got := assetIDsByType(rows, "operation_run")
+	for _, want := range []string{"operation_run:op-1", "operation_run:op-2", "operation_run:op-3"} {
+		if !got[want] {
+			t.Fatalf("assetIDsByType missing %q from %#v", want, got)
+		}
+	}
+	if got["operation_run:asset-row-1"] || got["operation_run:<nil>"] || got["repository:repo-1"] {
+		t.Fatalf("assetIDsByType included non-canonical ids: %#v", got)
 	}
 }
 

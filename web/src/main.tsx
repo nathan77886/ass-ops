@@ -619,8 +619,37 @@ function countByField(rows: AnyRow[] = [], field: string) {
   }, {});
 }
 
-function countOperationRowsWithLogs(rows: AnyRow[] = []) {
-  return rows.filter((row) => Number(row.log_count || 0) > 0).length;
+function operationRowAssetID(row: AnyRow = {}) {
+  for (const key of ['asset_id', 'id']) {
+    const value = String(row[key] || '').trim();
+    if (!value || value === '<nil>') continue;
+    return value.startsWith('operation_run:') ? value : `operation_run:${value}`;
+  }
+  return '';
+}
+
+function canonicalAssetGraphID(row: AnyRow = {}, type: string) {
+  const sourceID = String(row.source_id ?? '').trim();
+  if (sourceID && sourceID !== '<nil>') return `${type}:${sourceID}`;
+  for (const key of ['asset_id', 'id']) {
+    if (typeof row[key] !== 'string') continue;
+    const value = row[key].trim();
+    if (!value || value === '<nil>') continue;
+    if (value.startsWith(`${type}:`)) return value;
+    if (!value.includes(':')) return `${type}:${value}`;
+  }
+  return '';
+}
+
+function assetIDsByType(rows: AnyRow[] = [], type: string) {
+  return new Set(rows
+    .filter((row) => String(row.asset_type || '') === type)
+    .map((row) => canonicalAssetGraphID(row, type))
+    .filter(Boolean));
+}
+
+function countOperationRowsWithLogs(rows: AnyRow[] = [], operationAssetIDs = new Set<string>()) {
+  return rows.filter((row) => Number(row.log_count || 0) > 0 && operationAssetIDs.has(operationRowAssetID(row))).length;
 }
 
 function countContextGenerationEvidence(assets: AnyRow[] = []) {
@@ -635,11 +664,11 @@ function apiAssetGraphID(row: AnyRow = {}) {
   for (const key of ['asset_id', 'id']) {
     if (typeof row[key] !== 'string') continue;
     const value = row[key].trim();
-    if (value) return value;
+    if (value && value !== '<nil>') return value;
   }
   const type = String(row.asset_type ?? '').trim();
   const sourceID = String(row.source_id ?? '').trim();
-  return type && sourceID ? `${type}:${sourceID}` : '';
+  return type && type !== '<nil>' && sourceID && sourceID !== '<nil>' ? `${type}:${sourceID}` : '';
 }
 
 function countContextGraphLinks(assets: AnyRow[] = [], graph: AnyRow = {}) {
@@ -1137,7 +1166,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const activeApprovalRules = countRowsByTypeStatus(assets, 'operation_approval_rule', 'active');
   const operationAssets = assetCounts.operation_run || 0;
   const listedOperationRuns = operations.length;
-  const operationLogs = countOperationRowsWithLogs(operations);
+  const operationLogs = countOperationRowsWithLogs(operations, assetIDsByType(assets, 'operation_run'));
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
   const contextGenerations = countContextGenerationEvidence(assets);
   const repositoryGraphLinks = countRepositoryGraphLinks(graph);

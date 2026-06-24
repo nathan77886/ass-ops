@@ -1390,7 +1390,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	activeApprovalRules := countAPITypeStatus(assets, "operation_approval_rule", "active")
 	operationAssets := assetCounts["operation_run"]
 	listedOperationRuns := len(operations)
-	operationLogs := countOperationRowsWithLogs(operations)
+	operationLogs := countOperationRowsWithLogs(operations, assetIDsByType(assets, "operation_run"))
 	contextEvidence := assetCounts["agent_task"] + assetCounts["ai_runtime"]
 	contextGenerations := countContextGenerationEvidence(assets)
 	graphNodes := len(apiItemsByKey(graph, "nodes"))
@@ -1448,14 +1448,65 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	}
 }
 
-func countOperationRowsWithLogs(rows []map[string]any) int {
+func countOperationRowsWithLogs(rows []map[string]any, operationAssetIDs map[string]bool) int {
 	count := 0
 	for _, row := range rows {
-		if intFromAPI(row["log_count"]) > 0 {
+		if intFromAPI(row["log_count"]) > 0 && operationAssetIDs[operationRowAssetID(row)] {
 			count++
 		}
 	}
 	return count
+}
+
+func assetIDsByType(rows []map[string]any, typ string) map[string]bool {
+	ids := map[string]bool{}
+	for _, row := range rows {
+		if fmt.Sprint(row["asset_type"]) != typ {
+			continue
+		}
+		if assetID := canonicalAssetGraphID(row, typ); assetID != "" {
+			ids[assetID] = true
+		}
+	}
+	return ids
+}
+
+func canonicalAssetGraphID(row map[string]any, typ string) string {
+	sourceID := strings.TrimSpace(fmt.Sprint(row["source_id"]))
+	if sourceID != "" && sourceID != "<nil>" {
+		return typ + ":" + sourceID
+	}
+	for _, key := range []string{"asset_id", "id"} {
+		raw, ok := row[key].(string)
+		if !ok {
+			continue
+		}
+		value := strings.TrimSpace(raw)
+		if value == "" || value == "<nil>" {
+			continue
+		}
+		if strings.HasPrefix(value, typ+":") {
+			return value
+		}
+		if !strings.Contains(value, ":") {
+			return typ + ":" + value
+		}
+	}
+	return ""
+}
+
+func operationRowAssetID(row map[string]any) string {
+	for _, key := range []string{"asset_id", "id"} {
+		value := strings.TrimSpace(fmt.Sprint(row[key]))
+		if value == "" || value == "<nil>" {
+			continue
+		}
+		if strings.HasPrefix(value, "operation_run:") {
+			return value
+		}
+		return "operation_run:" + value
+	}
+	return ""
 }
 
 func countContextGenerationEvidence(assets []map[string]any) int {
