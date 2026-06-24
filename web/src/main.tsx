@@ -29,6 +29,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
   message
 } from 'antd';
@@ -1745,7 +1746,7 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
   );
 }
 
-function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?: AnyRow; persistedAttemptLedger?: AnyRow }) {
+function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, claimLoading, optimisticallyClaimedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; claimLoading?: boolean; optimisticallyClaimedAttemptID?: string }) {
   if (!value || value.kind !== 'project_template_provider_review_execute') return null;
   const request = value.execution_request || {};
   const guardrail = value.execution_guardrail || {};
@@ -1837,6 +1838,17 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const attemptInvocationSequence = Array.isArray(attemptInvocationPlan.invocation_sequence) ? attemptInvocationPlan.invocation_sequence : [];
   const attemptExecutionCandidateGates = Array.isArray(attemptExecutionCandidate.gates) ? attemptExecutionCandidate.gates : [];
   const attemptOperations = Array.isArray(attemptLedger.operations) ? attemptLedger.operations : [];
+  const claimableAttempt = attemptOperations.find((operation: AnyRow) => String(operation.name || '') === String(attemptExecutionCandidate.next_operation || ''));
+  const claimableAttemptID = String(claimableAttempt?.id || '');
+  const claimOptimistic = Boolean(claimableAttemptID) && optimisticallyClaimedAttemptID === claimableAttemptID;
+  const canClaimAttempt = Boolean(claimableAttemptID) && attemptClaimPlan.claim_metadata_ready === true && attemptClaimPlan.claim_recorded !== true && !claimOptimistic;
+  const claimBlockedReason = claimOptimistic
+    ? 'claim already requested'
+    : attemptClaimPlan.claim_recorded === true
+      ? 'claim already recorded'
+      : attemptClaimPlan.claim_metadata_ready !== true
+        ? String((Array.isArray(attemptClaimPlan.blocked_reasons) && attemptClaimPlan.blocked_reasons[0]) || 'claim metadata not ready')
+        : '';
   return (
     <Space direction="vertical" size={8} className="full">
       <Space size={4} wrap>
@@ -2150,6 +2162,14 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>{String(attemptClaimPlan.replay_check || 'redacted replay')}</Tag>
           <Tag>{String(attemptClaimPlan.conflict_policy || 'redacted conflict')}</Tag>
           <Tag>{String(attemptClaimPlan.retry_policy || 'redacted retry')}</Tag>
+          <Tag>{attemptClaimPlan.claim_recorded === true ? 'claim recorded' : 'claim not recorded'}</Tag>
+          {onClaimAttempt ? (
+            <Tooltip title={!canClaimAttempt ? claimBlockedReason : ''}>
+              <Button size="small" loading={claimLoading && claimOptimistic} disabled={!canClaimAttempt} onClick={() => onClaimAttempt(claimableAttemptID)}>
+                Claim attempt
+              </Button>
+            </Tooltip>
+          ) : null}
         </Space>
       ) : null}
       {attemptDispatchPlan.mode ? (
@@ -4311,6 +4331,8 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [ruleAuditID, setRuleAuditID] = useState<string>();
   const [delegateEmail, setDelegateEmail] = useState('');
   const [delegateReason, setDelegateReason] = useState('');
+  const [providerReviewClaimLoading, setProviderReviewClaimLoading] = useState(false);
+  const [optimisticallyClaimedProviderReviewAttemptID, setOptimisticallyClaimedProviderReviewAttemptID] = useState<string>();
   const [ruleForm] = Form.useForm();
   const approvalAudit = useLoad(() => approvalAuditID ? api(`/api/operation-approvals/${approvalAuditID}`) : Promise.resolve({}), [approvalAuditID]);
   const ruleAudits = useLoad(() => ruleAuditID ? api(`/api/operation-approval-rules/${ruleAuditID}/audits`) : Promise.resolve({ items: [] }), [ruleAuditID]);
@@ -4324,6 +4346,9 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
       ruleForm.setFieldsValue(approvalRuleInitialValues(editingRule));
     }
   }, [ruleOpen, editingRule?.id]);
+  useEffect(() => {
+    setOptimisticallyClaimedProviderReviewAttemptID(undefined);
+  }, [approvalAuditID]);
   const approvalActionOptions = Array.from(new Set([
     'repo.tag',
     'ssh.exec',
@@ -4462,6 +4487,25 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
       approvalReminderCandidates.reload();
     } catch (error: any) {
       message.error(error.message || 'Failed to revoke delegation');
+    }
+  }
+  async function claimProviderReviewAttempt(id: string) {
+    if (!id) return;
+    setOptimisticallyClaimedProviderReviewAttemptID(id);
+    setProviderReviewClaimLoading(true);
+    try {
+      const result = await api(`/api/provider-review-attempts/${id}/claim`, { method: 'POST', body: '{}' });
+      if (result.claimed === true) {
+        message.success('Provider review attempt claimed');
+      } else {
+        message.warning(String(result.claim_state || 'Provider review attempt not claimable'));
+      }
+      approvalAudit.reload();
+    } catch (error: any) {
+      message.error(error.message || 'Could not claim provider review attempt');
+    } finally {
+      setOptimisticallyClaimedProviderReviewAttemptID(undefined);
+      setProviderReviewClaimLoading(false);
     }
   }
   return (
@@ -4635,7 +4679,13 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             { title: 'Created', dataIndex: 'created_at' }
           ]} />
           {approvalAudit.data?.approval?.notification_last_error && <Alert type="error" showIcon message={approvalAudit.data.approval.notification_last_error} />}
-          <ProviderReviewApprovalAudit value={approvalAudit.data?.approval_payload_audit} persistedAttemptLedger={approvalAudit.data?.provider_review_attempt_ledger} />
+          <ProviderReviewApprovalAudit
+            value={approvalAudit.data?.approval_payload_audit}
+            persistedAttemptLedger={approvalAudit.data?.provider_review_attempt_ledger}
+            onClaimAttempt={claimProviderReviewAttempt}
+            claimLoading={providerReviewClaimLoading}
+            optimisticallyClaimedAttemptID={optimisticallyClaimedProviderReviewAttemptID}
+          />
           {approvalAudit.data?.approval && approvalStillActive(approvalAudit.data.approval) && canActOnApproval(approvalAudit.data.approval, currentRole) && (
             <Space wrap>
               <Input placeholder="Delegate to email" value={delegateEmail} onChange={(event) => setDelegateEmail(event.target.value)} style={{ width: 240 }} />

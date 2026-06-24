@@ -163,6 +163,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/operation-approvals/{id}/remind", s.remindOperationApproval)
 		r.Post("/api/operation-approvals/{id}/delegations", s.createOperationApprovalDelegation)
 		r.Post("/api/operation-approvals/{id}/delegations/{delegationID}/revoke", s.revokeOperationApprovalDelegation)
+		r.Post("/api/provider-review-attempts/{id}/claim", s.claimProviderReviewAttempt)
 		r.Get("/api/operations", s.listOperations)
 		r.Get("/api/worker-queue/summary", s.getWorkerQueueSummary)
 		r.Get("/api/operations/{id}", s.getOperation)
@@ -13594,7 +13595,15 @@ func (s *Server) providerReviewAttemptLedgerForApproval(ctx context.Context, app
 	if approvalID == "" {
 		return providerReviewAttemptLedgerSummary(nil), nil
 	}
-	attempts, err := queryMaps(ctx, s.store.DB, `
+	return s.providerReviewAttemptLedgerForApprovalDB(ctx, s.store.DB, approvalID)
+}
+
+func (s *Server) providerReviewAttemptLedgerForApprovalDB(ctx context.Context, db sqlx.ExtContext, approvalID string) (map[string]any, error) {
+	approvalID = cleanOptionalID(approvalID)
+	if approvalID == "" {
+		return providerReviewAttemptLedgerSummary(nil), nil
+	}
+	attempts, err := queryMaps(ctx, db, `
 		SELECT
 			id,
 			operation_name,
@@ -13610,7 +13619,9 @@ func (s *Server) providerReviewAttemptLedgerForApproval(ctx context.Context, app
 			response_diagnostics,
 			provider_api_call_made,
 			provider_api_mutation,
-			external_call_made
+			external_call_made,
+			claimed_at,
+			claimed_by_user_id
 		FROM provider_review_attempts
 		WHERE operation_approval_id=$1
 		ORDER BY operation_order ASC, created_at ASC, operation_name ASC`, approvalID)
@@ -13618,6 +13629,192 @@ func (s *Server) providerReviewAttemptLedgerForApproval(ctx context.Context, app
 		return nil, err
 	}
 	return providerReviewAttemptLedgerSummary(attempts), nil
+}
+
+func (s *Server) claimProviderReviewAttempt(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval"}, "update") {
+		return
+	}
+	attemptID := cleanOptionalID(chi.URLParam(r, "id"))
+	if attemptID == "" {
+		writeError(w, http.StatusBadRequest, "provider review attempt id is required")
+		return
+	}
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start provider review attempt claim")
+		return
+	}
+	defer tx.Rollback()
+	attempt, err := queryOne(r.Context(), tx, `
+		SELECT
+			pra.id,
+			pra.operation_approval_id,
+			pra.project_template_run_id,
+			pra.provider_type,
+			pra.review_kind,
+			pra.operation_name,
+			pra.endpoint_key,
+			pra.status,
+			pra.replay_check,
+			pra.conflict_policy,
+			pra.retry_policy,
+			pra.operation_order,
+			pra.depends_on_operation,
+			pra.dependency_status,
+			pra.request_summary,
+			pra.response_diagnostics,
+			pra.provider_api_call_made,
+			pra.provider_api_mutation,
+			pra.external_call_made,
+			pra.claimed_at,
+			pra.claimed_by_user_id,
+			oa.id AS approval_id,
+			oa.project_id AS approval_project_id,
+			oa.action AS approval_action,
+			oa.status AS approval_status
+		FROM provider_review_attempts pra
+		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
+		WHERE pra.id=$1
+		FOR UPDATE OF pra`, attemptID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	approval := map[string]any{
+		"id":         attempt["approval_id"],
+		"project_id": attempt["approval_project_id"],
+	}
+	projectID := cleanOptionalID(fmt.Sprint(approval["project_id"]))
+	if projectID == "" {
+		if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval", ID: fmt.Sprint(approval["id"])}, "update") {
+			return
+		}
+	} else if !s.requireProjectPolicy(w, r, PolicyResource{Type: "operation_approval", ID: fmt.Sprint(approval["id"]), ProjectID: projectID}, "update") {
+		return
+	}
+	if stringFromMap(attempt, "approval_action") != templateProviderReviewExecuteApprovalAction {
+		writeError(w, http.StatusConflict, "provider review attempt is not tied to provider review execution approval")
+		return
+	}
+	if stringFromMap(attempt, "approval_status") != "approved" {
+		writeJSON(w, http.StatusOK, providerReviewAttemptClaimBlockedResponse(attempt, "operation_approval_not_approved", nil))
+		return
+	}
+	claimPlan := providerReviewAttemptClaimPlanFromAttempt(attempt)
+	if claimPlan["claim_metadata_ready"] != true {
+		writeJSON(w, http.StatusOK, providerReviewAttemptClaimBlockedResponse(attempt, "provider_review_attempt_claim_metadata_not_ready", claimPlan))
+		return
+	}
+	claimed, err := queryOne(r.Context(), tx, `
+		UPDATE provider_review_attempts
+		SET status='running',
+			claimed_at=COALESCE(claimed_at, now()),
+			claimed_by_user_id=COALESCE(claimed_by_user_id, NULLIF($2,'')::uuid),
+			updated_at=now()
+		WHERE id=$1
+			AND status='planned'
+			AND dependency_status IN ('independent', 'dependency_satisfied')
+			AND provider_api_call_made=false
+			AND external_call_made=false
+			AND provider_api_mutation='disabled'
+		RETURNING
+			id,
+			operation_approval_id,
+			project_template_run_id,
+			provider_type,
+			review_kind,
+			operation_name,
+			endpoint_key,
+			status,
+			replay_check,
+			conflict_policy,
+			retry_policy,
+			operation_order,
+			depends_on_operation,
+			dependency_status,
+			request_summary,
+			response_diagnostics,
+			provider_api_call_made,
+			provider_api_mutation,
+			external_call_made,
+			claimed_at,
+			claimed_by_user_id`, attemptID, userIDOrNil(currentUser(r)))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeJSON(w, http.StatusOK, providerReviewAttemptClaimBlockedResponse(attempt, "provider_review_attempt_claim_conflict", claimPlan))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not claim provider review attempt")
+		return
+	}
+	ledger, err := s.providerReviewAttemptLedgerForApprovalDB(r.Context(), tx, cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not reload provider review attempt ledger")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit provider review attempt claim")
+		return
+	}
+	writeJSON(w, http.StatusOK, providerReviewAttemptClaimResponse(claimed, ledger, true, "claimed"))
+}
+
+func providerReviewAttemptClaimBlockedResponse(attempt map[string]any, reason string, claimPlan map[string]any) map[string]any {
+	if len(claimPlan) == 0 {
+		claimPlan = providerReviewAttemptClaimPlanFromAttempt(attempt)
+	}
+	return providerReviewAttemptClaimResponse(attempt, providerReviewAttemptLedgerSummary([]map[string]any{attempt}), false, reason, claimPlan)
+}
+
+func providerReviewAttemptClaimResponse(attempt map[string]any, ledger map[string]any, claimed bool, state string, claimPlanOverride ...map[string]any) map[string]any {
+	claimPlan := providerReviewAttemptClaimPlanFromAttempt(attempt)
+	if len(claimPlanOverride) > 0 && len(claimPlanOverride[0]) > 0 {
+		claimPlan = claimPlanOverride[0]
+	}
+	return map[string]any{
+		"claim_state":                cleanOptionalText(state),
+		"claimed":                    claimed,
+		"attempt":                    providerReviewAttemptLedgerSummary([]map[string]any{attempt})["operations"].([]map[string]any)[0],
+		"provider_review_attempt_id": cleanOptionalID(fmt.Sprint(attempt["id"])),
+		"operation_approval_id":      cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])),
+		"operation_name":             safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name")),
+		"endpoint_key":               safeProviderReviewEndpointKey(stringFromMap(attempt, "endpoint_key")),
+		"claim_plan":                 claimPlan,
+		"ledger":                     ledger,
+		"external_call_made":         false,
+		"provider_api_call_made":     false,
+		"provider_api_mutation":      "disabled",
+		"idempotency_key_included":   false,
+		"contains_token":             false,
+		"contains_provider_url":      false,
+		"contains_repository_ref":    false,
+		"contains_branch_name":       false,
+		"contains_file_content":      false,
+	}
+}
+
+func providerReviewAttemptClaimPlanFromAttempt(attempt map[string]any) map[string]any {
+	operation := map[string]any{
+		"name":                  stringFromMap(attempt, "operation_name"),
+		"endpoint_key":          stringFromMap(attempt, "endpoint_key"),
+		"status":                stringFromMap(attempt, "status"),
+		"dependency_status":     stringFromMap(attempt, "dependency_status"),
+		"replay_check":          stringFromMap(attempt, "replay_check"),
+		"conflict_policy":       stringFromMap(attempt, "conflict_policy"),
+		"retry_policy":          stringFromMap(attempt, "retry_policy"),
+		"operation_order":       attempt["operation_order"],
+		"request_summary":       attempt["request_summary"],
+		"response_diagnostics":  attempt["response_diagnostics"],
+		"claimed_at":            attempt["claimed_at"],
+		"claimed_by_user_id":    attempt["claimed_by_user_id"],
+		"provider_api_mutation": "disabled",
+	}
+	requestSummary := mapFromAny(attempt["request_summary"])
+	responseDiagnostics := mapFromAny(attempt["response_diagnostics"])
+	idempotencyReady := boolOnlyFromAny(requestSummary["requires_idempotency_ledger"])
+	responseReady := responseDiagnostics["mode"] == "redacted_attempt_response_diagnostics"
+	return providerReviewAttemptExecutionClaimPlan(operation, idempotencyReady, responseReady)
 }
 
 func sanitizedProviderReviewExecutionGuardrail(value map[string]any) map[string]any {
@@ -15677,6 +15874,10 @@ func sanitizedProviderReviewAttemptOrchestration(value map[string]any, operation
 func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]any {
 	operations := make([]map[string]any, 0, len(attempts))
 	for _, attempt := range attempts {
+		claimedAt := cleanOptionalText(fmt.Sprint(attempt["claimed_at"]))
+		if claimedAt == "<nil>" {
+			claimedAt = ""
+		}
 		operations = append(operations, map[string]any{
 			"id":                       cleanOptionalID(fmt.Sprint(attempt["id"])),
 			"name":                     cleanOptionalText(stringFromMap(attempt, "operation_name")),
@@ -15690,6 +15891,8 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 			"dependency_status":        safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(attempt, "dependency_status")),
 			"request_summary":          sanitizedProviderReviewAttemptRequestSummary(mapFromAny(attempt["request_summary"])),
 			"response_diagnostics":     sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(attempt["response_diagnostics"])),
+			"claim_recorded":           providerReviewAttemptClaimRecorded(attempt),
+			"claimed_at":               claimedAt,
 			"external_call_made":       false,
 			"provider_api_call_made":   false,
 			"provider_api_mutation":    "disabled",
@@ -17206,12 +17409,17 @@ func providerReviewAttemptExecutionClaimPlan(operation map[string]any, idempoten
 	rawDependencyStatus := cleanOptionalText(stringFromMap(operation, "dependency_status"))
 	dependencyStatus := safeProviderReviewAttemptClaimDependencyStatus(rawDependencyStatus)
 	dependencyReady := providerReviewAttemptClaimDependencyReady(dependencyStatus)
+	claimRecorded := providerReviewAttemptClaimRecorded(operation)
 	claimMetadataReady := status == "planned" && dependencyReady && idempotencyReady && responseDiagnosticsReady
+	claimState := "blocked"
+	if claimRecorded {
+		claimState = "claimed"
+	}
 	blockedReasons := []string{
 		"provider_review_adapter_not_implemented",
 		"provider_review_mutation_not_armed",
 	}
-	if status != "planned" {
+	if status != "planned" && !claimRecorded {
 		blockedReasons = append([]string{"provider_review_attempt_status_not_planned"}, blockedReasons...)
 	}
 	if !dependencyReady {
@@ -17225,7 +17433,7 @@ func providerReviewAttemptExecutionClaimPlan(operation map[string]any, idempoten
 	}
 	return map[string]any{
 		"mode":                            "redacted_attempt_execution_claim_plan",
-		"claim_state":                     "blocked",
+		"claim_state":                     claimState,
 		"claim_ready":                     false,
 		"claim_metadata_ready":            claimMetadataReady,
 		"operation_name":                  safeProviderReviewAttemptOperationName(stringFromMap(operation, "name")),
@@ -17248,7 +17456,8 @@ func providerReviewAttemptExecutionClaimPlan(operation map[string]any, idempoten
 		"requires_mutation_arming":        true,
 		"idempotency_metadata_ready":      idempotencyReady,
 		"response_diagnostics_ready":      responseDiagnosticsReady,
-		"claim_recorded":                  false,
+		"claim_recorded":                  claimRecorded,
+		"claimed_at_recorded":             claimRecorded,
 		"idempotency_claim_recorded":      false,
 		"adapter_implemented":             false,
 		"mutation_armed":                  false,
@@ -17263,6 +17472,15 @@ func providerReviewAttemptExecutionClaimPlan(operation map[string]any, idempoten
 		"contains_file_content":           false,
 		"blocked_reasons":                 blockedReasons,
 	}
+}
+
+func providerReviewAttemptClaimRecorded(operation map[string]any) bool {
+	value, ok := operation["claimed_at"]
+	if !ok || value == nil {
+		return false
+	}
+	claimedAt := cleanOptionalText(fmt.Sprint(value))
+	return claimedAt != "" && claimedAt != "<nil>"
 }
 
 func safeProviderReviewAttemptClaimDependencyStatus(value string) string {
