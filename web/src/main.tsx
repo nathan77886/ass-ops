@@ -648,6 +648,13 @@ function assetIDsByType(rows: AnyRow[] = [], type: string) {
     .filter(Boolean));
 }
 
+function assetIDsByGraphType(rows: AnyRow[] = [], assetType: string, graphType: string) {
+  return new Set(rows
+    .filter((row) => String(row.asset_type || '') === assetType)
+    .map((row) => canonicalAssetGraphID(row, graphType))
+    .filter(Boolean));
+}
+
 function countOperationRowsWithLogs(rows: AnyRow[] = [], operationAssetIDs = new Set<string>()) {
   return rows.filter((row) => Number(row.log_count || 0) > 0 && operationAssetIDs.has(operationRowAssetID(row))).length;
 }
@@ -804,7 +811,7 @@ function countRepoSyncGraphLinks(graph: AnyRow = {}, repoSyncAssetIDs = new Set<
   return counts;
 }
 
-function countGitHubActionGraphLinks(graph: AnyRow = {}) {
+function countGitHubActionGraphLinks(graph: AnyRow = {}, remoteAssetIDs = new Set<string>(), actionAssetIDs = new Set<string>(), tagRunAssetIDs = new Set<string>(), tagOperationIDs = new Set<string>()) {
   const repositoriesWithProject: Record<string, boolean> = {};
   const remoteRepositories: Record<string, Record<string, boolean>> = {};
   const remoteActionRuns: Record<string, Record<string, boolean>> = {};
@@ -852,7 +859,7 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}) {
       addTagActionRun(from, to);
     }
     return nextCounts;
-  }, { projectRepositories: 0, repositoryRemotes: 0, remoteActionRuns: 0, taggedRemotes: 0, tagActionRunLinks: 0, completeActionRuns: 0, completeTaggedRemotes: 0, linkedTagRuns: 0 });
+  }, { projectRepositories: 0, repositoryRemotes: 0, remoteActionRuns: 0, taggedRemotes: 0, tagActionRunLinks: 0, completeActionRuns: 0, completeActionAssets: 0, completeTaggedRemotes: 0, completeTaggedRemoteAssets: 0, linkedTagRuns: 0, linkedTagRunAssets: 0 });
   const projectLinkedActionRuns: Record<string, boolean> = {};
   counts.completeActionRuns = Object.entries(remoteActionRuns).reduce((total, [remoteID, actionRuns]) => {
     const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
@@ -860,12 +867,26 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}) {
     Object.keys(actionRuns).forEach((actionID) => { projectLinkedActionRuns[actionID] = true; });
     return total + Object.keys(actionRuns).length;
   }, 0);
+  counts.completeActionAssets = Object.entries(remoteActionRuns).reduce((total, [remoteID, actionRuns]) => {
+    const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
+    if (!hasProjectRepository || !remoteAssetIDs.has(remoteID)) return total;
+    return total + Object.keys(actionRuns).filter((actionID) => actionAssetIDs.has(actionID)).length;
+  }, 0);
   counts.completeTaggedRemotes = Object.entries(taggedRemoteOps).reduce((total, [remoteID, operations]) => {
     const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
     return hasProjectRepository ? total + Object.keys(operations).length : total;
   }, 0);
+  counts.completeTaggedRemoteAssets = Object.entries(taggedRemoteOps).reduce((total, [remoteID, operations]) => {
+    const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
+    if (!hasProjectRepository || !remoteAssetIDs.has(remoteID)) return total;
+    return total + Object.keys(operations).filter((operationID) => tagOperationIDs.has(operationID)).length;
+  }, 0);
   counts.linkedTagRuns = Object.values(tagActionRuns).filter((actionRuns) => (
     Object.keys(actionRuns).some((actionID) => projectLinkedActionRuns[actionID])
+  )).length;
+  counts.linkedTagRunAssets = Object.entries(tagActionRuns).filter(([tagRunID, actionRuns]) => (
+    tagRunAssetIDs.has(tagRunID) &&
+    Object.keys(actionRuns).some((actionID) => actionAssetIDs.has(actionID) && projectLinkedActionRuns[actionID])
   )).length;
   return counts;
 }
@@ -1222,8 +1243,15 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
     assetIDsByType(assets, 'repo_sync'),
     syncOperationIDs
   );
-  const githubActionLinks = countGitHubActionGraphLinks(graph);
   const repoTagRuns = (operationCounts['repo.tag'] || 0) + (operationCounts['repo.create_tag'] || 0);
+  const tagOperationIDs = mergeSets(operationIDsByType(operations, 'repo.tag'), operationIDsByType(operations, 'repo.create_tag'));
+  const githubActionLinks = countGitHubActionGraphLinks(
+    graph,
+    assetIDsByType(assets, 'git_remote'),
+    assetIDsByGraphType(assets, 'pipeline_run', 'github_action_run'),
+    assetIDsByType(assets, 'repo_tag_run'),
+    tagOperationIDs
+  );
   const sshGraphLinks = countSSHGraphLinks(graph, assetIDsByType(assets, 'ssh_command_run'));
   const argoGraphLinks = countArgoGraphLinks(
     graph,
@@ -1275,7 +1303,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'github_actions',
       label: 'See GitHub tags and Actions state',
       next: 'Create a repository tag and sync GitHub Actions for the mirror remote or receive workflow_run webhooks.',
-      ...readinessState((assetCounts.pipeline_run || 0) > 0 && githubActionLinks.completeActionRuns > 0 && repoTagRuns > 0 && githubActionLinks.completeTaggedRemotes > 0 && githubActionLinks.linkedTagRuns > 0, `${assetCounts.pipeline_run || 0} pipeline runs / ${githubActionLinks.completeActionRuns} complete action chains / ${repoTagRuns} tag ops / ${githubActionLinks.completeTaggedRemotes} complete tag links / ${githubActionLinks.linkedTagRuns} linked tag runs / ${githubActionLinks.projectRepositories} project links / ${githubActionLinks.repositoryRemotes} remote links / ${githubActionLinks.remoteActionRuns} action links / ${githubActionLinks.taggedRemotes} tag links / ${githubActionLinks.tagActionRunLinks} tag-action links`, (assetCounts.pipeline_run || 0) > 0 || repoTagRuns > 0 || githubActionLinks.projectRepositories > 0 || githubActionLinks.repositoryRemotes > 0 || githubActionLinks.remoteActionRuns > 0 || githubActionLinks.taggedRemotes > 0 || githubActionLinks.tagActionRunLinks > 0)
+      ...readinessState((assetCounts.pipeline_run || 0) > 0 && githubActionLinks.completeActionAssets > 0 && repoTagRuns > 0 && githubActionLinks.completeTaggedRemoteAssets > 0 && githubActionLinks.linkedTagRunAssets > 0, `${assetCounts.pipeline_run || 0} pipeline runs / ${githubActionLinks.completeActionRuns} complete action chains / ${githubActionLinks.completeActionAssets} action asset chains / ${repoTagRuns} tag ops / ${githubActionLinks.completeTaggedRemotes} complete tag links / ${githubActionLinks.completeTaggedRemoteAssets} tag asset links / ${githubActionLinks.linkedTagRuns} linked tag runs / ${githubActionLinks.linkedTagRunAssets} linked tag assets / ${githubActionLinks.projectRepositories} project links / ${githubActionLinks.repositoryRemotes} remote links / ${githubActionLinks.remoteActionRuns} action links / ${githubActionLinks.taggedRemotes} tag links / ${githubActionLinks.tagActionRunLinks} tag-action links`, (assetCounts.pipeline_run || 0) > 0 || repoTagRuns > 0 || githubActionLinks.projectRepositories > 0 || githubActionLinks.repositoryRemotes > 0 || githubActionLinks.remoteActionRuns > 0 || githubActionLinks.taggedRemotes > 0 || githubActionLinks.tagActionRunLinks > 0 || githubActionLinks.completeActionAssets > 0 || githubActionLinks.completeTaggedRemoteAssets > 0 || githubActionLinks.linkedTagRunAssets > 0)
     },
     {
       key: 'ssh',
