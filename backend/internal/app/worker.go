@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,6 +125,7 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 			return err
 		}
 		w.refreshCanonicalAssetsAfterOperation(ctx, job, opID, "failed")
+		w.autoRecordProjectVersionValidationSnapshotAfterRefresh(ctx, opID, "failed")
 		return adapterErr
 	}
 	if err := w.recordAdapterSuccess(ctx, tx, job, result); err != nil {
@@ -156,6 +158,7 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 			return errors.Join(err, failErr)
 		}
 		w.refreshCanonicalAssetsAfterOperation(ctx, job, opID, "failed")
+		w.autoRecordProjectVersionValidationSnapshotAfterRefresh(ctx, opID, "failed")
 		return err
 	}
 	resultJSON, _ := jsonParam(result)
@@ -176,7 +179,46 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 		return err
 	}
 	w.refreshCanonicalAssetsAfterOperation(ctx, job, opID, "completed")
+	w.autoRecordProjectVersionValidationSnapshotAfterRefresh(ctx, opID, "completed")
 	return nil
+}
+
+func (w *ControlWorker) autoRecordProjectVersionValidationSnapshotAfterRefresh(ctx context.Context, operationID, operationStatus string) {
+	if w == nil || w.store == nil || w.store.DB == nil {
+		return
+	}
+	row, err := queryOne(ctx, w.store.DB, `
+		SELECT input->>'project_version_id' AS project_version_id, operation_type
+		FROM operation_runs
+		WHERE id=$1
+			AND operation_type IN ('git.refs.refresh', 'github.actions.sync', 'argo.apps.sync')`, operationID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+			return
+		}
+		if w.log != nil {
+			w.log.Warn("project version validation auto-record lookup failed", "operation_id", operationID, "status", operationStatus, "error", err)
+		}
+		return
+	}
+	versionID := strings.TrimSpace(fmt.Sprint(row["project_version_id"]))
+	if versionID == "" || versionID == "<nil>" {
+		return
+	}
+	result, err := RecordProjectVersionValidationSnapshot(ctx, w.store, ProjectVersionValidationSnapshotOptions{
+		ProjectVersionID:       versionID,
+		RequireRecordedRefresh: true,
+		RecordingTrigger:       "control_worker_refresh_completion",
+	})
+	if err != nil {
+		if w.log != nil {
+			w.log.Warn("project version validation auto-record failed", "operation_id", operationID, "project_version_id", versionID, "status", operationStatus, "error", err)
+		}
+		return
+	}
+	if w.log != nil {
+		w.log.Debug("project version validation auto-record checked", "operation_id", operationID, "project_version_id", versionID, "status", operationStatus, "recording_state", result["recording_state"], "snapshot_written", result["validation_snapshot_written"])
+	}
 }
 
 func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context, job map[string]any, operationID, status string) {

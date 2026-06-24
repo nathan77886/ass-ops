@@ -4496,6 +4496,69 @@ func TestRecordProjectVersionValidationRerunSnapshotHandlerWritesWhenReady(t *te
 	}
 }
 
+func TestControlWorkerAutoRecordProjectVersionValidationSnapshotNoopsForNonRefreshOperation(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	worker := &ControlWorker{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)SELECT input->>'project_version_id' AS project_version_id, operation_type\s+FROM operation_runs\s+WHERE id=\$1\s+AND operation_type IN \('git.refs.refresh', 'github.actions.sync', 'argo.apps.sync'\)`).
+		WithArgs("op-1").
+		WillReturnError(sql.ErrNoRows)
+
+	worker.autoRecordProjectVersionValidationSnapshotAfterRefresh(context.Background(), "op-1", "completed")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestControlWorkerAutoRecordProjectVersionValidationSnapshotWaitsForTerminalRefresh(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	worker := &ControlWorker{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProjectVersionValidationAutoRecordOperationLookup(mock)
+	expectProjectVersionValidationSnapshotPreview(mock, "running")
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='project_version'`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+
+	worker.autoRecordProjectVersionValidationSnapshotAfterRefresh(context.Background(), "op-1", "completed")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestControlWorkerAutoRecordProjectVersionValidationSnapshotWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	worker := &ControlWorker{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProjectVersionValidationAutoRecordOperationLookup(mock)
+	expectProjectVersionValidationSnapshotPreview(mock, "completed")
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='project_version'`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-1", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	worker.autoRecordProjectVersionValidationSnapshotAfterRefresh(context.Background(), "op-1", "completed")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordProjectVersionValidationSnapshotHandlerRowsAffectedUnknown(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -4570,6 +4633,50 @@ func TestRecordProjectVersionValidationSnapshotHandlerRowsAffectedUnknown(t *tes
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
 	}
+}
+
+func expectProjectVersionValidationAutoRecordOperationLookup(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(`(?s)SELECT input->>'project_version_id' AS project_version_id, operation_type\s+FROM operation_runs\s+WHERE id=\$1\s+AND operation_type IN \('git.refs.refresh', 'github.actions.sync', 'argo.apps.sync'\)`).
+		WithArgs("op-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_version_id", "operation_type"}).
+			AddRow("version-1", "github.actions.sync"))
+}
+
+func expectProjectVersionValidationSnapshotPreview(mock sqlmock.Sqlmock, refreshStatus string) {
+	metadata := []byte(`{"repositories":[{"repo_key":"service","repo_role":"service","remote_id":"remote-1","remote_key":"github","commit_sha":"abc123","tag":"v0.1.0","github_action_run_id":"run-1"}]}`)
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, version, source, metadata, created_at\s+FROM project_versions\s+WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
+			AddRow("version-1", "project-1", "v0.1.0", "manual", metadata, time.Now()))
+	mock.ExpectQuery(`(?s)SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, gr.default_branch`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "remote_key", "provider_type", "latest_sha", "default_branch", "repo_key", "repo_role", "repository_name"}).
+			AddRow("remote-1", "github", "github", "abc123", "main", "service", "service", "Service"))
+	mock.ExpectQuery(`(?s)SELECT id, project_git_repository_id, target_remote_id, git_remote_id, tag_name, target_sha, status, created_at, finished_at\s+FROM repo_tag_runs`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "created_at", "finished_at"}).
+			AddRow("tag-1", "repo-1", "remote-1", "remote-1", "v0.1.0", "abc123", "succeeded", time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, git_remote_id, run_id, workflow_name, branch, commit_sha, status, conclusion, started_at, updated_at\s+FROM github_action_runs`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "git_remote_id", "run_id", "workflow_name", "branch", "commit_sha", "status", "conclusion", "started_at", "updated_at"}).
+			AddRow("action-1", "remote-1", "run-1", "ci", "main", "abc123", "completed", "success", time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, name, namespace, status, metadata, synced_at, updated_at\s+FROM argo_apps`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "namespace", "status", "metadata", "synced_at", "updated_at"}))
+	mock.ExpectQuery(`(?s)SELECT id, name, last_sync_status\s+FROM argo_connections`).
+		WithArgs("project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "last_sync_status"}))
+	finishedAt := any(time.Now())
+	if refreshStatus == "running" {
+		finishedAt = nil
+	}
+	mock.ExpectQuery(`(?s)SELECT id, operation_type, status, error, input, started_at, finished_at, created_at, updated_at\s+FROM operation_runs`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "error", "input", "started_at", "finished_at", "created_at", "updated_at"}).
+			AddRow("op-1", "github.actions.sync", refreshStatus, "", []byte(`{"project_version_id":"version-1","refresh_kind":"github_actions_api_refresh"}`), time.Now(), finishedAt, time.Now(), time.Now()))
 }
 
 func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
@@ -5534,6 +5641,7 @@ func assertProjectVersionBackgroundRerunPlanSafe(t *testing.T, plan map[string]a
 	t.Helper()
 	if plan["automatic_background_rerun"] != false ||
 		plan["background_worker_enqueued"] != false ||
+		plan["control_worker_auto_snapshot_supported"] != true ||
 		plan["validation_snapshot_written"] != false ||
 		plan["external_call_made"] != false ||
 		plan["provider_api_called"] != false ||
@@ -5543,12 +5651,12 @@ func assertProjectVersionBackgroundRerunPlanSafe(t *testing.T, plan map[string]a
 		plan["secret_included"] != false {
 		t.Fatalf("background rerun plan should stay disabled and redacted: %#v", plan)
 	}
-	for _, control := range []string{"terminal_refresh_workers", "server_side_validation_recheck", "validation_snapshot_write_audit", "background_worker_policy_review"} {
+	for _, control := range []string{"terminal_refresh_workers", "server_side_validation_recheck", "validation_snapshot_write_audit", "control_worker_auto_snapshot_review", "standalone_background_worker_policy_review"} {
 		if !containsString(stringSliceFromAny(plan["required_controls"]), control) {
 			t.Fatalf("background rerun required control missing %q: %#v", control, plan["required_controls"])
 		}
 	}
-	for _, backend := range []string{"background_validation_worker", "validation_snapshot_write", "raw_provider_response_recording"} {
+	for _, backend := range []string{"standalone_background_validation_worker", "raw_provider_response_recording"} {
 		if !containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
 			t.Fatalf("background rerun disabled backend missing %q: %#v", backend, plan["disabled_backends"])
 		}
@@ -5575,6 +5683,7 @@ func assertProjectVersionValidationSnapshotWritePlanSafe(t *testing.T, plan map[
 		plan["operation_log_written"] != false ||
 		plan["background_worker_enqueued"] != false ||
 		plan["automatic_background_rerun"] != false ||
+		plan["control_worker_auto_snapshot_supported"] != true ||
 		plan["external_call_made"] != false ||
 		plan["provider_api_called"] != false ||
 		plan["git_fetch_performed"] != false ||
@@ -5593,7 +5702,7 @@ func assertProjectVersionValidationSnapshotWritePlanSafe(t *testing.T, plan map[
 			t.Fatalf("snapshot write required control missing %q: %#v", control, plan["required_controls"])
 		}
 	}
-	for _, backend := range []string{"validation_snapshot_write", "asset_status_snapshot_write", "operation_log_write", "background_validation_worker", "raw_provider_response_recording"} {
+	for _, backend := range []string{"operation_log_write", "standalone_background_validation_worker", "raw_provider_response_recording"} {
 		if !containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
 			t.Fatalf("snapshot write disabled backend missing %q: %#v", backend, plan["disabled_backends"])
 		}
