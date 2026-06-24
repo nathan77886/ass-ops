@@ -19914,6 +19914,39 @@ func TestRecordProviderReviewMutationArmingSnapshotHandlerRequiresUpdateBeforeLo
 	}
 }
 
+func TestRecordProviderReviewMutationArmingSnapshotHandlerRejectsProjectNonMemberBeforeLedger(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, templateProviderReviewExecuteApprovalAction, "approved", "ready_to_arm", true, true, false)
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+		WithArgs("project-1", "dev-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	req := httptest.NewRequest(http.MethodPost, "/api/operation-approvals/approval-1/provider-review-arming-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "approval-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "dev-1", Role: "developer"}))
+	rr := httptest.NewRecorder()
+
+	server.recordProviderReviewMutationArmingSnapshot(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	var got PolicyDecision
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Effect != PolicyDeny || !strings.Contains(got.Reason, "not a member") {
+		t.Fatalf("unexpected policy decision: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordProviderReviewMutationArmingSnapshotHandlerRejectsInvalidJSONBeforeLookup(t *testing.T) {
 	server := &Server{}
 	rr := httptest.NewRecorder()
