@@ -1640,6 +1640,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
   const idempotencyOperations = Array.isArray(idempotencyPlan.operations) ? idempotencyPlan.operations : [];
   const attemptLedger = result.provider_review_attempt_ledger?.status ? result.provider_review_attempt_ledger : (persistedAttemptLedger || {});
   const attemptOrchestration = attemptLedger.orchestration || {};
+  const attemptDependencyChainPlan = attemptOrchestration.dependency_chain_plan || {};
+  const attemptDependencyOperations = Array.isArray(attemptDependencyChainPlan.ordered_operations) ? attemptDependencyChainPlan.ordered_operations : [];
   const attemptExecutionCandidate = attemptOrchestration.execution_candidate || {};
   const attemptAdapterContract = attemptExecutionCandidate.adapter_contract || {};
   const attemptAdapterContractMode = typeof attemptAdapterContract.mode === 'string' ? attemptAdapterContract.mode.replaceAll('_', ' ') : 'redacted attempt adapter contract';
@@ -1947,6 +1949,26 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger }: { value?
           <Tag>waiting {Number(attemptOrchestration.waiting_count || 0)}</Tag>
           <Tag>blocked {Number(attemptOrchestration.blocked_count || 0)}</Tag>
           <Tag>completed {Number(attemptOrchestration.completed_count || 0)}</Tag>
+        </Space>
+      ) : null}
+      {attemptDependencyChainPlan.mode ? (
+        <Space size={4} wrap>
+          <Tag color={attemptDependencyChainPlan.status === 'blocked' ? 'red' : attemptDependencyChainPlan.status === 'ready' ? 'green' : 'gold'}>
+            chain {String(attemptDependencyChainPlan.status || 'not_recorded').replaceAll('_', ' ')}
+          </Tag>
+          <Tag>next {String(attemptDependencyChainPlan.next_operation || '-')}</Tag>
+          <Tag>{attemptDependencyChainPlan.chain_ready_for_next_attempt === true ? 'next claim ready' : 'next claim blocked'}</Tag>
+          <Tag>ops {Number(attemptDependencyChainPlan.operation_count || 0)}</Tag>
+          <Tag>{String(attemptDependencyChainPlan.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
+      {attemptDependencyOperations.length ? (
+        <Space size={4} wrap>
+          {attemptDependencyOperations.map((operation: AnyRow, index: number) => (
+            <Tag key={String(operation.name || operation.endpoint_key || `dependency-operation-${index}`)}>
+              {String(operation.name || 'operation')}: {String(operation.dependency_status || 'independent').replaceAll('_', ' ')}
+            </Tag>
+          ))}
         </Space>
       ) : null}
       {attemptExecutionCandidate.mode ? (

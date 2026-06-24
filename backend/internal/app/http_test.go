@@ -6428,6 +6428,7 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 							"name":                     "open_review_request",
 							"endpoint_key":             "github.open_review",
 							"status":                   "planned",
+							"dependency_status":        "dependency_satisfied",
 							"replay_check":             "detect_existing_open_review",
 							"conflict_policy":          "reuse_existing_review_request",
 							"retry_policy":             "retry_only_after_response_diagnostics",
@@ -6834,6 +6835,20 @@ func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *te
 		resultAttemptOrchestration["requires_adapter_execution"] != true {
 		t.Fatalf("approval result attempt orchestration should be sanitized: %#v", resultAttemptOrchestration)
 	}
+	resultAttemptChainPlan := mapFromAny(resultAttemptOrchestration["dependency_chain_plan"])
+	if resultAttemptChainPlan["mode"] != "redacted_attempt_dependency_chain_plan" ||
+		resultAttemptChainPlan["status"] != "ready" ||
+		resultAttemptChainPlan["next_operation"] != "open_review_request" ||
+		resultAttemptChainPlan["chain_ready_for_next_attempt"] != true ||
+		resultAttemptChainPlan["provider_api_call_made"] != false ||
+		resultAttemptChainPlan["provider_api_mutation"] != "disabled" ||
+		resultAttemptChainPlan["contains_token"] != false ||
+		resultAttemptChainPlan["contains_provider_url"] != false ||
+		resultAttemptChainPlan["contains_repository_ref"] != false ||
+		resultAttemptChainPlan["contains_branch_name"] != false ||
+		resultAttemptChainPlan["contains_file_content"] != false {
+		t.Fatalf("approval result attempt dependency chain plan should be sanitized: %#v", resultAttemptChainPlan)
+	}
 	resultAttemptCandidate := mapFromAny(resultAttemptOrchestration["execution_candidate"])
 	if resultAttemptCandidate["mode"] != "redacted_attempt_execution_candidate" ||
 		resultAttemptCandidate["status"] != "blocked" ||
@@ -7075,6 +7090,50 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		orchestration["dependency_chain_status"] != "waiting_for_dependency" ||
 		orchestration["provider_api_mutation"] != "disabled" {
 		t.Fatalf("attempt orchestration summary = %#v", orchestration)
+	}
+	chainPlan := mapFromAny(orchestration["dependency_chain_plan"])
+	if chainPlan["mode"] != "redacted_attempt_dependency_chain_plan" ||
+		chainPlan["status"] != "waiting_for_dependency" ||
+		chainPlan["next_operation"] != "create_branch_ref" ||
+		chainPlan["operation_count"] != 3 ||
+		chainPlan["ready_count"] != 1 ||
+		chainPlan["waiting_count"] != 2 ||
+		chainPlan["chain_ready_for_next_attempt"] != false ||
+		chainPlan["requires_ordered_claim"] != true ||
+		chainPlan["requires_dependency_update"] != true ||
+		chainPlan["requires_response_plan"] != true ||
+		chainPlan["requires_transaction_boundary"] != true ||
+		chainPlan["dependency_updates_recorded"] != false ||
+		chainPlan["attempt_claim_recorded"] != false ||
+		chainPlan["provider_request_sent"] != false ||
+		chainPlan["provider_response_recorded"] != false ||
+		chainPlan["external_call_made"] != false ||
+		chainPlan["provider_api_call_made"] != false ||
+		chainPlan["provider_api_mutation"] != "disabled" ||
+		chainPlan["contains_token"] != false ||
+		chainPlan["contains_provider_url"] != false ||
+		chainPlan["contains_repository_ref"] != false ||
+		chainPlan["contains_branch_name"] != false ||
+		chainPlan["contains_file_content"] != false {
+		t.Fatalf("attempt dependency chain plan = %#v", chainPlan)
+	}
+	ordered := sliceOfMapsFromAny(chainPlan["ordered_operations"])
+	if len(ordered) != 3 ||
+		ordered[0]["name"] != "create_branch_ref" ||
+		ordered[0]["dependency_unlocks_operation"] != "commit_starter_files" ||
+		ordered[1]["depends_on_operation"] != "create_branch_ref" ||
+		ordered[2]["depends_on_operation"] != "commit_starter_files" {
+		t.Fatalf("attempt dependency chain ordered operations = %#v", ordered)
+	}
+	for _, field := range []string{"provider_url", "repository_ref", "branch_name", "file_content", "request_body", "response_body", "headers", "authorization_header", "idempotency_key", "token"} {
+		if !containsString(stringSliceFromAny(chainPlan["suppressed_fields"]), field) {
+			t.Fatalf("attempt dependency chain suppressed fields missing %q: %#v", field, chainPlan["suppressed_fields"])
+		}
+	}
+	for _, backend := range []string{"provider_api_branch_create", "provider_api_file_commit", "provider_api_review_create", "provider_request_send", "provider_response_record"} {
+		if !containsString(stringSliceFromAny(chainPlan["disabled_backends"]), backend) {
+			t.Fatalf("attempt dependency chain disabled backend missing %q: %#v", backend, chainPlan["disabled_backends"])
+		}
 	}
 	candidate := mapFromAny(orchestration["execution_candidate"])
 	if candidate["mode"] != "redacted_attempt_execution_candidate" ||
@@ -8235,6 +8294,22 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 		orchestration["provider_api_call_made"] != false {
 		t.Fatalf("persisted attempt orchestration summary = %#v", orchestration)
 	}
+	chainPlan := mapFromAny(orchestration["dependency_chain_plan"])
+	if chainPlan["mode"] != "redacted_attempt_dependency_chain_plan" ||
+		chainPlan["status"] != "waiting_for_dependency" ||
+		chainPlan["next_operation"] != "" ||
+		chainPlan["operation_count"] != 1 ||
+		chainPlan["waiting_count"] != 1 ||
+		chainPlan["chain_ready_for_next_attempt"] != false ||
+		chainPlan["provider_api_call_made"] != false ||
+		chainPlan["provider_api_mutation"] != "disabled" ||
+		chainPlan["contains_token"] != false ||
+		chainPlan["contains_provider_url"] != false ||
+		chainPlan["contains_repository_ref"] != false ||
+		chainPlan["contains_branch_name"] != false ||
+		chainPlan["contains_file_content"] != false {
+		t.Fatalf("persisted attempt dependency chain plan = %#v", chainPlan)
+	}
 	candidate := mapFromAny(orchestration["execution_candidate"])
 	if candidate["mode"] != "redacted_attempt_execution_candidate" ||
 		candidate["status"] != "blocked" ||
@@ -8660,13 +8735,25 @@ func TestProviderReviewAttemptOrchestrationSummaryBlocksUnknownStatus(t *testing
 	summary := providerReviewAttemptOrchestrationSummary([]map[string]any{{
 		"name":              "create_branch_ref",
 		"status":            "retrying",
-		"dependency_status": "independent",
+		"dependency_status": "raw_dependency",
 	}})
 	if summary["ready_count"] != 0 ||
 		summary["blocked_count"] != 1 ||
 		summary["next_operation"] != "" ||
 		summary["dependency_chain_status"] != "blocked" {
 		t.Fatalf("unknown status orchestration summary = %#v", summary)
+	}
+	chainPlan := mapFromAny(summary["dependency_chain_plan"])
+	if chainPlan["status"] != "blocked" ||
+		chainPlan["chain_ready_for_next_attempt"] != false ||
+		chainPlan["blocked_count"] != 1 ||
+		chainPlan["provider_api_call_made"] != false ||
+		chainPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("unknown status dependency chain plan = %#v", chainPlan)
+	}
+	ordered := sliceOfMapsFromAny(chainPlan["ordered_operations"])
+	if len(ordered) != 1 || ordered[0]["dependency_status"] != "blocked" {
+		t.Fatalf("unknown dependency status should stay blocked in chain plan: %#v", ordered)
 	}
 	candidate := mapFromAny(summary["execution_candidate"])
 	if candidate["next_operation"] != "" || candidate["status"] != "blocked" {

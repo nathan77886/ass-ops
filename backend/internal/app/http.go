@@ -12053,7 +12053,7 @@ func sanitizedProviderReviewAttemptLedger(value map[string]any) map[string]any {
 			"retry_policy":             cleanOptionalText(stringFromMap(operation, "retry_policy")),
 			"operation_order":          intFromAny(operation["operation_order"], 0),
 			"depends_on_operation":     safeProviderReviewAttemptDependencyName(stringFromMap(operation, "depends_on_operation")),
-			"dependency_status":        safeProviderReviewAttemptDependencyStatus(stringFromMap(operation, "dependency_status")),
+			"dependency_status":        safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(operation, "dependency_status")),
 			"request_summary":          sanitizedProviderReviewAttemptRequestSummary(mapFromAny(operation["request_summary"])),
 			"response_diagnostics":     sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(operation["response_diagnostics"])),
 			"external_call_made":       false,
@@ -13984,7 +13984,7 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 			"retry_policy":             safeProviderReviewRetryPolicy(stringFromMap(attempt, "retry_policy")),
 			"operation_order":          intFromAny(attempt["operation_order"], 0),
 			"depends_on_operation":     safeProviderReviewAttemptDependencyName(stringFromMap(attempt, "depends_on_operation")),
-			"dependency_status":        safeProviderReviewAttemptDependencyStatus(stringFromMap(attempt, "dependency_status")),
+			"dependency_status":        safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(attempt, "dependency_status")),
 			"request_summary":          sanitizedProviderReviewAttemptRequestSummary(mapFromAny(attempt["request_summary"])),
 			"response_diagnostics":     sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(attempt["response_diagnostics"])),
 			"external_call_made":       false,
@@ -14169,6 +14169,7 @@ func providerReviewAttemptOrchestrationSummary(operations []map[string]any) map[
 		"idempotency_key_included":   false,
 		"requires_operator_review":   true,
 		"requires_adapter_execution": true,
+		"dependency_chain_plan":      providerReviewAttemptDependencyChainPlan(nil, "not_recorded", "", 0, 0, 0, 0),
 		"execution_candidate":        providerReviewAttemptExecutionCandidate(nil, ""),
 	}
 	if len(operations) == 0 {
@@ -14219,8 +14220,70 @@ func providerReviewAttemptOrchestrationSummary(operations []map[string]any) map[
 	summary["blocked_count"] = blockedCount
 	summary["completed_count"] = completedCount
 	summary["dependency_chain_status"] = chainStatus
+	summary["dependency_chain_plan"] = providerReviewAttemptDependencyChainPlan(operations, chainStatus, nextOperation, readyCount, waitingCount, blockedCount, completedCount)
 	summary["execution_candidate"] = providerReviewAttemptExecutionCandidate(operations, nextOperation)
 	return summary
+}
+
+func providerReviewAttemptDependencyChainPlan(operations []map[string]any, chainStatus, nextOperation string, readyCount, waitingCount, blockedCount, completedCount int) map[string]any {
+	orderedOperations := make([]map[string]any, 0, len(operations))
+	for _, operation := range operations {
+		name := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+		dependsOn := safeProviderReviewAttemptDependencyName(stringFromMap(operation, "depends_on_operation"))
+		orderedOperations = append(orderedOperations, map[string]any{
+			"name":                         name,
+			"endpoint_key":                 safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key")),
+			"operation_order":              intFromAny(operation["operation_order"], 0),
+			"depends_on_operation":         dependsOn,
+			"dependency_status":            safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(operation, "dependency_status")),
+			"attempt_status":               safeProviderReviewAttemptStatus(stringFromMap(operation, "status")),
+			"dependency_unlocks_operation": providerReviewAttemptDependencyUnlockOperation(name),
+			"requires_dependency_update":   providerReviewAttemptDependencyUnlockOperation(name) != "",
+			"external_call_made":           false,
+			"provider_api_call_made":       false,
+			"provider_api_mutation":        "disabled",
+			"contains_token":               false,
+			"contains_provider_url":        false,
+			"contains_repository_ref":      false,
+			"contains_branch_name":         false,
+			"contains_file_content":        false,
+		})
+	}
+	chainStatus = safeProviderReviewAttemptDependencyChainStatus(chainStatus)
+	nextOperation = safeProviderReviewAttemptOperationName(nextOperation)
+	return map[string]any{
+		"mode":                          "redacted_attempt_dependency_chain_plan",
+		"status":                        chainStatus,
+		"next_operation":                nextOperation,
+		"operation_count":               len(orderedOperations),
+		"ready_count":                   readyCount,
+		"waiting_count":                 waitingCount,
+		"blocked_count":                 blockedCount,
+		"completed_count":               completedCount,
+		"ordered_operations":            orderedOperations,
+		"chain_ready_for_next_attempt":  chainStatus == "ready" && nextOperation != "",
+		"requires_ordered_claim":        true,
+		"requires_dependency_update":    true,
+		"requires_response_plan":        true,
+		"requires_transaction_boundary": true,
+		"requires_operator_review":      true,
+		"requires_adapter_execution":    true,
+		"dependency_updates_recorded":   false,
+		"attempt_claim_recorded":        false,
+		"provider_request_sent":         false,
+		"provider_response_recorded":    false,
+		"external_call_made":            false,
+		"provider_api_call_made":        false,
+		"provider_api_mutation":         "disabled",
+		"idempotency_key_included":      false,
+		"contains_token":                false,
+		"contains_provider_url":         false,
+		"contains_repository_ref":       false,
+		"contains_branch_name":          false,
+		"contains_file_content":         false,
+		"suppressed_fields":             []string{"provider_url", "repository_ref", "branch_name", "file_content", "request_body", "response_body", "headers", "authorization_header", "idempotency_key", "token"},
+		"disabled_backends":             []string{"provider_api_branch_create", "provider_api_file_commit", "provider_api_review_create", "provider_request_send", "provider_response_record"},
+	}
 }
 
 func providerReviewAttemptExecutionCandidate(operations []map[string]any, nextOperation string) map[string]any {
