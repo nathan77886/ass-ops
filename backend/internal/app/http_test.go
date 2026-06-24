@@ -3011,6 +3011,17 @@ func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
 		executionPlan["unique_blocked_kind_count"] != 0 {
 		t.Fatalf("refresh execution plan = %#v", executionPlan)
 	}
+	backgroundPlan := mapFromAny(preview["background_validation_rerun_plan"])
+	if backgroundPlan["mode"] != "project_version_background_validation_rerun_plan" ||
+		backgroundPlan["plan_state"] != "blocked" ||
+		backgroundPlan["background_rerun_ready_for_review"] != false ||
+		backgroundPlan["automatic_background_rerun"] != false ||
+		backgroundPlan["background_worker_enqueued"] != false ||
+		backgroundPlan["validation_snapshot_written"] != false ||
+		backgroundPlan["provider_refresh_operation_observed"] != false {
+		t.Fatalf("background rerun plan without operations should stay blocked: %#v", backgroundPlan)
+	}
+	assertProjectVersionBackgroundRerunPlanSafe(t, backgroundPlan)
 	assertProviderRefreshExecutionPlanSafe(t, executionPlan)
 	for _, required := range []string{"operation_approval", "provider_account_binding", "result_recording_audit", "ui_auto_validation_reload"} {
 		if !containsString(stringSliceFromAny(executionPlan["required_controls"]), required) {
@@ -3161,6 +3172,24 @@ func TestProjectVersionValidationPreviewIncludesRefreshResultSummary(t *testing.
 		rerunEvidence["secret_included"] != false {
 		t.Fatalf("validation rerun evidence = %#v", rerunEvidence)
 	}
+	backgroundPlan := mapFromAny(preview["background_validation_rerun_plan"])
+	if backgroundPlan["mode"] != "project_version_background_validation_rerun_plan" ||
+		backgroundPlan["plan_state"] != "waiting_for_workers" ||
+		backgroundPlan["background_rerun_ready_for_review"] != false ||
+		backgroundPlan["automatic_background_rerun"] != false ||
+		backgroundPlan["background_worker_enqueued"] != false ||
+		backgroundPlan["validation_snapshot_written"] != false ||
+		backgroundPlan["provider_refresh_operation_observed"] != true ||
+		backgroundPlan["provider_refresh_terminal"] != false {
+		t.Fatalf("waiting background rerun plan = %#v", backgroundPlan)
+	}
+	if !containsString(stringSliceFromAny(backgroundPlan["blocked_reasons"]), "refresh_workers_still_running") {
+		t.Fatalf("waiting background rerun blockers missing worker reason: %#v", backgroundPlan["blocked_reasons"])
+	}
+	assertProjectVersionBackgroundRerunPlanSafe(t, backgroundPlan)
+	if mapFromAny(executionPlan["background_validation_rerun_plan"])["plan_state"] != "waiting_for_workers" {
+		t.Fatalf("execution plan should carry background rerun plan: %#v", executionPlan)
+	}
 	encoded, _ := json.Marshal(preview)
 	for _, forbidden := range []string{"secret-token", "Bearer secret", "https://token@", "raw_provider_response\":true", "raw_git_output\":\""} {
 		if strings.Contains(string(encoded), forbidden) {
@@ -3273,6 +3302,23 @@ func TestProjectVersionValidationRerunEvidenceRecordsServerSideRecheck(t *testin
 				resultPlan["automatic_background_rerun"] != false {
 				t.Fatalf("result plan should reflect validation recheck evidence: %#v", resultPlan)
 			}
+			backgroundPlan := mapFromAny(preview["background_validation_rerun_plan"])
+			wantBackgroundReady := tt.wantState == "recorded"
+			if backgroundPlan["mode"] != "project_version_background_validation_rerun_plan" ||
+				backgroundPlan["background_rerun_ready_for_review"] != wantBackgroundReady ||
+				backgroundPlan["automatic_background_rerun"] != false ||
+				backgroundPlan["background_worker_enqueued"] != false ||
+				backgroundPlan["validation_snapshot_written"] != false ||
+				backgroundPlan["provider_refresh_terminal"] != true {
+				t.Fatalf("terminal background rerun plan = %#v", backgroundPlan)
+			}
+			if wantBackgroundReady && backgroundPlan["plan_state"] != "ready_for_operator_review" {
+				t.Fatalf("recorded terminal background rerun should be ready for operator review: %#v", backgroundPlan)
+			}
+			if !wantBackgroundReady && backgroundPlan["plan_state"] != "blocked" {
+				t.Fatalf("failed/canceled terminal background rerun should stay blocked: %#v", backgroundPlan)
+			}
+			assertProjectVersionBackgroundRerunPlanSafe(t, backgroundPlan)
 			encoded, _ := json.Marshal(preview)
 			for _, forbidden := range []string{"https://token@example.com", "Bearer secret", "raw_provider_response\":true", "raw_git_output\":\""} {
 				if strings.Contains(string(encoded), forbidden) {
@@ -3295,6 +3341,15 @@ func TestProjectVersionValidationRerunEvidenceWithoutOperations(t *testing.T) {
 		evidence["secret_included"] != false {
 		t.Fatalf("empty validation rerun evidence = %#v", evidence)
 	}
+	backgroundPlan := projectVersionBackgroundValidationRerunPlan(summary, evidence)
+	if backgroundPlan["plan_state"] != "blocked" ||
+		backgroundPlan["provider_refresh_operation_observed"] != false ||
+		backgroundPlan["background_rerun_ready_for_review"] != false ||
+		backgroundPlan["automatic_background_rerun"] != false ||
+		backgroundPlan["validation_snapshot_written"] != false {
+		t.Fatalf("empty background rerun plan = %#v", backgroundPlan)
+	}
+	assertProjectVersionBackgroundRerunPlanSafe(t, backgroundPlan)
 	encoded, _ := json.Marshal(evidence)
 	for _, forbidden := range []string{"Bearer secret", "raw_provider_response\":true", "raw_git_output\":\""} {
 		if strings.Contains(string(encoded), forbidden) {
@@ -3695,6 +3750,42 @@ func assertProviderRefreshExecutionPlanSafe(t *testing.T, executionPlan map[stri
 	for _, forbidden := range []string{"https://token@", "Bearer secret", "password=secret", "git@github.com:"} {
 		if strings.Contains(string(encodedExecutionPlan), forbidden) {
 			t.Fatalf("refresh execution plan leaked %q: %s", forbidden, encodedExecutionPlan)
+		}
+	}
+}
+
+func assertProjectVersionBackgroundRerunPlanSafe(t *testing.T, plan map[string]any) {
+	t.Helper()
+	if plan["automatic_background_rerun"] != false ||
+		plan["background_worker_enqueued"] != false ||
+		plan["validation_snapshot_written"] != false ||
+		plan["external_call_made"] != false ||
+		plan["provider_api_called"] != false ||
+		plan["git_fetch_performed"] != false ||
+		plan["argocd_api_called"] != false ||
+		plan["raw_response_included"] != false ||
+		plan["secret_included"] != false {
+		t.Fatalf("background rerun plan should stay disabled and redacted: %#v", plan)
+	}
+	for _, control := range []string{"terminal_refresh_workers", "server_side_validation_recheck", "validation_snapshot_write_audit", "background_worker_policy_review"} {
+		if !containsString(stringSliceFromAny(plan["required_controls"]), control) {
+			t.Fatalf("background rerun required control missing %q: %#v", control, plan["required_controls"])
+		}
+	}
+	for _, backend := range []string{"background_validation_worker", "validation_snapshot_write", "raw_provider_response_recording"} {
+		if !containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
+			t.Fatalf("background rerun disabled backend missing %q: %#v", backend, plan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"} {
+		if !containsString(stringSliceFromAny(plan["suppressed_fields"]), field) {
+			t.Fatalf("background rerun suppressed field missing %q: %#v", field, plan["suppressed_fields"])
+		}
+	}
+	encoded, _ := json.Marshal(plan)
+	for _, forbidden := range []string{"https://token@", "Bearer secret", "raw_provider_response\":true", "raw_git_output\":\""} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("background rerun plan leaked %q: %s", forbidden, encoded)
 		}
 	}
 }

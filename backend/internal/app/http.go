@@ -7976,26 +7976,29 @@ func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, a
 		overall = "partial"
 	}
 	rerunEvidence := projectVersionValidationRerunEvidence(refreshSummary, overall, len(items), ready, partial, blocked)
+	backgroundRerunPlan := projectVersionBackgroundValidationRerunPlan(refreshSummary, rerunEvidence)
 	attachProjectVersionRefreshResultSummary(refreshPlan, refreshSummary, rerunEvidence)
+	attachProjectVersionBackgroundValidationRerunPlan(refreshPlan, backgroundRerunPlan)
 	return map[string]any{
-		"version_id":                      version["id"],
-		"version":                         version["version"],
-		"mode":                            "synced_state_validation_preview",
-		"validation_state":                overall,
-		"external_call_made":              false,
-		"provider_api_called":             false,
-		"git_fetch_performed":             false,
-		"argocd_api_called":               false,
-		"validation_source":               "local_synced_database_state",
-		"repository_count":                len(items),
-		"ready_count":                     ready,
-		"partial_count":                   partial,
-		"blocked_count":                   blocked,
-		"items":                           items,
-		"provider_refresh_plan":           refreshPlan,
-		"provider_refresh_result_summary": refreshSummary,
-		"validation_rerun_evidence":       rerunEvidence,
-		"required_live_rehearsal":         stringSliceFromAny(refreshPlan["required_live_rehearsal"]),
+		"version_id":                       version["id"],
+		"version":                          version["version"],
+		"mode":                             "synced_state_validation_preview",
+		"validation_state":                 overall,
+		"external_call_made":               false,
+		"provider_api_called":              false,
+		"git_fetch_performed":              false,
+		"argocd_api_called":                false,
+		"validation_source":                "local_synced_database_state",
+		"repository_count":                 len(items),
+		"ready_count":                      ready,
+		"partial_count":                    partial,
+		"blocked_count":                    blocked,
+		"items":                            items,
+		"provider_refresh_plan":            refreshPlan,
+		"provider_refresh_result_summary":  refreshSummary,
+		"validation_rerun_evidence":        rerunEvidence,
+		"background_validation_rerun_plan": backgroundRerunPlan,
+		"required_live_rehearsal":          stringSliceFromAny(refreshPlan["required_live_rehearsal"]),
 	}
 }
 
@@ -8136,6 +8139,74 @@ func projectVersionValidationRerunEvidence(summary map[string]any, validationSta
 	}
 }
 
+func projectVersionBackgroundValidationRerunPlan(summary map[string]any, rerunEvidence map[string]any) map[string]any {
+	rerunStatus := strings.TrimSpace(fmt.Sprint(summary["validation_rerun_status"]))
+	if rerunStatus == "" || rerunStatus == "<nil>" {
+		rerunStatus = "not_requested"
+	}
+	operationCount := intFromAny(summary["operation_count"], 0)
+	activeCount := intFromAny(summary["active_count"], 0)
+	terminal := operationCount > 0 && activeCount == 0
+	planState := "blocked"
+	blockedReasons := []string{"provider_refresh_execution_not_performed", "background_validation_rerun_disabled"}
+	switch rerunStatus {
+	case "waiting_for_workers":
+		planState = "waiting_for_workers"
+		blockedReasons = []string{"refresh_workers_still_running", "background_validation_rerun_disabled"}
+	case "recorded":
+		planState = "ready_for_operator_review"
+		blockedReasons = []string{"background_validation_rerun_disabled", "validation_snapshot_write_disabled"}
+	case "refresh_failed":
+		planState = "blocked"
+		blockedReasons = []string{"refresh_worker_failed", "background_validation_rerun_disabled"}
+	case "refresh_canceled":
+		planState = "blocked"
+		blockedReasons = []string{"refresh_worker_canceled", "background_validation_rerun_disabled"}
+	}
+	return map[string]any{
+		"mode":                                    "project_version_background_validation_rerun_plan",
+		"plan_state":                              planState,
+		"rerun_status":                            rerunStatus,
+		"background_rerun_ready_for_review":       rerunStatus == "recorded" && terminal,
+		"automatic_background_rerun":              false,
+		"background_worker_enqueued":              false,
+		"validation_snapshot_written":             false,
+		"validation_rerun_recorded":               boolOnlyFromAny(summary["validation_rerun_recorded"]),
+		"server_side_validation_recheck_observed": boolOnlyFromAny(rerunEvidence["server_side_validation_recheck"]),
+		"server_side_validation_recheck_ready":    boolOnlyFromAny(rerunEvidence["server_side_validation_recheck_ready"]),
+		"provider_refresh_operation_observed":     operationCount > 0,
+		"provider_refresh_terminal":               terminal,
+		"operation_count":                         operationCount,
+		"active_count":                            activeCount,
+		"external_call_made":                      false,
+		"provider_api_called":                     false,
+		"git_fetch_performed":                     false,
+		"argocd_api_called":                       false,
+		"raw_response_included":                   false,
+		"secret_included":                         false,
+		"required_controls": []string{
+			"terminal_refresh_workers",
+			"server_side_validation_recheck",
+			"validation_snapshot_write_audit",
+			"background_worker_policy_review",
+		},
+		"rerun_sequence": []string{
+			"observe_terminal_refresh_workers",
+			"rerun_validation_against_synced_state",
+			"record_validation_snapshot",
+			"publish_background_rerun_result",
+		},
+		"disabled_backends": []string{
+			"background_validation_worker",
+			"validation_snapshot_write",
+			"raw_provider_response_recording",
+		},
+		"suppressed_fields": []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
+		"blocked_reasons":   blockedReasons,
+		"message":           "Automatic background validation rerun is planned only; the current response proves server-side recheck via this request and keeps background workers and snapshot writes disabled.",
+	}
+}
+
 func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summary map[string]any, rerunEvidence map[string]any) {
 	if refreshPlan == nil || summary == nil {
 		return
@@ -8179,6 +8250,24 @@ func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summar
 		resultPlan["automatic_background_rerun"] = boolOnlyFromAny(rerunEvidence["automatic_background_rerun"])
 		resultPlan["validation_rerun_evidence"] = rerunEvidence
 		resultPlan["blocked_reasons"] = projectVersionRefreshResultBlockedReasons(summary)
+	}
+}
+
+func attachProjectVersionBackgroundValidationRerunPlan(refreshPlan map[string]any, backgroundPlan map[string]any) {
+	if refreshPlan == nil || backgroundPlan == nil {
+		return
+	}
+	refreshPlan["background_validation_rerun_plan"] = backgroundPlan
+	executionPlan := mapFromAny(refreshPlan["execution_plan"])
+	if len(executionPlan) == 0 {
+		return
+	}
+	executionPlan["background_validation_rerun_plan"] = backgroundPlan
+	executionPlan["background_validation_rerun_state"] = backgroundPlan["plan_state"]
+	if resultPlan := mapFromAny(executionPlan["result_recording_plan"]); len(resultPlan) > 0 {
+		resultPlan["background_validation_rerun_plan"] = backgroundPlan
+		resultPlan["background_validation_rerun_state"] = backgroundPlan["plan_state"]
+		resultPlan["background_validation_rerun_ready_for_review"] = backgroundPlan["background_rerun_ready_for_review"]
 	}
 }
 
