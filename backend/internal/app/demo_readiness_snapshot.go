@@ -60,6 +60,8 @@ func RecordDemoReadinessSnapshot(ctx context.Context, store *Store, opts DemoRea
 	}
 	if opts.DryRun {
 		result["dry_run"] = true
+		result["recording_enabled"] = false
+		result["external_call_made"] = false
 		result["snapshots_written"] = 0
 		result["readiness_snapshot_written"] = false
 		result["asset_graph_snapshot_written"] = false
