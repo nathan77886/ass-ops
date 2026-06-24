@@ -19823,6 +19823,108 @@ func TestRecordProviderReviewMutationArmingSnapshotRowsAffectedUnknownDoesNotCla
 	}
 }
 
+func TestRecordProviderReviewMutationArmingSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, templateProviderReviewExecuteApprovalAction, "approved", "ready_to_arm", true, true, false)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+		{ID: "attempt-2", Operation: "commit_starter_files", Endpoint: "github.commit_files", Status: "planned", Dependency: "waiting_for_dependency", Order: 20, DependsOn: "create_branch_ref"},
+		{ID: "attempt-3", Operation: "open_review_request", Endpoint: "github.open_review", Status: "planned", Dependency: "waiting_for_dependency", Order: 30, DependsOn: "commit_starter_files"},
+	})
+	expectOperationApprovalSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-approval-1", "provider_review_mutation_arming_review_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-approval-1", "provider_review_mutation_arming_review_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewMutationArmingSnapshot(rr, newProviderReviewMutationArmingSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "ready_for_operator_review" ||
+		got["provider_review_mutation_arming_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["mutation_armed"] != false ||
+		got["contains_token"] != false ||
+		got["contains_provider_url"] != false ||
+		got["contains_repository_ref"] != false ||
+		got["contains_branch_name"] != false ||
+		got["contains_file_content"] != false {
+		t.Fatalf("unexpected arming snapshot handler response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["attempt_count"] != float64(3) && snapshot["attempt_count"] != 3 ||
+		snapshot["attempt_ledger_observed"] != true ||
+		snapshot["operation_approval_action"] != templateProviderReviewExecuteApprovalAction {
+		t.Fatalf("unexpected arming snapshot handler payload: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewMutationArmingSnapshotHandlerRejectsWrongApprovalAction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, "ssh.exec", "approved", "ready_to_arm", true, true, false)
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewMutationArmingSnapshot(rr, newProviderReviewMutationArmingSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewMutationArmingSnapshotHandlerRequiresUpdateBeforeLookup(t *testing.T) {
+	server := &Server{}
+	req := httptest.NewRequest(http.MethodPost, "/api/operation-approvals/approval-1/provider-review-arming-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "approval-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "viewer-1", Role: "viewer"}))
+	rr := httptest.NewRecorder()
+
+	server.recordProviderReviewMutationArmingSnapshot(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRecordProviderReviewMutationArmingSnapshotHandlerRejectsInvalidJSONBeforeLookup(t *testing.T) {
+	server := &Server{}
+	rr := httptest.NewRecorder()
+
+	server.recordProviderReviewMutationArmingSnapshot(rr, newProviderReviewMutationArmingSnapshotRequest(`{"dry_run":`))
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestRecordProviderReviewAttemptActivationSnapshotWritesBlockedCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -25121,6 +25223,12 @@ func newProviderReviewAttemptSnapshotRequest(body string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
 
+func newProviderReviewMutationArmingSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/operation-approvals/approval-1/provider-review-arming-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "approval-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
 func newProviderReviewAttemptActivationSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/activation-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
@@ -25414,6 +25522,40 @@ func expectOperationApprovalSnapshotAsset(mock sqlmock.Sqlmock, found bool) {
 	} else {
 		query.WillReturnError(sql.ErrNoRows)
 	}
+}
+
+func expectProviderReviewApprovalForArmingSnapshot(mock sqlmock.Sqlmock, action, approvalStatus, armingStatus string, executionEnabled, rehearsalReady, mutationConfig bool) {
+	approval := providerReviewArmingSnapshotApproval(approvalStatus, armingStatus, executionEnabled, rehearsalReady, mutationConfig)
+	approval["action"] = action
+	requestPayload, _ := json.Marshal(approval["request_payload"])
+	now := time.Now()
+	mock.ExpectQuery(`(?s)SELECT id, project_id, operation_run_id, resource_type, resource_id, action, title, status, request_payload, created_at, updated_at\s+FROM operation_approvals\s+WHERE id=\$1`).
+		WithArgs("approval-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"project_id",
+			"operation_run_id",
+			"resource_type",
+			"resource_id",
+			"action",
+			"title",
+			"status",
+			"request_payload",
+			"created_at",
+			"updated_at",
+		}).AddRow(
+			"approval-1",
+			"project-1",
+			nil,
+			"project_template_run",
+			"run-1",
+			action,
+			"Provider review execution",
+			approvalStatus,
+			requestPayload,
+			now,
+			now,
+		))
 }
 
 func providerReviewArmingSnapshotApproval(approvalStatus, armingStatus string, executionEnabled, rehearsalReady, mutationConfig bool) map[string]any {
