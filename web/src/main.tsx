@@ -891,7 +891,7 @@ function countWebhookSyncGraphLinks(graph: AnyRow = {}) {
   return counts;
 }
 
-function countSSHGraphLinks(graph: AnyRow = {}) {
+function countSSHGraphLinks(graph: AnyRow = {}, commandAssetIDs = new Set<string>()) {
   const byCommand: Record<string, { operation?: boolean; machine?: boolean }> = {};
   const commandEntry = (assetID: string) => {
     byCommand[assetID] ||= {};
@@ -910,8 +910,11 @@ function countSSHGraphLinks(graph: AnyRow = {}) {
       commandEntry(from).machine = true;
     }
     return nextCounts;
-  }, { operationCommands: 0, commandMachines: 0, completeCommands: 0 });
+  }, { operationCommands: 0, commandMachines: 0, completeCommands: 0, completeCommandAssets: 0 });
   counts.completeCommands = Object.values(byCommand).filter((entry) => entry.operation && entry.machine).length;
+  counts.completeCommandAssets = Object.entries(byCommand).filter(([commandID, entry]) => (
+    entry.operation && entry.machine && commandAssetIDs.has(commandID)
+  )).length;
   return counts;
 }
 
@@ -1174,7 +1177,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const webhookSyncGraphLinks = countWebhookSyncGraphLinks(graph);
   const githubActionLinks = countGitHubActionGraphLinks(graph);
   const repoTagRuns = (operationCounts['repo.tag'] || 0) + (operationCounts['repo.create_tag'] || 0);
-  const sshGraphLinks = countSSHGraphLinks(graph);
+  const sshGraphLinks = countSSHGraphLinks(graph, assetIDsByType(assets, 'ssh_command_run'));
   const argoGraphLinks = countArgoGraphLinks(graph);
   const activeApprovalRuleIDs = activeAssetIDsByTypeStatus(assets, 'operation_approval_rule', 'active');
   const approvalGraphLinks = countApprovalGraphLinks(graph, activeApprovalRuleIDs);
@@ -1223,7 +1226,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'ssh',
       label: 'Register SSH machines and audited commands',
       next: 'Verify an SSH machine, then run an approval-gated command.',
-      ...readinessState((assetCounts.host || 0) > 0 && sshVerifyRuns > 0 && sshCommandRuns > 0 && sshGraphLinks.completeCommands >= 2, `${assetCounts.host || 0} hosts / ${sshVerifyRuns} verify ops / ${sshCommandRuns} command ops / ${assetCounts.ssh_command_run || 0} command assets / ${sshGraphLinks.completeCommands} complete audit chains`, (assetCounts.host || 0) > 0 || sshVerifyRuns > 0 || sshCommandRuns > 0 || (assetCounts.ssh_command_run || 0) > 0 || sshGraphLinks.operationCommands > 0 || sshGraphLinks.commandMachines > 0)
+      ...readinessState((assetCounts.host || 0) > 0 && sshVerifyRuns > 0 && sshCommandRuns > 0 && sshGraphLinks.completeCommandAssets >= 2, `${assetCounts.host || 0} hosts / ${sshVerifyRuns} verify ops / ${sshCommandRuns} command ops / ${assetCounts.ssh_command_run || 0} command assets / ${sshGraphLinks.completeCommands} complete audit chains / ${sshGraphLinks.completeCommandAssets} command asset chains`, (assetCounts.host || 0) > 0 || sshVerifyRuns > 0 || sshCommandRuns > 0 || (assetCounts.ssh_command_run || 0) > 0 || sshGraphLinks.operationCommands > 0 || sshGraphLinks.commandMachines > 0 || sshGraphLinks.completeCommandAssets > 0)
     },
     {
       key: 'argo',
