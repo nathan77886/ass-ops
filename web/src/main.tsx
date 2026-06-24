@@ -3506,6 +3506,7 @@ function GitRemotes() {
   const [syncAssetEditOpen, setSyncAssetEditOpen] = useState(false);
   const [webhookOpen, setWebhookOpen] = useState(false);
   const [recordingThresholdAuditID, setRecordingThresholdAuditID] = useState<string>();
+  const [applyingThresholdConfigID, setApplyingThresholdConfigID] = useState<string>();
   const [recordingTagSnapshotID, setRecordingTagSnapshotID] = useState<string>();
   const [tagSnapshotResults, setTagSnapshotResults] = useState<Record<string, AnyRow>>({});
   const syncAssetDetail = useLoad(() => syncAssetID ? api(`/api/repo-sync-assets/${syncAssetID}`) : Promise.resolve(null), [syncAssetID]);
@@ -3615,6 +3616,16 @@ function GitRemotes() {
       webhookConnections.reload();
     } finally {
       setRecordingThresholdAuditID(undefined);
+    }
+  }
+  async function applyWebhookThresholdConfiguration(id: string) {
+    setApplyingThresholdConfigID(id);
+    try {
+      const result = await api(`/api/webhook-connections/${id}/threshold-configuration`, { method: 'POST', body: '{}' });
+      message.success(result.threshold_configuration_written ? 'Threshold configuration applied' : 'Threshold configuration reviewed');
+      webhookConnections.reload();
+    } finally {
+      setApplyingThresholdConfigID(undefined);
     }
   }
   async function runRepoSyncAsset(id: string) {
@@ -3819,6 +3830,7 @@ function GitRemotes() {
                 {metricsComparison.mode ? <Tag color={metricsComparison.comparison_ready_for_review ? 'gold' : metricsComparison.comparison_state === 'needs_failure_review' ? 'red' : 'default'}>metrics {metricsComparison.comparison_state || 'blocked'}</Tag> : null}
                 {metricsComparison.mode ? <Tag>{metricsComparison.provider_metrics_fetched ? 'provider metrics' : 'no provider metrics'}</Tag> : null}
                 {thresholdConfig.mode ? <Tag color={thresholdConfig.configuration_review_ready === true ? 'gold' : 'default'}>{thresholdConfig.configuration_review_ready === true ? 'config review ready' : `config ${thresholdConfig.configuration_state || 'blocked'}`}</Tag> : null}
+                {thresholdConfig.threshold_configuration_written ? <Tag color="green">{thresholdConfig.threshold_configuration_count || 0} configs</Tag> : null}
                 {thresholdAudit.mode ? <Tag color={thresholdAudit.decision_ready_for_review ? 'gold' : thresholdAudit.decision_state === 'needs_failure_review' ? 'red' : 'default'}>threshold audit {thresholdAudit.decision_state || 'blocked'}</Tag> : null}
                 {thresholdAudit.mode ? <Tag>{thresholdAudit.audit_insert_enabled ? 'audit write enabled' : 'no audit write'}</Tag> : null}
                 {thresholdAudit.threshold_decision_audit_count ? <Tag color="green">{thresholdAudit.threshold_decision_audit_count} audit rows</Tag> : null}
@@ -3834,7 +3846,8 @@ function GitRemotes() {
             } },
             { title: 'Action', render: (_, row) => {
               const thresholdPlan = row.callback_rehearsal?.provider_rehearsal_plan?.threshold_tuning_plan || {};
-              const thresholdAudit = thresholdPlan.threshold_configuration_plan?.threshold_decision_audit_plan || {};
+              const thresholdConfig = thresholdPlan.threshold_configuration_plan || {};
+              const thresholdAudit = thresholdConfig.threshold_decision_audit_plan || {};
               return <Space size={4} wrap>
                 <Button size="small" onClick={() => rotateWebhookSecret(row.id)}>Rotate secret</Button>
                 <Button
@@ -3844,6 +3857,14 @@ function GitRemotes() {
                   loading={recordingThresholdAuditID === row.id}
                 >
                   {thresholdAudit.threshold_decision_audit_count ? 'Audit recorded' : 'Record threshold audit'}
+                </Button>
+                <Button
+                  size="small"
+                  onClick={() => applyWebhookThresholdConfiguration(row.id)}
+                  disabled={!thresholdConfig.configuration_write_enabled || Boolean(thresholdConfig.threshold_configuration_written)}
+                  loading={applyingThresholdConfigID === row.id}
+                >
+                  {thresholdConfig.threshold_configuration_written ? 'Config applied' : 'Apply threshold config'}
                 </Button>
               </Space>;
             } }

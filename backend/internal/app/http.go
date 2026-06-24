@@ -193,6 +193,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/projects/{id}/webhook-connections", s.listWebhookConnections)
 		r.Get("/api/projects/{id}/webhook-events", s.listWebhookEvents)
 		r.Post("/api/webhook-connections/{id}/threshold-decision-audit", s.recordWebhookThresholdDecisionAudit)
+		r.Post("/api/webhook-connections/{id}/threshold-configuration", s.applyWebhookThresholdConfiguration)
 		r.Post("/api/webhook-connections/{id}/rotate-secret", s.rotateWebhookConnectionSecret)
 		r.Post("/api/webhook-events/{id}/replay", s.replayWebhookEvent)
 		r.Post("/api/projects/{id}/ssh-machines", s.createSSHMachine)
@@ -5593,6 +5594,8 @@ func (s *Server) listWebhookConnections(w http.ResponseWriter, r *http.Request) 
 			stats.last_event_signature_valid,
 			COALESCE(audit_stats.threshold_decision_audit_count, 0)::int AS threshold_decision_audit_count,
 			audit_stats.last_threshold_decision_audit_at,
+			COALESCE(config_stats.threshold_configuration_count, 0)::int AS threshold_configuration_count,
+			config_stats.last_threshold_configuration_at,
 			('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_path,
 			$2 || ('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_url
 		FROM webhook_connections wc
@@ -5638,11 +5641,18 @@ func (s *Server) listWebhookConnections(w http.ResponseWriter, r *http.Request) 
 			FROM webhook_threshold_decision_audits wtda
 			WHERE wtda.webhook_connection_id=wc.id
 		) audit_stats ON true
+		LEFT JOIN LATERAL (
+			SELECT count(*) AS threshold_configuration_count,
+				max(wtc.applied_at) AS last_threshold_configuration_at
+			FROM webhook_threshold_configurations wtc
+			WHERE wtc.webhook_connection_id=wc.id
+		) config_stats ON true
 		WHERE wc.project_id=$1
 		ORDER BY wc.created_at DESC`, projectID, baseURL)
 	annotateWebhookConnectionHealth(items)
 	annotateWebhookCallbackReadiness(items, baseURL)
 	annotateWebhookThresholdDecisionAuditEvidence(items)
+	annotateWebhookThresholdConfigurationEvidence(items)
 	writeQueryResult(w, items, err)
 }
 
@@ -5674,6 +5684,8 @@ func webhookConnectionWithCallbackReadiness(ctx context.Context, db sqlx.ExtCont
 			stats.last_event_signature_valid,
 			COALESCE(audit_stats.threshold_decision_audit_count, 0)::int AS threshold_decision_audit_count,
 			audit_stats.last_threshold_decision_audit_at,
+			COALESCE(config_stats.threshold_configuration_count, 0)::int AS threshold_configuration_count,
+			config_stats.last_threshold_configuration_at,
 			('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_path,
 			$2 || ('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_url
 		FROM webhook_connections wc
@@ -5719,6 +5731,12 @@ func webhookConnectionWithCallbackReadiness(ctx context.Context, db sqlx.ExtCont
 			FROM webhook_threshold_decision_audits wtda
 			WHERE wtda.webhook_connection_id=wc.id
 		) audit_stats ON true
+		LEFT JOIN LATERAL (
+			SELECT count(*) AS threshold_configuration_count,
+				max(wtc.applied_at) AS last_threshold_configuration_at
+			FROM webhook_threshold_configurations wtc
+			WHERE wtc.webhook_connection_id=wc.id
+		) config_stats ON true
 		WHERE wc.id=$1`, connectionID, baseURL)
 	if err != nil {
 		return nil, err
@@ -5726,6 +5744,7 @@ func webhookConnectionWithCallbackReadiness(ctx context.Context, db sqlx.ExtCont
 	annotateWebhookConnectionHealth([]map[string]any{item})
 	annotateWebhookCallbackReadiness([]map[string]any{item}, baseURL)
 	annotateWebhookThresholdDecisionAuditEvidence([]map[string]any{item})
+	annotateWebhookThresholdConfigurationEvidence([]map[string]any{item})
 	return item, nil
 }
 
@@ -5788,6 +5807,55 @@ func annotateWebhookThresholdDecisionAuditEvidence(items []map[string]any) {
 		readiness["provider_rehearsal_plan"] = providerPlan
 		item["callback_rehearsal"] = readiness
 	}
+}
+
+func annotateWebhookThresholdConfigurationEvidence(items []map[string]any) {
+	for _, item := range items {
+		count := intFromAny(item["threshold_configuration_count"], 0)
+		readiness := mapFromAny(item["callback_rehearsal"])
+		providerPlan := mapFromAny(readiness["provider_rehearsal_plan"])
+		thresholdPlan := mapFromAny(providerPlan["threshold_tuning_plan"])
+		configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
+		decisionAuditPlan := mapFromAny(configurationPlan["threshold_decision_audit_plan"])
+		auditRecorded := boolOnlyFromAny(decisionAuditPlan["operator_threshold_review_recorded"]) ||
+			intFromAny(decisionAuditPlan["threshold_decision_audit_count"], 0) > 0
+		if auditRecorded {
+			configurationPlan["configuration_write_enabled"] = true
+			configurationPlan["blocked_reasons"] = removeStringFromSlice(stringSliceFromAny(configurationPlan["blocked_reasons"]), "operator_threshold_review_not_recorded")
+			decisionAuditPlan["configuration_write_enabled"] = true
+			decisionAuditPlan["blocked_reasons"] = removeStringFromSlice(stringSliceFromAny(decisionAuditPlan["blocked_reasons"]), "operator_threshold_review_not_recorded")
+		}
+		if count > 0 {
+			configurationPlan["threshold_configuration_written"] = true
+			configurationPlan["configuration_state"] = "recorded"
+			configurationPlan["threshold_configuration_count"] = count
+			configurationPlan["last_threshold_configuration_at"] = item["last_threshold_configuration_at"]
+			configurationPlan["capacity_signals_recomputed"] = false
+			configurationPlan["provider_metrics_fetched"] = false
+			configurationPlan["external_call_made"] = false
+			decisionAuditPlan["threshold_configuration_written"] = true
+			decisionAuditPlan["threshold_configuration_count"] = count
+			decisionAuditPlan["last_threshold_configuration_at"] = item["last_threshold_configuration_at"]
+			thresholdPlan["threshold_configuration_written"] = true
+			thresholdPlan["provider_pair_thresholds_tuned"] = true
+		}
+		configurationPlan["threshold_decision_audit_plan"] = decisionAuditPlan
+		thresholdPlan["threshold_configuration_plan"] = configurationPlan
+		providerPlan["threshold_tuning_plan"] = thresholdPlan
+		readiness["provider_rehearsal_plan"] = providerPlan
+		item["callback_rehearsal"] = readiness
+	}
+}
+
+func removeStringFromSlice(values []string, remove string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == remove {
+			continue
+		}
+		result = append(result, value)
+	}
+	return result
 }
 
 func webhookCallbackRehearsalReadiness(row map[string]any, baseURL string) map[string]any {
@@ -6171,14 +6239,7 @@ func webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence, metricsCo
 		"contains_secret":                    false,
 		"contains_payload":                   false,
 		"contains_provider_url":              false,
-		"current_thresholds": []map[string]any{
-			{"key": "sync_capacity_active", "warning_at": repoSyncCapacityActiveWarningThreshold, "danger_at": repoSyncCapacityActiveDangerThreshold, "unit": "active_runs"},
-			{"key": "sync_failure_7d", "warning_at": repoSyncCapacityFailure7dWarningThreshold, "danger_at": repoSyncCapacityFailure7dDangerThreshold, "unit": "failures"},
-			{"key": "webhook_delivery_failure_7d", "warning_at": repoSyncCapacityWebhookWarningThreshold, "danger_at": repoSyncCapacityWebhookDangerThreshold, "unit": "failed_events"},
-			{"key": "github_actions_volume_24h", "warning_at": repoSyncCapacityGitHubVolumeWarningThreshold, "danger_at": repoSyncCapacityGitHubVolumeDangerThreshold, "unit": "runs"},
-			{"key": "provider_pair_active_24h", "warning_at": repoSyncCapacityPairActiveWarningThreshold, "danger_at": repoSyncCapacityPairActiveDangerThreshold, "unit": "active_runs"},
-			{"key": "provider_pair_failure_24h", "warning_at": repoSyncCapacityPairFailureWarningThreshold, "danger_at": repoSyncCapacityPairFailureDangerThreshold, "unit": "failures"},
-		},
+		"current_thresholds":                 webhookProviderCallbackCurrentThresholds(),
 		"required_persisted_fields": []string{
 			"provider_pair",
 			"threshold_key",
@@ -6212,6 +6273,17 @@ func webhookProviderCallbackThresholdConfigurationPlan(volumeEvidence, metricsCo
 		},
 		"blocked_reasons": blockedReasons,
 		"message":         "Threshold configuration persistence is review-only; current thresholds are exposed as non-secret constants and no provider metrics or configuration writes are performed.",
+	}
+}
+
+func webhookProviderCallbackCurrentThresholds() []map[string]any {
+	return []map[string]any{
+		{"key": "sync_capacity_active", "warning_at": repoSyncCapacityActiveWarningThreshold, "danger_at": repoSyncCapacityActiveDangerThreshold, "unit": "active_runs"},
+		{"key": "sync_failure_7d", "warning_at": repoSyncCapacityFailure7dWarningThreshold, "danger_at": repoSyncCapacityFailure7dDangerThreshold, "unit": "failures"},
+		{"key": "webhook_delivery_failure_7d", "warning_at": repoSyncCapacityWebhookWarningThreshold, "danger_at": repoSyncCapacityWebhookDangerThreshold, "unit": "failed_events"},
+		{"key": "github_actions_volume_24h", "warning_at": repoSyncCapacityGitHubVolumeWarningThreshold, "danger_at": repoSyncCapacityGitHubVolumeDangerThreshold, "unit": "runs"},
+		{"key": "provider_pair_active_24h", "warning_at": repoSyncCapacityPairActiveWarningThreshold, "danger_at": repoSyncCapacityPairActiveDangerThreshold, "unit": "active_runs"},
+		{"key": "provider_pair_failure_24h", "warning_at": repoSyncCapacityPairFailureWarningThreshold, "danger_at": repoSyncCapacityPairFailureDangerThreshold, "unit": "failures"},
 	}
 }
 
@@ -6770,6 +6842,10 @@ func (s *Server) recordWebhookThresholdDecisionAudit(w http.ResponseWriter, r *h
 	if evidenceWindow == "" {
 		evidenceWindow = "7d"
 	}
+	if !validWebhookEvidenceWindow(evidenceWindow) {
+		writeError(w, http.StatusBadRequest, "invalid evidence window")
+		return
+	}
 	readiness := mapFromAny(connection["callback_rehearsal"])
 	providerPlan := mapFromAny(readiness["provider_rehearsal_plan"])
 	thresholdPlan := mapFromAny(providerPlan["threshold_tuning_plan"])
@@ -6869,6 +6945,197 @@ func (s *Server) recordWebhookThresholdDecisionAudit(w http.ResponseWriter, r *h
 		"readiness":                     readiness,
 		"threshold_decision_audit_plan": decisionAuditPlan,
 	})
+}
+
+func (s *Server) applyWebhookThresholdConfiguration(w http.ResponseWriter, r *http.Request) {
+	connectionID := chi.URLParam(r, "id")
+	connection, err := webhookConnectionWithCallbackReadiness(r.Context(), s.store.DB, connectionID, s.publicBaseURL())
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	projectID := strings.TrimSpace(fmt.Sprint(connection["project_id"]))
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "webhook_connection", ID: connectionID, ProjectID: projectID}, "update") {
+		return
+	}
+	var req struct {
+		EvidenceWindow string `json:"evidence_window"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	evidenceWindow := strings.TrimSpace(req.EvidenceWindow)
+	if evidenceWindow == "" {
+		evidenceWindow = "7d"
+	}
+	if !validWebhookEvidenceWindow(evidenceWindow) {
+		writeError(w, http.StatusBadRequest, "invalid evidence window")
+		return
+	}
+	readiness := mapFromAny(connection["callback_rehearsal"])
+	providerPlan := mapFromAny(readiness["provider_rehearsal_plan"])
+	thresholdPlan := mapFromAny(providerPlan["threshold_tuning_plan"])
+	configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
+	decisionAuditPlan := mapFromAny(configurationPlan["threshold_decision_audit_plan"])
+	if boolOnlyFromAny(configurationPlan["threshold_configuration_written"]) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":     "threshold configuration is already applied",
+			"readiness": readiness,
+		})
+		return
+	}
+	if !boolOnlyFromAny(configurationPlan["configuration_write_enabled"]) ||
+		!boolOnlyFromAny(decisionAuditPlan["operator_threshold_review_recorded"]) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":     "threshold configuration requires a recorded threshold decision audit",
+			"readiness": readiness,
+		})
+		return
+	}
+	thresholds := webhookProviderCallbackCurrentThresholds()
+	thresholdsJSON, err := jsonParam(thresholds)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not serialize threshold configuration")
+		return
+	}
+	evidence := map[string]any{
+		"mode":                                     "provider_callback_threshold_configuration_evidence",
+		"webhook_connection_id":                    connectionID,
+		"provider":                                 strings.TrimSpace(fmt.Sprint(connection["provider"])),
+		"evidence_window":                          evidenceWindow,
+		"threshold_review_state":                   cleanPreviewString(decisionAuditPlan["threshold_review_state"]),
+		"configuration_state":                      cleanPreviewString(decisionAuditPlan["configuration_state"]),
+		"decision_state":                           cleanPreviewString(decisionAuditPlan["decision_state"]),
+		"threshold_configuration_written":          true,
+		"threshold_configuration_count":            len(thresholds),
+		"operator_threshold_review_recorded":       true,
+		"provider_metrics_fetched":                 false,
+		"provider_pair_limits_compared":            false,
+		"capacity_signals_recomputed":              false,
+		"external_call_made":                       false,
+		"contains_token":                           false,
+		"contains_secret":                          false,
+		"contains_payload":                         false,
+		"contains_provider_url":                    false,
+		"raw_request_headers_recorded":             false,
+		"raw_request_body_recorded":                false,
+		"raw_provider_response_recorded":           false,
+		"provider_metrics_comparison_review_ready": boolOnlyFromAny(decisionAuditPlan["decision_ready_for_review"]),
+		"suppressed_fields":                        decisionAuditPlan["suppressed_fields"],
+	}
+	evidenceJSON, err := jsonParam(evidence)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not serialize threshold configuration evidence")
+		return
+	}
+	actorID := ""
+	if user := currentUser(r); user != nil {
+		actorID = strings.TrimSpace(user.ID)
+	}
+	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start threshold configuration transaction")
+		return
+	}
+	defer tx.Rollback()
+	configurations, err := queryMaps(r.Context(), tx, `
+		WITH latest_audit AS (
+			SELECT id
+			FROM webhook_threshold_decision_audits
+			WHERE webhook_connection_id=$2 AND evidence_window=$4
+			ORDER BY created_at DESC
+			LIMIT 1
+		),
+		thresholds AS (
+			SELECT *
+			FROM jsonb_to_recordset($5::jsonb) AS t(key text, warning_at integer, danger_at integer, unit text)
+		)
+		INSERT INTO webhook_threshold_configurations(
+			project_id,
+			webhook_connection_id,
+			provider,
+			threshold_key,
+			warning_at,
+			danger_at,
+			unit,
+			evidence_window,
+			source_audit_id,
+			evidence,
+			applied_by
+		)
+		SELECT $1, $2, $3, thresholds.key, thresholds.warning_at, thresholds.danger_at,
+			thresholds.unit, $4, latest_audit.id, $6::jsonb, NULLIF($7, '')::uuid
+		FROM thresholds
+		CROSS JOIN latest_audit
+		ON CONFLICT (webhook_connection_id, threshold_key, evidence_window)
+		DO UPDATE SET
+			provider=EXCLUDED.provider,
+			warning_at=EXCLUDED.warning_at,
+			danger_at=EXCLUDED.danger_at,
+			unit=EXCLUDED.unit,
+			source_audit_id=EXCLUDED.source_audit_id,
+			evidence=EXCLUDED.evidence,
+			applied_by=COALESCE(EXCLUDED.applied_by, webhook_threshold_configurations.applied_by),
+			applied_at=now()
+		RETURNING id, project_id, webhook_connection_id, provider, threshold_key,
+			warning_at, danger_at, unit, evidence_window, source_audit_id, evidence,
+			applied_by, applied_at`,
+		projectID,
+		connectionID,
+		strings.TrimSpace(fmt.Sprint(connection["provider"])),
+		evidenceWindow,
+		thresholdsJSON,
+		evidenceJSON,
+		actorID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not apply threshold configuration")
+		return
+	}
+	if len(configurations) == 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":           "threshold configuration requires a matching threshold decision audit",
+			"evidence_window": evidenceWindow,
+		})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit threshold configuration")
+		return
+	}
+	configurationPlan["threshold_configuration_written"] = true
+	configurationPlan["configuration_state"] = "recorded"
+	configurationPlan["threshold_configuration_count"] = len(configurations)
+	configurationPlan["provider_metrics_fetched"] = false
+	configurationPlan["capacity_signals_recomputed"] = false
+	configurationPlan["external_call_made"] = false
+	decisionAuditPlan["threshold_configuration_written"] = true
+	configurationPlan["threshold_decision_audit_plan"] = decisionAuditPlan
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"configurations":                       configurations,
+		"readiness":                            readiness,
+		"threshold_configuration_plan":         configurationPlan,
+		"threshold_configuration_written":      true,
+		"threshold_configuration_count":        len(configurations),
+		"provider_metrics_fetched":             false,
+		"provider_pair_limits_compared":        false,
+		"capacity_signals_recomputed":          false,
+		"external_call_made":                   false,
+		"raw_provider_response_recorded":       false,
+		"raw_request_or_payload_body_recorded": false,
+	})
+}
+
+func validWebhookEvidenceWindow(value string) bool {
+	if len(value) < 2 {
+		return false
+	}
+	unit := value[len(value)-1]
+	if unit != 'h' && unit != 'd' && unit != 'w' && unit != 'm' {
+		return false
+	}
+	amount, err := strconv.Atoi(value[:len(value)-1])
+	return err == nil && amount > 0
 }
 
 func (s *Server) listWebhookEvents(w http.ResponseWriter, r *http.Request) {

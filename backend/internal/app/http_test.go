@@ -7314,6 +7314,39 @@ func TestWebhookThresholdDecisionAuditMigrationAndFreshInit(t *testing.T) {
 	}
 }
 
+func TestWebhookThresholdConfigurationMigrationAndFreshInit(t *testing.T) {
+	migration, err := os.ReadFile("../../migrations/018_webhook_threshold_configurations.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	for _, token := range []string{
+		"CREATE TABLE IF NOT EXISTS webhook_threshold_configurations",
+		"project_id UUID NOT NULL REFERENCES projects(id) ON DELETE RESTRICT",
+		"webhook_connection_id UUID NOT NULL REFERENCES webhook_connections(id) ON DELETE RESTRICT",
+		"source_audit_id UUID REFERENCES webhook_threshold_decision_audits(id) ON DELETE SET NULL",
+		"evidence JSONB NOT NULL DEFAULT '{}'::jsonb",
+		"applied_by UUID REFERENCES users(id) ON DELETE SET NULL",
+		"webhook_threshold_configurations_order CHECK",
+		"idx_webhook_threshold_configurations_connection",
+		"idx_webhook_threshold_configurations_project",
+		"idx_webhook_threshold_configurations_once",
+		"ON webhook_threshold_configurations(webhook_connection_id, threshold_key, evidence_window)",
+	} {
+		if !strings.Contains(string(migration), token) {
+			t.Fatalf("webhook threshold configuration migration missing %q", token)
+		}
+	}
+	for _, path := range []string{"../../../deploy/docker-compose.yml", "../../../deploy/compose.prod.yml"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(content), "018_webhook_threshold_configurations.sql") {
+			t.Fatalf("%s missing 018_webhook_threshold_configurations.sql init mount", path)
+		}
+	}
+}
+
 func TestProviderAccountSanitizeDoesNotReturnRawTokenEnv(t *testing.T) {
 	item := sanitizeProviderAccount(map[string]any{
 		"id":            "account-1",
@@ -17371,6 +17404,59 @@ func TestAnnotateWebhookThresholdDecisionAuditEvidenceMarksPersistedAudit(t *tes
 	}
 }
 
+func TestAnnotateWebhookThresholdConfigurationEvidenceMarksPersistedConfig(t *testing.T) {
+	item := map[string]any{
+		"callback_rehearsal": map[string]any{
+			"provider_rehearsal_plan": map[string]any{
+				"threshold_tuning_plan": map[string]any{
+					"threshold_configuration_written": false,
+					"threshold_configuration_plan": map[string]any{
+						"configuration_state":                "ready_for_operator_review",
+						"configuration_write_enabled":        false,
+						"threshold_configuration_written":    false,
+						"operator_threshold_review_recorded": true,
+						"blocked_reasons":                    []string{"operator_threshold_review_not_recorded", "threshold_configuration_write_disabled"},
+						"threshold_decision_audit_plan": map[string]any{
+							"operator_threshold_review_recorded": true,
+							"configuration_write_enabled":        false,
+							"threshold_configuration_written":    false,
+							"threshold_decision_audit_count":     1,
+							"blocked_reasons":                    []string{"operator_threshold_review_not_recorded", "threshold_configuration_write_disabled"},
+						},
+					},
+				},
+			},
+		},
+		"threshold_configuration_count":     int64(6),
+		"last_threshold_configuration_at":   "2026-06-24T10:30:00Z",
+		"raw_provider_response_should_hide": "provider-response",
+	}
+	annotateWebhookThresholdConfigurationEvidence([]map[string]any{item})
+	readiness := mapFromAny(item["callback_rehearsal"])
+	providerPlan := mapFromAny(readiness["provider_rehearsal_plan"])
+	thresholdPlan := mapFromAny(providerPlan["threshold_tuning_plan"])
+	configurationPlan := mapFromAny(thresholdPlan["threshold_configuration_plan"])
+	decisionAuditPlan := mapFromAny(configurationPlan["threshold_decision_audit_plan"])
+	if thresholdPlan["threshold_configuration_written"] != true ||
+		thresholdPlan["provider_pair_thresholds_tuned"] != true ||
+		configurationPlan["threshold_configuration_written"] != true ||
+		configurationPlan["configuration_state"] != "recorded" ||
+		configurationPlan["configuration_write_enabled"] != true ||
+		intFromAny(configurationPlan["threshold_configuration_count"], 0) != 6 ||
+		decisionAuditPlan["threshold_configuration_written"] != true ||
+		decisionAuditPlan["configuration_write_enabled"] != true {
+		t.Fatalf("persisted threshold configuration evidence was not merged into readiness: %#v", readiness)
+	}
+	if containsString(stringSliceFromAny(configurationPlan["blocked_reasons"]), "operator_threshold_review_not_recorded") ||
+		containsString(stringSliceFromAny(decisionAuditPlan["blocked_reasons"]), "operator_threshold_review_not_recorded") {
+		t.Fatalf("persisted threshold configuration should remove operator-review blocker: %#v %#v", configurationPlan, decisionAuditPlan)
+	}
+	encoded, _ := json.Marshal(readiness)
+	if strings.Contains(string(encoded), "provider-response") {
+		t.Fatalf("annotated threshold configuration evidence leaked unrelated raw field: %s", encoded)
+	}
+}
+
 func TestRecordWebhookThresholdDecisionAuditHandlerWritesSanitizedEvidence(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -17534,6 +17620,180 @@ func TestRecordWebhookThresholdDecisionAuditHandlerBlocksWithoutReadyEvidence(t 
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestApplyWebhookThresholdConfigurationHandlerWritesSanitizedConfigurations(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
+		WithArgs("conn-1", "https://assops.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "project_id", "provider", "name", "source_remote_id", "enabled", "event_types", "last_delivery_status", "metadata", "created_at", "updated_at", "source_remote_name",
+			"deliveries_7d", "failures_7d", "processed_7d", "ignored_7d", "replayed_7d", "signature_valid_7d", "matched_repo_sync_asset_7d", "operation_run_7d",
+			"last_event_at", "last_event_status", "last_event_type", "last_event_signature_valid", "threshold_decision_audit_count", "last_threshold_decision_audit_at", "threshold_configuration_count", "last_threshold_configuration_at", "webhook_path", "webhook_url",
+		}).AddRow(
+			"conn-1", "project-1", "gitea", "main webhook", "remote-1", true, []byte(`["push"]`), "processed", []byte(`{}`), now, now, "source",
+			2, 0, 1, 0, 1, 2, 1, 1,
+			now, "processed", "push", true, 1, now, 0, nil, "/api/webhooks/gitea/conn-1", "https://assops.example.com/api/webhooks/gitea/conn-1",
+		))
+	mock.ExpectBegin()
+	rows := sqlmock.NewRows([]string{
+		"id", "project_id", "webhook_connection_id", "provider", "threshold_key", "warning_at", "danger_at", "unit", "evidence_window", "source_audit_id", "evidence", "applied_by", "applied_at",
+	})
+	for _, threshold := range webhookProviderCallbackCurrentThresholds() {
+		rows.AddRow(
+			"config-"+fmt.Sprint(threshold["key"]),
+			"project-1",
+			"conn-1",
+			"gitea",
+			threshold["key"],
+			threshold["warning_at"],
+			threshold["danger_at"],
+			threshold["unit"],
+			"7d",
+			"audit-1",
+			[]byte(`{"contains_secret":false,"threshold_configuration_written":true}`),
+			"admin-1",
+			now,
+		)
+	}
+	mock.ExpectQuery(`(?s)WITH latest_audit AS .*INSERT INTO webhook_threshold_configurations`).
+		WithArgs("project-1", "conn-1", "gitea", "7d", sqlmock.AnyArg(), jsonEvidenceArg(func(payload map[string]any) bool {
+			return payload["mode"] == "provider_callback_threshold_configuration_evidence" &&
+				payload["webhook_connection_id"] == "conn-1" &&
+				payload["provider"] == "gitea" &&
+				payload["threshold_configuration_written"] == true &&
+				intFromAny(payload["threshold_configuration_count"], 0) == 6 &&
+				payload["operator_threshold_review_recorded"] == true &&
+				payload["provider_metrics_fetched"] == false &&
+				payload["provider_pair_limits_compared"] == false &&
+				payload["capacity_signals_recomputed"] == false &&
+				payload["external_call_made"] == false &&
+				payload["contains_secret"] == false &&
+				payload["contains_payload"] == false &&
+				payload["contains_provider_url"] == false
+		}), "admin-1").
+		WillReturnRows(rows)
+	mock.ExpectCommit()
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := httptest.NewRequest(http.MethodPost, "/api/webhook-connections/conn-1/threshold-configuration", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "conn-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+	server.applyWebhookThresholdConfiguration(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["threshold_configuration_written"] != true ||
+		intFromAny(body["threshold_configuration_count"], 0) != len(webhookProviderCallbackCurrentThresholds()) ||
+		body["provider_metrics_fetched"] != false ||
+		body["capacity_signals_recomputed"] != false ||
+		body["external_call_made"] != false {
+		t.Fatalf("threshold configuration response should be sanitized and recorded: %#v", body)
+	}
+	encoded := rr.Body.String()
+	for _, forbidden := range []string{"secret-token", "payload-body", "provider-response", "Bearer", "provider.example.com"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("threshold configuration response leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestApplyWebhookThresholdConfigurationHandlerBlocksWithoutAudit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
+		WithArgs("conn-1", "https://assops.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "project_id", "provider", "name", "source_remote_id", "enabled", "event_types", "last_delivery_status", "metadata", "created_at", "updated_at", "source_remote_name",
+			"deliveries_7d", "failures_7d", "processed_7d", "ignored_7d", "replayed_7d", "signature_valid_7d", "matched_repo_sync_asset_7d", "operation_run_7d",
+			"last_event_at", "last_event_status", "last_event_type", "last_event_signature_valid", "threshold_decision_audit_count", "last_threshold_decision_audit_at", "threshold_configuration_count", "last_threshold_configuration_at", "webhook_path", "webhook_url",
+		}).AddRow(
+			"conn-1", "project-1", "gitea", "main webhook", "remote-1", true, []byte(`["push"]`), "processed", []byte(`{}`), now, now, "source",
+			2, 0, 1, 0, 1, 2, 1, 1,
+			now, "processed", "push", true, 0, nil, 0, nil, "/api/webhooks/gitea/conn-1", "https://assops.example.com/api/webhooks/gitea/conn-1",
+		))
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := httptest.NewRequest(http.MethodPost, "/api/webhook-connections/conn-1/threshold-configuration", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "conn-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+	server.applyWebhookThresholdConfiguration(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "threshold configuration requires a recorded threshold decision audit") {
+		t.Fatalf("blocked threshold configuration response = %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestApplyWebhookThresholdConfigurationHandlerBlocksAlreadyApplied(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
+		WithArgs("conn-1", "https://assops.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "project_id", "provider", "name", "source_remote_id", "enabled", "event_types", "last_delivery_status", "metadata", "created_at", "updated_at", "source_remote_name",
+			"deliveries_7d", "failures_7d", "processed_7d", "ignored_7d", "replayed_7d", "signature_valid_7d", "matched_repo_sync_asset_7d", "operation_run_7d",
+			"last_event_at", "last_event_status", "last_event_type", "last_event_signature_valid", "threshold_decision_audit_count", "last_threshold_decision_audit_at", "threshold_configuration_count", "last_threshold_configuration_at", "webhook_path", "webhook_url",
+		}).AddRow(
+			"conn-1", "project-1", "gitea", "main webhook", "remote-1", true, []byte(`["push"]`), "processed", []byte(`{}`), now, now, "source",
+			2, 0, 1, 0, 1, 2, 1, 1,
+			now, "processed", "push", true, 1, now, 6, now, "/api/webhooks/gitea/conn-1", "https://assops.example.com/api/webhooks/gitea/conn-1",
+		))
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := httptest.NewRequest(http.MethodPost, "/api/webhook-connections/conn-1/threshold-configuration", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "conn-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+	server.applyWebhookThresholdConfiguration(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "threshold configuration is already applied") {
+		t.Fatalf("already-applied threshold configuration response = %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestValidWebhookEvidenceWindow(t *testing.T) {
+	for _, value := range []string{"1h", "7d", "2w", "12m"} {
+		if !validWebhookEvidenceWindow(value) {
+			t.Fatalf("validWebhookEvidenceWindow(%q) = false", value)
+		}
+	}
+	for _, value := range []string{"", "0d", "-1d", "7", "abc123", "1y", "1 d"} {
+		if validWebhookEvidenceWindow(value) {
+			t.Fatalf("validWebhookEvidenceWindow(%q) = true", value)
+		}
 	}
 }
 
