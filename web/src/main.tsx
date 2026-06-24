@@ -4995,6 +4995,8 @@ function ConfigPage() {
   const [podLogSnapshotResult, setPodLogSnapshotResult] = useState<AnyRow>();
   const [sshOpen, setSSHOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
+  const [sshSnapshotLoading, setSSHSnapshotLoading] = useState(false);
+  const [sshSnapshotResult, setSSHSnapshotResult] = useState<AnyRow>();
   const argoConnections = useLoad(() => project ? api(`/api/projects/${project.id}/argo/connections`) : Promise.resolve({ items: [] }), [project?.id]);
   const argoRows = argoConnections.data?.items || [];
   const argoPick = useSelectedRow(argoRows);
@@ -5037,6 +5039,9 @@ function ConfigPage() {
     recent_evidence: sshRehearsal.data.recent_evidence
   } : null;
   const sshRuns = useLoad(() => project ? api(`/api/ssh-command-runs?project_id=${project.id}`) : Promise.resolve({ items: [] }), [project?.id]);
+  useEffect(() => {
+    setSSHSnapshotResult(undefined);
+  }, [sshPick.selectedID]);
   const deploymentPosture = buildDeploymentPosture(
     deploymentTargets.data?.items || [],
     deploymentRecords.data?.items || [],
@@ -5237,6 +5242,31 @@ function ConfigPage() {
       message.error(error.message);
     }
   }
+  async function recordSSHRehearsalSnapshot() {
+    if (!sshPick.selectedID) {
+      message.error('Select an SSH machine first');
+      return;
+    }
+    setSSHSnapshotLoading(true);
+    try {
+      const result = await api(`/api/ssh-machines/${sshPick.selectedID}/rehearsal-snapshot`, {
+        method: 'POST',
+        body: '{}'
+      });
+      setSSHSnapshotResult(result);
+      sshRehearsal.reload();
+      if (result.recording_ready === false) {
+        message.warning(result.message || 'SSH rehearsal snapshot is not ready yet');
+      } else {
+        message.success(result.ssh_rehearsal_snapshot_written ? 'SSH rehearsal snapshot recorded' : 'SSH rehearsal snapshot already current');
+      }
+    } catch (error: any) {
+      setSSHSnapshotResult(undefined);
+      message.error(error.message || 'Request failed');
+    } finally {
+      setSSHSnapshotLoading(false);
+    }
+  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Typography.Title level={2}>Argo / SSH</Typography.Title>
@@ -5249,6 +5279,7 @@ function ConfigPage() {
             <Button onClick={verifySSHMachine} disabled={!sshPick.selectedID}>Verify</Button>
             <Button type="primary" onClick={() => setCommandOpen(true)} disabled={!sshPick.selectedID}>Run command</Button>
             <Button onClick={() => { sshRuns.reload(); sshRehearsal.reload(); }} loading={sshRehearsal.loading} disabled={!project}>Refresh runs</Button>
+            <Button onClick={recordSSHRehearsalSnapshot} loading={sshSnapshotLoading} disabled={!sshPick.selectedID || !sshRehearsalView?.target_environment_attestation_ready}>Record snapshot</Button>
           </Space>
           {sshRehearsal.error && <Alert showIcon type="warning" message="SSH rehearsal preview unavailable" description={sshRehearsal.error} />}
           {sshRehearsalView && (
@@ -5288,6 +5319,15 @@ function ConfigPage() {
                   <Tag>{sshRehearsalView.recent_evidence?.failed_runs || 0} failed runs</Tag>
                   <Tag>{sshRehearsalView.recent_evidence?.canceled_runs || 0} canceled runs</Tag>
                 </Space>
+                {sshSnapshotResult && (
+                  <Space wrap>
+                    <Tag color={sshSnapshotResult.recording_state === 'recorded' ? 'green' : sshSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'gold'}>snapshot {sshSnapshotResult.recording_state || 'pending'}</Tag>
+                    <Tag>{sshSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
+                    <Tag>{sshSnapshotResult.ssh_machine_asset_observed ? 'host asset observed' : 'host asset missing'}</Tag>
+                    <Tag>{sshSnapshotResult.stdout_included || sshSnapshotResult.stderr_included ? 'output included' : 'no command output'}</Tag>
+                    <Tag>{sshSnapshotResult.private_key_included ? 'key included' : 'no key material'}</Tag>
+                  </Space>
+                )}
                 <JSONBlock value={sshRehearsalView} />
               </Space>
             </Card>

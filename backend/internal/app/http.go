@@ -195,6 +195,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/projects/{id}/ssh-machines", s.createSSHMachine)
 		r.Get("/api/projects/{id}/ssh-machines", s.listSSHMachines)
 		r.Get("/api/ssh-machines/{id}/rehearsal", s.getSSHMachineRehearsal)
+		r.Post("/api/ssh-machines/{id}/rehearsal-snapshot", s.recordSSHMachineRehearsalSnapshot)
 		r.Post("/api/ssh-machines/{id}/verify", s.verifySSHMachine)
 		r.Post("/api/ssh-machines/{id}/commands", s.createSSHCommand)
 		r.Get("/api/ssh-command-runs", s.listSSHCommandRuns)
@@ -20481,6 +20482,41 @@ func (s *Server) getSSHMachineRehearsal(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, buildSSHMachineRehearsalPreview(machine, runs))
+}
+
+func (s *Server) recordSSHMachineRehearsalSnapshot(w http.ResponseWriter, r *http.Request) {
+	machineID := chi.URLParam(r, "id")
+	var req struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	machine, err := sshMachineForRehearsalSnapshot(r.Context(), s.store.DB, machineID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	projectID := cleanPreviewString(machine["project_id"])
+	if projectID == "" {
+		writeError(w, http.StatusInternalServerError, "SSH machine has no project")
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "ssh_machine", ID: machineID, ProjectID: projectID}, "update") {
+		return
+	}
+	result, err := RecordSSHMachineRehearsalSnapshot(r.Context(), s.store, SSHMachineRehearsalSnapshotOptions{
+		MachineID: machineID,
+		DryRun:    req.DryRun,
+	})
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("ssh rehearsal snapshot failed", "ssh_machine_id", machineID, "project_id", projectID, "error", err)
+		}
+		writeError(w, http.StatusBadRequest, "record SSH rehearsal snapshot failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func buildSSHMachineRehearsalPreview(machine map[string]any, runs []map[string]any) map[string]any {

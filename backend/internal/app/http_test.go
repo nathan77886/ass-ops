@@ -6538,6 +6538,408 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 	}
 }
 
+func TestSSHMachineRehearsalSnapshotPayloadSanitizesAttestation(t *testing.T) {
+	preview := buildSSHMachineRehearsalPreview(
+		map[string]any{
+			"id":         "machine-1",
+			"project_id": "project-1",
+			"name":       "prod-api",
+			"host":       "10.0.0.12",
+			"port":       22,
+			"username":   "deploy",
+			"auth_type":  "key",
+			"metadata": map[string]any{
+				"key_path":                      "/etc/assops/ssh/prod-api",
+				"known_hosts_path":              "/etc/assops/ssh/known_hosts",
+				"live_rehearsal_runbook":        "https://runbooks.example.com/ssh/prod-api",
+				"authorized_fixture_id":         "fixture-prod-api-1",
+				"operator_approved_by":          "alice@example.com",
+				"operator_approval_note":        "approved for production rehearsal",
+				"live_rehearsal_environment":    "prod",
+				"operator_environment_proof_id": "env-proof-1",
+				"private_key_should_not_leak":   "BEGIN OPENSSH PRIVATE KEY",
+			},
+		},
+		[]map[string]any{
+			{"id": "run-2", "status": "completed", "exit_code": 0, "operation_type": "ssh.exec", "command": "cat /etc/passwd", "stdout": "secret output", "stderr": "secret error"},
+			{"id": "run-1", "status": "completed", "exit_code": 0, "operation_type": "ssh.verify", "command": "true"},
+		},
+	)
+	snapshot := sshMachineRehearsalSnapshotPayload(preview, true)
+	ready, state, missing := sshMachineRehearsalSnapshotReadiness(preview, snapshot)
+	if !ready || state != "ready_to_record" || len(missing) != 0 {
+		t.Fatalf("snapshot readiness = %v/%s/%#v; snapshot=%#v", ready, state, missing, snapshot)
+	}
+	if snapshot["target_environment_attestation_ready"] != true ||
+		snapshot["environment_proof_ready"] != true ||
+		snapshot["live_rehearsal_controls_ready"] != true ||
+		snapshot["sanitized_result_recorded"] != true ||
+		snapshot["status_snapshot_written"] != true ||
+		snapshot["external_call_made"] != false ||
+		snapshot["ssh_process_started"] != false ||
+		snapshot["command_executed"] != false ||
+		snapshot["stdout_included"] != false ||
+		snapshot["stderr_included"] != false ||
+		snapshot["private_key_included"] != false ||
+		snapshot["operator_identity_included"] != false ||
+		snapshot["environment_identifier_included"] != false {
+		t.Fatalf("unexpected sanitized ssh snapshot: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, forbidden := range []string{"10.0.0.12", "deploy", "/etc/assops/ssh/prod-api", "runbooks.example.com", "fixture-prod-api-1", "alice@example.com", "approved for production rehearsal", "env-proof-1", "BEGIN OPENSSH PRIVATE KEY", "secret output", "secret error", "cat /etc/passwd"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("ssh rehearsal snapshot leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestRecordSSHMachineRehearsalSnapshotHandlerBlockedByAttestationReadiness(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{{id: "run-1", status: "completed", operationType: "ssh.verify"}})
+	expectSSHRehearsalSnapshotAsset(mock, true)
+
+	req := newSSHRehearsalSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineRehearsalSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_ready"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["ssh_rehearsal_snapshot_written"] != false ||
+		got["stdout_included"] != false ||
+		got["private_key_included"] != false {
+		t.Fatalf("unexpected blocked ssh snapshot response: %#v", got)
+	}
+	if !containsString(stringSliceFromAny(got["missing_evidence"]), "completed_ssh_exec_missing") ||
+		!containsString(stringSliceFromAny(got["missing_evidence"]), "target_environment_attestation_not_ready") {
+		t.Fatalf("blocked ssh snapshot missing expected evidence: %#v", got["missing_evidence"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordSSHMachineRehearsalSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{
+		{id: "run-2", status: "completed", operationType: "ssh.exec"},
+		{id: "run-1", status: "completed", operationType: "ssh.verify"},
+	})
+	expectSSHRehearsalSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-ssh-1", "ssh_rehearsal_attested").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-ssh-1", "ssh_rehearsal_attested", "warning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	req := newSSHRehearsalSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineRehearsalSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["recording_ready"] != true ||
+		got["ssh_rehearsal_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["external_call_made"] != false ||
+		got["ssh_process_started"] != false ||
+		got["command_executed"] != false ||
+		got["stdout_included"] != false ||
+		got["private_key_included"] != false ||
+		got["target_environment_attestation_ready"] != true {
+		t.Fatalf("unexpected ready ssh snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["target_environment_attestation_ready"] != true ||
+		snapshot["environment_proof_ready"] != true ||
+		snapshot["live_rehearsal_controls_ready"] != true ||
+		snapshot["stdout_included"] != false ||
+		snapshot["private_key_included"] != false ||
+		snapshot["environment_identifier_included"] != false {
+		t.Fatalf("unexpected ready ssh snapshot payload: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordSSHMachineRehearsalSnapshotHandlerDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{
+		{id: "run-2", status: "completed", operationType: "ssh.exec"},
+		{id: "run-1", status: "completed", operationType: "ssh.verify"},
+	})
+	expectSSHRehearsalSnapshotAsset(mock, true)
+
+	req := newSSHRehearsalSnapshotRequest(`{"dry_run":true}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineRehearsalSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "ready_to_record" ||
+		got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["ssh_rehearsal_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run ssh snapshot response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordSSHMachineRehearsalSnapshotHandlerRowsAffectedUnavailable(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{
+		{id: "run-2", status: "completed", operationType: "ssh.exec"},
+		{id: "run-1", status: "completed", operationType: "ssh.verify"},
+	})
+	expectSSHRehearsalSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-ssh-1", "ssh_rehearsal_attested").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-ssh-1", "ssh_rehearsal_attested", "warning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	req := newSSHRehearsalSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineRehearsalSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["snapshots_written"] != float64(-1) ||
+		got["snapshots_skipped_as_duplicate"] != float64(0) ||
+		got["rows_affected_unknown"] != true ||
+		got["snapshot_commit_attempted"] != true ||
+		got["ssh_rehearsal_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true {
+		t.Fatalf("unexpected rows affected unavailable response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordSSHMachineRehearsalSnapshotHandlerSkipsDuplicate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{
+		{id: "run-2", status: "completed", operationType: "ssh.exec"},
+		{id: "run-1", status: "completed", operationType: "ssh.verify"},
+	})
+	expectSSHRehearsalSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-ssh-1", "ssh_rehearsal_attested").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-ssh-1", "ssh_rehearsal_attested", "warning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+
+	req := newSSHRehearsalSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineRehearsalSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["snapshots_written"] != float64(0) ||
+		got["snapshots_skipped_as_duplicate"] != float64(1) ||
+		got["snapshot_commit_attempted"] != true ||
+		got["ssh_rehearsal_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected duplicate ssh snapshot response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordSSHMachineRehearsalSnapshotHandlerRunLoadFailure(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	mock.ExpectQuery(`(?s)SELECT scr\.id, scr\.status, scr\.exit_code, scr\.created_at, scr\.finished_at, op\.operation_type\s+FROM ssh_command_runs scr\s+LEFT JOIN operation_runs op ON op\.id=scr\.operation_run_id\s+WHERE scr\.ssh_machine_id=\$1`).
+		WithArgs("machine-1").
+		WillReturnError(fmt.Errorf("query failed"))
+
+	req := newSSHRehearsalSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineRehearsalSnapshot(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordSSHMachineRehearsalSnapshotHandlerAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotMachine(mock)
+	expectSSHRehearsalSnapshotRuns(mock, []sshSnapshotRun{
+		{id: "run-2", status: "completed", operationType: "ssh.exec"},
+		{id: "run-1", status: "completed", operationType: "ssh.verify"},
+	})
+	expectSSHRehearsalSnapshotAsset(mock, false)
+
+	req := newSSHRehearsalSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordSSHMachineRehearsalSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["ssh_machine_asset_observed"] != false ||
+		got["ssh_rehearsal_snapshot_written"] != false {
+		t.Fatalf("unexpected asset missing response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+type sshSnapshotRun struct {
+	id            string
+	status        string
+	operationType string
+}
+
+func expectSSHRehearsalSnapshotMachine(mock sqlmock.Sqlmock) {
+	now := time.Now()
+	metadata := []byte(`{
+		"key_path":"/etc/assops/ssh/prod-api",
+		"known_hosts_path":"/etc/assops/ssh/known_hosts",
+		"live_rehearsal_runbook":"https://runbooks.example.com/ssh/prod-api",
+		"authorized_fixture_id":"fixture-prod-api-1",
+		"operator_approved_by":"alice@example.com",
+		"operator_approval_note":"approved for production rehearsal",
+		"live_rehearsal_environment":"prod",
+		"operator_environment_proof_id":"env-proof-1",
+		"private_key_should_not_leak":"BEGIN OPENSSH PRIVATE KEY"
+	}`)
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, host, port, username, auth_type, metadata, created_at, updated_at\s+FROM ssh_machines\s+WHERE id=\$1`).
+		WithArgs("machine-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "host", "port", "username", "auth_type", "metadata", "created_at", "updated_at"}).
+			AddRow("machine-1", "project-1", "prod-api", "10.0.0.12", 22, "deploy", "key", metadata, now, now))
+}
+
+func expectSSHRehearsalSnapshotRuns(mock sqlmock.Sqlmock, runs []sshSnapshotRun) {
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "status", "exit_code", "created_at", "finished_at", "operation_type"})
+	for _, run := range runs {
+		rows.AddRow(run.id, run.status, 0, now, now, run.operationType)
+	}
+	mock.ExpectQuery(`(?s)SELECT scr\.id, scr\.status, scr\.exit_code, scr\.created_at, scr\.finished_at, op\.operation_type\s+FROM ssh_command_runs scr\s+LEFT JOIN operation_runs op ON op\.id=scr\.operation_run_id\s+WHERE scr\.ssh_machine_id=\$1`).
+		WithArgs("machine-1").
+		WillReturnRows(rows)
+}
+
+func expectSSHRehearsalSnapshotAsset(mock sqlmock.Sqlmock, found bool) {
+	query := mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='host'\s+AND source_table='ssh_machines'`).
+		WithArgs("machine-1")
+	if found {
+		query.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-ssh-1"))
+	} else {
+		query.WillReturnError(sql.ErrNoRows)
+	}
+}
+
+func newSSHRehearsalSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/ssh-machines/machine-1/rehearsal-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "machine-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
 func TestProviderAccountsMigrationIncludesTableAndRemoteFK(t *testing.T) {
 	content, err := os.ReadFile("../../migrations/003_provider_accounts.sql")
 	if err != nil {
