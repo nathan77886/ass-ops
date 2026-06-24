@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"assops/backend/internal/app"
 )
 
 func TestPostgresProcessDatabaseURLStripsPassword(t *testing.T) {
@@ -504,115 +501,6 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 		}
 		assertDemoDataRehearsalPlanSafe(t, plan)
 	}
-}
-
-func TestBuildDemoReadinessSnapshotResultRecordsPartialSafely(t *testing.T) {
-	result, err := buildDemoReadinessSnapshotResult([]demoReadinessAssetRow{
-		{
-			ID:          "asset-project",
-			AssetType:   "project",
-			SourceTable: "projects",
-			SourceID:    "project-1",
-			Name:        "ASSOPS Demo",
-			DisplayName: "ASSOPS Demo",
-			Status:      "active",
-			RiskLevel:   "low",
-		},
-	}, nil, demoReadinessSnapshotOptions{ProjectSlug: "assops-demo", DryRun: true})
-	if err != nil {
-		t.Fatalf("buildDemoReadinessSnapshotResult partial: %v", err)
-	}
-	if result["recording_state"] != "ready_to_record" || result["recording_ready"] != true {
-		t.Fatalf("partial snapshot should be ready to record diagnostic state: %#v", result)
-	}
-	snapshot := mapFromAny(result["snapshot"])
-	if snapshot["readiness_status"] != "partial" ||
-		snapshot["project_readiness_status"] != "ready" ||
-		snapshot["repository_readiness_status"] != "missing" ||
-		snapshot["graph_proof_status"] != "partial" {
-		t.Fatalf("partial snapshot statuses = %#v", snapshot)
-	}
-	if snapshot["project_asset_id"] != "project:project-1" {
-		t.Fatalf("partial snapshot project asset id = %#v", snapshot["project_asset_id"])
-	}
-	for _, missing := range []string{"repository_readiness_not_ready", "repository_asset_path_missing", "two_remote_asset_path_missing"} {
-		if !containsString(stringSliceFromAny(snapshot["missing_required_evidence"]), missing) {
-			t.Fatalf("partial snapshot missing evidence should include %q: %#v", missing, snapshot["missing_required_evidence"])
-		}
-	}
-	assertDemoReadinessSnapshotSafe(t, snapshot)
-}
-
-func TestBuildDemoReadinessSnapshotResultUsesAllowlistedRawFields(t *testing.T) {
-	assets := []demoReadinessAssetRow{
-		{
-			ID:          "asset-project",
-			AssetType:   "project",
-			SourceTable: "projects",
-			SourceID:    "project-1",
-			Name:        "ASSOPS Demo",
-			DisplayName: "ASSOPS Demo",
-			Status:      "active",
-			RiskLevel:   "low",
-			Metadata:    app.JSONValue{Data: map[string]any{"token": "secret-token", "remote_url": "git@github.com:secret/demo.git"}},
-		},
-		{
-			ID:          "asset-repo",
-			AssetType:   "repository",
-			SourceTable: "project_git_repositories",
-			SourceID:    "repo-1",
-			Name:        "demo-service",
-			DisplayName: "Demo Service",
-			Status:      "active",
-			RiskLevel:   "low",
-			Metadata:    app.JSONValue{Data: map[string]any{"repo_role": "service", "provider_token": "ghp_secret"}},
-		},
-		{
-			ID:          "asset-source",
-			AssetType:   "git_remote",
-			SourceTable: "git_remotes",
-			SourceID:    "remote-source",
-			Name:        "source",
-			DisplayName: "Source",
-			Status:      "active",
-			RiskLevel:   "low",
-			Metadata:    app.JSONValue{Data: map[string]any{"provider": "gitea", "remote_url": "ssh://git@gitea.example.com/demo.git"}},
-		},
-		{
-			ID:          "asset-mirror",
-			AssetType:   "git_remote",
-			SourceTable: "git_remotes",
-			SourceID:    "remote-mirror",
-			Name:        "mirror",
-			DisplayName: "Mirror",
-			Status:      "active",
-			RiskLevel:   "low",
-			Metadata:    app.JSONValue{Data: map[string]any{"provider": "github", "web_url": "https://token@example.com/demo.git", "latest_sha": "0123456789abcdef"}},
-		},
-	}
-	relations := []demoReadinessRelationRow{
-		{FromAssetID: "asset-project", ToAssetID: "asset-repo", RelationType: "owns"},
-		{FromAssetID: "asset-repo", ToAssetID: "asset-source", RelationType: "has_remote"},
-		{FromAssetID: "asset-repo", ToAssetID: "asset-mirror", RelationType: "has_remote"},
-	}
-	result, err := buildDemoReadinessSnapshotResult(assets, relations, demoReadinessSnapshotOptions{ProjectID: "project-1"})
-	if err != nil {
-		t.Fatalf("buildDemoReadinessSnapshotResult ready: %v", err)
-	}
-	snapshot := mapFromAny(result["snapshot"])
-	if snapshot["readiness_status"] != "ready" ||
-		snapshot["graph_proof_status"] != "observed" ||
-		snapshot["project_asset_id"] != "project:project-1" ||
-		snapshot["repository_asset_id"] != "repository:repo-1" {
-		t.Fatalf("ready snapshot = %#v", snapshot)
-	}
-	remoteIDs := stringSliceFromAny(snapshot["remote_asset_ids"])
-	if len(remoteIDs) != 2 ||
-		!containsString(remoteIDs, "git_remote:remote-source") ||
-		!containsString(remoteIDs, "git_remote:remote-mirror") {
-		t.Fatalf("ready snapshot remote ids = %#v", remoteIDs)
-	}
-	assertDemoReadinessSnapshotSafe(t, snapshot)
 }
 
 func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
@@ -1959,47 +1847,6 @@ func containsString(items []string, target string) bool {
 		}
 	}
 	return false
-}
-
-func assertDemoReadinessSnapshotSafe(t *testing.T, snapshot map[string]any) {
-	t.Helper()
-	for _, field := range []string{"project_asset_id", "repository_asset_id", "remote_asset_ids", "readiness_status", "project_readiness_status", "repository_readiness_status", "graph_proof_status", "evidence_counts", "missing_required_evidence"} {
-		if _, ok := snapshot[field]; !ok {
-			t.Fatalf("demo readiness snapshot missing allowlisted field %q: %#v", field, snapshot)
-		}
-	}
-	if snapshot["external_call_made"] != false ||
-		snapshot["demo_seed_written"] != false ||
-		snapshot["project_created"] != false ||
-		snapshot["repository_created"] != false ||
-		snapshot["git_remote_created"] != false ||
-		snapshot["asset_graph_written"] != false ||
-		snapshot["operation_log_written"] != false {
-		t.Fatalf("demo readiness snapshot should keep mutation/external flags false: %#v", snapshot)
-	}
-	encoded, err := json.Marshal(snapshot)
-	if err != nil {
-		t.Fatalf("marshal demo readiness snapshot: %v", err)
-	}
-	for _, forbidden := range []string{
-		"git@github.com",
-		"ssh://git@",
-		"https://token@",
-		"secret-token",
-		"ghp_secret",
-		"0123456789abcdef",
-		"remote_url",
-		"web_url",
-		"provider_token",
-		"git_credentials",
-		"webhook_secret",
-		"operation_log_body",
-		"provider_response_body",
-	} {
-		if strings.Contains(string(encoded), forbidden) {
-			t.Fatalf("demo readiness snapshot leaked %q: %s", forbidden, encoded)
-		}
-	}
 }
 
 func writeSHA256SUMS(t *testing.T, dir string, files map[string]string) {

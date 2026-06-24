@@ -1034,13 +1034,16 @@ function demoDataResultRecordingPlan(status: string, evidenceCounts: AnyRow = {}
   const missing = missingDemoDataEvidence(checks, requiredEvidence);
   const readinessSnapshotReady = status === 'ready' && missing.length === 0;
   const graphSnapshotReady = readinessSnapshotReady;
+  const disabledBackends = readinessSnapshotReady
+    ? ['demo_result_write', 'asset_graph_snapshot_write', 'operation_log_write']
+    : ['demo_result_write', 'readiness_snapshot_write', 'asset_graph_snapshot_write', 'operation_log_write'];
   const preflight = {
     mode: 'first_version_demo_data_result_recording_preflight',
     readiness_status: status,
     readiness_snapshot_ready_for_review: readinessSnapshotReady,
     asset_graph_snapshot_ready_for_review: graphSnapshotReady,
     snapshot_contract_ready: readinessSnapshotReady && graphSnapshotReady,
-    snapshot_write_enabled: false,
+    snapshot_write_enabled: readinessSnapshotReady,
     asset_graph_write_enabled: false,
     operation_log_write_enabled: false,
     external_call_made: false,
@@ -1051,16 +1054,16 @@ function demoDataResultRecordingPlan(status: string, evidenceCounts: AnyRow = {}
     evidence_counts: evidenceCounts,
     required_snapshot_fields: ['project_asset_id', 'repository_asset_id', 'source_remote_asset_id', 'mirror_remote_asset_id', 'graph_proof_status', 'readiness_status', 'evidence_counts', 'missing_required_evidence'],
     suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret', 'raw_graph_payload', 'operation_log_body'],
-    disabled_backends: ['demo_result_write', 'readiness_snapshot_write', 'asset_graph_snapshot_write', 'operation_log_write'],
-    blocked_reasons: readinessSnapshotReady ? ['demo_result_write_disabled', 'readiness_snapshot_write_disabled', 'asset_graph_snapshot_write_disabled'] : ['demo_result_write_disabled', 'readiness_snapshot_write_disabled', 'asset_graph_snapshot_write_disabled', 'required_demo_evidence_missing'],
-    message: 'Demo result recording preflight is review metadata only; snapshot and operation-log writes remain disabled.'
+    disabled_backends: disabledBackends,
+    blocked_reasons: readinessSnapshotReady ? ['demo_result_write_disabled', 'asset_graph_snapshot_write_disabled'] : ['demo_result_write_disabled', 'readiness_snapshot_write_disabled', 'asset_graph_snapshot_write_disabled', 'required_demo_evidence_missing'],
+    message: readinessSnapshotReady ? 'Local readiness snapshot recording is available; demo result and operation-log writes remain disabled.' : 'Demo result recording preflight is review metadata only until required graph evidence is observed.'
   };
   return {
     mode: 'first_version_demo_data_result_recording_plan',
-    result_recording_state: 'blocked',
-    result_recording_ready: false,
-    result_recording_ready_reason: 'demo_data_execution_not_performed',
-    recording_enabled: false,
+    result_recording_state: readinessSnapshotReady ? 'snapshot_ready' : 'blocked',
+    result_recording_ready: readinessSnapshotReady,
+    result_recording_ready_reason: readinessSnapshotReady ? 'local_readiness_snapshot_recording_ready' : 'demo_data_execution_not_performed',
+    recording_enabled: readinessSnapshotReady,
     result_written: false,
     operation_log_written: false,
     readiness_snapshot_written: false,
@@ -1070,8 +1073,8 @@ function demoDataResultRecordingPlan(status: string, evidenceCounts: AnyRow = {}
     required_result_fields: ['project_asset_id', 'repository_asset_id', 'source_remote_asset_id', 'mirror_remote_asset_id', 'graph_proof_status', 'readiness_status'],
     result_recording_preflight: preflight,
     suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret', 'raw_graph_payload', 'operation_log_body'],
-    blocked_reasons: ['demo_data_execution_not_performed', 'readiness_snapshot_not_recorded', 'asset_graph_snapshot_not_recorded'],
-    message: 'Demo data result recording is disabled until a live environment run creates and proves the graph-backed demo evidence.'
+    blocked_reasons: readinessSnapshotReady ? ['demo_data_execution_not_performed', 'asset_graph_snapshot_not_recorded'] : ['demo_data_execution_not_performed', 'readiness_snapshot_not_recorded', 'asset_graph_snapshot_not_recorded'],
+    message: readinessSnapshotReady ? 'Local readiness snapshot recording can persist sanitized graph evidence; live demo result recording remains disabled.' : 'Demo data result recording is disabled until a live environment run creates and proves the graph-backed demo evidence.'
   };
 }
 
@@ -1446,6 +1449,20 @@ function Dashboard() {
   const readinessRows = firstVersionReadinessRows(assets.data?.items || [], ops.data?.items || [], approvalSummary.data || {}, graph.data || {});
   const readinessCounts = countByField(readinessRows, 'status');
   const graphWarning = graph.error ? `Asset graph unavailable: ${graph.error}` : graph.data && !graphPayloadAvailable(graph.data) ? 'Asset graph response missing nodes or edges' : '';
+  const [demoSnapshotLoading, setDemoSnapshotLoading] = useState(false);
+  const [demoSnapshotResult, setDemoSnapshotResult] = useState<AnyRow>();
+  async function recordDemoReadinessSnapshot() {
+    setDemoSnapshotLoading(true);
+    try {
+      const result = await api('/api/demo-readiness-snapshot', { method: 'POST', body: '{}' });
+      setDemoSnapshotResult(result);
+      message.success(result.readiness_snapshot_written ? 'Demo readiness snapshot recorded' : 'Demo readiness snapshot already current');
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setDemoSnapshotLoading(false);
+    }
+  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Typography.Title level={2}>Dashboard</Typography.Title>
@@ -1456,7 +1473,14 @@ function Dashboard() {
         <Card><Typography.Text type="secondary">Needs evidence</Typography.Text><Typography.Title level={3}>{(readinessCounts.partial || 0) + (readinessCounts.missing || 0)}</Typography.Title></Card>
       </div>
       {graphWarning ? <Alert showIcon closable type="warning" message={graphWarning} action={<Button size="small" onClick={graph.reload}>Retry</Button>} /> : null}
-      <Card title="First-Version Readiness">
+      <Card
+        title="First-Version Readiness"
+        extra={<Space size={8} wrap>
+          {demoSnapshotResult ? <Tag color={demoSnapshotResult.readiness_snapshot_written ? 'green' : demoSnapshotResult.recording_state === 'blocked' ? 'red' : 'default'}>snapshot {demoSnapshotResult.recording_state || 'unknown'}</Tag> : null}
+          {demoSnapshotResult ? <Tag>{demoSnapshotResult.asset_graph_snapshot_written ? 'asset status written' : 'no asset status write'}</Tag> : null}
+          <Button size="small" onClick={recordDemoReadinessSnapshot} loading={demoSnapshotLoading}>Record demo snapshot</Button>
+        </Space>}
+      >
         <Table<AnyRow>
           rowKey="key"
           dataSource={readinessRows}

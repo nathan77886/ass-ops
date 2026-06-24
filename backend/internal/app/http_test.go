@@ -3323,6 +3323,143 @@ func assertRepoTagRemoteRehearsalPlanSafe(t *testing.T, plan map[string]any) {
 	}
 }
 
+func TestRecordDemoReadinessSnapshotWritesSanitizedGraphSnapshots(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	projectID := "11111111-1111-1111-1111-111111111111"
+	projectAssetID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	repoAssetID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	sourceAssetID := "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	mirrorAssetID := "dddddddd-dddd-dddd-dddd-dddddddddddd"
+	projectSourceID := projectID
+	repoSourceID := "22222222-2222-2222-2222-222222222222"
+	sourceRemoteID := "33333333-3333-3333-3333-333333333333"
+	mirrorRemoteID := "44444444-4444-4444-4444-444444444444"
+	metadata := []byte(`{"provider":"github","remote_url":"git@github.com:secret/repo.git","provider_token":"Bearer secret","repository_secret":"hidden"}`)
+
+	mock.ExpectQuery(`(?s)SELECT\s+id::text AS id,.*FROM assets.*asset_type IN \('project', 'repository', 'git_remote'\)`).
+		WithArgs(projectID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "asset_type", "source_table", "source_id", "name", "display_name", "status", "risk_level", "metadata"}).
+			AddRow(projectAssetID, projectID, "project", "projects", projectSourceID, "Project", "Project", "active", "normal", metadata).
+			AddRow(repoAssetID, projectID, "repository", "project_git_repositories", repoSourceID, "Repo", "Repo", "active", "normal", metadata).
+			AddRow(sourceAssetID, projectID, "git_remote", "git_remotes", sourceRemoteID, "Source", "Source", "active", "normal", metadata).
+			AddRow(mirrorAssetID, projectID, "git_remote", "git_remotes", mirrorRemoteID, "Mirror", "Mirror", "active", "normal", metadata))
+	mock.ExpectQuery(`(?s)SELECT from_asset_id::text AS from_asset_id, to_asset_id::text AS to_asset_id, relation_type\s+FROM asset_relations`).
+		WithArgs(projectID).
+		WillReturnRows(sqlmock.NewRows([]string{"from_asset_id", "to_asset_id", "relation_type"}).
+			AddRow(projectAssetID, repoAssetID, "owns").
+			AddRow(repoAssetID, sourceAssetID, "has_remote").
+			AddRow(repoAssetID, mirrorAssetID, "has_remote"))
+	mock.ExpectBegin()
+	for _, target := range []string{projectAssetID, repoAssetID, sourceAssetID, mirrorAssetID} {
+		mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+			WithArgs(target, "ready", "low", jsonEvidenceArg(func(payload map[string]any) bool {
+				counts := mapFromAny(payload["evidence_counts"])
+				return payload["mode"] == "first_version_demo_readiness_snapshot" &&
+					payload["readiness_status"] == "ready" &&
+					payload["graph_proof_status"] == "observed" &&
+					payload["project_asset_id"] == "project:"+projectSourceID &&
+					payload["repository_asset_id"] == "repository:"+repoSourceID &&
+					payload["external_call_made"] == false &&
+					payload["demo_seed_written"] == false &&
+					payload["project_created"] == false &&
+					payload["repository_created"] == false &&
+					payload["git_remote_created"] == false &&
+					payload["asset_graph_written"] == false &&
+					payload["operation_log_written"] == false &&
+					counts["project_assets"] == float64(1) &&
+					counts["repository_assets"] == float64(1) &&
+					counts["git_remote_assets"] == float64(2)
+			})).
+			WillReturnResult(sqlmock.NewResult(1, 1))
+	}
+	mock.ExpectCommit()
+
+	got, err := RecordDemoReadinessSnapshot(context.Background(), store, DemoReadinessSnapshotOptions{ProjectID: projectID})
+	if err != nil {
+		t.Fatalf("RecordDemoReadinessSnapshot: %v", err)
+	}
+	if got["recording_state"] != "recorded" ||
+		got["readiness_snapshot_written"] != true ||
+		got["asset_graph_snapshot_written"] != true ||
+		got["snapshots_written"] != 4 ||
+		got["external_call_made"] != false {
+		t.Fatalf("unexpected demo readiness snapshot result: %#v", got)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"git@github.com", "Bearer secret", "hidden", "remote_url", "provider_token", "repository_secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("demo readiness snapshot leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordDemoReadinessSnapshotDryRunDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	projectID := "11111111-1111-1111-1111-111111111111"
+	projectAssetID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	repoAssetID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	sourceAssetID := "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	mirrorAssetID := "dddddddd-dddd-dddd-dddd-dddddddddddd"
+
+	mock.ExpectQuery(`(?s)SELECT\s+id::text AS id,.*FROM assets.*asset_type IN \('project', 'repository', 'git_remote'\)`).
+		WithArgs(projectID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "asset_type", "source_table", "source_id", "name", "display_name", "status", "risk_level", "metadata"}).
+			AddRow(projectAssetID, projectID, "project", "projects", projectID, "Project", "Project", "active", "normal", []byte(`{}`)).
+			AddRow(repoAssetID, projectID, "repository", "project_git_repositories", "22222222-2222-2222-2222-222222222222", "Repo", "Repo", "active", "normal", []byte(`{}`)).
+			AddRow(sourceAssetID, projectID, "git_remote", "git_remotes", "33333333-3333-3333-3333-333333333333", "Source", "Source", "active", "normal", []byte(`{}`)).
+			AddRow(mirrorAssetID, projectID, "git_remote", "git_remotes", "44444444-4444-4444-4444-444444444444", "Mirror", "Mirror", "active", "normal", []byte(`{}`)))
+	mock.ExpectQuery(`(?s)SELECT from_asset_id::text AS from_asset_id, to_asset_id::text AS to_asset_id, relation_type\s+FROM asset_relations`).
+		WithArgs(projectID).
+		WillReturnRows(sqlmock.NewRows([]string{"from_asset_id", "to_asset_id", "relation_type"}).
+			AddRow(projectAssetID, repoAssetID, "owns").
+			AddRow(repoAssetID, sourceAssetID, "has_remote").
+			AddRow(repoAssetID, mirrorAssetID, "has_remote"))
+
+	got, err := RecordDemoReadinessSnapshot(context.Background(), store, DemoReadinessSnapshotOptions{ProjectID: projectID, DryRun: true})
+	if err != nil {
+		t.Fatalf("RecordDemoReadinessSnapshot dry run: %v", err)
+	}
+	if got["dry_run"] != true ||
+		got["recording_enabled"] != false ||
+		got["snapshots_written"] != 0 ||
+		got["readiness_snapshot_written"] != false ||
+		got["asset_graph_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run demo readiness snapshot result: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordDemoReadinessSnapshotRejectsInvalidProjectIDBeforeDB(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+
+	if _, err := RecordDemoReadinessSnapshot(context.Background(), store, DemoReadinessSnapshotOptions{ProjectID: "project-1"}); err == nil {
+		t.Fatalf("expected invalid project id error")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestRecordRepoTagRunResultSnapshotWritesSanitizedSnapshot(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

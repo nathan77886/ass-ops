@@ -77,6 +77,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/auth/me", s.me)
 		r.Post("/api/projects", s.createProject)
 		r.Get("/api/projects", s.listProjects)
+		r.Post("/api/demo-readiness-snapshot", s.recordDemoReadinessSnapshot)
 		r.Get("/api/project-templates", s.listProjectTemplates)
 		r.Get("/api/project-templates/{id}", s.getProjectTemplate)
 		r.Post("/api/project-templates/{id}/preview", s.previewProjectTemplate)
@@ -417,6 +418,34 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		)
 		ORDER BY p.created_at DESC`, userCanReadAllProjects(user), userIDOrNil(user))
 	writeQueryResult(w, items, err)
+}
+
+func (s *Server) recordDemoReadinessSnapshot(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProjectID   string `json:"project_id"`
+		ProjectSlug string `json:"project_slug"`
+		DryRun      bool   `json:"dry_run"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	opts := DemoReadinessSnapshotOptions{ProjectID: req.ProjectID, ProjectSlug: req.ProjectSlug, DryRun: req.DryRun}
+	projectID, err := ResolveDemoReadinessSnapshotProjectID(r.Context(), s.store, opts)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "resolve demo readiness project failed")
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project", ID: projectID, ProjectID: projectID}, "update") {
+		return
+	}
+	opts.ProjectID = projectID
+	opts.ProjectSlug = ""
+	result, err := RecordDemoReadinessSnapshot(r.Context(), s.store, opts)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "record demo readiness snapshot failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) listProjectTemplates(w http.ResponseWriter, r *http.Request) {
