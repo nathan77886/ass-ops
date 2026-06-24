@@ -1411,7 +1411,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		operationIDsByType(operations, "argo.apps.sync"),
 	)
 	activeApprovalRuleIDs := activeAssetIDsByTypeStatus(assets, "operation_approval_rule", "active")
-	approvalGraphLinks := countApprovalGraphLinks(graph, activeApprovalRuleIDs)
+	approvalGraphLinks := countApprovalGraphLinks(graph, activeApprovalRuleIDs, assetIDsByType(assets, "operation_approval"))
 	contextGraphLinks := countContextGraphLinks(assets, graph)
 	argoEvidence := assetCounts["argo_connection"] + assetCounts["argo_app"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"] + argoGraphLinks.ConnectionApps + argoGraphLinks.AppTargets + argoGraphLinks.CompleteAppAssets
 
@@ -2426,14 +2426,14 @@ type approvalGraphLinkCounts struct {
 	ApprovalOperations int
 }
 
-func countApprovalGraphLinks(graph map[string]any, activeRuleIDs map[string]bool) approvalGraphLinkCounts {
+func countApprovalGraphLinks(graph map[string]any, activeRuleIDs, approvalAssetIDs map[string]bool) approvalGraphLinkCounts {
 	counts := approvalGraphLinkCounts{}
 	for _, edge := range apiItemsByKey(graph, "edges") {
 		from := fmt.Sprint(edge["from_asset_id"])
 		to := fmt.Sprint(edge["to_asset_id"])
 		switch fmt.Sprint(edge["relation_type"]) {
 		case "governs":
-			if activeRuleIDs[from] && strings.HasPrefix(to, "operation_approval:") {
+			if activeRuleIDs[from] && approvalAssetIDs[to] {
 				counts.RuleApprovals++
 			}
 		case "gates_operation":

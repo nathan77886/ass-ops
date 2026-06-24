@@ -967,12 +967,12 @@ function countArgoGraphLinks(graph: AnyRow = {}, connectionAssetIDs = new Set<st
   return counts;
 }
 
-function countApprovalGraphLinks(graph: AnyRow = {}, activeRuleIDs = new Set<string>()) {
+function countApprovalGraphLinks(graph: AnyRow = {}, activeRuleIDs = new Set<string>(), approvalAssetIDs = new Set<string>()) {
   return graphItems(graph, 'edges').reduce((counts, edge: AnyRow) => {
     const relation = String(edge.relation_type || '');
     const from = String(edge.from_asset_id || '');
     const to = String(edge.to_asset_id || '');
-    if (relation === 'governs' && activeRuleIDs.has(from) && to.startsWith('operation_approval:')) {
+    if (relation === 'governs' && activeRuleIDs.has(from) && approvalAssetIDs.has(to)) {
       counts.ruleApprovals += 1;
     }
     // Pending approvals can be ready before a gated operation exists; keep this as display/future execution evidence.
@@ -1205,7 +1205,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
     operationIDsByType(operations, 'argo.apps.sync')
   );
   const activeApprovalRuleIDs = activeAssetIDsByTypeStatus(assets, 'operation_approval_rule', 'active');
-  const approvalGraphLinks = countApprovalGraphLinks(graph, activeApprovalRuleIDs);
+  const approvalGraphLinks = countApprovalGraphLinks(graph, activeApprovalRuleIDs, assetIDsByType(assets, 'operation_approval'));
   const contextGraphLinks = countContextGraphLinks(assets, graph);
   const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.argo_app || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0) + argoGraphLinks.connectionApps + argoGraphLinks.appTargets + argoGraphLinks.completeAppAssets;
   const argoEvidenceText = `${assetCounts.deployment_target || 0} targets / ${assetCounts.argo_connection || 0} Argo connections / ${assetCounts.argo_app || 0} apps / ${operationCounts['argo.apps.sync'] || 0} sync ops / ${argoGraphLinks.completeApps} complete app links / ${argoGraphLinks.completeAppAssets} app asset chains${argoGraphLinks.completeApps > 0 && argoGraphLinks.completeAppAssets === 0 ? ' / canonical evidence missing' : ''}`;

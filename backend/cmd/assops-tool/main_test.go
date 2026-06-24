@@ -1178,7 +1178,7 @@ func TestCountApprovalGraphLinks(t *testing.T) {
 			map[string]any{"from_asset_id": "operation_approval:21", "to_asset_id": "operation_approval_rule:12", "relation_type": "gates_operation"},
 		},
 	}
-	got := countApprovalGraphLinks(graph, map[string]bool{"operation_approval_rule:10": true})
+	got := countApprovalGraphLinks(graph, map[string]bool{"operation_approval_rule:10": true}, map[string]bool{"operation_approval:20": true})
 	if got.RuleApprovals != 1 || got.ApprovalOperations != 1 {
 		t.Fatalf("countApprovalGraphLinks = %#v, want one rule-approval and one approval-operation link", got)
 	}
@@ -1214,6 +1214,18 @@ func TestFirstVersionReadinessReportApprovalReadinessMatrix(t *testing.T) {
 	})
 	if got := readinessByKey(t, withGovernedApproval, "approval"); got.Status != "ready" || got.Evidence != "1 approvals / 1 approval assets / 0 pending ops / 1 active rules / 1 governed approvals" {
 		t.Fatalf("approval status from governed approval asset and active rule = %#v, want ready", got)
+	}
+
+	withUnmatchedGovernedApproval := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "operation_approval", "source_id": "21", "status": "pending"},
+		{"asset_type": "operation_approval_rule", "source_id": "10", "status": "active"},
+	}, nil, map[string]any{"total": float64(1)}, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "operation_approval_rule:10", "to_asset_id": "operation_approval:20", "relation_type": "governs"},
+		},
+	})
+	if got := readinessByKey(t, withUnmatchedGovernedApproval, "approval"); got.Status != "partial" || got.Evidence != "1 approvals / 1 approval assets / 0 pending ops / 1 active rules / 0 governed approvals" {
+		t.Fatalf("approval status from unmatched governed approval edge = %#v, want partial without canonical approval asset evidence", got)
 	}
 
 	withDisabledRuleGovernedApproval := firstVersionReadinessReportWithGraph([]map[string]any{
