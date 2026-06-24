@@ -995,6 +995,59 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 			t.Fatalf("kubeconfig binding suppressed field missing %q: %#v", field, kubeconfigPlan["suppressed_fields"])
 		}
 	}
+	kubeconfigReadinessPlan := mapFromAny(executionPlan["kubeconfig_readiness_plan"])
+	if kubeconfigReadinessPlan["mode"] != "pod_log_namespace_kubeconfig_binding_readiness_plan" ||
+		kubeconfigReadinessPlan["kubeconfig_binding_performed"] != false ||
+		kubeconfigReadinessPlan["namespace_scoped_kubeconfig_bound"] != false ||
+		kubeconfigReadinessPlan["kubernetes_client_created"] != false ||
+		kubeconfigReadinessPlan["token_subject_review_performed"] != false ||
+		kubeconfigReadinessPlan["rbac_read_logs_review_performed"] != false ||
+		kubeconfigReadinessPlan["kubernetes_api_call"] != false ||
+		kubeconfigReadinessPlan["argocd_api_call"] != false ||
+		kubeconfigReadinessPlan["kubectl_command_invoked"] != false ||
+		kubeconfigReadinessPlan["log_stream_opened"] != false ||
+		kubeconfigReadinessPlan["log_body_included"] != false ||
+		kubeconfigReadinessPlan["redacted_log_body_included"] != false ||
+		kubeconfigReadinessPlan["external_call_made"] != false ||
+		kubeconfigReadinessPlan["contains_kubeconfig"] != false ||
+		kubeconfigReadinessPlan["contains_cluster_token"] != false ||
+		kubeconfigReadinessPlan["contains_authorization_header"] != false ||
+		kubeconfigReadinessPlan["contains_log_body"] != false ||
+		kubeconfigReadinessPlan["contains_raw_kubernetes_response"] != false {
+		t.Fatalf("pod log kubeconfig readiness plan should stay disabled and redacted: %#v", kubeconfigReadinessPlan)
+	}
+	evidence := mapFromAny(executionPlan["audit_evidence"])
+	if boolOnlyFromAny(evidence["has_audit_operations"]) {
+		if evidence["evidence_state"] == "recorded" {
+			if kubeconfigReadinessPlan["readiness_state"] != "audit_result_ready_for_binding_review" || kubeconfigReadinessPlan["readiness_ready"] != true {
+				t.Fatalf("recorded audit evidence should be ready for binding review: %#v", kubeconfigReadinessPlan)
+			}
+		} else if evidence["evidence_state"] == "failed" && (kubeconfigReadinessPlan["readiness_state"] != "audit_failed" || kubeconfigReadinessPlan["readiness_ready"] != false) {
+			t.Fatalf("failed audit evidence should block binding readiness: %#v", kubeconfigReadinessPlan)
+		}
+	} else if executionPlan["prerequisite_state"] == "metadata_available" {
+		if kubeconfigReadinessPlan["readiness_state"] != "ready_for_approval" ||
+			kubeconfigReadinessPlan["readiness_ready"] != true ||
+			kubeconfigReadinessPlan["metadata_ready"] != true ||
+			kubeconfigReadinessPlan["namespace_scope_ready"] != true ||
+			kubeconfigReadinessPlan["pod_identity_present"] != true {
+			t.Fatalf("metadata-ready pod log readiness should be ready for approval: %#v", kubeconfigReadinessPlan)
+		}
+	} else if kubeconfigReadinessPlan["readiness_state"] != "metadata_blocked" ||
+		kubeconfigReadinessPlan["readiness_ready"] != false ||
+		kubeconfigReadinessPlan["metadata_ready"] != false {
+		t.Fatalf("metadata-blocked pod log readiness should stay blocked: %#v", kubeconfigReadinessPlan)
+	}
+	for _, backend := range []string{"kubeconfig_secret_binding", "kubernetes_client_create", "token_subject_review", "rbac_review", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs"} {
+		if !containsString(stringSliceFromAny(kubeconfigReadinessPlan["disabled_backends"]), backend) {
+			t.Fatalf("kubeconfig readiness disabled backend missing %q: %#v", backend, kubeconfigReadinessPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "log_body", "redacted_log_body", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret"} {
+		if !containsString(stringSliceFromAny(kubeconfigReadinessPlan["suppressed_fields"]), field) {
+			t.Fatalf("kubeconfig readiness suppressed field missing %q: %#v", field, kubeconfigReadinessPlan["suppressed_fields"])
+		}
+	}
 	podScopePlan := mapFromAny(executionPlan["pod_scope_plan"])
 	if podScopePlan["mode"] != "pod_log_pod_scope_plan" ||
 		podScopePlan["target_scope_verified"] != false ||
@@ -1095,7 +1148,6 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		}
 	}
 	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
-	evidence := mapFromAny(executionPlan["audit_evidence"])
 	hasAuditEvidence := boolOnlyFromAny(evidence["has_audit_operations"])
 	hasSanitizedResult := boolOnlyFromAny(evidence["sanitized_result_recorded"])
 	if resultPlan["log_body_included"] != false ||
@@ -1141,6 +1193,15 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 				t.Fatalf("pod log result blocked reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
 			}
 		}
+	}
+	resultReadinessPlan := mapFromAny(resultPlan["kubeconfig_readiness_plan"])
+	if resultReadinessPlan["readiness_state"] != kubeconfigReadinessPlan["readiness_state"] ||
+		resultReadinessPlan["readiness_ready"] != kubeconfigReadinessPlan["readiness_ready"] ||
+		resultReadinessPlan["kubeconfig_binding_performed"] != false ||
+		resultReadinessPlan["kubernetes_client_created"] != false ||
+		resultReadinessPlan["log_body_included"] != false ||
+		resultReadinessPlan["contains_kubeconfig"] != false {
+		t.Fatalf("result recording kubeconfig readiness should mirror execution readiness safely: result=%#v execution=%#v", resultReadinessPlan, kubeconfigReadinessPlan)
 	}
 	encodedExecutionPlan, _ := json.Marshal(executionPlan)
 	for _, forbidden := range []string{"apiVersion:", "kind: Secret", "Bearer secret", "kubeconfig-data", "actual log line"} {
