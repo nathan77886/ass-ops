@@ -814,10 +814,15 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}) {
 }
 
 function countWebhookSyncGraphLinks(graph: AnyRow = {}) {
-  const byEvent: Record<string, { connection?: boolean; repoSync?: boolean; operation?: boolean }> = {};
+  const byEvent: Record<string, { connection?: boolean; repoSyncs: Record<string, boolean>; operations: Record<string, boolean> }> = {};
+  const operationRepoSyncs: Record<string, Record<string, boolean>> = {};
   const eventEntry = (assetID: string) => {
-    byEvent[assetID] ??= {};
+    byEvent[assetID] ??= { repoSyncs: {}, operations: {} };
     return byEvent[assetID];
+  };
+  const addOperationRepoSync = (operationID: string, repoSyncID: string) => {
+    operationRepoSyncs[operationID] ??= {};
+    operationRepoSyncs[operationID][repoSyncID] = true;
   };
   const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
     const relation = String(edge.relation_type || '');
@@ -829,16 +834,24 @@ function countWebhookSyncGraphLinks(graph: AnyRow = {}) {
     }
     if (relation === 'matched_repo_sync' && from.startsWith('webhook_event:') && to.startsWith('repo_sync:')) {
       nextCounts.eventRepoSyncs += 1;
-      eventEntry(from).repoSync = true;
+      eventEntry(from).repoSyncs[to] = true;
     }
     // Ignore legacy webhook_connection -> operation_run compatibility edges.
     if (relation === 'triggered_operation' && from.startsWith('webhook_event:') && to.startsWith('operation_run:')) {
       nextCounts.eventOperations += 1;
-      eventEntry(from).operation = true;
+      eventEntry(from).operations[to] = true;
+    }
+    if (relation === 'ran_repo_sync' && from.startsWith('operation_run:') && to.startsWith('repo_sync:')) {
+      addOperationRepoSync(from, to);
     }
     return nextCounts;
   }, { connectionEvents: 0, eventRepoSyncs: 0, eventOperations: 0, completeChains: 0 });
-  counts.completeChains = Object.values(byEvent).filter((entry) => entry.connection && entry.repoSync && entry.operation).length;
+  counts.completeChains = Object.values(byEvent).filter((entry) => (
+    entry.connection &&
+    Object.keys(entry.operations).some((operationID) => (
+      Object.keys(entry.repoSyncs).some((repoSyncID) => operationRepoSyncs[operationID]?.[repoSyncID])
+    ))
+  )).length;
   return counts;
 }
 

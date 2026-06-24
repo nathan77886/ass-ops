@@ -2122,17 +2122,24 @@ func countWebhookSyncGraphLinks(graph map[string]any) webhookSyncGraphLinkCounts
 	counts := webhookSyncGraphLinkCounts{}
 	type eventLinks struct {
 		connection bool
-		repoSync   bool
-		operation  bool
+		repoSyncs  map[string]bool
+		operations map[string]bool
 	}
+	operationRepoSyncs := map[string]map[string]bool{}
 	byEvent := map[string]*eventLinks{}
 	eventEntry := func(assetID string) *eventLinks {
 		entry := byEvent[assetID]
 		if entry == nil {
-			entry = &eventLinks{}
+			entry = &eventLinks{repoSyncs: map[string]bool{}, operations: map[string]bool{}}
 			byEvent[assetID] = entry
 		}
 		return entry
+	}
+	addOperationRepoSync := func(operationID, repoSyncID string) {
+		if operationRepoSyncs[operationID] == nil {
+			operationRepoSyncs[operationID] = map[string]bool{}
+		}
+		operationRepoSyncs[operationID][repoSyncID] = true
 	}
 	for _, edge := range apiItemsByKey(graph, "edges") {
 		from := fmt.Sprint(edge["from_asset_id"])
@@ -2146,22 +2153,37 @@ func countWebhookSyncGraphLinks(graph map[string]any) webhookSyncGraphLinkCounts
 		case "matched_repo_sync":
 			if strings.HasPrefix(from, "webhook_event:") && strings.HasPrefix(to, "repo_sync:") {
 				counts.EventRepoSyncs++
-				eventEntry(from).repoSync = true
+				eventEntry(from).repoSyncs[to] = true
 			}
 		case "triggered_operation":
 			// Ignore legacy webhook_connection -> operation_run compatibility edges.
 			if strings.HasPrefix(from, "webhook_event:") && strings.HasPrefix(to, "operation_run:") {
 				counts.EventOperations++
-				eventEntry(from).operation = true
+				eventEntry(from).operations[to] = true
+			}
+		case "ran_repo_sync":
+			if strings.HasPrefix(from, "operation_run:") && strings.HasPrefix(to, "repo_sync:") {
+				addOperationRepoSync(from, to)
 			}
 		}
 	}
 	for _, entry := range byEvent {
-		if entry.connection && entry.repoSync && entry.operation {
+		if entry.connection && hasOperationRepoSyncChain(entry.repoSyncs, entry.operations, operationRepoSyncs) {
 			counts.CompleteChains++
 		}
 	}
 	return counts
+}
+
+func hasOperationRepoSyncChain(repoSyncs, operations map[string]bool, operationRepoSyncs map[string]map[string]bool) bool {
+	for operationID := range operations {
+		for repoSyncID := range repoSyncs {
+			if operationRepoSyncs[operationID][repoSyncID] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type sshGraphLinkCounts struct {
