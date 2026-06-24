@@ -3198,6 +3198,15 @@ func TestProjectVersionValidationPreviewUsesSyncedStateOnly(t *testing.T) {
 		t.Fatalf("background rerun plan without operations should stay blocked: %#v", backgroundPlan)
 	}
 	assertProjectVersionBackgroundRerunPlanSafe(t, backgroundPlan)
+	snapshotPlan := mapFromAny(backgroundPlan["validation_snapshot_write_plan"])
+	if snapshotPlan["mode"] != "project_version_validation_snapshot_write_plan" ||
+		snapshotPlan["snapshot_state"] != "blocked" ||
+		snapshotPlan["snapshot_ready_for_review"] != false ||
+		snapshotPlan["snapshot_write_enabled"] != false ||
+		snapshotPlan["provider_refresh_status"] != "not_requested" {
+		t.Fatalf("snapshot write plan without operations should stay blocked: %#v", snapshotPlan)
+	}
+	assertProjectVersionValidationSnapshotWritePlanSafe(t, snapshotPlan)
 	assertProviderRefreshExecutionPlanSafe(t, executionPlan)
 	for _, required := range []string{"operation_approval", "provider_account_binding", "result_recording_audit", "ui_auto_validation_reload"} {
 		if !containsString(stringSliceFromAny(executionPlan["required_controls"]), required) {
@@ -3363,6 +3372,14 @@ func TestProjectVersionValidationPreviewIncludesRefreshResultSummary(t *testing.
 		t.Fatalf("waiting background rerun blockers missing worker reason: %#v", backgroundPlan["blocked_reasons"])
 	}
 	assertProjectVersionBackgroundRerunPlanSafe(t, backgroundPlan)
+	waitingSnapshotPlan := mapFromAny(backgroundPlan["validation_snapshot_write_plan"])
+	if waitingSnapshotPlan["snapshot_state"] != "waiting_for_workers" ||
+		waitingSnapshotPlan["snapshot_ready_for_review"] != false ||
+		waitingSnapshotPlan["provider_refresh_status"] != "waiting_for_workers" ||
+		!containsString(stringSliceFromAny(waitingSnapshotPlan["blocked_reasons"]), "refresh_workers_still_running") {
+		t.Fatalf("waiting snapshot write plan = %#v", waitingSnapshotPlan)
+	}
+	assertProjectVersionValidationSnapshotWritePlanSafe(t, waitingSnapshotPlan)
 	if mapFromAny(executionPlan["background_validation_rerun_plan"])["plan_state"] != "waiting_for_workers" {
 		t.Fatalf("execution plan should carry background rerun plan: %#v", executionPlan)
 	}
@@ -3495,6 +3512,24 @@ func TestProjectVersionValidationRerunEvidenceRecordsServerSideRecheck(t *testin
 				t.Fatalf("failed/canceled terminal background rerun should stay blocked: %#v", backgroundPlan)
 			}
 			assertProjectVersionBackgroundRerunPlanSafe(t, backgroundPlan)
+			snapshotPlan := mapFromAny(backgroundPlan["validation_snapshot_write_plan"])
+			if snapshotPlan["mode"] != "project_version_validation_snapshot_write_plan" ||
+				snapshotPlan["snapshot_ready_for_review"] != wantBackgroundReady ||
+				snapshotPlan["snapshot_write_enabled"] != false ||
+				snapshotPlan["validation_snapshot_written"] != false ||
+				snapshotPlan["provider_refresh_terminal"] != true {
+				t.Fatalf("terminal snapshot write plan = %#v", snapshotPlan)
+			}
+			if wantBackgroundReady && snapshotPlan["snapshot_state"] != "metadata_review_ready" {
+				t.Fatalf("recorded terminal snapshot write should be ready for review: %#v", snapshotPlan)
+			}
+			if !wantBackgroundReady && snapshotPlan["snapshot_state"] != "blocked" {
+				t.Fatalf("failed/canceled snapshot write should stay blocked: %#v", snapshotPlan)
+			}
+			if !wantBackgroundReady && snapshotPlan["snapshot_ready_for_review"] != false {
+				t.Fatalf("failed/canceled snapshot write should not be ready for review: %#v", snapshotPlan)
+			}
+			assertProjectVersionValidationSnapshotWritePlanSafe(t, snapshotPlan)
 			encoded, _ := json.Marshal(preview)
 			for _, forbidden := range []string{"https://token@example.com", "Bearer secret", "raw_provider_response\":true", "raw_git_output\":\""} {
 				if strings.Contains(string(encoded), forbidden) {
@@ -3526,6 +3561,14 @@ func TestProjectVersionValidationRerunEvidenceWithoutOperations(t *testing.T) {
 		t.Fatalf("empty background rerun plan = %#v", backgroundPlan)
 	}
 	assertProjectVersionBackgroundRerunPlanSafe(t, backgroundPlan)
+	snapshotPlan := mapFromAny(backgroundPlan["validation_snapshot_write_plan"])
+	if snapshotPlan["snapshot_state"] != "blocked" ||
+		snapshotPlan["snapshot_ready_for_review"] != false ||
+		snapshotPlan["provider_refresh_status"] != "not_requested" ||
+		!containsString(stringSliceFromAny(snapshotPlan["blocked_reasons"]), "provider_refresh_execution_not_performed") {
+		t.Fatalf("empty snapshot write plan = %#v", snapshotPlan)
+	}
+	assertProjectVersionValidationSnapshotWritePlanSafe(t, snapshotPlan)
 	encoded, _ := json.Marshal(evidence)
 	for _, forbidden := range []string{"Bearer secret", "raw_provider_response\":true", "raw_git_output\":\""} {
 		if strings.Contains(string(encoded), forbidden) {
@@ -3962,6 +4005,56 @@ func assertProjectVersionBackgroundRerunPlanSafe(t *testing.T, plan map[string]a
 	for _, forbidden := range []string{"https://token@", "Bearer secret", "raw_provider_response\":true", "raw_git_output\":\""} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("background rerun plan leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func assertProjectVersionValidationSnapshotWritePlanSafe(t *testing.T, plan map[string]any) {
+	t.Helper()
+	if plan["mode"] != "project_version_validation_snapshot_write_plan" ||
+		plan["snapshot_write_enabled"] != false ||
+		plan["validation_snapshot_written"] != false ||
+		plan["asset_status_snapshot_written"] != false ||
+		plan["operation_log_written"] != false ||
+		plan["background_worker_enqueued"] != false ||
+		plan["automatic_background_rerun"] != false ||
+		plan["external_call_made"] != false ||
+		plan["provider_api_called"] != false ||
+		plan["git_fetch_performed"] != false ||
+		plan["argocd_api_called"] != false ||
+		plan["raw_response_included"] != false ||
+		plan["secret_included"] != false {
+		t.Fatalf("validation snapshot write plan should stay disabled and redacted: %#v", plan)
+	}
+	for _, field := range []string{"project_version_id", "validation_state", "repository_count", "ready_count", "partial_count", "blocked_count", "provider_refresh_status", "operation_count", "server_side_validation_recheck_status"} {
+		if !containsString(stringSliceFromAny(plan["required_snapshot_fields"]), field) {
+			t.Fatalf("snapshot write required_snapshot_fields missing %q: %#v", field, plan["required_snapshot_fields"])
+		}
+	}
+	for _, control := range []string{"terminal_refresh_workers", "server_side_validation_recheck", "snapshot_schema_review", "snapshot_operator_review", "asset_status_snapshot_audit", "operation_log_redaction_review"} {
+		if !containsString(stringSliceFromAny(plan["required_controls"]), control) {
+			t.Fatalf("snapshot write required control missing %q: %#v", control, plan["required_controls"])
+		}
+	}
+	for _, backend := range []string{"validation_snapshot_write", "asset_status_snapshot_write", "operation_log_write", "background_validation_worker", "raw_provider_response_recording"} {
+		if !containsString(stringSliceFromAny(plan["disabled_backends"]), backend) {
+			t.Fatalf("snapshot write disabled backend missing %q: %#v", backend, plan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body", "repository_ref"} {
+		if !containsString(stringSliceFromAny(plan["suppressed_fields"]), field) {
+			t.Fatalf("snapshot write suppressed field missing %q: %#v", field, plan["suppressed_fields"])
+		}
+	}
+	for _, reason := range []string{"validation_snapshot_write_disabled"} {
+		if !containsString(stringSliceFromAny(plan["blocked_reasons"]), reason) {
+			t.Fatalf("snapshot write blocked reason missing %q: %#v", reason, plan["blocked_reasons"])
+		}
+	}
+	encoded, _ := json.Marshal(plan)
+	for _, forbidden := range []string{"https://token@", "Bearer secret", "raw_provider_response\":true", "raw_git_output\":\"", "workflow_logs\":\""} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("snapshot write plan leaked %q: %s", forbidden, encoded)
 		}
 	}
 }

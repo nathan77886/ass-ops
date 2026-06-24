@@ -8302,6 +8302,7 @@ func projectVersionBackgroundValidationRerunPlan(summary map[string]any, rerunEv
 	operationCount := intFromAny(summary["operation_count"], 0)
 	activeCount := intFromAny(summary["active_count"], 0)
 	terminal := operationCount > 0 && activeCount == 0
+	snapshotWritePlan := projectVersionValidationSnapshotWritePlan(summary, rerunEvidence, terminal)
 	planState := "blocked"
 	blockedReasons := []string{"provider_refresh_execution_not_performed", "background_validation_rerun_disabled"}
 	switch rerunStatus {
@@ -8326,6 +8327,7 @@ func projectVersionBackgroundValidationRerunPlan(summary map[string]any, rerunEv
 		"automatic_background_rerun":              false,
 		"background_worker_enqueued":              false,
 		"validation_snapshot_written":             false,
+		"validation_snapshot_write_plan":          snapshotWritePlan,
 		"validation_rerun_recorded":               boolOnlyFromAny(summary["validation_rerun_recorded"]),
 		"server_side_validation_recheck_observed": boolOnlyFromAny(rerunEvidence["server_side_validation_recheck"]),
 		"server_side_validation_recheck_ready":    boolOnlyFromAny(rerunEvidence["server_side_validation_recheck_ready"]),
@@ -8359,6 +8361,77 @@ func projectVersionBackgroundValidationRerunPlan(summary map[string]any, rerunEv
 		"suppressed_fields": []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body"},
 		"blocked_reasons":   blockedReasons,
 		"message":           "Automatic background validation rerun is planned only; the current response proves server-side recheck via this request and keeps background workers and snapshot writes disabled.",
+	}
+}
+
+func projectVersionValidationSnapshotWritePlan(summary map[string]any, rerunEvidence map[string]any, terminal bool) map[string]any {
+	rerunStatus := strings.TrimSpace(fmt.Sprint(summary["validation_rerun_status"]))
+	if rerunStatus == "" || rerunStatus == "<nil>" {
+		rerunStatus = "not_requested"
+	}
+	snapshotState := "blocked"
+	if rerunStatus == "waiting_for_workers" {
+		snapshotState = "waiting_for_workers"
+	} else if rerunStatus == "recorded" && terminal {
+		snapshotState = "metadata_review_ready"
+	}
+	reviewReady := snapshotState == "metadata_review_ready" &&
+		boolOnlyFromAny(summary["validation_rerun_recorded"]) &&
+		boolOnlyFromAny(rerunEvidence["server_side_validation_recheck_ready"])
+	blockedReasons := []string{"validation_snapshot_write_disabled"}
+	if rerunStatus == "not_requested" {
+		blockedReasons = append(blockedReasons, "provider_refresh_execution_not_performed")
+	}
+	if rerunStatus == "waiting_for_workers" {
+		blockedReasons = append(blockedReasons, "refresh_workers_still_running")
+	}
+	if rerunStatus == "refresh_failed" {
+		blockedReasons = append(blockedReasons, "refresh_worker_failed")
+	}
+	if rerunStatus == "refresh_canceled" {
+		blockedReasons = append(blockedReasons, "refresh_worker_canceled")
+	}
+	if !boolOnlyFromAny(rerunEvidence["server_side_validation_recheck_ready"]) {
+		blockedReasons = append(blockedReasons, "server_side_validation_recheck_not_terminal")
+	}
+	if !boolOnlyFromAny(summary["validation_rerun_recorded"]) {
+		blockedReasons = append(blockedReasons, "validation_rerun_not_recorded")
+	}
+	return map[string]any{
+		"mode":                                    "project_version_validation_snapshot_write_plan",
+		"snapshot_state":                          snapshotState,
+		"snapshot_ready_for_review":               reviewReady,
+		"snapshot_write_enabled":                  false,
+		"validation_snapshot_written":             false,
+		"asset_status_snapshot_written":           false,
+		"operation_log_written":                   false,
+		"background_worker_enqueued":              false,
+		"automatic_background_rerun":              false,
+		"server_side_validation_recheck_observed": boolOnlyFromAny(rerunEvidence["server_side_validation_recheck"]),
+		"server_side_validation_recheck_ready":    boolOnlyFromAny(rerunEvidence["server_side_validation_recheck_ready"]),
+		"validation_rerun_recorded":               boolOnlyFromAny(summary["validation_rerun_recorded"]),
+		"provider_refresh_terminal":               terminal,
+		"provider_refresh_status":                 rerunStatus,
+		"operation_count":                         intFromAny(summary["operation_count"], 0),
+		"active_count":                            intFromAny(summary["active_count"], 0),
+		"repository_count":                        intFromAny(rerunEvidence["repository_count"], 0),
+		"ready_count":                             intFromAny(rerunEvidence["ready_count"], 0),
+		"partial_count":                           intFromAny(rerunEvidence["partial_count"], 0),
+		"blocked_count":                           intFromAny(rerunEvidence["blocked_count"], 0),
+		"validation_state":                        rerunEvidence["validation_state"],
+		"validation_source":                       "local_synced_database_state",
+		"external_call_made":                      false,
+		"provider_api_called":                     false,
+		"git_fetch_performed":                     false,
+		"argocd_api_called":                       false,
+		"raw_response_included":                   false,
+		"secret_included":                         false,
+		"required_snapshot_fields":                []string{"project_version_id", "validation_state", "repository_count", "ready_count", "partial_count", "blocked_count", "provider_refresh_status", "operation_count", "server_side_validation_recheck_status"},
+		"required_controls":                       []string{"terminal_refresh_workers", "server_side_validation_recheck", "snapshot_schema_review", "snapshot_operator_review", "asset_status_snapshot_audit", "operation_log_redaction_review"},
+		"disabled_backends":                       []string{"validation_snapshot_write", "asset_status_snapshot_write", "operation_log_write", "background_validation_worker", "raw_provider_response_recording"},
+		"suppressed_fields":                       []string{"remote_url", "provider_token", "authorization_header", "git_credentials", "raw_provider_response", "raw_git_output", "raw_argo_response", "workflow_logs", "commit_body", "repository_ref"},
+		"blocked_reasons":                         blockedReasons,
+		"message":                                 "Metadata-only validation snapshot write preflight; no asset status snapshot, operation log, raw provider response, Git output, Argo response, URL, credential, or workflow log is written.",
 	}
 }
 
