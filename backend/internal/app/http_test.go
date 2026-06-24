@@ -20105,6 +20105,280 @@ func TestRecordProviderReviewAttemptSendSnapshotRowsAffectedUnknownDoesNotClaimW
 	}
 }
 
+func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenReady(t *testing.T) {
+	tests := []struct {
+		name      string
+		handler   func(*Server, http.ResponseWriter, *http.Request)
+		request   func(string) *http.Request
+		status    string
+		state     string
+		health    string
+		writeFlag string
+		extra     func(t *testing.T, got map[string]any)
+	}{
+		{
+			name: "activation",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptActivationSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptActivationSnapshotRequest,
+			status:    "provider_review_attempt_activation_blocked",
+			state:     "activation_blocked",
+			health:    "warning",
+			writeFlag: "provider_review_attempt_activation_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["mutation_armed"] != false ||
+					got["provider_request_sent"] != false ||
+					got["provider_call_boundary_recorded"] != false {
+					t.Fatalf("unexpected activation snapshot response: %#v", got)
+				}
+			},
+		},
+		{
+			name: "send",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptSendSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptSendSnapshotRequest,
+			status:    "provider_review_attempt_send_blocked",
+			state:     "send_blocked",
+			health:    "warning",
+			writeFlag: "provider_review_attempt_send_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["provider_request_sent"] != false ||
+					got["send_attempted"] != false {
+					t.Fatalf("unexpected send snapshot response: %#v", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			defer db.Close()
+			server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+			expectProviderReviewAttemptUpdatePolicy(mock)
+			expectProviderReviewAttemptSnapshotSelect(mock, "planned", "independent", nil)
+			expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+				{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+			})
+			expectProviderReviewAttemptSnapshotAsset(mock, true)
+			mock.ExpectBegin()
+			mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+				WithArgs("asset-attempt-1", tt.status).
+				WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+				WithArgs("asset-attempt-1", tt.status, tt.health, sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(1, 1))
+			mock.ExpectCommit()
+
+			rr := httptest.NewRecorder()
+			tt.handler(server, rr, tt.request(`{}`))
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+			}
+			var got map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if got["recording_state"] != tt.state ||
+				got["recording_ready"] != true ||
+				got[tt.writeFlag] != true ||
+				got["asset_status_snapshot_written"] != true ||
+				got["provider_api_call_made"] != false ||
+				got["provider_api_mutation"] != "disabled" {
+				t.Fatalf("unexpected %s snapshot handler response: %#v", tt.name, got)
+			}
+			tt.extra(t, got)
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet sql expectations: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnapprovedAttempts(t *testing.T) {
+	tests := []struct {
+		name      string
+		handler   func(*Server, http.ResponseWriter, *http.Request)
+		request   func(string) *http.Request
+		writeFlag string
+		extra     func(t *testing.T, got map[string]any)
+	}{
+		{
+			name: "activation",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptActivationSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptActivationSnapshotRequest,
+			writeFlag: "provider_review_attempt_activation_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["provider_request_sent"] != nil {
+					t.Fatalf("activation unapproved response should not invent send fields: %#v", got)
+				}
+			},
+		},
+		{
+			name: "send",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptSendSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptSendSnapshotRequest,
+			writeFlag: "provider_review_attempt_send_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["provider_request_sent"] != false ||
+					got["send_attempted"] != false {
+					t.Fatalf("unexpected send unapproved response: %#v", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			defer db.Close()
+			server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+			expectProviderReviewAttemptUpdatePolicy(mock)
+			expectProviderReviewAttemptSnapshotSelectWithApproval(mock, "planned", "independent", nil, "pending")
+
+			rr := httptest.NewRecorder()
+			tt.handler(server, rr, tt.request(`{"dry_run":true}`))
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+			}
+			var got map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if got["recording_state"] != "operation_approval_not_approved" ||
+				got["recording_ready"] != false ||
+				got["recording_enabled"] != false ||
+				got["dry_run"] != true ||
+				got[tt.writeFlag] != false ||
+				got["asset_status_snapshot_written"] != false ||
+				got["provider_api_call_made"] != false ||
+				got["provider_api_mutation"] != "disabled" {
+				t.Fatalf("unexpected %s unapproved snapshot handler response: %#v", tt.name, got)
+			}
+			tt.extra(t, got)
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet sql expectations: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrongApprovalAction(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler func(*Server, http.ResponseWriter, *http.Request)
+		request func(string) *http.Request
+	}{
+		{
+			name: "activation",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptActivationSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptActivationSnapshotRequest,
+		},
+		{
+			name: "send",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptSendSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptSendSnapshotRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			defer db.Close()
+			server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+			expectProviderReviewAttemptUpdatePolicy(mock)
+			expectProviderReviewAttemptSnapshotSelectWithApprovalAction(mock, "planned", "independent", nil, "ssh.exec", "approved")
+
+			rr := httptest.NewRecorder()
+			tt.handler(server, rr, tt.request(`{}`))
+
+			if rr.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409: %s", rr.Code, rr.Body.String())
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet sql expectations: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpdatePolicy(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler func(*Server, http.ResponseWriter, *http.Request)
+		path    string
+	}{
+		{
+			name: "activation",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptActivationSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/activation-snapshot",
+		},
+		{
+			name: "send",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptSendSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/send-snapshot",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			defer db.Close()
+			server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+			expectProviderReviewAttemptUpdatePolicy(mock)
+			mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+				WithArgs("project-1", "user-1").
+				WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(`{}`))
+			req = withRouteParam(req, "id", "attempt-1")
+			req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "user-1", Role: "developer"}))
+
+			rr := httptest.NewRecorder()
+			tt.handler(server, rr, req)
+
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet sql expectations: %v", err)
+			}
+		})
+	}
+}
+
 func TestRecordProviderReviewAttemptResponseSnapshotWritesMetadataReadyCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -24750,6 +25024,18 @@ func newProviderReviewAttemptLocalResultRequest(body string) *http.Request {
 
 func newProviderReviewAttemptSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptActivationSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/activation-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptSendSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/send-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
