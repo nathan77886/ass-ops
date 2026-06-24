@@ -15874,6 +15874,23 @@ func TestAgentCodeModificationPlan(t *testing.T) {
 			t.Fatalf("recording suppressed_fields missing %q: %#v", field, recording["suppressed_fields"])
 		}
 	}
+	arming := mapFromAny(got["execution_arming_plan"])
+	if arming["arming_state"] != "blocked" ||
+		arming["arming_ready"] != false ||
+		arming["source_checkout_performed"] != false ||
+		arming["branch_created"] != false ||
+		arming["file_patch_applied"] != false ||
+		arming["tests_executed"] != false ||
+		arming["git_commit_created"] != false ||
+		arming["git_push_performed"] != false ||
+		arming["provider_review_created"] != false ||
+		arming["commit_push_agent_invoked"] != false ||
+		arming["repository_mutation_allowed"] != false ||
+		arming["contains_patch_content"] != false ||
+		arming["contains_diff_content"] != false ||
+		arming["contains_file_content"] != false {
+		t.Fatalf("code modification arming should stay blocked and redacted: %#v", arming)
+	}
 	encoded, _ := json.Marshal(got)
 	encodedText := string(encoded)
 	lowerEncodedText := strings.ToLower(encodedText)
@@ -15924,6 +15941,23 @@ func TestAgentCodeModificationPlanReconcilesAuditEvidence(t *testing.T) {
 		recording["raw_diff_recorded"] != false ||
 		recording["raw_test_output_recorded"] != false {
 		t.Fatalf("code modification recording should reflect sanitized audit only: %#v", recording)
+	}
+	arming := mapFromAny(got["execution_arming_plan"])
+	if arming["arming_state"] != "ready_for_operator_review" ||
+		arming["arming_ready"] != true ||
+		arming["worker_dispatch_audit_recorded"] != true ||
+		arming["codex_execution_plan_recorded"] != true ||
+		arming["patch_prepare_audit_recorded"] != true ||
+		arming["terminal_audit_recorded"] != true ||
+		arming["source_checkout_performed"] != false ||
+		arming["branch_created"] != false ||
+		arming["file_patch_applied"] != false ||
+		arming["tests_executed"] != false ||
+		arming["git_commit_created"] != false ||
+		arming["git_push_performed"] != false ||
+		arming["provider_review_created"] != false ||
+		arming["repository_mutation_allowed"] != false {
+		t.Fatalf("code modification arming should reconcile audit only for operator review: %#v", arming)
 	}
 	encoded, _ := json.Marshal(got)
 	for _, forbidden := range []string{"do-not-serialize", "actual tool output", "/tmp/secret-workspace", "secret diff", "secret patch", "secret test"} {
@@ -16558,6 +16592,65 @@ func assertAgentCodeModificationPlanSafe(t *testing.T, got map[string]any) {
 	recording := mapFromAny(got["result_recording_plan"])
 	if recording["recording_enabled"] == true && codeEvidence["sanitized_result_recorded"] != true {
 		t.Fatalf("recording cannot be enabled without sanitized code evidence: recording=%#v evidence=%#v", recording, codeEvidence)
+	}
+	arming := mapFromAny(got["execution_arming_plan"])
+	if arming["mode"] != "redacted_agent_code_modification_execution_arming_plan" ||
+		arming["source_checkout_performed"] != false ||
+		arming["workspace_bound"] != false ||
+		arming["branch_created"] != false ||
+		arming["patch_content_materialized"] != false ||
+		arming["diff_materialized"] != false ||
+		arming["file_patch_applied"] != false ||
+		arming["tests_executed"] != false ||
+		arming["git_commit_created"] != false ||
+		arming["git_push_performed"] != false ||
+		arming["provider_review_created"] != false ||
+		arming["commit_push_agent_invoked"] != false ||
+		arming["external_call_made"] != false ||
+		arming["repository_mutation_allowed"] != false ||
+		arming["contains_source_remote_url"] != false ||
+		arming["contains_workspace_path"] != false ||
+		arming["contains_branch_name"] != false ||
+		arming["contains_patch_content"] != false ||
+		arming["contains_diff_content"] != false ||
+		arming["contains_file_content"] != false ||
+		arming["contains_test_output"] != false ||
+		arming["contains_token"] != false {
+		t.Fatalf("code modification execution arming should stay disabled and redacted: %#v", arming)
+	}
+	if got["execution_arming_ready"] != arming["arming_ready"] {
+		t.Fatalf("top-level arming flag should mirror arming plan: got=%#v arming=%#v", got["execution_arming_ready"], arming)
+	}
+	for _, control := range []string{"agent_execute_approval", "runtime_verification", "source_remote_review", "workspace_binding_review", "branch_policy_review", "structured_patch_review", "test_plan_review", "commit_push_agent_review", "provider_review_reconciliation"} {
+		if !containsString(stringSliceFromAny(arming["required_controls"]), control) {
+			t.Fatalf("code modification arming required control missing %q: %#v", control, arming["required_controls"])
+		}
+	}
+	for _, evidence := range []string{"worker_dispatch_plan_audit", "codex_execution_plan_audit", "patch_prepare_audit", "terminal_tool_call_audit", "future_operator_execution_review"} {
+		if !containsString(stringSliceFromAny(arming["required_evidence"]), evidence) {
+			t.Fatalf("code modification arming required evidence missing %q: %#v", evidence, arming["required_evidence"])
+		}
+	}
+	for _, backend := range []string{"source_checkout", "workspace_bind", "branch_create", "file_patch_apply", "test_command_execute", "git_commit", "git_push", "pull_request_create", "commit_push_agent"} {
+		if !containsString(stringSliceFromAny(arming["disabled_backends"]), backend) {
+			t.Fatalf("code modification arming disabled backend missing %q: %#v", backend, arming["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"runtime_config", "environment_variables", "authorization_header", "source_remote_url", "repository_url", "workspace_path", "branch_name", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "file_content", "test_output", "command_output", "token", "api_key"} {
+		if !containsString(stringSliceFromAny(arming["suppressed_fields"]), field) {
+			t.Fatalf("code modification arming suppressed field missing %q: %#v", field, arming["suppressed_fields"])
+		}
+	}
+	if boolOnlyFromAny(arming["arming_ready"]) {
+		if arming["arming_state"] != "ready_for_operator_review" ||
+			arming["worker_dispatch_audit_recorded"] != true ||
+			arming["codex_execution_plan_recorded"] != true ||
+			arming["patch_prepare_audit_recorded"] != true ||
+			arming["terminal_audit_recorded"] != true {
+			t.Fatalf("ready code modification arming should only reflect complete audit evidence: %#v", arming)
+		}
+	} else if arming["arming_state"] == "ready_for_operator_review" {
+		t.Fatalf("code modification arming cannot be ready state without arming_ready: %#v", arming)
 	}
 }
 

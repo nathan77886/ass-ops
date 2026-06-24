@@ -16927,6 +16927,7 @@ func agentCodeModificationPlan(auditEvidenceRows ...map[string]any) map[string]a
 		auditEvidence = auditEvidenceRows[0]
 	}
 	codeEvidence := agentCodeModificationEvidence(auditEvidence)
+	executionArmingPlan := agentCodeModificationExecutionArmingPlan(codeEvidence)
 	return map[string]any{
 		"mode":                          "redacted_agent_code_modification_plan",
 		"plan_state":                    "blocked",
@@ -16961,6 +16962,8 @@ func agentCodeModificationPlan(auditEvidenceRows ...map[string]any) map[string]a
 		"contains_file_content":         false,
 		"execution_boundary_redacted":   true,
 		"code_modification_evidence":    codeEvidence,
+		"execution_arming_plan":         executionArmingPlan,
+		"execution_arming_ready":        executionArmingPlan["arming_ready"],
 		"audit_result_recorded":         boolOnlyFromAny(codeEvidence["sanitized_result_recorded"]),
 		"blocked_reasons": []string{
 			"agent_code_modification_backend_disabled",
@@ -17022,6 +17025,70 @@ func agentCodeModificationPlan(auditEvidenceRows ...map[string]any) map[string]a
 		},
 		"result_recording_plan": agentCodeModificationResultRecordingPlan(codeEvidence),
 		"message":               "Agent code modification is represented as a redacted rehearsal plan only; source checkout, branch creation, patch application, tests, commit, push, and review creation remain disabled.",
+	}
+}
+
+func agentCodeModificationExecutionArmingPlan(codeEvidence map[string]any) map[string]any {
+	evidenceState := cleanPreviewString(codeEvidence["evidence_state"])
+	completeAudit := evidenceState == "recorded" &&
+		boolOnlyFromAny(codeEvidence["worker_dispatch_audit_recorded"]) &&
+		boolOnlyFromAny(codeEvidence["codex_execution_plan_recorded"]) &&
+		boolOnlyFromAny(codeEvidence["patch_prepare_audit_recorded"]) &&
+		boolOnlyFromAny(codeEvidence["sanitized_result_recorded"])
+	armingState := "blocked"
+	armingReason := "agent_code_modification_audit_not_recorded"
+	switch {
+	case completeAudit:
+		armingState = "ready_for_operator_review"
+		armingReason = "sanitized_agent_code_modification_audit_ready_for_future_execution_review"
+	case evidenceState == "waiting_for_worker":
+		armingState = "waiting_for_worker"
+		armingReason = "agent_code_modification_audit_waiting_for_worker"
+	case boolOnlyFromAny(codeEvidence["has_code_modification_audit"]):
+		armingState = "partial_audit"
+		armingReason = "agent_code_modification_audit_incomplete"
+	}
+	missing := append([]string{}, stringSliceFromAny(codeEvidence["missing_audit_evidence"])...)
+	if !completeAudit && !stringListContains(missing, "future_operator_execution_review") {
+		missing = append(missing, "future_operator_execution_review")
+	}
+	return map[string]any{
+		"mode":                           "redacted_agent_code_modification_execution_arming_plan",
+		"arming_state":                   armingState,
+		"arming_ready":                   armingState == "ready_for_operator_review",
+		"arming_ready_reason":            armingReason,
+		"audit_evidence_state":           evidenceState,
+		"worker_dispatch_audit_recorded": boolOnlyFromAny(codeEvidence["worker_dispatch_audit_recorded"]),
+		"codex_execution_plan_recorded":  boolOnlyFromAny(codeEvidence["codex_execution_plan_recorded"]),
+		"patch_prepare_audit_recorded":   boolOnlyFromAny(codeEvidence["patch_prepare_audit_recorded"]),
+		"terminal_audit_recorded":        boolOnlyFromAny(codeEvidence["sanitized_result_recorded"]),
+		"source_checkout_performed":      false,
+		"workspace_bound":                false,
+		"branch_created":                 false,
+		"patch_content_materialized":     false,
+		"diff_materialized":              false,
+		"file_patch_applied":             false,
+		"tests_executed":                 false,
+		"git_commit_created":             false,
+		"git_push_performed":             false,
+		"provider_review_created":        false,
+		"commit_push_agent_invoked":      false,
+		"external_call_made":             false,
+		"repository_mutation_allowed":    false,
+		"contains_source_remote_url":     false,
+		"contains_workspace_path":        false,
+		"contains_branch_name":           false,
+		"contains_patch_content":         false,
+		"contains_diff_content":          false,
+		"contains_file_content":          false,
+		"contains_test_output":           false,
+		"contains_token":                 false,
+		"required_controls":              []string{"agent_execute_approval", "runtime_verification", "source_remote_review", "workspace_binding_review", "branch_policy_review", "structured_patch_review", "test_plan_review", "commit_push_agent_review", "provider_review_reconciliation"},
+		"required_evidence":              []string{"worker_dispatch_plan_audit", "codex_execution_plan_audit", "patch_prepare_audit", "terminal_tool_call_audit", "future_operator_execution_review"},
+		"missing_evidence":               missing,
+		"disabled_backends":              []string{"source_checkout", "workspace_bind", "branch_create", "file_patch_apply", "test_command_execute", "git_commit", "git_push", "pull_request_create", "commit_push_agent"},
+		"suppressed_fields":              []string{"runtime_config", "environment_variables", "authorization_header", "source_remote_url", "repository_url", "workspace_path", "branch_name", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "file_content", "test_output", "command_output", "token", "api_key"},
+		"message":                        "Agent code modification execution is only ready for future operator review; source checkout, branch creation, patch application, tests, commit, push, and provider review remain disabled.",
 	}
 }
 
