@@ -98,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/project-versions/{id}", s.getProjectVersion)
 		r.Get("/api/project-versions/{id}/validation", s.getProjectVersionValidation)
 		r.Post("/api/project-versions/{id}/refresh", s.refreshProjectVersionProviders)
+		r.Post("/api/project-versions/{id}/validation-snapshot", s.recordProjectVersionValidationSnapshot)
 		r.Post("/api/project-versions/{id}/pin-config-commit", s.pinProjectVersionConfigCommit)
 		r.Get("/api/asset-graph-views", s.listAssetGraphViews)
 		r.Post("/api/asset-graph-views", s.createAssetGraphView)
@@ -2407,6 +2408,36 @@ func (s *Server) pinProjectVersionConfigCommit(w http.ResponseWriter, r *http.Re
 			s.log.Warn("config commit pin failed", "project_version_id", versionID, "repository_id", strings.TrimSpace(req.RepositoryID), "error", err)
 		}
 		writeError(w, http.StatusBadRequest, "pin config commit failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) recordProjectVersionValidationSnapshot(w http.ResponseWriter, r *http.Request) {
+	versionID := chi.URLParam(r, "id")
+	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: projectID}, "update") {
+		return
+	}
+	var req struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := RecordProjectVersionValidationSnapshot(r.Context(), s.store, ProjectVersionValidationSnapshotOptions{
+		ProjectVersionID: versionID,
+		DryRun:           req.DryRun,
+	})
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("project version validation snapshot failed", "project_version_id", versionID, "error", err)
+		}
+		writeError(w, http.StatusBadRequest, "record validation snapshot failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

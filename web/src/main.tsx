@@ -1210,6 +1210,32 @@ function sanitizedConfigPinResult(result: AnyRow = {}) {
   }, {});
 }
 
+function sanitizedValidationSnapshotResult(result: AnyRow = {}) {
+  const keys = [
+    'mode',
+    'recording_state',
+    'recording_ready',
+    'recording_enabled',
+    'dry_run',
+    'project_version_id',
+    'project_version_asset_observed',
+    'snapshots_written',
+    'snapshots_skipped_as_duplicate',
+    'validation_snapshot_written',
+    'asset_status_snapshot_written',
+    'operation_log_written',
+    'external_call_made',
+    'rows_affected_warning',
+    'rows_affected_unknown',
+    'missing_evidence',
+    'message'
+  ];
+  return keys.reduce((out: AnyRow, key) => {
+    if (Object.prototype.hasOwnProperty.call(result, key)) out[key] = result[key];
+    return out;
+  }, {});
+}
+
 function parseJSONField(value?: string) {
   const text = (value || '').trim();
   if (!text) return {};
@@ -2841,11 +2867,13 @@ function ProjectDetail() {
   const versionValidationAutoReloadAttempts = useRef(0);
   const [validatingVersionID, setValidatingVersionID] = useState<string>();
   const [refreshingVersionID, setRefreshingVersionID] = useState<string>();
+  const [recordingValidationSnapshotID, setRecordingValidationSnapshotID] = useState<string>();
   const [configPinningVersionID, setConfigPinningVersionID] = useState<string>();
   const [configInitializing, setConfigInitializing] = useState(false);
   const [configWorkflowRequesting, setConfigWorkflowRequesting] = useState(false);
   const [configWorkflowResult, setConfigWorkflowResult] = useState<AnyRow>();
   const [configPinResult, setConfigPinResult] = useState<AnyRow>();
+  const [versionSnapshotResult, setVersionSnapshotResult] = useState<AnyRow>();
   const configRepo = repoRows.find((row: AnyRow) => row.repo_role === 'config');
   const configScaffold = useLoad(() => configRepo ? api(`/api/git-repositories/${configRepo.id}/config-scaffold`) : Promise.resolve(undefined), [configRepo?.id]);
   async function initializeConfigRepo() {
@@ -2956,6 +2984,26 @@ function ProjectDetail() {
       message.error(error.message || 'Request failed');
     } finally {
       setConfigPinningVersionID(undefined);
+    }
+  }
+  async function recordValidationSnapshot(row: AnyRow) {
+    setRecordingValidationSnapshotID(row.id);
+    try {
+      const result = await api(`/api/project-versions/${row.id}/validation-snapshot`, {
+        method: 'POST',
+        body: JSON.stringify({ dry_run: false })
+      });
+      const safeResult = sanitizedValidationSnapshotResult(result);
+      setVersionSnapshotResult(safeResult);
+      if (versionValidation?.version_id === row.id) {
+        const validation = await api(`/api/project-versions/${row.id}/validation`);
+        setVersionValidation(validation);
+      }
+      message.success(safeResult.validation_snapshot_written ? 'Validation snapshot recorded' : 'Validation snapshot already current');
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setRecordingValidationSnapshotID(undefined);
     }
   }
   useEffect(() => {
@@ -3188,6 +3236,20 @@ function ProjectDetail() {
                     <Typography.Text type="secondary">{versionValidation.provider_refresh_plan.execution_plan.required_operator_action}</Typography.Text>
                   </Space>
                 )}
+                <Space wrap>
+                  <Button
+                    size="small"
+                    loading={recordingValidationSnapshotID === versionValidation.version_id}
+                    disabled={!versionValidation.version_id}
+                    onClick={() => recordValidationSnapshot({ id: versionValidation.version_id })}
+                  >
+                    Record validation snapshot
+                  </Button>
+                  {versionSnapshotResult ? <Tag color={versionSnapshotResult.validation_snapshot_written ? 'green' : versionSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>snapshot {versionSnapshotResult.recording_state || 'unknown'}</Tag> : null}
+                  {versionSnapshotResult ? <Tag>{versionSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'no asset status write'}</Tag> : null}
+                  {versionSnapshotResult ? <Tag>{versionSnapshotResult.operation_log_written ? 'operation log' : 'no operation log'}</Tag> : null}
+                  {versionSnapshotResult ? <Tag>{versionSnapshotResult.external_call_made ? 'external call' : 'no external call'}</Tag> : null}
+                </Space>
                 {versionRefreshResult && (
                   <Space wrap>
                     <Tag color="blue">{versionRefreshResult.operation_count || 0} operations queued</Tag>
@@ -3201,6 +3263,7 @@ function ProjectDetail() {
                 <JSONBlock value={versionValidation} />
                 {versionRefreshResult ? <JSONBlock value={versionRefreshResult} /> : null}
                 {configPinResult ? <JSONBlock value={configPinResult} /> : null}
+                {versionSnapshotResult ? <JSONBlock value={versionSnapshotResult} /> : null}
               </Space>
             </Card>
           )}

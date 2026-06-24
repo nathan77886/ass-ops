@@ -103,7 +103,7 @@ func RecordProjectVersionValidationSnapshot(ctx context.Context, store *Store, o
 		written = int(rows)
 	} else {
 		written = 1
-		rowsAffectedWarning = err.Error()
+		rowsAffectedWarning = "rows affected unavailable"
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("committing project version validation snapshot: %w", err)
@@ -116,7 +116,8 @@ func RecordProjectVersionValidationSnapshot(ctx context.Context, store *Store, o
 	result["asset_status_snapshot_written"] = written > 0
 	if rowsAffectedWarning != "" {
 		result["rows_affected_warning"] = rowsAffectedWarning
-		result["snapshots_skipped_as_duplicate"] = "unknown"
+		result["rows_affected_unknown"] = true
+		result["snapshots_skipped_as_duplicate"] = -1
 	}
 	result["message"] = "Sanitized ProjectVersion validation snapshot recorded from local synced database state."
 	return result, nil
