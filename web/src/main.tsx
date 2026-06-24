@@ -4419,6 +4419,7 @@ function AgentTasks() {
       const capabilities = Array.isArray(plan.required_worker_capabilities) ? plan.required_worker_capabilities : [];
       const claimPlan = plan.worker_claim_plan || {};
       const toolPlan = plan.tool_invocation_plan || {};
+      const armingPlan = plan.tool_execution_arming_plan || {};
       const callbackPlan = plan.result_callback_plan || {};
       const evidence = plan.tool_call_audit_evidence || {};
       return <Space size={4} wrap>
@@ -4429,6 +4430,8 @@ function AgentTasks() {
         <Tag color={plan.worker_claim_enabled === true ? 'blue' : 'green'}>{plan.worker_claim_enabled === true ? 'Worker claim wired' : 'No worker claim'}</Tag>
         <Tag color="gold">tools {toolPlan.invocation_state || 'blocked'}</Tag>
         <Tag color={plan.tool_invocation_enabled === true ? 'red' : 'green'}>{plan.tool_invocation_enabled === true ? 'Tools enabled' : 'Tools blocked'}</Tag>
+        {plan.tool_execution_arming_plan ? <Tag color={armingPlan.arming_ready === true ? 'gold' : 'red'}>arming {armingPlan.arming_state || 'blocked'}</Tag> : null}
+        {plan.tool_execution_arming_plan ? <Tag>{armingPlan.arming_ready === true ? 'operator review ready' : 'arming blocked'}</Tag> : null}
         <Tag color="gold">callback {callbackPlan.callback_state || 'blocked'}</Tag>
         <Tag color={plan.result_callback_enabled === true ? 'blue' : 'green'}>{plan.result_callback_enabled === true ? 'Callback wired' : 'Callback blocked'}</Tag>
         {evidence.tool_call_count ? <Tag color={agentAuditEvidenceColor(evidence.evidence_state)}>audit {evidence.evidence_state}</Tag> : null}

@@ -16024,6 +16024,17 @@ func TestAgentWorkerDispatchPlan(t *testing.T) {
 					t.Fatalf("suppressed_fields missing %q: %#v", field, got["suppressed_fields"])
 				}
 			}
+			armingPlan := mapFromAny(got["tool_execution_arming_plan"])
+			if tt.wantPrerequisite == "metadata_available" {
+				if armingPlan["arming_state"] != "audit_ready" ||
+					armingPlan["arming_ready"] != false ||
+					armingPlan["metadata_ready"] != true ||
+					armingPlan["allowlist_ready"] != true ||
+					armingPlan["audit_evidence_observed"] != false ||
+					!containsString(stringSliceFromAny(armingPlan["missing_evidence"]), "tool_call_audit_evidence") {
+					t.Fatalf("metadata-ready dispatch should keep tool execution arming audit-ready but not armed: %#v", armingPlan)
+				}
+			}
 			assertAgentWorkerDispatchSubplansSafe(t, got)
 			encoded, _ := json.Marshal(got)
 			for _, forbidden := range []string{"do-not-serialize", "ASSOPS_", "OPENAI_", "GITHUB_TOKEN", "PRIVATE KEY", "Bearer", "password"} {
@@ -16062,6 +16073,19 @@ func TestAgentWorkerDispatchPlanReconcilesToolCallAuditEvidence(t *testing.T) {
 		got["external_call_made"] != false ||
 		got["repository_mutation_allowed"] != false {
 		t.Fatalf("dispatch plan should reflect audit evidence without enabling tools: %#v", got)
+	}
+	armingPlan := mapFromAny(got["tool_execution_arming_plan"])
+	if armingPlan["arming_state"] != "ready_for_operator_review" ||
+		armingPlan["arming_ready"] != true ||
+		armingPlan["audit_evidence_observed"] != true ||
+		armingPlan["terminal_audit_observed"] != true ||
+		armingPlan["result_callback_observed"] != true ||
+		armingPlan["tool_invocation_enabled"] != false ||
+		armingPlan["tool_invoked"] != false ||
+		armingPlan["raw_tool_output_recorded"] != false ||
+		armingPlan["contains_tool_input"] != false ||
+		armingPlan["contains_tool_output"] != false {
+		t.Fatalf("tool execution arming should reconcile audit evidence without enabling invocation: %#v", armingPlan)
 	}
 	callbackPlan := mapFromAny(got["result_callback_plan"])
 	if callbackPlan["callback_state"] != "recorded" ||
@@ -16205,10 +16229,73 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 			t.Fatalf("tool invocation blocked reasons missing %q: %#v", reason, toolPlan["blocked_reasons"])
 		}
 	}
+	armingPlan := mapFromAny(got["tool_execution_arming_plan"])
+	if armingPlan["mode"] != "redacted_agent_tool_execution_arming_plan" ||
+		armingPlan["tool_invocation_enabled"] != false ||
+		armingPlan["tool_invoked"] != false ||
+		armingPlan["allowlisted_tool_invoked"] != false ||
+		armingPlan["codex_cli_process_started"] != false ||
+		armingPlan["patch_applied"] != false ||
+		armingPlan["repository_mutation_allowed"] != false ||
+		armingPlan["external_call_made"] != false ||
+		armingPlan["raw_tool_input_materialized"] != false ||
+		armingPlan["raw_tool_output_recorded"] != false ||
+		armingPlan["runtime_config_materialized"] != false ||
+		armingPlan["contains_runtime_config"] != false ||
+		armingPlan["contains_prompt_body"] != false ||
+		armingPlan["contains_tool_input"] != false ||
+		armingPlan["contains_tool_output"] != false ||
+		armingPlan["contains_patch_content"] != false ||
+		armingPlan["contains_diff_content"] != false ||
+		armingPlan["contains_token"] != false {
+		t.Fatalf("tool execution arming plan should stay disabled and redacted: %#v", armingPlan)
+	}
+	if got["prerequisite_state"] == "metadata_available" && armingPlan["metadata_ready"] != true {
+		t.Fatalf("metadata-available dispatch should mark tool arming metadata ready: %#v", armingPlan)
+	}
+	if got["prerequisite_state"] == "metadata_blocked" && (armingPlan["metadata_ready"] != false || armingPlan["arming_state"] != "blocked") {
+		t.Fatalf("metadata-blocked dispatch should block tool arming: %#v", armingPlan)
+	}
+	for _, tool := range []string{"context.generate", "runtime.check", "codex.execution.plan", "patch.prepare"} {
+		if !containsString(stringSliceFromAny(armingPlan["allowed_tool_names"]), tool) {
+			t.Fatalf("tool arming allowed tool missing %q: %#v", tool, armingPlan["allowed_tool_names"])
+		}
+	}
+	for _, control := range []string{"agent_execute_approval", "verified_runtime_metadata", "tool_allowlist_review", "result_callback_audit", "operator_execution_review", "raw_io_redaction_review"} {
+		if !containsString(stringSliceFromAny(armingPlan["required_controls"]), control) {
+			t.Fatalf("tool arming required control missing %q: %#v", control, armingPlan["required_controls"])
+		}
+	}
+	for _, field := range []string{"runtime_metadata", "tool_allowlist", "tool_call_audit_evidence", "terminal_tool_call_audit", "result_callback"} {
+		if !containsString(stringSliceFromAny(armingPlan["required_evidence"]), field) {
+			t.Fatalf("tool arming required evidence missing %q: %#v", field, armingPlan["required_evidence"])
+		}
+	}
+	for _, backend := range []string{"worker_tool_invoke", "codex_cli_process", "tool_input_materialization", "tool_output_recording", "patch_apply", "repository_mutation"} {
+		if !containsString(stringSliceFromAny(armingPlan["disabled_backends"]), backend) {
+			t.Fatalf("tool arming disabled backend missing %q: %#v", backend, armingPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"runtime_config", "environment_variables", "authorization_header", "workspace_path", "repository_url", "prompt_body", "tool_input", "tool_output", "patch_content", "diff_content", "file_content", "token", "api_key", "bearer_token"} {
+		if !containsString(stringSliceFromAny(armingPlan["suppressed_fields"]), field) {
+			t.Fatalf("tool arming suppressed field missing %q: %#v", field, armingPlan["suppressed_fields"])
+		}
+	}
 
 	callbackPlan := mapFromAny(got["result_callback_plan"])
 	evidence := mapFromAny(got["tool_call_audit_evidence"])
 	hasAuditEvidence := boolOnlyFromAny(evidence["has_tool_call_audit"])
+	if hasAuditEvidence && boolOnlyFromAny(evidence["sanitized_result_recorded"]) && got["prerequisite_state"] == "metadata_available" {
+		if armingPlan["arming_state"] != "ready_for_operator_review" ||
+			armingPlan["arming_ready"] != true ||
+			armingPlan["audit_evidence_observed"] != true ||
+			armingPlan["terminal_audit_observed"] != true ||
+			armingPlan["result_callback_wired"] != true {
+			t.Fatalf("terminal audit evidence should make tool arming ready only for operator review: %#v", armingPlan)
+		}
+	} else if armingPlan["arming_ready"] == true {
+		t.Fatalf("tool arming cannot be ready without metadata and terminal audit evidence: %#v", armingPlan)
+	}
 	if callbackPlan["mode"] != "redacted_agent_result_callback_plan" ||
 		callbackPlan["callback_ready"] != true ||
 		callbackPlan["callback_enabled"] != true ||
