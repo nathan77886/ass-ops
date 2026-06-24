@@ -880,9 +880,10 @@ function countSSHGraphLinks(graph: AnyRow = {}) {
 }
 
 function countArgoGraphLinks(graph: AnyRow = {}) {
-  const byApp: Record<string, { connection?: boolean; target?: boolean }> = {};
+  const byApp: Record<string, { connections: Record<string, boolean>; target?: boolean }> = {};
+  const syncedConnections: Record<string, boolean> = {};
   const appEntry = (assetID: string) => {
-    byApp[assetID] ||= {};
+    byApp[assetID] ||= { connections: {} };
     return byApp[assetID];
   };
   const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
@@ -891,15 +892,20 @@ function countArgoGraphLinks(graph: AnyRow = {}) {
     const to = String(edge.to_asset_id || '');
     if (relation === 'manages' && from.startsWith('argo_connection:') && to.startsWith('argo_app:')) {
       nextCounts.connectionApps += 1;
-      appEntry(to).connection = true;
+      appEntry(to).connections[from] = true;
     }
     if (relation === 'deployed_to' && from.startsWith('argo_app:') && to.startsWith('deployment_target:')) {
       nextCounts.appTargets += 1;
       appEntry(from).target = true;
     }
+    if (relation === 'synced_argo_connection' && from.startsWith('operation_run:') && to.startsWith('argo_connection:')) {
+      syncedConnections[to] = true;
+    }
     return nextCounts;
   }, { connectionApps: 0, appTargets: 0, completeApps: 0 });
-  counts.completeApps = Object.values(byApp).filter((entry) => entry.connection && entry.target).length;
+  counts.completeApps = Object.values(byApp).filter((entry) => (
+    entry.target && Object.keys(entry.connections).some((connectionID) => syncedConnections[connectionID])
+  )).length;
   return counts;
 }
 

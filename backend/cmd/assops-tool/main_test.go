@@ -258,10 +258,44 @@ func TestFirstVersionReadinessReportRequiresArgoSync(t *testing.T) {
 		"edges": []any{
 			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "argo_app:20", "relation_type": "manages"},
 			map[string]any{"from_asset_id": "argo_app:20", "to_asset_id": "deployment_target:30", "relation_type": "deployed_to"},
+			map[string]any{"from_asset_id": "operation_run:40", "to_asset_id": "argo_connection:10", "relation_type": "synced_argo_connection"},
 		},
 	})
 	if got := readinessByKey(t, ready, "argo"); got.Status != "ready" || got.Evidence != "1 targets / 1 Argo connections / 1 apps / 1 sync ops / 1 complete app links" {
 		t.Fatalf("argo status with complete app graph = %#v, want ready", got)
+	}
+
+	withoutSyncedConnection := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "deployment_target"},
+		{"asset_type": "argo_connection"},
+		{"asset_type": "argo_app"},
+	}, []map[string]any{
+		{"operation_type": "argo.apps.sync"},
+	}, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "argo_app:20", "relation_type": "manages"},
+			map[string]any{"from_asset_id": "argo_app:20", "to_asset_id": "deployment_target:30", "relation_type": "deployed_to"},
+		},
+	})
+	if got := readinessByKey(t, withoutSyncedConnection, "argo"); got.Status != "partial" || got.Evidence != "1 targets / 1 Argo connections / 1 apps / 1 sync ops / 0 complete app links" {
+		t.Fatalf("argo status without synced connection edge = %#v, want partial", got)
+	}
+
+	withUnrelatedSyncedConnection := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "deployment_target"},
+		{"asset_type": "argo_connection"},
+		{"asset_type": "argo_app"},
+	}, []map[string]any{
+		{"operation_type": "argo.apps.sync"},
+	}, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "argo_app:20", "relation_type": "manages"},
+			map[string]any{"from_asset_id": "argo_app:20", "to_asset_id": "deployment_target:30", "relation_type": "deployed_to"},
+			map[string]any{"from_asset_id": "operation_run:40", "to_asset_id": "argo_connection:11", "relation_type": "synced_argo_connection"},
+		},
+	})
+	if got := readinessByKey(t, withUnrelatedSyncedConnection, "argo"); got.Status != "partial" || got.Evidence != "1 targets / 1 Argo connections / 1 apps / 1 sync ops / 0 complete app links" {
+		t.Fatalf("argo status with unrelated synced connection edge = %#v, want partial", got)
 	}
 
 	crossAppAggregation := firstVersionReadinessReportWithGraph([]map[string]any{
@@ -275,6 +309,7 @@ func TestFirstVersionReadinessReportRequiresArgoSync(t *testing.T) {
 		"edges": []any{
 			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "argo_app:20", "relation_type": "manages"},
 			map[string]any{"from_asset_id": "argo_app:21", "to_asset_id": "deployment_target:30", "relation_type": "deployed_to"},
+			map[string]any{"from_asset_id": "operation_run:40", "to_asset_id": "argo_connection:10", "relation_type": "synced_argo_connection"},
 		},
 	})
 	if got := readinessByKey(t, crossAppAggregation, "argo"); got.Status != "partial" || got.Evidence != "1 targets / 1 Argo connections / 2 apps / 1 sync ops / 0 complete app links" {
@@ -1040,6 +1075,7 @@ func TestCountArgoGraphLinks(t *testing.T) {
 		"edges": []any{
 			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "argo_app:20", "relation_type": "manages"},
 			map[string]any{"from_asset_id": "argo_app:20", "to_asset_id": "deployment_target:30", "relation_type": "deployed_to"},
+			map[string]any{"from_asset_id": "operation_run:40", "to_asset_id": "argo_connection:10", "relation_type": "synced_argo_connection"},
 			map[string]any{"from_asset_id": "deployment_target:30", "to_asset_id": "argo_app:20", "relation_type": "hosts"},
 			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "deployment_target:30", "relation_type": "manages"},
 			map[string]any{"from_asset_id": "argo_app:21", "to_asset_id": "deployment_target:31", "relation_type": "deployed_to"},
@@ -1048,6 +1084,35 @@ func TestCountArgoGraphLinks(t *testing.T) {
 	got := countArgoGraphLinks(graph)
 	if got.ConnectionApps != 1 || got.AppTargets != 2 || got.CompleteApps != 1 {
 		t.Fatalf("countArgoGraphLinks = %#v, want one connection-app, two app-targets, and one complete app", got)
+	}
+}
+
+func TestCountArgoGraphLinksRequiresSyncedConnection(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "argo_app:20", "relation_type": "manages"},
+			map[string]any{"from_asset_id": "argo_app:20", "to_asset_id": "deployment_target:30", "relation_type": "deployed_to"},
+			map[string]any{"from_asset_id": "operation_run:40", "to_asset_id": "argo_connection:11", "relation_type": "synced_argo_connection"},
+		},
+	}
+	got := countArgoGraphLinks(graph)
+	if got.ConnectionApps != 1 || got.AppTargets != 1 || got.CompleteApps != 0 {
+		t.Fatalf("countArgoGraphLinks with unrelated synced connection = %#v, want no complete app", got)
+	}
+}
+
+func TestCountArgoGraphLinksAllowsOneSyncedConnectionForSharedApp(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "argo_connection:10", "to_asset_id": "argo_app:20", "relation_type": "manages"},
+			map[string]any{"from_asset_id": "argo_connection:11", "to_asset_id": "argo_app:20", "relation_type": "manages"},
+			map[string]any{"from_asset_id": "argo_app:20", "to_asset_id": "deployment_target:30", "relation_type": "deployed_to"},
+			map[string]any{"from_asset_id": "operation_run:40", "to_asset_id": "argo_connection:10", "relation_type": "synced_argo_connection"},
+		},
+	}
+	got := countArgoGraphLinks(graph)
+	if got.ConnectionApps != 2 || got.AppTargets != 1 || got.CompleteApps != 1 {
+		t.Fatalf("countArgoGraphLinks with shared app and one synced connection = %#v, want one complete app", got)
 	}
 }
 

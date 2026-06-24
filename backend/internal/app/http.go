@@ -12425,6 +12425,8 @@ func assetRelationInventorySQL() string {
 		END
 		WHERE op.operation_type='agent.execute'
 		UNION ALL
+		-- Keep this relation scoped to real Argo app sync operations; if new Argo
+		-- sync operation types are introduced, update readiness consumers together.
 		SELECT
 			'operation_run:' || op.id::text || ':synced_argo_connection:argo_connection:' || ac.id::text,
 			ac.project_id::text,

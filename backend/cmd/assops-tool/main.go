@@ -2240,14 +2240,15 @@ type argoGraphLinkCounts struct {
 func countArgoGraphLinks(graph map[string]any) argoGraphLinkCounts {
 	counts := argoGraphLinkCounts{}
 	type appLinks struct {
-		connection bool
-		target     bool
+		connections map[string]bool
+		target      bool
 	}
+	syncedConnections := map[string]bool{}
 	byApp := map[string]*appLinks{}
 	appEntry := func(assetID string) *appLinks {
 		entry := byApp[assetID]
 		if entry == nil {
-			entry = &appLinks{}
+			entry = &appLinks{connections: map[string]bool{}}
 			byApp[assetID] = entry
 		}
 		return entry
@@ -2259,21 +2260,34 @@ func countArgoGraphLinks(graph map[string]any) argoGraphLinkCounts {
 		case "manages":
 			if strings.HasPrefix(from, "argo_connection:") && strings.HasPrefix(to, "argo_app:") {
 				counts.ConnectionApps++
-				appEntry(to).connection = true
+				appEntry(to).connections[from] = true
 			}
 		case "deployed_to":
 			if strings.HasPrefix(from, "argo_app:") && strings.HasPrefix(to, "deployment_target:") {
 				counts.AppTargets++
 				appEntry(from).target = true
 			}
+		case "synced_argo_connection":
+			if strings.HasPrefix(from, "operation_run:") && strings.HasPrefix(to, "argo_connection:") {
+				syncedConnections[to] = true
+			}
 		}
 	}
 	for _, entry := range byApp {
-		if entry.connection && entry.target {
+		if entry.target && hasSyncedConnection(entry.connections, syncedConnections) {
 			counts.CompleteApps++
 		}
 	}
 	return counts
+}
+
+func hasSyncedConnection(connections, syncedConnections map[string]bool) bool {
+	for connectionID := range connections {
+		if syncedConnections[connectionID] {
+			return true
+		}
+	}
+	return false
 }
 
 type approvalGraphLinkCounts struct {
