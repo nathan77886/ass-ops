@@ -10213,14 +10213,20 @@ func TestPostApprovalWebhookSendsSafePayload(t *testing.T) {
 
 	server := &Server{cfg: Config{ApprovalWebhookURL: "https://93.184.216.34/approval", ApprovalWebhookToken: "token-123"}}
 	err := server.postApprovalWebhook(context.Background(), map[string]any{
-		"id":              "approval-1",
-		"project_id":      "project-1",
-		"resource_type":   "ssh_machine",
-		"resource_id":     "machine-1",
-		"action":          "ssh.exec",
-		"title":           "Run SSH command",
-		"status":          "pending",
-		"request_payload": map[string]any{"command": "secret command"},
+		"id":                       "approval-1",
+		"project_id":               "project-1",
+		"resource_type":            "ssh_machine",
+		"resource_id":              "machine-1",
+		"action":                   "ssh.exec",
+		"title":                    "Run SSH command",
+		"status":                   "pending",
+		"required_approver_roles":  []string{"admin", "owner"},
+		"required_approval_count":  2,
+		"escalation_after_minutes": 30,
+		"escalation_channels":      []string{"email:ops@example.com", "slack:#deploys", "pagerduty"},
+		"last_escalated_at":        "2026-01-01T00:00:00Z",
+		"escalation_count":         1,
+		"request_payload":          map[string]any{"command": "secret command"},
 	}, "pending")
 	if err != nil {
 		t.Fatalf("postApprovalWebhook: %v", err)
@@ -10238,28 +10244,45 @@ func TestPostApprovalWebhookSendsSafePayload(t *testing.T) {
 	if _, ok := approval["request_payload"]; ok {
 		t.Fatal("approval webhook must not include request_payload")
 	}
+	for _, field := range []string{"required_approver_roles", "required_approval_count", "escalation_after_minutes", "escalation_channels", "last_escalated_at", "escalation_count"} {
+		if _, ok := approval[field]; ok {
+			t.Fatalf("approval webhook must not include rule metadata field %q: %#v", field, approval)
+		}
+	}
 	if approval["action"] != "ssh.exec" {
 		t.Fatalf("action = %v, want ssh.exec", approval["action"])
+	}
+	encoded, _ := json.Marshal(gotPayload)
+	for _, leaked := range []string{"secret command", "ops@example.com", "#deploys", "pagerduty"} {
+		if strings.Contains(string(encoded), leaked) {
+			t.Fatalf("approval webhook leaked %q: %s", leaked, encoded)
+		}
 	}
 }
 
 func TestApprovalWebhookPayloadUsesMetadataAllowlist(t *testing.T) {
 	payload := approvalWebhookPayload(map[string]any{
-		"id":                      "approval-1",
-		"project_id":              "project-1",
-		"operation_run_id":        "run-1",
-		"resource_type":           "agent_task",
-		"resource_id":             "task-1",
-		"action":                  "agent.execute",
-		"title":                   "Execute agent task",
-		"status":                  "pending",
-		"approved_count":          1,
-		"rejected_count":          0,
-		"request_payload":         map[string]any{"prompt": "secret prompt", "token": "secret-token"},
-		"result_payload":          map[string]any{"diff": "secret diff"},
-		"decision_reason":         "contains private operational detail",
-		"notification_last_error": "Bearer secret-token",
-		"metadata":                map[string]any{"kubeconfig": "secret kubeconfig"},
+		"id":                       "approval-1",
+		"project_id":               "project-1",
+		"operation_run_id":         "run-1",
+		"resource_type":            "agent_task",
+		"resource_id":              "task-1",
+		"action":                   "agent.execute",
+		"title":                    "Execute agent task",
+		"status":                   "pending",
+		"approved_count":           1,
+		"rejected_count":           0,
+		"required_approver_roles":  []string{"admin", "owner"},
+		"required_approval_count":  2,
+		"escalation_after_minutes": 30,
+		"escalation_channels":      []string{"email:ops@example.com", "slack:#deploys", "pagerduty"},
+		"last_escalated_at":        "2026-01-01T00:00:00Z",
+		"escalation_count":         1,
+		"request_payload":          map[string]any{"prompt": "secret prompt", "token": "secret-token"},
+		"result_payload":           map[string]any{"diff": "secret diff"},
+		"decision_reason":          "contains private operational detail",
+		"notification_last_error":  "Bearer secret-token",
+		"metadata":                 map[string]any{"kubeconfig": "secret kubeconfig"},
 	}, "escalation")
 	if payload["event"] != "escalation" {
 		t.Fatalf("event = %#v", payload["event"])
@@ -10286,6 +10309,12 @@ func TestApprovalWebhookPayloadUsesMetadataAllowlist(t *testing.T) {
 		"result_payload",
 		"decision_reason",
 		"notification_last_error",
+		"required_approver_roles",
+		"required_approval_count",
+		"escalation_after_minutes",
+		"escalation_channels",
+		"last_escalated_at",
+		"escalation_count",
 		"metadata",
 		"token",
 		"kubeconfig",
@@ -10299,7 +10328,7 @@ func TestApprovalWebhookPayloadUsesMetadataAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal approval webhook payload: %v", err)
 	}
-	for _, leaked := range []string{"secret prompt", "secret-token", "secret diff", "private operational detail", "secret kubeconfig"} {
+	for _, leaked := range []string{"secret prompt", "secret-token", "secret diff", "private operational detail", "secret kubeconfig", "ops@example.com", "#deploys", "pagerduty"} {
 		if strings.Contains(string(encoded), leaked) {
 			t.Fatalf("approval webhook payload leaked %q: %s", leaked, encoded)
 		}
@@ -10319,14 +10348,18 @@ func TestPostApprovalWebhookReminderUsesSafePayload(t *testing.T) {
 
 	server := &Server{cfg: Config{ApprovalWebhookURL: "https://93.184.216.34/approval"}}
 	err := server.postApprovalWebhook(context.Background(), map[string]any{
-		"id":                      "approval-1",
-		"action":                  "agent.execute",
-		"title":                   "Execute agent task",
-		"status":                  "pending",
-		"required_approver_roles": []string{"admin", "owner"},
-		"required_approval_count": 2,
-		"approved_count":          1,
-		"request_payload":         map[string]any{"private": "context"},
+		"id":                       "approval-1",
+		"action":                   "agent.execute",
+		"title":                    "Execute agent task",
+		"status":                   "pending",
+		"required_approver_roles":  []string{"admin", "owner"},
+		"required_approval_count":  2,
+		"approved_count":           1,
+		"escalation_after_minutes": 30,
+		"escalation_channels":      []string{"email:ops@example.com", "slack:#deploys", "pagerduty"},
+		"last_escalated_at":        "2026-01-01T00:00:00Z",
+		"escalation_count":         1,
+		"request_payload":          map[string]any{"private": "context"},
 	}, "reminder")
 	if err != nil {
 		t.Fatalf("postApprovalWebhook reminder: %v", err)
@@ -10341,8 +10374,25 @@ func TestPostApprovalWebhookReminderUsesSafePayload(t *testing.T) {
 	if _, ok := approval["request_payload"]; ok {
 		t.Fatal("reminder webhook must not include request_payload")
 	}
-	if approval["approved_count"] != float64(1) || approval["required_approval_count"] != float64(2) {
+	if approval["approved_count"] != float64(1) {
 		t.Fatalf("approval progress = %#v", approval)
+	}
+	if _, ok := approval["required_approval_count"]; ok {
+		t.Fatalf("reminder webhook must not include rule approval count: %#v", approval)
+	}
+	if _, ok := approval["required_approver_roles"]; ok {
+		t.Fatalf("reminder webhook must not include approver roles: %#v", approval)
+	}
+	for _, field := range []string{"escalation_after_minutes", "escalation_channels", "last_escalated_at", "escalation_count"} {
+		if _, ok := approval[field]; ok {
+			t.Fatalf("reminder webhook must not include escalation metadata field %q: %#v", field, approval)
+		}
+	}
+	encoded, _ := json.Marshal(gotPayload)
+	for _, leaked := range []string{"private", "ops@example.com", "#deploys", "pagerduty"} {
+		if strings.Contains(string(encoded), leaked) {
+			t.Fatalf("reminder webhook leaked %q: %s", leaked, encoded)
+		}
 	}
 }
 
