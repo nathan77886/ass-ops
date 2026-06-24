@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18984,6 +18985,260 @@ func TestRecordProviderReviewAttemptLocalResultHandlerReleasesClaimForRetryable(
 	}
 }
 
+func TestProviderReviewAttemptSnapshotPayloadSanitizesAttempt(t *testing.T) {
+	snapshot := providerReviewAttemptSnapshotPayload(map[string]any{
+		"id":                      "attempt-1",
+		"operation_approval_id":   "approval-1",
+		"project_template_run_id": "run-1",
+		"provider_type":           "github",
+		"review_kind":             "pull_request",
+		"operation_name":          "create_branch_ref",
+		"endpoint_key":            "github.create_branch_ref",
+		"status":                  "running",
+		"dependency_status":       "independent",
+		"operation_order":         10,
+		"replay_check":            "detect_existing_branch_ref",
+		"conflict_policy":         "treat_existing_matching_ref_as_success",
+		"retry_policy":            "retry_only_after_response_diagnostics",
+		"request_summary":         map[string]any{"raw": "secret request body"},
+		"response_diagnostics":    map[string]any{"raw": "secret response body"},
+		"idempotency_key_hash":    "secret hash",
+		"claimed_by_user_id":      "user-secret",
+		"claimed_at":              time.Now(),
+	}, true)
+	ready, state, missing := providerReviewAttemptSnapshotReadiness(snapshot)
+	if !ready || state != "running" || len(missing) != 0 {
+		t.Fatalf("readiness = %v/%s/%#v; snapshot=%#v", ready, state, missing, snapshot)
+	}
+	if snapshot["provider_review_attempt_asset_observed"] != true ||
+		snapshot["status_snapshot_written"] != true ||
+		snapshot["provider_api_call_made"] != false ||
+		snapshot["external_call_made"] != false ||
+		snapshot["provider_api_mutation"] != "disabled" ||
+		snapshot["request_body_included"] != false ||
+		snapshot["response_body_included"] != false ||
+		snapshot["idempotency_key_included"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review attempt snapshot: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, forbidden := range []string{"secret request body", "secret response body", "secret hash", "user-secret", "claimed_by_user_id"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("provider review attempt snapshot leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestRecordProviderReviewAttemptSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "running", "independent", time.Now())
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_running").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_running", "warning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptSnapshot(rr, newProviderReviewAttemptSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "running" ||
+		got["provider_review_attempt_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["contains_token"] != false ||
+		got["contains_provider_url"] != false ||
+		got["contains_branch_name"] != false ||
+		got["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review attempt snapshot response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptSnapshotHandlerDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "running", "independent", time.Now())
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptSnapshot(rr, newProviderReviewAttemptSnapshotRequest(`{"dry_run":true}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run snapshot response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptSnapshotHandlerBlocksUnapprovedAttempt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApproval(mock, "planned", "independent", nil, "pending")
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptSnapshot(rr, newProviderReviewAttemptSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "operation_approval_not_approved" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["provider_api_call_made"] != false {
+		t.Fatalf("unexpected unapproved snapshot response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptSnapshotHandlerAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "planned", "independent", nil)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptSnapshot(rr, newProviderReviewAttemptSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected asset missing snapshot response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptSnapshotHandlerTransactionErrorReturnsServerError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "completed", "independent", time.Now())
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin().WillReturnError(fmt.Errorf("database unavailable"))
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptSnapshot(rr, newProviderReviewAttemptSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "completed", "independent", time.Now())
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_completed").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_completed", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptSnapshot(rr, newProviderReviewAttemptSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != float64(-1) ||
+		got["snapshots_skipped_as_duplicate"] != float64(-1) ||
+		got["provider_review_attempt_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown snapshot response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordProviderReviewAttemptLocalResultHandlerReturnsConflictWhenUpdateDoesNotMatch(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -23491,6 +23746,12 @@ func newProviderReviewAttemptLocalResultRequest(body string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
 
+func newProviderReviewAttemptSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
 func newAgentCodeAuditSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/agent/tasks/task-1/code-audit-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "task-1")
@@ -23685,6 +23946,73 @@ func expectProviderReviewAttemptUpdatePolicy(mock sqlmock.Sqlmock) {
 		WithArgs("attempt-1").
 		WillReturnRows(sqlmock.NewRows([]string{"approval_id", "approval_project_id"}).
 			AddRow("approval-1", "project-1"))
+}
+
+func expectProviderReviewAttemptSnapshotSelect(mock sqlmock.Sqlmock, status, dependency string, claimedAt any) {
+	expectProviderReviewAttemptSnapshotSelectWithApproval(mock, status, dependency, claimedAt, "approved")
+}
+
+func expectProviderReviewAttemptSnapshotSelectWithApproval(mock sqlmock.Sqlmock, status, dependency string, claimedAt any, approvalStatus string) {
+	rows := sqlmock.NewRows([]string{
+		"id",
+		"operation_approval_id",
+		"project_template_run_id",
+		"provider_type",
+		"review_kind",
+		"operation_name",
+		"endpoint_key",
+		"status",
+		"replay_check",
+		"conflict_policy",
+		"retry_policy",
+		"operation_order",
+		"depends_on_operation",
+		"dependency_status",
+		"provider_api_call_made",
+		"provider_api_mutation",
+		"external_call_made",
+		"claimed_at",
+		"approval_id",
+		"approval_project_id",
+		"approval_action",
+		"approval_status",
+	}).AddRow(
+		"attempt-1",
+		"approval-1",
+		"run-1",
+		"github",
+		"pull_request",
+		"create_branch_ref",
+		"github.create_branch_ref",
+		status,
+		"detect_existing_branch_ref",
+		"treat_existing_matching_ref_as_success",
+		"retry_only_after_response_diagnostics",
+		10,
+		"",
+		dependency,
+		false,
+		"disabled",
+		false,
+		claimedAt,
+		"approval-1",
+		"project-1",
+		templateProviderReviewExecuteApprovalAction,
+		approvalStatus,
+	)
+	mock.ExpectQuery(`(?s)SELECT\s+pra\.id,.*FROM provider_review_attempts pra\s+JOIN operation_approvals oa ON oa\.id=pra\.operation_approval_id\s+WHERE pra\.id=\$1`).
+		WithArgs("attempt-1").
+		WillReturnRows(rows)
+}
+
+func expectProviderReviewAttemptSnapshotAsset(mock sqlmock.Sqlmock, found bool) {
+	query := mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='provider_review_attempt'\s+AND source_table='provider_review_attempts'`).
+		WithArgs("attempt-1")
+	if found {
+		query.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-attempt-1"))
+	} else {
+		query.WillReturnError(sql.ErrNoRows)
+	}
 }
 
 func expectProviderReviewAttemptLocalResultSelect(mock sqlmock.Sqlmock, opts providerReviewAttemptClaimSelectOptions) {
