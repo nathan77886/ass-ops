@@ -3546,7 +3546,9 @@ function GitRemotes() {
   const [recordingThresholdAuditID, setRecordingThresholdAuditID] = useState<string>();
   const [applyingThresholdConfigID, setApplyingThresholdConfigID] = useState<string>();
   const [recordingTagSnapshotID, setRecordingTagSnapshotID] = useState<string>();
+  const [recordingTagActionsSnapshotID, setRecordingTagActionsSnapshotID] = useState<string>();
   const [tagSnapshotResults, setTagSnapshotResults] = useState<Record<string, AnyRow>>({});
+  const [tagActionsSnapshotResults, setTagActionsSnapshotResults] = useState<Record<string, AnyRow>>({});
   const syncAssetDetail = useLoad(() => syncAssetID ? api(`/api/repo-sync-assets/${syncAssetID}`) : Promise.resolve(null), [syncAssetID]);
   useEffect(() => {
     const defaultBranch = sourceRemote?.default_branch || repo?.default_branch || '';
@@ -3765,6 +3767,22 @@ function GitRemotes() {
       setRecordingTagSnapshotID(undefined);
     }
   }
+  async function recordTagActionsRefreshSnapshot(id: string) {
+    setRecordingTagActionsSnapshotID(id);
+    try {
+      const result = await api(`/api/repo-tag-runs/${id}/actions-refresh-snapshot`, {
+        method: 'POST',
+        body: JSON.stringify({ dry_run: false })
+      });
+      setTagActionsSnapshotResults((current) => ({ ...current, [id]: result }));
+      tagRuns.reload();
+      message.success(result.actions_refresh_snapshot_written ? 'Actions refresh snapshot recorded' : result.recording_ready ? 'Actions refresh snapshot already current' : 'Actions refresh snapshot not ready');
+    } catch (error: any) {
+      message.error(error.message || 'Request failed');
+    } finally {
+      setRecordingTagActionsSnapshotID(undefined);
+    }
+  }
   async function syncGitHubActions() {
     if (!sourcePick.selectedID) {
       message.error('Select a GitHub remote first');
@@ -3937,6 +3955,7 @@ function GitRemotes() {
             const lookupPreflight = plan.live_remote_lookup_preflight || liveResultPlan.live_remote_lookup_preflight || {};
             const tagResultEvidence = plan.tag_result_evidence || resultPlan.tag_result_evidence || {};
             const snapshotResult = tagSnapshotResults[row.id];
+            const actionsSnapshotResult = tagActionsSnapshotResults[row.id];
             return <Space size={4} wrap>
               <Tag color={plan.rehearsal_state === 'observed' ? 'green' : plan.rehearsal_state === 'blocked' || plan.rehearsal_state === 'failed' ? 'red' : 'gold'}>{plan.rehearsal_state || 'planned'}</Tag>
               <Tag>{plan.live_remote_tag_success_observed ? 'remote success' : 'no remote success'}</Tag>
@@ -3947,6 +3966,7 @@ function GitRemotes() {
               <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
               {resultPlan.result_recording_state ? <Tag color={tagResultEvidenceColor(resultPlan.result_recording_state)}>recording {resultPlan.result_recording_state}</Tag> : null}
               {snapshotResult ? <Tag color={snapshotResult.tag_result_snapshot_written ? 'green' : snapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>snapshot {snapshotResult.recording_state || 'unknown'}</Tag> : null}
+              {actionsSnapshotResult ? <Tag color={actionsSnapshotResult.actions_refresh_snapshot_written ? 'green' : actionsSnapshotResult.recording_state === 'asset_missing' ? 'red' : actionsSnapshotResult.recording_ready ? 'gold' : 'default'}>actions snapshot {actionsSnapshotResult.recording_state || 'unknown'}</Tag> : null}
               {tagResultEvidence.waiting_for_worker ? <Tag color="blue">tag worker pending</Tag> : null}
               {tagResultEvidence.live_remote_tag_failed_observed ? <Tag color="red">tag failure observed</Tag> : null}
             </Space>;
@@ -3964,6 +3984,18 @@ function GitRemotes() {
               loading={recordingTagSnapshotID === row.id}
             >
               Record result snapshot
+            </Button>;
+          } },
+          { title: 'Actions', render: (_, row) => {
+            const plan = row.remote_rehearsal_plan || {};
+            const actionsPlan = plan.actions_refresh_plan || {};
+            return <Button
+              size="small"
+              onClick={() => recordTagActionsRefreshSnapshot(row.id)}
+              disabled={plan.rehearsal_state !== 'observed' || actionsPlan.refresh_state === 'failed'}
+              loading={recordingTagActionsSnapshotID === row.id}
+            >
+              Record actions snapshot
             </Button>;
           } }
         ]} /> },

@@ -144,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/repo-sync-assets/{id}/run", s.runRepoSyncAsset)
 		r.Get("/api/repo-tag-runs", s.listRepoTagRuns)
 		r.Post("/api/repo-tag-runs/{id}/result-snapshot", s.recordRepoTagRunResultSnapshot)
+		r.Post("/api/repo-tag-runs/{id}/actions-refresh-snapshot", s.recordRepoTagRunActionsRefreshSnapshot)
 		r.Get("/api/operation-approvals", s.listOperationApprovals)
 		r.Get("/api/operation-approvals/summary", s.getOperationApprovalSummary)
 		r.Get("/api/operation-approvals/reminder-candidates", s.listOperationApprovalReminderCandidates)
@@ -8773,6 +8774,30 @@ func (s *Server) recordRepoTagRunResultSnapshot(w http.ResponseWriter, r *http.R
 	result, err := RecordRepoTagRunResultSnapshot(r.Context(), s.store, RepoTagRunResultSnapshotOptions{RepoTagRunID: runID, DryRun: req.DryRun})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "record repo tag result snapshot failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) recordRepoTagRunActionsRefreshSnapshot(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	projectID, err := repoTagRunProjectID(r.Context(), s.store.DB, runID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_tag_run", ID: runID, ProjectID: projectID}, "update") {
+		return
+	}
+	var req struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := RecordRepoTagRunActionsRefreshSnapshot(r.Context(), s.store, RepoTagRunActionsRefreshSnapshotOptions{RepoTagRunID: runID, DryRun: req.DryRun})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "record repo tag actions refresh snapshot failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

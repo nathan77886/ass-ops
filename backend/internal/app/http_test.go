@@ -4073,6 +4073,284 @@ func TestRecordRepoTagRunResultSnapshotWritesSanitizedSnapshot(t *testing.T) {
 	}
 }
 
+func TestRecordRepoTagRunActionsRefreshSnapshotWritesSanitizedSnapshot(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	runID := "11111111-1111-1111-1111-111111111111"
+	mock.ExpectQuery(`(?s)SELECT rtr\.id,.*FROM repo_tag_runs rtr.*WHERE rtr\.id=\$1`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_run_id", "project_id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "error_message", "started_at", "finished_at", "created_at", "provider_type", "remote_role", "repo_key", "repo_role",
+		}).AddRow(runID, "op-1", "project-1", "repo-1", "remote-1", "remote-1", "v1.0.0", "abc123", "completed", "", now, now, now, "github", "target", "service", "service"))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='repo_tag_run'`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\)::int AS total,.*FROM github_action_runs\s+WHERE git_remote_id=\$1\s+AND \(\$2 = '' OR commit_sha=\$2\)`).
+		WithArgs("remote-1", "abc123").
+		WillReturnRows(sqlmock.NewRows([]string{"total", "success_count", "failure_count", "active_count", "synced_count", "latest_synced_at", "latest_updated_at"}).
+			AddRow(2, 1, 1, 0, 2, now, now))
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-1", "github_actions_refresh_recorded", "low", jsonEvidenceArg(func(payload map[string]any) bool {
+			encoded, _ := json.Marshal(payload)
+			for _, forbidden := range []string{"v1.0.0", "abc123", "main", "deploy.yml", "https://github.com/example/actions/runs/1", "Bearer"} {
+				if strings.Contains(string(encoded), forbidden) {
+					return false
+				}
+			}
+			return payload["mode"] == "repo_tag_run_actions_refresh_snapshot" &&
+				payload["repo_tag_run_id"] == runID &&
+				payload["tag_run_status"] == "completed" &&
+				payload["actions_refresh_recording_state"] == "recorded" &&
+				payload["actions_refresh_recording_ready"] == true &&
+				payload["evidence_scope"] == "commit" &&
+				payload["github_actions_refresh_evidence_found"] == true &&
+				intFromAny(payload["github_actions_total"], 0) == 2 &&
+				intFromAny(payload["github_actions_success"], 0) == 1 &&
+				intFromAny(payload["github_actions_failure"], 0) == 1 &&
+				payload["provider_api_called"] == false &&
+				payload["external_call_made"] == false &&
+				payload["contains_commit_sha"] == false &&
+				payload["contains_workflow_name"] == false &&
+				payload["contains_html_url"] == false &&
+				payload["sanitized_metadata_only"] == true
+		})).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordRepoTagRunActionsRefreshSnapshot(context.Background(), store, RepoTagRunActionsRefreshSnapshotOptions{RepoTagRunID: runID})
+	if err != nil {
+		t.Fatalf("RecordRepoTagRunActionsRefreshSnapshot: %v", err)
+	}
+	if got["mode"] != "repo_tag_run_actions_refresh_snapshot_recording" ||
+		got["recording_state"] != "recorded" ||
+		got["recording_ready"] != true ||
+		got["actions_refresh_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["external_call_made"] != false ||
+		got["provider_api_called"] != false ||
+		got["github_actions_refresh_performed"] != false {
+		t.Fatalf("unexpected actions refresh snapshot result: %#v", got)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, forbidden := range []string{"v1.0.0", "abc123", "main", "deploy.yml", "https://github.com/example/actions/runs/1", "Bearer"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("actions refresh snapshot leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordRepoTagRunActionsRefreshSnapshotBlocksWithoutActionsEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	runID := "11111111-1111-1111-1111-111111111111"
+	mock.ExpectQuery(`(?s)SELECT rtr\.id,.*FROM repo_tag_runs rtr.*WHERE rtr\.id=\$1`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_run_id", "project_id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "error_message", "started_at", "finished_at", "created_at", "provider_type", "remote_role", "repo_key", "repo_role",
+		}).AddRow(runID, "op-1", "project-1", "repo-1", "remote-1", "remote-1", "v1.0.0", "abc123", "completed", "", now, now, now, "github", "target", "service", "service"))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='repo_tag_run'`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\)::int AS total,.*FROM github_action_runs\s+WHERE git_remote_id=\$1\s+AND \(\$2 = '' OR commit_sha=\$2\)`).
+		WithArgs("remote-1", "abc123").
+		WillReturnRows(sqlmock.NewRows([]string{"total", "success_count", "failure_count", "active_count", "synced_count", "latest_synced_at", "latest_updated_at"}).
+			AddRow(0, 0, 0, 0, 0, nil, nil))
+
+	got, err := RecordRepoTagRunActionsRefreshSnapshot(context.Background(), store, RepoTagRunActionsRefreshSnapshotOptions{RepoTagRunID: runID})
+	if err != nil {
+		t.Fatalf("RecordRepoTagRunActionsRefreshSnapshot: %v", err)
+	}
+	if got["recording_state"] != "waiting_for_actions_refresh" ||
+		got["recording_ready"] != false ||
+		got["actions_refresh_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected blocked actions refresh snapshot result: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["github_actions_refresh_evidence_found"] != false ||
+		!containsString(stringSliceFromAny(snapshot["missing_evidence"]), "github_actions_refresh_evidence_missing") ||
+		snapshot["contains_commit_sha"] != false {
+		t.Fatalf("unexpected blocked actions snapshot payload: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordRepoTagRunActionsRefreshSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	runID := "11111111-1111-1111-1111-111111111111"
+	mock.ExpectQuery(`(?s)SELECT rtr\.id,.*FROM repo_tag_runs rtr.*WHERE rtr\.id=\$1`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_run_id", "project_id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "error_message", "started_at", "finished_at", "created_at", "provider_type", "remote_role", "repo_key", "repo_role",
+		}).AddRow(runID, "op-1", "project-1", "repo-1", "remote-1", "remote-1", "v1.0.0", "abc123", "completed", "", now, now, now, "github", "target", "service", "service"))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='repo_tag_run'`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\)::int AS total,.*lower\(conclusion\)='success'.*FROM github_action_runs\s+WHERE git_remote_id=\$1\s+AND \(\$2 = '' OR commit_sha=\$2\)`).
+		WithArgs("remote-1", "abc123").
+		WillReturnRows(sqlmock.NewRows([]string{"total", "success_count", "failure_count", "active_count", "synced_count", "latest_synced_at", "latest_updated_at"}).
+			AddRow(1, 1, 0, 0, 1, now, now))
+
+	got, err := RecordRepoTagRunActionsRefreshSnapshot(context.Background(), store, RepoTagRunActionsRefreshSnapshotOptions{RepoTagRunID: runID, DryRun: true})
+	if err != nil {
+		t.Fatalf("RecordRepoTagRunActionsRefreshSnapshot dry run: %v", err)
+	}
+	if got["dry_run"] != true ||
+		got["recording_state"] != "ready_to_record" ||
+		got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["actions_refresh_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run actions refresh snapshot result: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordRepoTagRunActionsRefreshSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	runID := "11111111-1111-1111-1111-111111111111"
+	mock.ExpectQuery(`(?s)SELECT rtr\.id,.*FROM repo_tag_runs rtr.*WHERE rtr\.id=\$1`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_run_id", "project_id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "error_message", "started_at", "finished_at", "created_at", "provider_type", "remote_role", "repo_key", "repo_role",
+		}).AddRow(runID, "op-1", "project-1", "repo-1", "remote-1", "remote-1", "v1.0.0", "abc123", "completed", "", now, now, now, "github", "target", "service", "service"))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='repo_tag_run'`).
+		WithArgs(runID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\)::int AS total,.*FROM github_action_runs\s+WHERE git_remote_id=\$1\s+AND \(\$2 = '' OR commit_sha=\$2\)`).
+		WithArgs("remote-1", "abc123").
+		WillReturnRows(sqlmock.NewRows([]string{"total", "success_count", "failure_count", "active_count", "synced_count", "latest_synced_at", "latest_updated_at"}).
+			AddRow(1, 1, 0, 0, 1, now, now))
+
+	got, err := RecordRepoTagRunActionsRefreshSnapshot(context.Background(), store, RepoTagRunActionsRefreshSnapshotOptions{RepoTagRunID: runID})
+	if err != nil {
+		t.Fatalf("RecordRepoTagRunActionsRefreshSnapshot asset missing: %v", err)
+	}
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["repo_tag_run_asset_observed"] != false ||
+		got["actions_refresh_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected asset-missing actions refresh snapshot result: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordRepoTagRunActionsRefreshSnapshotRejectsInvalidIDBeforeDB(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	if _, err := RecordRepoTagRunActionsRefreshSnapshot(context.Background(), store, RepoTagRunActionsRefreshSnapshotOptions{RepoTagRunID: "not-a-uuid"}); err == nil {
+		t.Fatal("expected invalid uuid error")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordRepoTagRunActionsRefreshSnapshotTagNotCompleted(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	runID := "11111111-1111-1111-1111-111111111111"
+	mock.ExpectQuery(`(?s)SELECT rtr\.id,.*FROM repo_tag_runs rtr.*WHERE rtr\.id=\$1`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation_run_id", "project_id", "project_git_repository_id", "target_remote_id", "git_remote_id", "tag_name", "target_sha", "status", "error_message", "started_at", "finished_at", "created_at", "provider_type", "remote_role", "repo_key", "repo_role",
+		}).AddRow(runID, "op-1", "project-1", "repo-1", "remote-1", "remote-1", "v1.0.0", "abc123", "running", "", now, nil, now, "github", "target", "service", "service"))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='repo_tag_run'`).
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-1"))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\)::int AS total,.*FROM github_action_runs\s+WHERE git_remote_id=\$1\s+AND \(\$2 = '' OR commit_sha=\$2\)`).
+		WithArgs("remote-1", "abc123").
+		WillReturnRows(sqlmock.NewRows([]string{"total", "success_count", "failure_count", "active_count", "synced_count", "latest_synced_at", "latest_updated_at"}).
+			AddRow(1, 1, 0, 0, 1, now, now))
+
+	got, err := RecordRepoTagRunActionsRefreshSnapshot(context.Background(), store, RepoTagRunActionsRefreshSnapshotOptions{RepoTagRunID: runID})
+	if err != nil {
+		t.Fatalf("RecordRepoTagRunActionsRefreshSnapshot tag running: %v", err)
+	}
+	if got["recording_state"] != "waiting_for_tag_completion" ||
+		got["recording_ready"] != false ||
+		got["actions_refresh_snapshot_written"] != false {
+		t.Fatalf("unexpected running tag actions refresh snapshot result: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if !containsString(stringSliceFromAny(snapshot["missing_evidence"]), "live_remote_tag_success_not_observed") {
+		t.Fatalf("running tag snapshot missing tag success evidence: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordRepoTagRunActionsRefreshEvidenceDoesNotTreatCompletedStatusAsSuccess(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	run := map[string]any{"target_remote_id": "remote-1", "target_sha": "abc123"}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)COUNT\(\*\) FILTER \(WHERE lower\(conclusion\)='success'\)::int AS success_count`).
+		WithArgs("remote-1", "abc123").
+		WillReturnRows(sqlmock.NewRows([]string{"total", "success_count", "failure_count", "active_count", "synced_count", "latest_synced_at", "latest_updated_at"}).
+			AddRow(1, 0, 0, 0, 1, now, now))
+
+	got, err := repoTagRunActionsRefreshEvidence(context.Background(), store.DB, run)
+	if err != nil {
+		t.Fatalf("repoTagRunActionsRefreshEvidence: %v", err)
+	}
+	if got["github_actions_success"] != 0 ||
+		got["github_actions_refresh_evidence_found"] != true ||
+		got["evidence_scope"] != "commit" {
+		t.Fatalf("unexpected actions refresh evidence: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestRecordRepoTagRunResultSnapshotDryRunAllowsMissingAsset(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
