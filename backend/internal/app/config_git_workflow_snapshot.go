@@ -500,6 +500,7 @@ func configRepositoryGitWorkflowPromotionSnapshotPayload(repo map[string]any, pr
 	promotionPlan := mapFromAny(commitPlan["promotion_readiness_plan"])
 	workflowEvidence := mapFromAny(preview["git_workflow_audit_evidence"])
 	resultPlan := mapFromAny(commitPlan["result_recording_plan"])
+	statusSnapshotWriteEligible := assetObserved
 	return map[string]any{
 		"mode":                                  "config_git_workflow_promotion_snapshot",
 		"project_git_repository_id":             cleanOptionalID(fmt.Sprint(repo["id"])),
@@ -509,7 +510,8 @@ func configRepositoryGitWorkflowPromotionSnapshotPayload(repo map[string]any, pr
 		"file_count":                            intFromAny(preview["file_count"], 0),
 		"remote_count":                          intFromAny(preview["remote_count"], 0),
 		"git_repository_asset_observed":         assetObserved,
-		"status_snapshot_written":               assetObserved,
+		"status_snapshot_write_eligible":        statusSnapshotWriteEligible,
+		"status_snapshot_written":               statusSnapshotWriteEligible,
 		"audit_operation_observed":              boolOnlyFromAny(promotionPlan["audit_operation_observed"]),
 		"sanitized_audit_result_recorded":       boolOnlyFromAny(promotionPlan["sanitized_audit_result_recorded"]),
 		"promotion_state":                       cleanPreviewString(promotionPlan["promotion_state"]),
@@ -592,6 +594,7 @@ func configRepositoryGitWorkflowPromotionSnapshotStatusHealth(state string) (str
 func configRepositoryRefRefreshSnapshotPayload(repo map[string]any, preview map[string]any, assetObserved bool) map[string]any {
 	commitPlan := mapFromAny(preview["git_commit_plan"])
 	refEvidence := mapFromAny(preview["config_ref_refresh_evidence"])
+	statusSnapshotWriteEligible := assetObserved
 	return map[string]any{
 		"mode":                                  "config_ref_refresh_snapshot",
 		"project_git_repository_id":             cleanOptionalID(fmt.Sprint(repo["id"])),
@@ -601,7 +604,8 @@ func configRepositoryRefRefreshSnapshotPayload(repo map[string]any, preview map[
 		"file_count":                            intFromAny(preview["file_count"], 0),
 		"remote_count":                          intFromAny(preview["remote_count"], 0),
 		"git_repository_asset_observed":         assetObserved,
-		"status_snapshot_written":               assetObserved,
+		"status_snapshot_write_eligible":        statusSnapshotWriteEligible,
+		"status_snapshot_written":               statusSnapshotWriteEligible,
 		"config_ref_refresh_observed":           boolOnlyFromAny(refEvidence["has_ref_refresh_operations"]),
 		"config_ref_refresh_completed":          boolOnlyFromAny(refEvidence["git_fetch_performed"]),
 		"refresh_state":                         cleanPreviewString(refEvidence["refresh_state"]),

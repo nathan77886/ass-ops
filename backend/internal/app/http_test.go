@@ -3511,7 +3511,9 @@ func TestConfigRepositoryGitWorkflowPromotionSnapshotPayloadSanitizesEvidence(t 
 	}
 	if snapshot["promotion_ready_for_operator_review"] != true ||
 		snapshot["sanitized_audit_result_recorded"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
 		snapshot["status_snapshot_written"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["git_commit_created"] != false ||
 		snapshot["git_push_performed"] != false ||
 		snapshot["provider_review_created"] != false ||
@@ -3679,6 +3681,11 @@ func TestRecordConfigRepositoryGitWorkflowPromotionSnapshotAssetMissing(t *testi
 		result["promotion_snapshot_written"] != false {
 		t.Fatalf("unexpected asset-missing promotion snapshot result: %#v", result)
 	}
+	snapshot := mapFromAny(result["snapshot"])
+	if snapshot["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] {
+		t.Fatalf("unexpected asset-missing promotion snapshot write eligibility: %#v", snapshot)
+	}
 	if !containsString(stringSliceFromAny(result["missing_evidence"]), "git_repository_asset_missing") {
 		t.Fatalf("missing asset evidence not reported: %#v", result["missing_evidence"])
 	}
@@ -3739,6 +3746,9 @@ func TestConfigRepositoryRefRefreshSnapshotPayloadSanitizesEvidence(t *testing.T
 	}
 	if snapshot["config_ref_refresh_observed"] != true ||
 		snapshot["config_ref_refresh_completed"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["git_fetch_performed"] != true ||
 		snapshot["git_write_performed"] != false ||
 		snapshot["git_commit_created"] != false ||
@@ -3951,6 +3961,11 @@ func TestRecordConfigRepositoryRefRefreshSnapshotAssetMissing(t *testing.T) {
 		result["git_repository_asset_observed"] != false ||
 		result["ref_refresh_snapshot_written"] != false {
 		t.Fatalf("unexpected asset-missing ref refresh snapshot result: %#v", result)
+	}
+	snapshot := mapFromAny(result["snapshot"])
+	if snapshot["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] {
+		t.Fatalf("unexpected asset-missing ref refresh snapshot write eligibility: %#v", snapshot)
 	}
 	if !containsString(stringSliceFromAny(result["missing_evidence"]), "git_repository_asset_missing") {
 		t.Fatalf("missing asset evidence not reported: %#v", result["missing_evidence"])
