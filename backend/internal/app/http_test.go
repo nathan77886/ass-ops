@@ -25015,6 +25015,25 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenRe
 				}
 			},
 		},
+		{
+			name: "transaction",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptTransactionSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptTransactionSnapshotRequest,
+			status:    "provider_review_attempt_transaction_metadata_ready",
+			state:     "transaction_metadata_ready",
+			health:    "low",
+			writeFlag: "provider_review_attempt_transaction_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["transaction_opened"] != false ||
+					got["transaction_recorded"] != false ||
+					got["provider_call_boundary_recorded"] != false {
+					t.Fatalf("unexpected transaction snapshot response: %#v", got)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -25297,6 +25316,36 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnappr
 			},
 		},
 		{
+			name: "transaction",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptTransactionSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptTransactionSnapshotRequest,
+			writeFlag: "provider_review_attempt_transaction_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["transaction_opened"] != false ||
+					got["transaction_recorded"] != false ||
+					got["provider_call_boundary_opened"] != false ||
+					got["provider_call_boundary_recorded"] != false ||
+					got["provider_request_sent"] != false ||
+					got["provider_response_received"] != false ||
+					got["response_recorded"] != false ||
+					got["dependency_update_recorded"] != false ||
+					got["contains_token"] != false ||
+					got["contains_provider_url"] != false ||
+					got["contains_repository_ref"] != false ||
+					got["contains_branch_name"] != false ||
+					got["contains_file_content"] != false ||
+					got["status_snapshot_write_eligible"] != false ||
+					got["provider_review_attempt_asset_observed"] != false ||
+					got["operation_log_written"] != false ||
+					got["snapshot"] != nil {
+					t.Fatalf("transaction unapproved response should stay uncalled: %#v", got)
+				}
+			},
+		},
+		{
 			name: "send",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptSendSnapshot(w, r)
@@ -25442,6 +25491,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 			},
 			request: newProviderReviewAttemptSendSnapshotRequest,
 		},
+		{
+			name: "transaction",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptTransactionSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptTransactionSnapshotRequest,
+		},
 	}
 
 	for _, tt := range tests {
@@ -25557,6 +25613,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptSendSnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/send-snapshot",
+		},
+		{
+			name: "transaction",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptTransactionSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/transaction-snapshot",
 		},
 	}
 
@@ -25917,6 +25980,245 @@ func TestRecordProviderReviewAttemptResponseSnapshotHandlerRequiresUpdatePolicy(
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransactionSnapshotWritesMetadataReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_transaction_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_transaction_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptTransactionSnapshot(context.Background(), store, ProviderReviewAttemptTransactionSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptTransactionSnapshot: %v", err)
+	}
+	if got["recording_state"] != "transaction_metadata_ready" ||
+		got["recording_ready"] != true ||
+		got["status_snapshot_write_eligible"] != true ||
+		got["provider_review_attempt_transaction_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["transaction_opened"] != false ||
+		got["transaction_recorded"] != false ||
+		got["provider_call_boundary_recorded"] != false {
+		t.Fatalf("unexpected provider review transaction snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != false ||
+		snapshot["transaction_plan_observed"] != true ||
+		snapshot["provider_call_boundary_plan_observed"] != true ||
+		snapshot["transaction_metadata_ready"] != true ||
+		snapshot["provider_call_boundary_metadata_ready"] != true ||
+		snapshot["transaction_ready_reason"] != "provider_review_transaction_not_armed" ||
+		snapshot["provider_call_boundary_ready_reason"] != "provider_review_provider_call_boundary_not_armed" ||
+		snapshot["success_attempt_status"] != "completed" ||
+		snapshot["retry_attempt_status"] != "planned" ||
+		snapshot["failure_attempt_status"] != "failed" ||
+		snapshot["transaction_opened"] != false ||
+		snapshot["transaction_recorded"] != false ||
+		snapshot["provider_call_boundary_opened"] != false ||
+		snapshot["provider_call_boundary_recorded"] != false ||
+		snapshot["provider_request_sent"] != false ||
+		snapshot["provider_response_received"] != false ||
+		snapshot["provider_request_id_recorded"] != false ||
+		snapshot["provider_response_body_recorded"] != false ||
+		snapshot["provider_response_headers_recorded"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review transaction snapshot payload: %#v", snapshot)
+	}
+	if len(stringSliceFromAny(snapshot["transaction_sequence"])) == 0 ||
+		len(stringSliceFromAny(snapshot["provider_call_boundary_sequence"])) == 0 {
+		t.Fatalf("transaction snapshot should include sanitized sequence metadata: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("transaction snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransactionSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptTransactionSnapshot(context.Background(), store, ProviderReviewAttemptTransactionSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptTransactionSnapshot asset missing: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_transaction_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected asset missing provider review transaction response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransactionSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptTransactionSnapshot(context.Background(), store, ProviderReviewAttemptTransactionSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptTransactionSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_transaction_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run provider review transaction response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransactionSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_transaction_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_transaction_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptTransactionSnapshot(context.Background(), store, ProviderReviewAttemptTransactionSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptTransactionSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_transaction_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown provider review transaction response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptTransactionSnapshotPayloadRequiresTransactionPlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	delete(dispatchPlan, "transaction_plan")
+
+	snapshot := providerReviewAttemptTransactionSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptTransactionSnapshotReadiness(snapshot)
+	if ready ||
+		state != "transaction_blocked" ||
+		snapshot["transaction_plan_observed"] != false ||
+		snapshot["provider_call_boundary_plan_observed"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_transaction_plan_missing") ||
+		!containsString(missing, "provider_review_provider_call_boundary_plan_missing") {
+		t.Fatalf("transaction snapshot without transaction plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+}
+
+func TestProviderReviewAttemptTransactionSnapshotPayloadRejectsProviderCallRecorded(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	transactionPlan := mapFromAny(dispatchPlan["transaction_plan"])
+	boundaryPlan := mapFromAny(transactionPlan["provider_call_boundary_plan"])
+	boundaryPlan["provider_call_boundary_recorded"] = true
+	boundaryPlan["contains_token"] = true
+	boundaryPlan["provider_call_boundary_ready_reason"] = "secret-token"
+
+	snapshot := providerReviewAttemptTransactionSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptTransactionSnapshotReadiness(snapshot)
+	if ready ||
+		state != "transaction_metadata_ready" ||
+		snapshot["provider_call_boundary_recorded"] != true ||
+		snapshot["contains_token"] != true ||
+		snapshot["provider_call_boundary_ready_reason"] != "" ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_written"] != false ||
+		!containsString(missing, "provider_review_transaction_not_no_call") {
+		t.Fatalf("transaction snapshot with recorded provider call = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("transaction snapshot with provider call marker leaked %q: %s", leak, encoded)
+		}
 	}
 }
 
@@ -31095,6 +31397,12 @@ func newProviderReviewAttemptSendSnapshotRequest(body string) *http.Request {
 
 func newProviderReviewAttemptResponseSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/response-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptTransactionSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/transaction-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
