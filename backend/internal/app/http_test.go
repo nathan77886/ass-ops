@@ -22482,6 +22482,320 @@ func TestProviderReviewAttemptRequestEnvelopeSnapshotPayloadRejectsMismatchedEnv
 	}
 }
 
+func TestRecordProviderReviewAttemptRuntimeSnapshotWritesContractReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_runtime_contract_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_runtime_contract_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptRuntimeSnapshot(context.Background(), store, ProviderReviewAttemptRuntimeSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRuntimeSnapshot: %v", err)
+	}
+	if got["recording_state"] != "runtime_contract_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_runtime_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["live_adapter_implemented"] != false ||
+		got["provider_client_constructed"] != false ||
+		got["runtime_bound"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" {
+		t.Fatalf("unexpected provider review runtime snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["adapter_runtime_plan_observed"] != true ||
+		snapshot["runtime_contract_ready"] != true ||
+		snapshot["runtime_metadata_ready"] != true ||
+		snapshot["provider_client_contract_ready"] != true ||
+		snapshot["execute_method_contract_ready"] != true ||
+		snapshot["request_builder_contract_ready"] != true ||
+		snapshot["response_handler_contract_ready"] != true ||
+		snapshot["runtime_ready"] != false ||
+		snapshot["runtime_ready_reason"] != "provider_review_adapter_runtime_not_armed" ||
+		snapshot["provider_type"] != "github" ||
+		snapshot["adapter_kind"] != "github_provider_review_adapter" ||
+		snapshot["adapter_interface_registered"] != true ||
+		snapshot["adapter_dispatch_registered"] != true ||
+		snapshot["runtime_adapter_selected"] != true ||
+		snapshot["operation_supported"] != true ||
+		snapshot["provider_client_plan_kind"] != "github_provider_review_api_client" ||
+		snapshot["execute_method_name"] != "execute_branch_ref_creation" ||
+		snapshot["request_builder_name"] != "build_redacted_branch_ref_request" ||
+		snapshot["response_handler_name"] != "handle_branch_ref_response" ||
+		snapshot["live_adapter_implemented"] != false ||
+		snapshot["provider_client_constructed"] != false ||
+		snapshot["execute_method_bound"] != false ||
+		snapshot["request_builder_bound"] != false ||
+		snapshot["response_handler_bound"] != false ||
+		snapshot["runtime_bound"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review runtime snapshot payload: %#v", snapshot)
+	}
+	methods := stringSliceFromAny(snapshot["required_runtime_methods"])
+	if len(methods) != 4 ||
+		methods[0] != "build_request" ||
+		methods[3] != "record_attempt_transaction" {
+		t.Fatalf("runtime snapshot methods = %#v", methods)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("runtime snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRuntimeSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptRuntimeSnapshot(context.Background(), store, ProviderReviewAttemptRuntimeSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRuntimeSnapshot asset missing: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_runtime_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected asset missing provider review runtime response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRuntimeSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptRuntimeSnapshot(context.Background(), store, ProviderReviewAttemptRuntimeSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRuntimeSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_runtime_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run provider review runtime response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRuntimeSnapshotNotCurrentCandidateDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("completed", "dependency_satisfied")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptRuntimeSnapshot(context.Background(), store, ProviderReviewAttemptRuntimeSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRuntimeSnapshot not current: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_runtime_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("unexpected not-current provider review runtime response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRuntimeSnapshotEmptyLedgerDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewAttemptLedgerSummary(nil)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptRuntimeSnapshot(context.Background(), store, ProviderReviewAttemptRuntimeSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRuntimeSnapshot empty ledger: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_runtime_snapshot_written"] != false ||
+		snapshot["candidate_observed"] != true ||
+		snapshot["candidate_matches_attempt"] != false ||
+		snapshot["adapter_runtime_plan_observed"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("unexpected empty-ledger provider review runtime response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRuntimeSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_runtime_contract_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_runtime_contract_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptRuntimeSnapshot(context.Background(), store, ProviderReviewAttemptRuntimeSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRuntimeSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_runtime_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown provider review runtime response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptRuntimeSnapshotPayloadRequiresRuntimePlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	delete(dispatchPlan, "adapter_runtime_plan")
+
+	snapshot := providerReviewAttemptRuntimeSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptRuntimeSnapshotReadiness(snapshot)
+	if ready ||
+		state != "runtime_blocked" ||
+		snapshot["adapter_runtime_plan_observed"] != false ||
+		snapshot["runtime_contract_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_runtime_plan_missing") {
+		t.Fatalf("runtime snapshot without plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("runtime snapshot without plan leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestProviderReviewAttemptRuntimeSnapshotPayloadRejectsMismatchedRuntimeContract(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	runtimePlan := mapFromAny(dispatchPlan["adapter_runtime_plan"])
+	runtimePlan["operation_name"] = "commit_starter_files"
+	runtimePlan["endpoint_key"] = "github.commit_files"
+
+	snapshot := providerReviewAttemptRuntimeSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptRuntimeSnapshotReadiness(snapshot)
+	if ready ||
+		state != "runtime_blocked" ||
+		snapshot["adapter_runtime_plan_observed"] != true ||
+		snapshot["runtime_contract_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		!containsString(missing, "provider_review_runtime_contract_not_ready") {
+		t.Fatalf("runtime snapshot with mismatched contract = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("runtime snapshot with mismatched contract leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
 func TestRecordProviderReviewAttemptBranchPolicySnapshotWritesMetadataReadyCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -23377,6 +23691,25 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenRe
 			},
 		},
 		{
+			name: "runtime",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRuntimeSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptRuntimeSnapshotRequest,
+			status:    "provider_review_attempt_runtime_contract_ready",
+			state:     "runtime_contract_ready",
+			health:    "low",
+			writeFlag: "provider_review_attempt_runtime_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["live_adapter_implemented"] != false ||
+					got["provider_client_constructed"] != false ||
+					got["runtime_bound"] != false {
+					t.Fatalf("unexpected runtime snapshot response: %#v", got)
+				}
+			},
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -23532,6 +23865,28 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnappr
 			},
 		},
 		{
+			name: "runtime",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRuntimeSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptRuntimeSnapshotRequest,
+			writeFlag: "provider_review_attempt_runtime_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["live_adapter_implemented"] != false ||
+					got["provider_client_constructed"] != false ||
+					got["runtime_bound"] != false ||
+					got["contains_token"] != false ||
+					got["contains_provider_url"] != false ||
+					got["contains_repository_ref"] != false ||
+					got["contains_branch_name"] != false ||
+					got["contains_file_content"] != false ||
+					got["status_snapshot_write_eligible"] != false {
+					t.Fatalf("runtime unapproved response should stay unbound: %#v", got)
+				}
+			},
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -23637,6 +23992,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 			request: newProviderReviewAttemptBranchPolicySnapshotRequest,
 		},
 		{
+			name: "runtime",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRuntimeSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptRuntimeSnapshotRequest,
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -23709,6 +24071,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptBranchPolicySnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/branch-policy-snapshot",
+		},
+		{
+			name: "runtime",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRuntimeSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/runtime-snapshot",
 		},
 		{
 			name: "execution-lock",
@@ -29207,6 +29576,12 @@ func newProviderReviewAttemptRequestEnvelopeSnapshotRequest(body string) *http.R
 
 func newProviderReviewAttemptBranchPolicySnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/branch-policy-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptRuntimeSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/runtime-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
