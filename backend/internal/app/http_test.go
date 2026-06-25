@@ -9384,7 +9384,9 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 	if resultPlan["mode"] != "ssh_rehearsal_result_recording_plan" ||
 		resultPlan["operation_log_written"] != false ||
 		resultPlan["canonical_asset_sync_queued"] != false ||
+		resultPlan["status_snapshot_write_eligible"] != false ||
 		resultPlan["status_snapshot_written"] != false ||
+		resultPlan["status_snapshot_written"] != resultPlan["status_snapshot_write_eligible"] ||
 		resultPlan["stdout_included"] != false ||
 		resultPlan["stderr_included"] != false ||
 		resultPlan["raw_error_included"] != false ||
@@ -29214,7 +29216,9 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 		callbackPlan["callback_scope"] != "sanitized_audit_status_only" ||
 		callbackPlan["agent_task_status_written"] != false ||
 		callbackPlan["canonical_asset_sync_queued"] != false ||
+		callbackPlan["status_snapshot_write_eligible"] != false ||
 		callbackPlan["status_snapshot_written"] != false ||
+		callbackPlan["status_snapshot_written"] != callbackPlan["status_snapshot_write_eligible"] ||
 		callbackPlan["raw_tool_output_recorded"] != false ||
 		callbackPlan["raw_runtime_output_recorded"] != false ||
 		callbackPlan["raw_patch_recorded"] != false ||
