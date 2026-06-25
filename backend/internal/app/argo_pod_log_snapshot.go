@@ -247,6 +247,9 @@ func argoPodLogAuditSnapshotReadiness(preview map[string]any, snapshot map[strin
 	if !boolOnlyFromAny(snapshot["sanitized_result_recorded"]) {
 		missing = append(missing, "sanitized_result_missing")
 	}
+	if cleanPreviewString(snapshot["audit_evidence_state"]) == "recorded" && intFromAny(snapshot["operation_log_count"], 0) == 0 {
+		missing = append(missing, "sanitized_result_operation_log_missing")
+	}
 	if !boolOnlyFromAny(snapshot["live_stream_review_ready"]) {
 		missing = append(missing, "live_stream_review_not_ready")
 	}

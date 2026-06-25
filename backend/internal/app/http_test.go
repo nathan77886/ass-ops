@@ -1076,6 +1076,53 @@ func TestRecordArgoPodLogAuditSnapshotHandlerFailedEvidenceDoesNotWrite(t *testi
 	}
 }
 
+func TestRecordArgoPodLogAuditSnapshotHandlerCompletedWithoutAuditLogDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
+		WithArgs("target-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
+			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
+		WithArgs("project-1", "target-1", "api-7d9f", "web").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
+			AddRow("op-pod-logs", "completed", nil, nil, nil, int64(0)))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='deployment_target'`).
+		WithArgs("target-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-target-1"))
+	rr := httptest.NewRecorder()
+
+	server.recordArgoPodLogAuditSnapshot(rr, newArgoPodLogSnapshotRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "blocked" ||
+		got["recording_ready"] != false ||
+		got["pod_log_audit_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		!containsString(stringSliceFromAny(got["missing_evidence"]), "sanitized_result_operation_log_missing") {
+		t.Fatalf("unexpected completed-without-log response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["audit_evidence_state"] != "recorded" ||
+		snapshot["sanitized_result_recorded"] != false ||
+		intFromAny(snapshot["operation_log_count"], 0) != 0 {
+		t.Fatalf("unexpected completed-without-log snapshot: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestPreviewArgoPodLogQueryLoadsSanitizedAuditEvidence(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -1126,12 +1173,16 @@ func TestPreviewArgoPodLogQueryLoadsSanitizedAuditEvidence(t *testing.T) {
 
 func TestArgoPodLogAuditEvidenceStatusCombinations(t *testing.T) {
 	tests := []struct {
-		name      string
-		statuses  []string
-		wantState string
+		name          string
+		statuses      []string
+		logCounts     []int
+		wantState     string
+		wantSanitized bool
 	}{
-		{name: "running waits", statuses: []string{"running", "completed"}, wantState: "waiting_for_worker"},
-		{name: "failed terminal", statuses: []string{"failed", "completed"}, wantState: "failed"},
+		{name: "completed with audit log records sanitized result", statuses: []string{"completed"}, logCounts: []int{1}, wantState: "recorded", wantSanitized: true},
+		{name: "completed without audit log is not sanitized result", statuses: []string{"completed"}, wantState: "recorded", wantSanitized: false},
+		{name: "running waits", statuses: []string{"running", "completed"}, logCounts: []int{1, 1}, wantState: "waiting_for_worker", wantSanitized: true},
+		{name: "failed terminal", statuses: []string{"failed", "completed"}, logCounts: []int{1, 1}, wantState: "failed", wantSanitized: true},
 		{name: "canceled terminal", statuses: []string{"canceled"}, wantState: "canceled"},
 		{name: "unknown terminal", statuses: []string{"mystery"}, wantState: "unknown"},
 		{name: "empty not requested", wantState: "not_requested"},
@@ -1140,14 +1191,18 @@ func TestArgoPodLogAuditEvidenceStatusCombinations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rows := make([]map[string]any, 0, len(tt.statuses))
 			for index, status := range tt.statuses {
-				rows = append(rows, map[string]any{"id": fmt.Sprintf("op-%d", index), "status": status})
+				row := map[string]any{"id": fmt.Sprintf("op-%d", index), "status": status}
+				if index < len(tt.logCounts) {
+					row["operation_log_count"] = tt.logCounts[index]
+				}
+				rows = append(rows, row)
 			}
 			evidence := argoPodLogAuditEvidenceSummary(rows)
 			if evidence["evidence_state"] != tt.wantState {
 				t.Fatalf("evidence_state=%#v want %s; evidence=%#v", evidence["evidence_state"], tt.wantState, evidence)
 			}
-			if containsString(tt.statuses, "completed") && evidence["sanitized_result_recorded"] != true {
-				t.Fatalf("sanitized_result_recorded should reflect completed evidence independently: %#v", evidence)
+			if evidence["sanitized_result_recorded"] != tt.wantSanitized {
+				t.Fatalf("sanitized_result_recorded=%#v want %v; evidence=%#v", evidence["sanitized_result_recorded"], tt.wantSanitized, evidence)
 			}
 			encoded, _ := json.Marshal(evidence)
 			for _, forbidden := range []string{"log line", "secret kubeconfig", "Bearer secret"} {
@@ -1156,6 +1211,27 @@ func TestArgoPodLogAuditEvidenceStatusCombinations(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestArgoPodLogLiveStreamReviewPlanReportsMissingAuditLog(t *testing.T) {
+	preview := argoPodLogQueryPreview("api-7d9f", "web", 500, 30, map[string]any{
+		"id":           "target-1",
+		"name":         "prod",
+		"environment":  "prod",
+		"cluster_name": "prod-cluster",
+		"namespace":    "billing",
+		"status":       "Healthy",
+	}, []map[string]any{
+		{"id": "op-pod-logs", "status": "completed", "operation_log_count": int64(0)},
+	})
+	executionPlan := mapFromAny(mapFromAny(preview["retrieval_plan"])["execution_plan"])
+	liveStreamPlan := mapFromAny(executionPlan["live_log_stream_plan"])
+	if liveStreamPlan["stream_state"] != "audit_log_missing" ||
+		liveStreamPlan["stream_ready_for_review"] != false ||
+		!containsString(stringSliceFromAny(liveStreamPlan["blocked_reasons"]), "sanitized_result_operation_log_missing") ||
+		!containsString(stringSliceFromAny(liveStreamPlan["blocked_reasons"]), "sanitized_log_result_not_recorded") {
+		t.Fatalf("live stream plan should report missing sanitized operation log: %#v", liveStreamPlan)
 	}
 }
 

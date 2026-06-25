@@ -22412,6 +22412,9 @@ func argoPodLogLiveLogStreamReviewPlan(query, target map[string]any, prerequisit
 	case "recorded":
 		if prerequisiteState == "metadata_available" {
 			streamState = "ready_for_operator_review"
+			if intFromAny(auditEvidence["operation_log_count"], 0) == 0 {
+				streamState = "audit_log_missing"
+			}
 		}
 	}
 	streamReadyForReview := streamState == "ready_for_operator_review" &&
@@ -22441,6 +22444,9 @@ func argoPodLogLiveLogStreamReviewPlan(query, target map[string]any, prerequisit
 	}
 	if !boolOnlyFromAny(auditEvidence["sanitized_result_recorded"]) {
 		blockedReasons = append(blockedReasons, "sanitized_log_result_not_recorded")
+	}
+	if evidenceState == "recorded" && intFromAny(auditEvidence["operation_log_count"], 0) == 0 {
+		blockedReasons = append(blockedReasons, "sanitized_result_operation_log_missing")
 	}
 	return map[string]any{
 		"mode":                              "pod_log_live_log_stream_review_plan",
@@ -22675,6 +22681,7 @@ func argoPodLogAuditEvidenceSummary(rows []map[string]any) map[string]any {
 	}
 	operationCount := len(rows)
 	activeCount := queued + running
+	sanitizedRecorded := completed > 0 && logCount > 0
 	evidenceState := "not_requested"
 	if operationCount > 0 {
 		evidenceState = "waiting_for_worker"
@@ -22703,7 +22710,7 @@ func argoPodLogAuditEvidenceSummary(rows []map[string]any) map[string]any {
 		"operation_log_count":        logCount,
 		"evidence_state":             evidenceState,
 		"has_audit_operations":       operationCount > 0,
-		"sanitized_result_recorded":  completed > 0,
+		"sanitized_result_recorded":  sanitizedRecorded,
 		"has_failures":               failed > 0,
 		"has_cancellations":          canceled > 0,
 		"has_unknown_status":         unknown > 0,
