@@ -935,17 +935,21 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}, projectAssetIDs = new S
     const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => Object.keys(repositoryProjects[repositoryID] || {}).length > 0);
     return hasProjectRepository ? total + Object.keys(operations).length : total;
   }, 0);
+  const canonicalTaggedTagRunAssets = new Set<string>();
   counts.completeTaggedRemoteAssets = Object.entries(taggedRemoteOps).reduce((total, [remoteID, operations]) => {
     if (!hasCanonicalProjectRemote(remoteID) || !remoteAssetIDs.has(remoteID)) return total;
-    return total + Object.keys(operations).filter((operationID) => (
-      tagOperationIDs.has(operationID) && Array.from(tagRunAssetIDsByOperation[operationID] || []).some((tagRunID) => tagRunAssetIDs.has(tagRunID))
-    )).length;
+    return total + Object.keys(operations).filter((operationID) => {
+      const linkedTagRuns = Array.from(tagRunAssetIDsByOperation[operationID] || []).filter((tagRunID) => tagRunAssetIDs.has(tagRunID));
+      if (!tagOperationIDs.has(operationID) || !linkedTagRuns.length) return false;
+      linkedTagRuns.forEach((tagRunID) => canonicalTaggedTagRunAssets.add(tagRunID));
+      return true;
+    }).length;
   }, 0);
   counts.linkedTagRuns = Object.values(tagActionRuns).filter((actionRuns) => (
     Object.keys(actionRuns).some((actionID) => projectLinkedActionRuns[actionID])
   )).length;
   counts.linkedTagRunAssets = Object.entries(tagActionRuns).filter(([tagRunID, actionRuns]) => (
-    tagRunAssetIDs.has(tagRunID) &&
+    canonicalTaggedTagRunAssets.has(tagRunID) &&
     Object.keys(actionRuns).some((actionID) => actionAssetIDs.has(actionID) && canonicalProjectLinkedActionRuns[actionID])
   )).length;
   return counts;

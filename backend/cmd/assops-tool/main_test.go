@@ -1448,6 +1448,31 @@ func TestCountGitHubActionGraphLinksFindsCanonicalLinkedTagRunAcrossMultipleMatc
 	}
 }
 
+func TestCountGitHubActionGraphLinksRequiresSameTaggedRunForLinkedAction(t *testing.T) {
+	graph := map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "project:1", "to_asset_id": "repository:1", "relation_type": "owns"},
+			map[string]any{"from_asset_id": "repository:1", "to_asset_id": "git_remote:1", "relation_type": "has_remote"},
+			map[string]any{"from_asset_id": "git_remote:1", "to_asset_id": "github_action_run:1", "relation_type": "triggered_by"},
+			map[string]any{"from_asset_id": "operation_run:1", "to_asset_id": "git_remote:1", "relation_type": "tagged_remote", "metadata": map[string]any{"status": "completed"}},
+			map[string]any{"from_asset_id": "repo_tag_run:2", "to_asset_id": "github_action_run:1", "relation_type": "matched_action_run"},
+		},
+	}
+	got := countGitHubActionGraphLinks(
+		graph,
+		map[string]bool{"project:1": true},
+		map[string]bool{"repository:1": true},
+		map[string]bool{"git_remote:1": true},
+		map[string]bool{"github_action_run:1": true},
+		map[string]bool{"repo_tag_run:1": true, "repo_tag_run:2": true},
+		map[string]map[string]bool{"operation_run:1": {"repo_tag_run:1": true}},
+		map[string]bool{"operation_run:1": true},
+	)
+	if got.CompleteTaggedRemoteAssets != 1 || got.LinkedTagRuns != 1 || got.LinkedTagRunAssets != 0 {
+		t.Fatalf("countGitHubActionGraphLinks with different tagged and matched runs = %#v, want tag asset but no linked tag asset", got)
+	}
+}
+
 func TestCountGitHubActionGraphLinksRequiresProjectLinkedTagActionRun(t *testing.T) {
 	graph := map[string]any{
 		"edges": []any{
