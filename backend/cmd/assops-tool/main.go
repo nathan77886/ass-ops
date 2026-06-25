@@ -105,12 +105,23 @@ func run() error {
 			fmt.Print(plan)
 			return nil
 		}
+		if (len(args) == 5 || len(args) == 6) && args[1] == "branch-protection-plan" {
+			plan, err := releaseBranchProtectionPlan(args[2], args[3], args[4])
+			if err != nil {
+				return err
+			}
+			if len(args) == 6 {
+				return writeTextFile(args[5], plan)
+			}
+			fmt.Print(plan)
+			return nil
+		}
 	}
 	return usage()
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -638,6 +649,236 @@ func releaseBackupSchedulePlan(repo, environment, runner, cronExpr, backupSource
 	return b.String(), nil
 }
 
+func releaseBranchProtectionPlan(repo, rulesetPath, codeownersPath string) (string, error) {
+	repo = strings.TrimSpace(repo)
+	rulesetPath = strings.TrimSpace(rulesetPath)
+	codeownersPath = strings.TrimSpace(codeownersPath)
+	if !isOwnerRepo(repo) {
+		return "", fmt.Errorf("repository must be owner/repo")
+	}
+	if rulesetPath == "" {
+		return "", fmt.Errorf("ruleset JSON path is required")
+	}
+	if codeownersPath == "" {
+		return "", fmt.Errorf("CODEOWNERS path is required")
+	}
+	ruleset, err := readBranchProtectionRuleset(rulesetPath)
+	if err != nil {
+		return "", err
+	}
+	codeowners, err := readCodeownersSummary(codeownersPath)
+	if err != nil {
+		return "", err
+	}
+	statusChecks := stringSliceFromAny(ruleset["required_status_checks"])
+	if len(statusChecks) == 0 {
+		return "", fmt.Errorf("ruleset required status checks are empty")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# ASSOPS Branch Protection Plan\n\n")
+	fmt.Fprintf(&b, "Repository: `%s`\n\n", repo)
+	fmt.Fprintf(&b, "Ruleset template: `%s`\n\n", rulesetPath)
+	fmt.Fprintf(&b, "CODEOWNERS: `%s`\n\n", codeownersPath)
+	fmt.Fprintf(&b, "Ruleset name: `%s`\n\n", ruleset["name"])
+	fmt.Fprintf(&b, "Target: `%s`\n\n", ruleset["target"])
+	fmt.Fprintf(&b, "Enforcement: `%s`\n\n", ruleset["enforcement"])
+	fmt.Fprintf(&b, "## Local Validation\n\n")
+	fmt.Fprintf(&b, "- Ruleset targets `~DEFAULT_BRANCH` and keeps enforcement active.\n")
+	fmt.Fprintf(&b, "- Branch deletion and non-fast-forward pushes are blocked.\n")
+	fmt.Fprintf(&b, "- Pull requests require one approval, code owner review, last-pusher separation, stale-review dismissal, and resolved review threads.\n")
+	fmt.Fprintf(&b, "- Required status checks are strict/fresh and match the first-version CI contract.\n")
+	fmt.Fprintf(&b, "- CODEOWNERS has a default owner and path-specific owners for backend, web, GitHub governance, deploy, Dockerfile, and Makefile.\n\n")
+	fmt.Fprintf(&b, "## Required Checks\n\n")
+	for _, check := range statusChecks {
+		fmt.Fprintf(&b, "- `%s`\n", check)
+	}
+	fmt.Fprintf(&b, "\n## CODEOWNERS Coverage\n\n")
+	for _, pattern := range stringSliceFromAny(codeowners["required_patterns"]) {
+		fmt.Fprintf(&b, "- `%s`\n", pattern)
+	}
+	fmt.Fprintf(&b, "\n## No-Call Boundary\n\n")
+	fmt.Fprintf(&b, "- This plan is local validation only; it does not call GitHub, create rulesets, mutate branch protection, or read secrets.\n")
+	fmt.Fprintf(&b, "- Applying the ruleset requires a repository administrator with `Administration: write` permission.\n")
+	fmt.Fprintf(&b, "- Review the target repository and default branch in GitHub before running the commands below.\n\n")
+	fmt.Fprintf(&b, "## Apply Commands\n\n```bash\n")
+	fmt.Fprintf(&b, "jq . %q\n", rulesetPath)
+	fmt.Fprintf(&b, "gh api \\\n")
+	fmt.Fprintf(&b, "  --method POST \\\n")
+	fmt.Fprintf(&b, "  -H \"Accept: application/vnd.github+json\" \\\n")
+	fmt.Fprintf(&b, "  -H \"X-GitHub-Api-Version: 2026-03-10\" \\\n")
+	fmt.Fprintf(&b, "  /repos/%s/rulesets \\\n", repo)
+	fmt.Fprintf(&b, "  --input %q\n", rulesetPath)
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "## Verify Commands\n\n```bash\n")
+	fmt.Fprintf(&b, "gh api \\\n")
+	fmt.Fprintf(&b, "  -H \"Accept: application/vnd.github+json\" \\\n")
+	fmt.Fprintf(&b, "  -H \"X-GitHub-Api-Version: 2026-03-10\" \\\n")
+	fmt.Fprintf(&b, "  /repos/%s/rulesets\n", repo)
+	fmt.Fprintf(&b, "gh api \\\n")
+	fmt.Fprintf(&b, "  -H \"Accept: application/vnd.github+json\" \\\n")
+	fmt.Fprintf(&b, "  -H \"X-GitHub-Api-Version: 2026-03-10\" \\\n")
+	fmt.Fprintf(&b, "  /repos/%s/rules/branches/main\n", repo)
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "## Update Existing Ruleset\n\n")
+	fmt.Fprintf(&b, "If the repository already has this ruleset, replace it only after comparing the active ruleset ID from the verification output:\n\n```bash\n")
+	fmt.Fprintf(&b, "gh api \\\n")
+	fmt.Fprintf(&b, "  --method PUT \\\n")
+	fmt.Fprintf(&b, "  -H \"Accept: application/vnd.github+json\" \\\n")
+	fmt.Fprintf(&b, "  -H \"X-GitHub-Api-Version: 2026-03-10\" \\\n")
+	fmt.Fprintf(&b, "  /repos/%s/rulesets/<ruleset-id> \\\n", repo)
+	fmt.Fprintf(&b, "  --input %q\n", rulesetPath)
+	fmt.Fprintf(&b, "```\n")
+	return b.String(), nil
+}
+
+func readBranchProtectionRuleset(path string) (map[string]any, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading ruleset JSON: %w", err)
+	}
+	var ruleset map[string]any
+	if err := json.Unmarshal(raw, &ruleset); err != nil {
+		return nil, fmt.Errorf("parsing ruleset JSON: %w", err)
+	}
+	name, _ := ruleset["name"].(string)
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("ruleset name is required")
+	}
+	if ruleset["target"] != "branch" {
+		return nil, fmt.Errorf("ruleset target must be branch")
+	}
+	if ruleset["enforcement"] != "active" {
+		return nil, fmt.Errorf("ruleset enforcement must be active")
+	}
+	conditions := toolMapFromAny(ruleset["conditions"])
+	refName := toolMapFromAny(conditions["ref_name"])
+	if !toolContainsString(stringSliceFromAny(refName["include"]), "~DEFAULT_BRANCH") {
+		return nil, fmt.Errorf("ruleset must include ~DEFAULT_BRANCH")
+	}
+	rules, ok := ruleset["rules"].([]any)
+	if !ok || len(rules) == 0 {
+		return nil, fmt.Errorf("ruleset rules must be a non-empty array")
+	}
+	ruleByType := map[string]map[string]any{}
+	for _, rawRule := range rules {
+		rule := toolMapFromAny(rawRule)
+		ruleType := strings.TrimSpace(fmt.Sprint(rule["type"]))
+		if ruleType != "" {
+			ruleByType[ruleType] = rule
+		}
+	}
+	for _, required := range []string{"deletion", "non_fast_forward", "pull_request", "required_status_checks"} {
+		if _, ok := ruleByType[required]; !ok {
+			return nil, fmt.Errorf("ruleset missing %s rule", required)
+		}
+	}
+	prParams := toolMapFromAny(ruleByType["pull_request"]["parameters"])
+	for _, field := range []string{"dismiss_stale_reviews_on_push", "require_code_owner_review", "require_last_push_approval", "required_review_thread_resolution"} {
+		if prParams[field] != true {
+			return nil, fmt.Errorf("pull request rule must set %s", field)
+		}
+	}
+	if intFromAny(prParams["required_approving_review_count"]) < 1 {
+		return nil, fmt.Errorf("pull request rule must require at least one approval")
+	}
+	statusParams := toolMapFromAny(ruleByType["required_status_checks"]["parameters"])
+	if statusParams["strict_required_status_checks_policy"] != true {
+		return nil, fmt.Errorf("required status checks must be strict")
+	}
+	checks := statusCheckContexts(statusParams["required_status_checks"])
+	for _, want := range firstVersionRequiredStatusChecks() {
+		if !toolContainsString(checks, want) {
+			return nil, fmt.Errorf("ruleset missing required status check %q", want)
+		}
+	}
+	ruleset["required_status_checks"] = checks
+	return ruleset, nil
+}
+
+func readCodeownersSummary(path string) (map[string]any, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading CODEOWNERS: %w", err)
+	}
+	ownersByPattern := map[string][]string{}
+	defaultOwnerLine := 0
+	for lineNo, rawLine := range strings.Split(string(raw), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("CODEOWNERS line %d must include a pattern and owner", lineNo+1)
+		}
+		pattern := fields[0]
+		if strings.Contains(pattern, "..") {
+			return nil, fmt.Errorf("CODEOWNERS line %d contains unsafe pattern", lineNo+1)
+		}
+		for _, owner := range fields[1:] {
+			if !strings.HasPrefix(owner, "@") || len(owner) < 2 || strings.ContainsAny(owner, " \t\r\n") {
+				return nil, fmt.Errorf("CODEOWNERS line %d contains invalid owner", lineNo+1)
+			}
+			ownersByPattern[pattern] = append(ownersByPattern[pattern], owner)
+		}
+		if pattern == "*" {
+			defaultOwnerLine = lineNo + 1
+		}
+	}
+	for _, pattern := range requiredCodeownerPatterns() {
+		if len(ownersByPattern[pattern]) == 0 {
+			return nil, fmt.Errorf("CODEOWNERS missing required pattern %s", pattern)
+		}
+	}
+	return map[string]any{
+		"required_patterns":  requiredCodeownerPatterns(),
+		"pattern_count":      len(ownersByPattern),
+		"default_owner_line": defaultOwnerLine,
+	}, nil
+}
+
+func statusCheckContexts(value any) []string {
+	rawItems, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(rawItems))
+	for _, rawItem := range rawItems {
+		item := toolMapFromAny(rawItem)
+		context, ok := item["context"].(string)
+		context = strings.TrimSpace(context)
+		if ok && context != "" {
+			out = append(out, context)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Keep this list synchronized with `.github/workflows/ci.yml` job names and
+// `.github/rulesets/main-required-checks.json`.
+func firstVersionRequiredStatusChecks() []string {
+	return []string{
+		"Workflow Lint",
+		"Secret Scan",
+		"Go",
+		"Web",
+		"Compose Config",
+		"DB Rehearsal",
+		"Helm Chart",
+		"Helm Smoke",
+		"Docker Build (gateway)",
+		"Docker Build (worker)",
+		"Docker Build (node-worker)",
+		"Docker Build (web)",
+		"Go Vulnerability Check",
+	}
+}
+
+func requiredCodeownerPatterns() []string {
+	return []string{"*", "/backend/", "/web/", "/.github/", "/deploy/", "/docs/deploy-production.md", "/docs/deploy-helm.md", "/docs/github-branch-protection.md", "/Dockerfile", "/Makefile"}
+}
+
 func parseBackupScheduleSource(value string) (string, string, error) {
 	kind, raw, ok := strings.Cut(strings.TrimSpace(value), ":")
 	if !ok {
@@ -737,6 +978,39 @@ func isOwnerRepo(value string) bool {
 		return false
 	}
 	return isContainerPathSegment(strings.ToLower(parts[0])) && isContainerPathSegment(strings.ToLower(parts[1]))
+}
+
+func toolMapFromAny(value any) map[string]any {
+	if item, ok := value.(map[string]any); ok {
+		return item
+	}
+	return nil
+}
+
+func intFromAny(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case json.Number:
+		n, _ := typed.Int64()
+		return int(n)
+	default:
+		n, _ := strconv.Atoi(strings.TrimSpace(fmt.Sprint(value)))
+		return n
+	}
+}
+
+func toolContainsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func stringSliceFromAny(value any) []string {

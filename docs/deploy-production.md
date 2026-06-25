@@ -15,7 +15,7 @@ docker build --target web -t assops/web:local .
 
 For a tagged release candidate, push a `v*` tag or manually run the `Release Candidate` workflow in GitHub Actions. The workflow uploads Linux amd64 binaries, the web bundle, a packaged Helm chart, `SHA256SUMS`, and Docker image smoke-build results as an artifact, then creates GitHub artifact attestations for the release files. Tagged `v*` runs also publish gateway, worker, node-worker, and web images to GHCR with version and commit-SHA tags and registry-backed image attestations. Keep the release artifact together with the restore rehearsal JSON report before promoting an update.
 
-Before treating `main` as a release branch, apply the GitHub repository ruleset from `.github/rulesets/main-required-checks.json`; see `docs/github-branch-protection.md`. The ruleset requires PR review, fresh CI checks, and blocks branch deletion or force pushes.
+Before treating `main` as a release branch, generate the local branch-protection plan and then have a repository administrator apply the GitHub repository ruleset from `.github/rulesets/main-required-checks.json`; see `docs/github-branch-protection.md`. The ruleset requires PR review, fresh CI checks, and blocks branch deletion or force pushes.
 The CI workflow includes `actionlint`, so changes to CI/release/promotion workflows are checked for common GitHub Actions expression and workflow mistakes before merge. It also runs Gitleaks secret scanning to catch accidental hardcoded credentials before protected-branch merge.
 
 Validate Compose expansion:

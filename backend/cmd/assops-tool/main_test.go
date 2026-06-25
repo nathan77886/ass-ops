@@ -2248,6 +2248,177 @@ func TestReleaseBackupSchedulePlanForMountedPathSource(t *testing.T) {
 	}
 }
 
+func TestReleaseBranchProtectionPlan(t *testing.T) {
+	plan, err := releaseBranchProtectionPlan("nathan77886/ass-ops", "../../../.github/rulesets/main-required-checks.json", "../../../.github/CODEOWNERS")
+	if err != nil {
+		t.Fatalf("releaseBranchProtectionPlan: %v", err)
+	}
+	for _, want := range []string{
+		"# ASSOPS Branch Protection Plan",
+		"Repository: `nathan77886/ass-ops`",
+		"Ruleset template: `../../../.github/rulesets/main-required-checks.json`",
+		"Ruleset name: `ASSOPS main required checks`",
+		"Enforcement: `active`",
+		"Ruleset targets `~DEFAULT_BRANCH`",
+		"Branch deletion and non-fast-forward pushes are blocked",
+		"code owner review",
+		"Required status checks are strict/fresh",
+		"`Workflow Lint`",
+		"`Secret Scan`",
+		"`Go Vulnerability Check`",
+		"`/backend/`",
+		"`/web/`",
+		"`/.github/`",
+		"`/deploy/`",
+		"local validation only; it does not call GitHub",
+		"Administration: write",
+		"gh api",
+		"/repos/nathan77886/ass-ops/rulesets",
+		"--input \"../../../.github/rulesets/main-required-checks.json\"",
+		"/repos/nathan77886/ass-ops/rules/branches/main",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("branch protection plan missing %q in:\n%s", want, plan)
+		}
+	}
+	for _, forbidden := range []string{
+		"Authorization:",
+		"token",
+		"password",
+		"PRIVATE KEY",
+	} {
+		if strings.Contains(strings.ToLower(plan), strings.ToLower(forbidden)) {
+			t.Fatalf("branch protection plan should not contain %q:\n%s", forbidden, plan)
+		}
+	}
+}
+
+func TestReleaseBranchProtectionPlanRejectsMissingRequiredCheck(t *testing.T) {
+	dir := t.TempDir()
+	rulesetPath := filepath.Join(dir, "ruleset.json")
+	codeownersPath := filepath.Join(dir, "CODEOWNERS")
+	ruleset := `{
+		"name": "ASSOPS main required checks",
+		"target": "branch",
+		"enforcement": "active",
+		"conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+		"rules": [
+			{"type": "deletion"},
+			{"type": "non_fast_forward"},
+			{"type": "pull_request", "parameters": {
+				"dismiss_stale_reviews_on_push": true,
+				"require_code_owner_review": true,
+				"require_last_push_approval": true,
+				"required_approving_review_count": 1,
+				"required_review_thread_resolution": true
+			}},
+			{"type": "required_status_checks", "parameters": {
+				"strict_required_status_checks_policy": true,
+				"required_status_checks": [{"context": "Go"}]
+			}}
+		]
+	}`
+	if err := os.WriteFile(rulesetPath, []byte(ruleset), 0o600); err != nil {
+		t.Fatalf("write ruleset: %v", err)
+	}
+	if err := os.WriteFile(codeownersPath, []byte(strings.Join([]string{
+		"* @nathan77886",
+		"/backend/ @nathan77886",
+		"/web/ @nathan77886",
+		"/.github/ @nathan77886",
+		"/deploy/ @nathan77886",
+		"/docs/deploy-production.md @nathan77886",
+		"/docs/deploy-helm.md @nathan77886",
+		"/docs/github-branch-protection.md @nathan77886",
+		"/Dockerfile @nathan77886",
+		"/Makefile @nathan77886",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write codeowners: %v", err)
+	}
+
+	_, err := releaseBranchProtectionPlan("nathan77886/ass-ops", rulesetPath, codeownersPath)
+	if err == nil || !strings.Contains(err.Error(), "Workflow Lint") {
+		t.Fatalf("releaseBranchProtectionPlan error = %v, want missing Workflow Lint", err)
+	}
+}
+
+func TestReleaseBranchProtectionPlanRejectsIncompleteCodeowners(t *testing.T) {
+	dir := t.TempDir()
+	rulesetPath := filepath.Join(dir, "ruleset.json")
+	codeownersPath := filepath.Join(dir, "CODEOWNERS")
+	rulesetBytes, err := os.ReadFile("../../../.github/rulesets/main-required-checks.json")
+	if err != nil {
+		t.Fatalf("read ruleset fixture: %v", err)
+	}
+	if err := os.WriteFile(rulesetPath, rulesetBytes, 0o600); err != nil {
+		t.Fatalf("write ruleset: %v", err)
+	}
+	if err := os.WriteFile(codeownersPath, []byte("* @nathan77886\n/backend/ @nathan77886\n"), 0o600); err != nil {
+		t.Fatalf("write codeowners: %v", err)
+	}
+
+	_, err = releaseBranchProtectionPlan("nathan77886/ass-ops", rulesetPath, codeownersPath)
+	if err == nil || !strings.Contains(err.Error(), "/web/") {
+		t.Fatalf("releaseBranchProtectionPlan error = %v, want missing /web/", err)
+	}
+}
+
+func TestReleaseBranchProtectionPlanRejectsUnsafeInputs(t *testing.T) {
+	dir := t.TempDir()
+	badJSONPath := filepath.Join(dir, "bad.json")
+	badOwnersPath := filepath.Join(dir, "CODEOWNERS")
+	if err := os.WriteFile(badJSONPath, []byte(`not-json`), 0o600); err != nil {
+		t.Fatalf("write bad json: %v", err)
+	}
+	if err := os.WriteFile(badOwnersPath, []byte("* nathan77886\n"), 0o600); err != nil {
+		t.Fatalf("write bad codeowners: %v", err)
+	}
+	cases := []struct {
+		name string
+		repo string
+		rule string
+		own  string
+		want string
+	}{
+		{
+			name: "invalid repo",
+			repo: "nathan77886",
+			rule: "../../../.github/rulesets/main-required-checks.json",
+			own:  "../../../.github/CODEOWNERS",
+			want: "owner/repo",
+		},
+		{
+			name: "empty ruleset",
+			repo: "nathan77886/ass-ops",
+			rule: "",
+			own:  "../../../.github/CODEOWNERS",
+			want: "ruleset JSON path",
+		},
+		{
+			name: "bad json",
+			repo: "nathan77886/ass-ops",
+			rule: badJSONPath,
+			own:  "../../../.github/CODEOWNERS",
+			want: "parsing ruleset JSON",
+		},
+		{
+			name: "invalid owner",
+			repo: "nathan77886/ass-ops",
+			rule: "../../../.github/rulesets/main-required-checks.json",
+			own:  badOwnersPath,
+			want: "invalid owner",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := releaseBranchProtectionPlan(tc.repo, tc.rule, tc.own)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("releaseBranchProtectionPlan error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestProductionRestoreRehearsalWorkflowValidatesArtifactContents(t *testing.T) {
 	content, err := os.ReadFile("../../../.github/workflows/production-restore-rehearsal.yml")
 	if err != nil {

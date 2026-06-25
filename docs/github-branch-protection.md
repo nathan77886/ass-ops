@@ -39,6 +39,16 @@ Keep these names aligned with `.github/workflows/ci.yml`. The Docker matrix job 
 
 The GitHub REST rulesets API requires repository `Administration: write` permission to create or update a ruleset.
 
+Generate the local no-call application plan first. This validates the checked-in ruleset template and CODEOWNERS coverage, then prints the exact administrator commands without calling GitHub:
+
+```bash
+assops-tool release branch-protection-plan \
+  <owner>/<repo> \
+  .github/rulesets/main-required-checks.json \
+  .github/CODEOWNERS \
+  .assops/release-notes/branch-protection-plan.md
+```
+
 Review the JSON first:
 
 ```bash
