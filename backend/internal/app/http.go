@@ -4187,7 +4187,7 @@ func configRepositoryGitWorkflowAuditEvidence(operations []map[string]any) map[s
 	default:
 		state = "recorded"
 	}
-	sanitizedRecorded := len(operations) > 0 && active == 0 && unknown == 0
+	sanitizedRecorded := len(operations) > 0 && active == 0 && unknown == 0 && logCount > 0
 	return map[string]any{
 		"mode":                                      "config_repository_git_workflow_audit_evidence",
 		"evidence_state":                            state,
@@ -4722,6 +4722,9 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any, workf
 	} else if workflowState == "unknown" {
 		recordingState = "blocked"
 		recordingReason = "config_git_commit_audit_operation_unknown"
+	} else if workflowState == "recorded" && workflowObserved && !workflowRecorded {
+		recordingState = "blocked"
+		recordingReason = "config_git_commit_audit_operation_log_missing"
 	} else if pinObserved && liveObserved && workflowRecorded {
 		recordingState = "recorded"
 		recordingReason = "audit_result_pin_and_live_validation_observed"
@@ -4734,6 +4737,13 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any, workf
 	}
 	resultWritten := workflowRecorded
 	operationLogWritten := intFromAny(workflowEvidence["operation_log_count"], 0) > 0
+	blockedReasons := []string{
+		"project_version_config_commit_pin_not_written",
+		"live_remote_commit_validation_not_performed",
+	}
+	if !resultWritten {
+		blockedReasons = append([]string{recordingReason}, blockedReasons...)
+	}
 	return map[string]any{
 		"mode":                             "config_repository_git_commit_result_recording_plan",
 		"result_recording_state":           recordingState,
@@ -4808,11 +4818,7 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any, workf
 			"provider_response_body",
 			"provider_response_headers",
 		},
-		"blocked_reasons": []string{
-			"config_git_commit_execution_not_performed",
-			"project_version_config_commit_pin_not_written",
-			"live_remote_commit_validation_not_performed",
-		},
+		"blocked_reasons": blockedReasons,
 		"message": "Config Git workflow result recording only reconciles sanitized audit operation metadata; no scaffold artifact, Git result, provider review, ProjectVersion pin write, or live validation record is persisted.",
 	}
 }
@@ -4838,6 +4844,9 @@ func configRepositoryGitCommitPromotionReadinessPlan(evidence map[string]any, wo
 	case workflowState == "unknown":
 		promotionState = "unknown"
 		promotionReason = "config_git_commit_audit_operation_unknown"
+	case workflowState == "recorded" && workflowObserved && !workflowRecorded:
+		promotionState = "blocked"
+		promotionReason = "config_git_commit_audit_operation_log_missing"
 	case workflowRecorded && pinObserved && liveObserved:
 		promotionState = "ready_for_live_workflow_review"
 		promotionReason = "audit_result_pin_and_live_validation_ready_for_operator_review"
