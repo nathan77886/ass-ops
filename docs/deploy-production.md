@@ -344,6 +344,19 @@ assops-tool release demo-import-plan \
 
 The plan lists the provider-owned Gitea/GitHub repository setup, ASSOPS project/repository/remote/RepoSyncAsset evidence, callback rehearsal evidence, and readiness snapshot order without calling providers, running Git, creating rows, recording snapshots, or storing remote URLs, tokens, provider responses, Git output, SHAs, branch names, or operator notes.
 
+Before rehearsing live Argo pod log retrieval for the demo environment, generate the no-call pod-log rehearsal plan:
+
+```bash
+assops-tool release pod-log-rehearsal-plan \
+  assops-demo \
+  https://assops.example.com \
+  prod \
+  assops \
+  .assops/release-notes/pod-log-rehearsal-plan.md
+```
+
+The plan validates the project slug, public staging HTTPS origin, environment identifier, and Kubernetes namespace shape, then lists the namespace-scoped kubeconfig review, token subject/RBAC review, approval request, sanitized result metadata, and pod-log audit snapshot evidence to collect. Localhost, private IP, `.local`, path, query, fragment, and userinfo origins are rejected. It does not read kubeconfig, call Kubernetes or Argo, open log streams, create approvals, enqueue workers, record snapshots, store log bodies, or expose cluster tokens, authorization headers, client keys, pod env, secret mounts, raw provider responses, raw log bodies, or redacted log bodies.
+
 The production values example enables stricter pod/container security settings for Go workloads and migration jobs. Review these settings with the actual images and cluster policy before rollout, especially if you override images.
 
 It also enables chart-managed NetworkPolicies. Confirm that your CNI enforces NetworkPolicy and that the configured web ingress CIDRs match the ingress controller or load balancer path used by the cluster.

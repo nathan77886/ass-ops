@@ -2571,6 +2571,91 @@ func TestReleaseDemoImportPlanRejectsUnsafeInput(t *testing.T) {
 	}
 }
 
+func TestReleasePodLogRehearsalPlan(t *testing.T) {
+	plan, err := releasePodLogRehearsalPlan("ASSOPS-Demo", "https://assops-staging.example.com/", "Prod", "billing-api")
+	if err != nil {
+		t.Fatalf("releasePodLogRehearsalPlan: %v", err)
+	}
+	if _, err := releasePodLogRehearsalPlan("assops-demo", "https://assops-staging.example.com", "prod", strings.Repeat("a", 63)); err != nil {
+		t.Fatalf("releasePodLogRehearsalPlan should accept 63-character namespace: %v", err)
+	}
+	for _, want := range []string{
+		"# ASSOPS Argo Pod Log Rehearsal Plan",
+		"Project slug: `assops-demo`",
+		"Public origin: `https://assops-staging.example.com`",
+		"Environment: `prod`",
+		"Namespace: `billing-api`",
+		"does not read kubeconfig, create Kubernetes clients, call Argo/Kubernetes, open log streams, or write ASSOPS rows",
+		"Bind a namespace-scoped kubeconfig secret out of band",
+		"Create the ASSOPS `argo.pod_logs` approval request",
+		"Record only sanitized result metadata",
+		"deployment target linked to project and Argo app",
+		"RBAC read pods/logs review completed",
+		"log redaction review completed",
+		"kubeconfig bodies",
+		"raw Kubernetes or Argo responses",
+		"raw log bodies and redacted log bodies",
+		"does not read kubeconfig, call Kubernetes or Argo, open a log stream, create approvals, enqueue workers, record snapshots, or store log bodies",
+		"assops-tool project readiness",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("pod log rehearsal plan missing %q in:\n%s", want, plan)
+		}
+	}
+	for _, forbidden := range []string{
+		"Authorization:",
+		"token=",
+		"password=",
+		"PRIVATE KEY",
+		"BEGIN CERTIFICATE",
+		"kubeconfig:",
+		"log body:",
+		"https://user:",
+	} {
+		if strings.Contains(plan, forbidden) {
+			t.Fatalf("pod log rehearsal plan should not contain %q:\n%s", forbidden, plan)
+		}
+	}
+}
+
+func TestReleasePodLogRehearsalPlanRejectsUnsafeInput(t *testing.T) {
+	cases := []struct {
+		name        string
+		slug        string
+		origin      string
+		environment string
+		namespace   string
+		want        string
+	}{
+		{name: "empty slug", slug: "", origin: "https://assops.example.com", environment: "prod", namespace: "billing", want: "project slug"},
+		{name: "leading dot slug", slug: ".assops", origin: "https://assops.example.com", environment: "prod", namespace: "billing", want: "project slug"},
+		{name: "trailing dot slug", slug: "assops.", origin: "https://assops.example.com", environment: "prod", namespace: "billing", want: "project slug"},
+		{name: "unsafe origin", slug: "assops-demo", origin: "http://assops.example.com", environment: "prod", namespace: "billing", want: "must use https"},
+		{name: "origin path", slug: "assops-demo", origin: "https://assops.example.com/logs", environment: "prod", namespace: "billing", want: "must not include a path"},
+		{name: "origin query", slug: "assops-demo", origin: "https://assops.example.com?token=bad", environment: "prod", namespace: "billing", want: "must not include query or fragment"},
+		{name: "origin fragment", slug: "assops-demo", origin: "https://assops.example.com#logs", environment: "prod", namespace: "billing", want: "must not include query or fragment"},
+		{name: "origin userinfo", slug: "assops-demo", origin: "https://user:pass@assops.example.com", environment: "prod", namespace: "billing", want: "must not include userinfo"},
+		{name: "empty environment", slug: "assops-demo", origin: "https://assops.example.com", environment: "", namespace: "billing", want: "environment"},
+		{name: "environment slash", slug: "assops-demo", origin: "https://assops.example.com", environment: "prod/us", namespace: "billing", want: "environment"},
+		{name: "environment leading dot", slug: "assops-demo", origin: "https://assops.example.com", environment: ".prod", namespace: "billing", want: "environment"},
+		{name: "environment trailing dot", slug: "assops-demo", origin: "https://assops.example.com", environment: "prod.", namespace: "billing", want: "environment"},
+		{name: "empty namespace", slug: "assops-demo", origin: "https://assops.example.com", environment: "prod", namespace: "", want: "namespace"},
+		{name: "namespace uppercase", slug: "assops-demo", origin: "https://assops.example.com", environment: "prod", namespace: "Billing", want: "lowercase"},
+		{name: "namespace underscore", slug: "assops-demo", origin: "https://assops.example.com", environment: "prod", namespace: "billing_api", want: "namespace"},
+		{name: "namespace leading hyphen", slug: "assops-demo", origin: "https://assops.example.com", environment: "prod", namespace: "-billing", want: "namespace"},
+		{name: "namespace trailing hyphen", slug: "assops-demo", origin: "https://assops.example.com", environment: "prod", namespace: "billing-", want: "namespace"},
+		{name: "namespace too long", slug: "assops-demo", origin: "https://assops.example.com", environment: "prod", namespace: strings.Repeat("a", 64), want: "namespace"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := releasePodLogRehearsalPlan(tc.slug, tc.origin, tc.environment, tc.namespace)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("releasePodLogRehearsalPlan error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestReleaseBackupSchedulePlanForArtifactSource(t *testing.T) {
 	plan, err := releaseBackupSchedulePlan("nathan77886/ass-ops", "production", "ubuntu-latest", "17 3 * * 1", "artifact:retained-assops-backup", "14")
 	if err != nil {

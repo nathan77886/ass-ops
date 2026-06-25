@@ -139,6 +139,17 @@ func run() error {
 			fmt.Print(plan)
 			return nil
 		}
+		if (len(args) == 6 || len(args) == 7) && args[1] == "pod-log-rehearsal-plan" {
+			plan, err := releasePodLogRehearsalPlan(args[2], args[3], args[4], args[5])
+			if err != nil {
+				return err
+			}
+			if len(args) == 7 {
+				return writeTextFile(args[6], plan)
+			}
+			fmt.Print(plan)
+			return nil
+		}
 		if (len(args) == 5 || len(args) == 6) && args[1] == "branch-protection-plan" {
 			plan, err := releaseBranchProtectionPlan(args[2], args[3], args[4])
 			if err != nil {
@@ -155,7 +166,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -1007,6 +1018,87 @@ func releaseDemoImportPlan(projectSlug, publicOrigin string) (string, error) {
 	return b.String(), nil
 }
 
+func releasePodLogRehearsalPlan(projectSlug, publicOrigin, environment, namespace string) (string, error) {
+	projectSlug = strings.ToLower(strings.TrimSpace(projectSlug))
+	if !isSafeProjectSlug(projectSlug) {
+		return "", fmt.Errorf("project slug must contain letters or numbers and may include only internal dot, underscore, or hyphen")
+	}
+	origin, err := normalizePublicCallbackOrigin(publicOrigin)
+	if err != nil {
+		return "", err
+	}
+	environment = strings.ToLower(strings.TrimSpace(environment))
+	if !isSafeProjectSlug(environment) {
+		return "", fmt.Errorf("environment must contain letters or numbers and may include only internal dot, underscore, or hyphen")
+	}
+	namespace = strings.TrimSpace(namespace)
+	if hasUppercaseASCII(namespace) {
+		return "", fmt.Errorf("namespace must be a lowercase Kubernetes DNS label")
+	}
+	if !isSafeKubernetesNamespace(namespace) {
+		return "", fmt.Errorf("namespace must be a Kubernetes DNS label")
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# ASSOPS Argo Pod Log Rehearsal Plan\n\n")
+	fmt.Fprintf(&b, "Project slug: `%s`\n\n", projectSlug)
+	fmt.Fprintf(&b, "Public origin: `%s`\n\n", origin)
+	fmt.Fprintf(&b, "Environment: `%s`\n\n", environment)
+	fmt.Fprintf(&b, "Namespace: `%s`\n\n", namespace)
+	fmt.Fprintf(&b, "## Local Validation\n\n")
+	fmt.Fprintf(&b, "- Project slug and environment are safe local identifiers for release evidence matching.\n")
+	fmt.Fprintf(&b, "- Namespace is a Kubernetes DNS label and is recorded only as scoped metadata.\n")
+	fmt.Fprintf(&b, "- Public origin is a clean HTTPS origin for ASSOPS operator access.\n")
+	fmt.Fprintf(&b, "- This plan does not read kubeconfig, create Kubernetes clients, call Argo/Kubernetes, open log streams, or write ASSOPS rows.\n\n")
+	fmt.Fprintf(&b, "## Live Rehearsal Sequence\n\n")
+	for index, step := range []string{
+		"Confirm the deployment target in ASSOPS belongs to the selected project, environment, and namespace.",
+		"Bind a namespace-scoped kubeconfig secret out of band and confirm it can only read pods/logs in the selected namespace.",
+		"Review token subject and RBAC permissions before any live log retrieval backend is enabled.",
+		"Create the ASSOPS `argo.pod_logs` approval request with pod, container, tail, and since controls.",
+		"After approval, retrieve a short low-risk pod log sample through the live backend once it exists.",
+		"Record only sanitized result metadata: operation id, approval id, target id, pod/container identifiers, status, line count, truncation flag, and review statuses.",
+		"Record the local pod-log audit snapshot after terminal sanitized evidence is visible in ASSOPS.",
+	} {
+		fmt.Fprintf(&b, "%d. %s\n", index+1, step)
+	}
+	fmt.Fprintf(&b, "\n## Required Evidence\n\n")
+	for _, item := range []string{
+		"deployment target linked to project and Argo app",
+		"namespace-scoped kubeconfig binding reviewed",
+		"token subject review completed",
+		"RBAC read pods/logs review completed",
+		"operation approval recorded for argo.pod_logs",
+		"pod and container scope confirmation",
+		"log redaction review completed",
+		"sanitized pod-log audit snapshot status",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## Suppressed Material\n\n")
+	for _, item := range []string{
+		"kubeconfig bodies",
+		"cluster tokens or authorization headers",
+		"client certificates or private keys",
+		"raw Kubernetes or Argo responses",
+		"pod environment variables and secret mounts",
+		"raw log bodies and redacted log bodies",
+		"provider URLs, operator notes, and incident details",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## No-Call Boundary\n\n")
+	fmt.Fprintf(&b, "- This plan is local documentation only; it does not read kubeconfig, call Kubernetes or Argo, open a log stream, create approvals, enqueue workers, record snapshots, or store log bodies.\n")
+	fmt.Fprintf(&b, "- Namespace-scoped credential binding, RBAC review, live log retrieval, result redaction, and audit snapshot recording remain operator-owned staging tasks.\n\n")
+	fmt.Fprintf(&b, "## Verification Commands\n\n```bash\n")
+	fmt.Fprintf(&b, "assops-tool project readiness\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: Project -> Argo -> deployment target -> request pod log audit\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: Project -> Argo -> Record pod-log audit snapshot after terminal sanitized evidence\n")
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "Run the live retrieval rehearsal only after the target environment, namespace, kubeconfig scope, RBAC review, approval, and redaction review are confirmed out of band.\n")
+	return b.String(), nil
+}
+
 func readBranchProtectionRuleset(path string) (map[string]any, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -1443,6 +1535,34 @@ func isSafeProjectSlug(value string) bool {
 	}
 	for _, char := range value {
 		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') {
+			return true
+		}
+	}
+	return false
+}
+
+func isSafeKubernetesNamespace(value string) bool {
+	if value == "" || len(value) > 63 {
+		return false
+	}
+	if value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for _, char := range value {
+		switch {
+		case char >= 'a' && char <= 'z':
+		case char >= '0' && char <= '9':
+		case char == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func hasUppercaseASCII(value string) bool {
+	for _, char := range value {
+		if char >= 'A' && char <= 'Z' {
 			return true
 		}
 	}
