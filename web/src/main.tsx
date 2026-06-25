@@ -2012,7 +2012,7 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
   );
 }
 
-function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onRecordAttemptSnapshot, onRecordAttemptCredentialSnapshot, onRecordAttemptBranchPolicySnapshot, onRecordAttemptRuntimeSnapshot, onRecordAttemptAdapterRehearsalSnapshot, onRecordAttemptAdapterBlueprintSnapshot, onRecordAttemptLiveAdapterContractSnapshot, onRecordAttemptInvocationSnapshot, onRecordAttemptExecutionLockSnapshot, onRecordAttemptRequestEnvelopeSnapshot, onRecordAttemptIdempotencySnapshot, onRecordAttemptRequestValidationSnapshot, onRecordAttemptRequestMaterializationSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptTransportSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptRetryBackoffSnapshot, onRecordAttemptResponseSnapshot, onRecordAttemptResultRecordingSnapshot, onRecordAttemptProviderCallBoundarySnapshot, onRecordAttemptTransactionSnapshot, onRecordAttemptLiveExecutionReadinessSnapshot, onRecordAttemptLiveExecutionGuardSnapshot, onCheckAttemptLiveExecutionPreflight, onRecordCurrentAttemptLiveReadinessSnapshot, onRecordArmingSnapshot, canRecordCurrentAttemptLiveReadinessSnapshot, canRecordArmingSnapshot, claimLoading, resultLoading, snapshotLoading, credentialSnapshotLoading, branchPolicySnapshotLoading, runtimeSnapshotLoading, adapterRehearsalSnapshotLoading, adapterBlueprintSnapshotLoading, liveAdapterContractSnapshotLoading, invocationSnapshotLoading, executionLockSnapshotLoading, requestEnvelopeSnapshotLoading, idempotencySnapshotLoading, requestValidationSnapshotLoading, requestMaterializationSnapshotLoading, activationSnapshotLoading, transportSnapshotLoading, sendSnapshotLoading, retryBackoffSnapshotLoading, responseSnapshotLoading, resultRecordingSnapshotLoading, providerCallBoundarySnapshotLoading, transactionSnapshotLoading, liveExecutionReadinessSnapshotLoading, liveExecutionGuardSnapshotLoading, liveExecutionPreflightLoading, currentLiveReadinessSnapshotLoading, armingSnapshotLoading, snapshotResult, credentialSnapshotResult, branchPolicySnapshotResult, runtimeSnapshotResult, adapterRehearsalSnapshotResult, adapterBlueprintSnapshotResult, liveAdapterContractSnapshotResult, invocationSnapshotResult, executionLockSnapshotResult, requestEnvelopeSnapshotResult, idempotencySnapshotResult, requestValidationSnapshotResult, requestMaterializationSnapshotResult, activationSnapshotResult, transportSnapshotResult, sendSnapshotResult, retryBackoffSnapshotResult, responseSnapshotResult, resultRecordingSnapshotResult, providerCallBoundarySnapshotResult, transactionSnapshotResult, liveExecutionReadinessSnapshotResult, liveExecutionGuardSnapshotResult, liveExecutionPreflightResult, currentLiveReadinessSnapshotResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptCredentialSnapshot?: (id: string) => void; onRecordAttemptBranchPolicySnapshot?: (id: string) => void; onRecordAttemptRuntimeSnapshot?: (id: string) => void; onRecordAttemptAdapterRehearsalSnapshot?: (id: string) => void; onRecordAttemptAdapterBlueprintSnapshot?: (id: string) => void; onRecordAttemptLiveAdapterContractSnapshot?: (id: string) => void; onRecordAttemptInvocationSnapshot?: (id: string) => void; onRecordAttemptExecutionLockSnapshot?: (id: string) => void; onRecordAttemptRequestEnvelopeSnapshot?: (id: string) => void; onRecordAttemptIdempotencySnapshot?: (id: string) => void; onRecordAttemptRequestValidationSnapshot?: (id: string) => void; onRecordAttemptRequestMaterializationSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptTransportSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptRetryBackoffSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordAttemptResultRecordingSnapshot?: (id: string) => void; onRecordAttemptProviderCallBoundarySnapshot?: (id: string) => void; onRecordAttemptTransactionSnapshot?: (id: string) => void; onRecordAttemptLiveExecutionReadinessSnapshot?: (id: string) => void; onRecordAttemptLiveExecutionGuardSnapshot?: (id: string) => void; onCheckAttemptLiveExecutionPreflight?: (id: string) => void; onRecordCurrentAttemptLiveReadinessSnapshot?: () => void; onRecordArmingSnapshot?: () => void; canRecordCurrentAttemptLiveReadinessSnapshot?: boolean; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; snapshotLoading?: boolean; credentialSnapshotLoading?: boolean; branchPolicySnapshotLoading?: boolean; runtimeSnapshotLoading?: boolean; adapterRehearsalSnapshotLoading?: boolean; adapterBlueprintSnapshotLoading?: boolean; liveAdapterContractSnapshotLoading?: boolean; invocationSnapshotLoading?: boolean; executionLockSnapshotLoading?: boolean; requestEnvelopeSnapshotLoading?: boolean; idempotencySnapshotLoading?: boolean; requestValidationSnapshotLoading?: boolean; requestMaterializationSnapshotLoading?: boolean; activationSnapshotLoading?: boolean; transportSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; retryBackoffSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; resultRecordingSnapshotLoading?: boolean; providerCallBoundarySnapshotLoading?: boolean; transactionSnapshotLoading?: boolean; liveExecutionReadinessSnapshotLoading?: boolean; liveExecutionGuardSnapshotLoading?: boolean; liveExecutionPreflightLoading?: boolean; currentLiveReadinessSnapshotLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; credentialSnapshotResult?: AnyRow; branchPolicySnapshotResult?: AnyRow; runtimeSnapshotResult?: AnyRow; adapterRehearsalSnapshotResult?: AnyRow; adapterBlueprintSnapshotResult?: AnyRow; liveAdapterContractSnapshotResult?: AnyRow; invocationSnapshotResult?: AnyRow; executionLockSnapshotResult?: AnyRow; requestEnvelopeSnapshotResult?: AnyRow; idempotencySnapshotResult?: AnyRow; requestValidationSnapshotResult?: AnyRow; requestMaterializationSnapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; transportSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; retryBackoffSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; resultRecordingSnapshotResult?: AnyRow; providerCallBoundarySnapshotResult?: AnyRow; transactionSnapshotResult?: AnyRow; liveExecutionReadinessSnapshotResult?: AnyRow; liveExecutionGuardSnapshotResult?: AnyRow; liveExecutionPreflightResult?: AnyRow; currentLiveReadinessSnapshotResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
+function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onRecordAttemptSnapshot, onRecordAttemptCredentialSnapshot, onRecordAttemptBranchPolicySnapshot, onRecordAttemptRuntimeSnapshot, onRecordAttemptAdapterRehearsalSnapshot, onRecordAttemptAdapterBlueprintSnapshot, onRecordAttemptLiveAdapterContractSnapshot, onRecordAttemptInvocationSnapshot, onRecordAttemptExecutionLockSnapshot, onRecordAttemptRequestEnvelopeSnapshot, onRecordAttemptIdempotencySnapshot, onRecordAttemptRequestValidationSnapshot, onRecordAttemptRequestMaterializationSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptTransportSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptRetryBackoffSnapshot, onRecordAttemptResponseSnapshot, onRecordAttemptResultRecordingSnapshot, onRecordAttemptProviderCallBoundarySnapshot, onRecordAttemptTransactionSnapshot, onRecordAttemptLiveExecutionReadinessSnapshot, onRecordAttemptLiveExecutionGuardSnapshot, onCheckAttemptLiveExecutionPreflight, onCheckAttemptLiveExecutionLaunchPlan, onRecordCurrentAttemptLiveReadinessSnapshot, onRecordArmingSnapshot, canRecordCurrentAttemptLiveReadinessSnapshot, canRecordArmingSnapshot, claimLoading, resultLoading, snapshotLoading, credentialSnapshotLoading, branchPolicySnapshotLoading, runtimeSnapshotLoading, adapterRehearsalSnapshotLoading, adapterBlueprintSnapshotLoading, liveAdapterContractSnapshotLoading, invocationSnapshotLoading, executionLockSnapshotLoading, requestEnvelopeSnapshotLoading, idempotencySnapshotLoading, requestValidationSnapshotLoading, requestMaterializationSnapshotLoading, activationSnapshotLoading, transportSnapshotLoading, sendSnapshotLoading, retryBackoffSnapshotLoading, responseSnapshotLoading, resultRecordingSnapshotLoading, providerCallBoundarySnapshotLoading, transactionSnapshotLoading, liveExecutionReadinessSnapshotLoading, liveExecutionGuardSnapshotLoading, liveExecutionPreflightLoading, liveExecutionLaunchPlanLoading, currentLiveReadinessSnapshotLoading, armingSnapshotLoading, snapshotResult, credentialSnapshotResult, branchPolicySnapshotResult, runtimeSnapshotResult, adapterRehearsalSnapshotResult, adapterBlueprintSnapshotResult, liveAdapterContractSnapshotResult, invocationSnapshotResult, executionLockSnapshotResult, requestEnvelopeSnapshotResult, idempotencySnapshotResult, requestValidationSnapshotResult, requestMaterializationSnapshotResult, activationSnapshotResult, transportSnapshotResult, sendSnapshotResult, retryBackoffSnapshotResult, responseSnapshotResult, resultRecordingSnapshotResult, providerCallBoundarySnapshotResult, transactionSnapshotResult, liveExecutionReadinessSnapshotResult, liveExecutionGuardSnapshotResult, liveExecutionPreflightResult, liveExecutionLaunchPlanResult, currentLiveReadinessSnapshotResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptCredentialSnapshot?: (id: string) => void; onRecordAttemptBranchPolicySnapshot?: (id: string) => void; onRecordAttemptRuntimeSnapshot?: (id: string) => void; onRecordAttemptAdapterRehearsalSnapshot?: (id: string) => void; onRecordAttemptAdapterBlueprintSnapshot?: (id: string) => void; onRecordAttemptLiveAdapterContractSnapshot?: (id: string) => void; onRecordAttemptInvocationSnapshot?: (id: string) => void; onRecordAttemptExecutionLockSnapshot?: (id: string) => void; onRecordAttemptRequestEnvelopeSnapshot?: (id: string) => void; onRecordAttemptIdempotencySnapshot?: (id: string) => void; onRecordAttemptRequestValidationSnapshot?: (id: string) => void; onRecordAttemptRequestMaterializationSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptTransportSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptRetryBackoffSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordAttemptResultRecordingSnapshot?: (id: string) => void; onRecordAttemptProviderCallBoundarySnapshot?: (id: string) => void; onRecordAttemptTransactionSnapshot?: (id: string) => void; onRecordAttemptLiveExecutionReadinessSnapshot?: (id: string) => void; onRecordAttemptLiveExecutionGuardSnapshot?: (id: string) => void; onCheckAttemptLiveExecutionPreflight?: (id: string) => void; onCheckAttemptLiveExecutionLaunchPlan?: (id: string) => void; onRecordCurrentAttemptLiveReadinessSnapshot?: () => void; onRecordArmingSnapshot?: () => void; canRecordCurrentAttemptLiveReadinessSnapshot?: boolean; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; snapshotLoading?: boolean; credentialSnapshotLoading?: boolean; branchPolicySnapshotLoading?: boolean; runtimeSnapshotLoading?: boolean; adapterRehearsalSnapshotLoading?: boolean; adapterBlueprintSnapshotLoading?: boolean; liveAdapterContractSnapshotLoading?: boolean; invocationSnapshotLoading?: boolean; executionLockSnapshotLoading?: boolean; requestEnvelopeSnapshotLoading?: boolean; idempotencySnapshotLoading?: boolean; requestValidationSnapshotLoading?: boolean; requestMaterializationSnapshotLoading?: boolean; activationSnapshotLoading?: boolean; transportSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; retryBackoffSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; resultRecordingSnapshotLoading?: boolean; providerCallBoundarySnapshotLoading?: boolean; transactionSnapshotLoading?: boolean; liveExecutionReadinessSnapshotLoading?: boolean; liveExecutionGuardSnapshotLoading?: boolean; liveExecutionPreflightLoading?: boolean; liveExecutionLaunchPlanLoading?: boolean; currentLiveReadinessSnapshotLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; credentialSnapshotResult?: AnyRow; branchPolicySnapshotResult?: AnyRow; runtimeSnapshotResult?: AnyRow; adapterRehearsalSnapshotResult?: AnyRow; adapterBlueprintSnapshotResult?: AnyRow; liveAdapterContractSnapshotResult?: AnyRow; invocationSnapshotResult?: AnyRow; executionLockSnapshotResult?: AnyRow; requestEnvelopeSnapshotResult?: AnyRow; idempotencySnapshotResult?: AnyRow; requestValidationSnapshotResult?: AnyRow; requestMaterializationSnapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; transportSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; retryBackoffSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; resultRecordingSnapshotResult?: AnyRow; providerCallBoundarySnapshotResult?: AnyRow; transactionSnapshotResult?: AnyRow; liveExecutionReadinessSnapshotResult?: AnyRow; liveExecutionGuardSnapshotResult?: AnyRow; liveExecutionPreflightResult?: AnyRow; liveExecutionLaunchPlanResult?: AnyRow; currentLiveReadinessSnapshotResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
   if (!value || value.kind !== 'project_template_provider_review_execute') return null;
   const request = value.execution_request || {};
   const guardrail = value.execution_guardrail || {};
@@ -2741,6 +2741,22 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
           <Tag>{String(liveExecutionPreflightResult.provider_api_mutation || 'disabled')}</Tag>
         </Space>
       ) : null}
+      {liveExecutionLaunchPlanResult ? (
+        <Space size={4} wrap>
+          <Tag color={liveExecutionLaunchPlanResult.launch_plan_ready ? 'green' : 'gold'}>
+            live launch {String(liveExecutionLaunchPlanResult.launch_plan_state || 'unknown')}
+          </Tag>
+          <Tag>{liveExecutionLaunchPlanResult.launch_plan?.launch_plan_metadata_ready ? 'launch metadata' : 'launch blocked'}</Tag>
+          <Tag>{liveExecutionLaunchPlanResult.live_execution_preflight_ready ? 'preflight ready' : 'preflight blocked'}</Tag>
+          <Tag>{liveExecutionLaunchPlanResult.launch_plan?.live_adapter_plan_observed ? 'adapter plan observed' : 'adapter plan missing'}</Tag>
+          <Tag>{liveExecutionLaunchPlanResult.launch_plan?.live_adapter_contract_plan_observed ? 'contract observed' : 'contract missing'}</Tag>
+          <Tag>{liveExecutionLaunchPlanResult.launch_plan?.live_adapter_implemented ? 'live adapter implemented' : 'adapter unimplemented'}</Tag>
+          <Tag>{liveExecutionLaunchPlanResult.provider_request_materialized ? 'request materialized' : 'request not materialized'}</Tag>
+          <Tag>{liveExecutionLaunchPlanResult.provider_request_sent ? 'provider request sent' : 'no provider request'}</Tag>
+          <Tag>{liveExecutionLaunchPlanResult.transaction_recorded ? 'transaction recorded' : 'no transaction'}</Tag>
+          <Tag>{String(liveExecutionLaunchPlanResult.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
       {attemptOrchestration.status && attemptOrchestration.status !== 'not_recorded' ? (
         <Space size={4} wrap>
           <Tag color={attemptOrchestration.dependency_chain_status === 'blocked' ? 'red' : attemptOrchestration.dependency_chain_status === 'ready' ? 'green' : attemptOrchestration.dependency_chain_status === 'waiting_for_dependency' ? 'gold' : 'default'}>
@@ -3146,6 +3162,11 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
               {onCheckAttemptLiveExecutionPreflight ? (
                 <Button size="small" loading={liveExecutionPreflightLoading} disabled={!operation.id || liveExecutionPreflightLoading} onClick={() => onCheckAttemptLiveExecutionPreflight(String(operation.id || ''))}>
                   Check live preflight
+                </Button>
+              ) : null}
+              {onCheckAttemptLiveExecutionLaunchPlan ? (
+                <Button size="small" loading={liveExecutionLaunchPlanLoading} disabled={!operation.id || liveExecutionLaunchPlanLoading} onClick={() => onCheckAttemptLiveExecutionLaunchPlan(String(operation.id || ''))}>
+                  Check live launch
                 </Button>
               ) : null}
             </Space.Compact>
@@ -5275,6 +5296,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [providerReviewLiveExecutionReadinessSnapshotLoading, setProviderReviewLiveExecutionReadinessSnapshotLoading] = useState(false);
   const [providerReviewLiveExecutionGuardSnapshotLoading, setProviderReviewLiveExecutionGuardSnapshotLoading] = useState(false);
   const [providerReviewLiveExecutionPreflightLoading, setProviderReviewLiveExecutionPreflightLoading] = useState(false);
+  const [providerReviewLiveExecutionLaunchPlanLoading, setProviderReviewLiveExecutionLaunchPlanLoading] = useState(false);
   const [providerReviewCurrentLiveReadinessSnapshotLoading, setProviderReviewCurrentLiveReadinessSnapshotLoading] = useState(false);
   const [providerReviewArmingSnapshotLoading, setProviderReviewArmingSnapshotLoading] = useState(false);
   const [providerReviewSnapshotResult, setProviderReviewSnapshotResult] = useState<AnyRow>();
@@ -5301,6 +5323,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [providerReviewLiveExecutionReadinessSnapshotResult, setProviderReviewLiveExecutionReadinessSnapshotResult] = useState<AnyRow>();
   const [providerReviewLiveExecutionGuardSnapshotResult, setProviderReviewLiveExecutionGuardSnapshotResult] = useState<AnyRow>();
   const [providerReviewLiveExecutionPreflightResult, setProviderReviewLiveExecutionPreflightResult] = useState<AnyRow>();
+  const [providerReviewLiveExecutionLaunchPlanResult, setProviderReviewLiveExecutionLaunchPlanResult] = useState<AnyRow>();
   const [providerReviewCurrentLiveReadinessSnapshotResult, setProviderReviewCurrentLiveReadinessSnapshotResult] = useState<AnyRow>();
   const [providerReviewArmingSnapshotResult, setProviderReviewArmingSnapshotResult] = useState<AnyRow>();
   const [optimisticallyClaimedProviderReviewAttemptID, setOptimisticallyClaimedProviderReviewAttemptID] = useState<string>();
@@ -5341,6 +5364,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     setProviderReviewLiveExecutionReadinessSnapshotResult(undefined);
     setProviderReviewLiveExecutionGuardSnapshotResult(undefined);
     setProviderReviewLiveExecutionPreflightResult(undefined);
+    setProviderReviewLiveExecutionLaunchPlanResult(undefined);
     setProviderReviewCurrentLiveReadinessSnapshotResult(undefined);
     setProviderReviewArmingSnapshotResult(undefined);
   }, [approvalAuditID]);
@@ -6002,6 +6026,26 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
       setProviderReviewLiveExecutionPreflightLoading(false);
     }
   }
+  async function checkProviderReviewAttemptLiveExecutionLaunchPlan(id: string) {
+    if (!id || providerReviewLiveExecutionLaunchPlanLoading) return;
+    setProviderReviewLiveExecutionLaunchPlanResult(undefined);
+    setProviderReviewLiveExecutionLaunchPlanLoading(true);
+    try {
+      const result = await api(`/api/provider-review-attempts/${id}/live-execution-launch-plan`, { method: 'POST', body: JSON.stringify({}) });
+      setProviderReviewLiveExecutionLaunchPlanResult(result);
+      if (result.launch_plan_ready === false) {
+        message.warning(result.message || 'Provider review live execution launch plan is blocked');
+      } else {
+        message.success('Provider review live execution launch plan is ready');
+      }
+    } catch (error: any) {
+      setProviderReviewLiveExecutionLaunchPlanResult(undefined);
+      message.error(error.message || 'Could not check provider review live execution launch plan');
+    } finally {
+      approvalAudit.reload();
+      setProviderReviewLiveExecutionLaunchPlanLoading(false);
+    }
+  }
   async function recordProviderReviewCurrentAttemptLiveReadinessSnapshot() {
     if (!approvalAuditID || providerReviewCurrentLiveReadinessSnapshotLoading) return;
     setProviderReviewCurrentLiveReadinessSnapshotResult(undefined);
@@ -6242,6 +6286,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             onRecordAttemptLiveExecutionReadinessSnapshot={recordProviderReviewAttemptLiveExecutionReadinessSnapshot}
             onRecordAttemptLiveExecutionGuardSnapshot={recordProviderReviewAttemptLiveExecutionGuardSnapshot}
             onCheckAttemptLiveExecutionPreflight={checkProviderReviewAttemptLiveExecutionPreflight}
+            onCheckAttemptLiveExecutionLaunchPlan={checkProviderReviewAttemptLiveExecutionLaunchPlan}
             onRecordCurrentAttemptLiveReadinessSnapshot={recordProviderReviewCurrentAttemptLiveReadinessSnapshot}
             onRecordArmingSnapshot={recordProviderReviewArmingSnapshot}
             canRecordCurrentAttemptLiveReadinessSnapshot={Boolean(approvalAuditID)}
@@ -6272,6 +6317,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             liveExecutionReadinessSnapshotLoading={providerReviewLiveExecutionReadinessSnapshotLoading}
             liveExecutionGuardSnapshotLoading={providerReviewLiveExecutionGuardSnapshotLoading}
             liveExecutionPreflightLoading={providerReviewLiveExecutionPreflightLoading}
+            liveExecutionLaunchPlanLoading={providerReviewLiveExecutionLaunchPlanLoading}
             currentLiveReadinessSnapshotLoading={providerReviewCurrentLiveReadinessSnapshotLoading}
             armingSnapshotLoading={providerReviewArmingSnapshotLoading}
             snapshotResult={providerReviewSnapshotResult}
@@ -6298,6 +6344,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             liveExecutionReadinessSnapshotResult={providerReviewLiveExecutionReadinessSnapshotResult}
             liveExecutionGuardSnapshotResult={providerReviewLiveExecutionGuardSnapshotResult}
             liveExecutionPreflightResult={providerReviewLiveExecutionPreflightResult}
+            liveExecutionLaunchPlanResult={providerReviewLiveExecutionLaunchPlanResult}
             currentLiveReadinessSnapshotResult={providerReviewCurrentLiveReadinessSnapshotResult}
             armingSnapshotResult={providerReviewArmingSnapshotResult}
             optimisticallyClaimedAttemptID={optimisticallyClaimedProviderReviewAttemptID}

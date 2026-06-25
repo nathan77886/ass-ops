@@ -23536,6 +23536,204 @@ func TestProviderReviewAttemptLiveExecutionPreflightHandlerReturnsNotApproved(t 
 	}
 }
 
+func TestProviderReviewAttemptLiveExecutionLaunchPlanBlocksBeforeProviderExecution(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("running", "independent")
+	attempt["claimed_at"] = time.Now()
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := ProviderReviewAttemptLiveExecutionLaunchPlan(context.Background(), store, ProviderReviewAttemptLiveExecutionLaunchPlanOptions{
+		AttemptID:         "attempt-1",
+		Attempt:           attempt,
+		LiveGuardObserved: true,
+	})
+	if err != nil {
+		t.Fatalf("ProviderReviewAttemptLiveExecutionLaunchPlan: %v", err)
+	}
+	launchPlan := mapFromAny(got["launch_plan"])
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["launch_plan_state"] != "live_execution_launch_blocked" ||
+		got["launch_plan_ready"] != false ||
+		got["live_execution_preflight_state"] != "live_execution_preflight_blocked" ||
+		got["provider_request_materialized"] != false ||
+		got["provider_request_sent"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		launchPlan["launch_plan_metadata_ready"] != true ||
+		launchPlan["live_adapter_plan_observed"] != true ||
+		launchPlan["live_adapter_contract_plan_observed"] != true ||
+		launchPlan["live_adapter_implemented"] != false ||
+		launchPlan["provider_client_constructed"] != false ||
+		launchPlan["request_builder_invoked"] != false ||
+		launchPlan["transaction_recorded"] != false ||
+		!containsString(missing, "provider_review_live_execution_preflight_not_ready") ||
+		!containsString(missing, "provider_review_live_adapter_not_implemented") ||
+		!containsString(missing, "provider_request_send_not_armed") ||
+		!containsString(missing, "provider_review_transaction_recording_not_armed") {
+		t.Fatalf("unexpected live execution launch plan response: %#v", got)
+	}
+	encoded, _ := json.Marshal(launchPlan)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "idempotency_key_hash", "raw_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("live execution launch plan leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLiveExecutionLaunchPlanBlocksWithoutGuard(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("running", "independent")
+	attempt["claimed_at"] = time.Now()
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectQuery(`(?s)SELECT DISTINCT status\s+FROM asset_status_snapshots\s+WHERE asset_id=\$1\s+AND status = ANY\(\$2\)`).
+		WithArgs("asset-attempt-1", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}))
+
+	got, err := ProviderReviewAttemptLiveExecutionLaunchPlan(context.Background(), store, ProviderReviewAttemptLiveExecutionLaunchPlanOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+	})
+	if err != nil {
+		t.Fatalf("ProviderReviewAttemptLiveExecutionLaunchPlan missing guard: %v", err)
+	}
+	launchPlan := mapFromAny(got["launch_plan"])
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["launch_plan_state"] != "live_execution_launch_blocked" ||
+		got["launch_plan_ready"] != false ||
+		launchPlan["preflight_metadata_ready"] != false ||
+		launchPlan["launch_plan_metadata_ready"] != false ||
+		!containsString(missing, "provider_review_live_execution_preflight_metadata_not_ready") {
+		t.Fatalf("live execution launch plan should block without guard: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLiveExecutionLaunchPlanHandlerReturnsBlockedNoCallPlan(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "running", "independent", time.Now())
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectQuery(`(?s)SELECT DISTINCT status\s+FROM asset_status_snapshots\s+WHERE asset_id=\$1\s+AND status = ANY\(\$2\)`).
+		WithArgs("asset-attempt-1", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("provider_review_attempt_live_execution_guard_ready"))
+
+	rr := httptest.NewRecorder()
+	server.providerReviewAttemptLiveExecutionLaunchPlan(rr, newProviderReviewAttemptLiveExecutionLaunchPlanRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	launchPlan := mapFromAny(got["launch_plan"])
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["launch_plan_state"] != "live_execution_launch_blocked" ||
+		got["launch_plan_ready"] != false ||
+		got["provider_request_materialized"] != false ||
+		got["provider_request_sent"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		launchPlan["launch_plan_metadata_ready"] != true ||
+		launchPlan["live_adapter_plan_observed"] != true ||
+		!containsString(missing, "provider_review_live_adapter_not_implemented") ||
+		!containsString(missing, "provider_review_request_not_materialized") {
+		t.Fatalf("unexpected live execution launch plan handler response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLiveExecutionLaunchPlanHandlerReturnsNotApproved(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApproval(mock, "running", "independent", time.Now(), "pending")
+
+	rr := httptest.NewRecorder()
+	server.providerReviewAttemptLiveExecutionLaunchPlan(rr, newProviderReviewAttemptLiveExecutionLaunchPlanRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["launch_plan_state"] != "operation_approval_not_approved" ||
+		got["launch_plan_ready"] != false ||
+		got["launch_plan"] != nil ||
+		got["provider_request_materialized"] != false ||
+		got["provider_request_sent"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["operation_log_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		!containsString(missing, "operation_approval_not_approved") {
+		t.Fatalf("unexpected not-approved live execution launch plan response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLiveExecutionLaunchPlanHandlerReturnsIncorrectApprovalAction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApprovalAction(mock, "running", "independent", time.Now(), "project_template.other", "approved")
+
+	rr := httptest.NewRecorder()
+	server.providerReviewAttemptLiveExecutionLaunchPlan(rr, newProviderReviewAttemptLiveExecutionLaunchPlanRequest())
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLiveExecutionLaunchPlanRejectsNilStore(t *testing.T) {
+	_, err := ProviderReviewAttemptLiveExecutionLaunchPlan(context.Background(), nil, ProviderReviewAttemptLiveExecutionLaunchPlanOptions{
+		AttemptID: "attempt-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "store is required") {
+		t.Fatalf("ProviderReviewAttemptLiveExecutionLaunchPlan nil store error = %v, want store is required", err)
+	}
+}
+
 func TestRecordProviderReviewAttemptLiveExecutionReadinessSnapshotMissingEvidenceDoesNotWrite(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -34905,6 +35103,12 @@ func newProviderReviewAttemptLiveExecutionReadinessSnapshotRequest(body string) 
 
 func newProviderReviewAttemptLiveExecutionPreflightRequest() *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/live-execution-preflight", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptLiveExecutionLaunchPlanRequest() *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/live-execution-launch-plan", strings.NewReader(`{}`))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
