@@ -2012,7 +2012,7 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
   );
 }
 
-function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onRecordAttemptSnapshot, onRecordAttemptCredentialSnapshot, onRecordAttemptBranchPolicySnapshot, onRecordAttemptRuntimeSnapshot, onRecordAttemptAdapterRehearsalSnapshot, onRecordAttemptAdapterBlueprintSnapshot, onRecordAttemptExecutionLockSnapshot, onRecordAttemptRequestEnvelopeSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptResponseSnapshot, onRecordArmingSnapshot, canRecordArmingSnapshot, claimLoading, resultLoading, snapshotLoading, credentialSnapshotLoading, branchPolicySnapshotLoading, runtimeSnapshotLoading, adapterRehearsalSnapshotLoading, adapterBlueprintSnapshotLoading, executionLockSnapshotLoading, requestEnvelopeSnapshotLoading, activationSnapshotLoading, sendSnapshotLoading, responseSnapshotLoading, armingSnapshotLoading, snapshotResult, credentialSnapshotResult, branchPolicySnapshotResult, runtimeSnapshotResult, adapterRehearsalSnapshotResult, adapterBlueprintSnapshotResult, executionLockSnapshotResult, requestEnvelopeSnapshotResult, activationSnapshotResult, sendSnapshotResult, responseSnapshotResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptCredentialSnapshot?: (id: string) => void; onRecordAttemptBranchPolicySnapshot?: (id: string) => void; onRecordAttemptRuntimeSnapshot?: (id: string) => void; onRecordAttemptAdapterRehearsalSnapshot?: (id: string) => void; onRecordAttemptAdapterBlueprintSnapshot?: (id: string) => void; onRecordAttemptExecutionLockSnapshot?: (id: string) => void; onRecordAttemptRequestEnvelopeSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordArmingSnapshot?: () => void; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; snapshotLoading?: boolean; credentialSnapshotLoading?: boolean; branchPolicySnapshotLoading?: boolean; runtimeSnapshotLoading?: boolean; adapterRehearsalSnapshotLoading?: boolean; adapterBlueprintSnapshotLoading?: boolean; executionLockSnapshotLoading?: boolean; requestEnvelopeSnapshotLoading?: boolean; activationSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; credentialSnapshotResult?: AnyRow; branchPolicySnapshotResult?: AnyRow; runtimeSnapshotResult?: AnyRow; adapterRehearsalSnapshotResult?: AnyRow; adapterBlueprintSnapshotResult?: AnyRow; executionLockSnapshotResult?: AnyRow; requestEnvelopeSnapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
+function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onRecordAttemptSnapshot, onRecordAttemptCredentialSnapshot, onRecordAttemptBranchPolicySnapshot, onRecordAttemptRuntimeSnapshot, onRecordAttemptAdapterRehearsalSnapshot, onRecordAttemptAdapterBlueprintSnapshot, onRecordAttemptExecutionLockSnapshot, onRecordAttemptRequestEnvelopeSnapshot, onRecordAttemptRequestValidationSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptResponseSnapshot, onRecordArmingSnapshot, canRecordArmingSnapshot, claimLoading, resultLoading, snapshotLoading, credentialSnapshotLoading, branchPolicySnapshotLoading, runtimeSnapshotLoading, adapterRehearsalSnapshotLoading, adapterBlueprintSnapshotLoading, executionLockSnapshotLoading, requestEnvelopeSnapshotLoading, requestValidationSnapshotLoading, activationSnapshotLoading, sendSnapshotLoading, responseSnapshotLoading, armingSnapshotLoading, snapshotResult, credentialSnapshotResult, branchPolicySnapshotResult, runtimeSnapshotResult, adapterRehearsalSnapshotResult, adapterBlueprintSnapshotResult, executionLockSnapshotResult, requestEnvelopeSnapshotResult, requestValidationSnapshotResult, activationSnapshotResult, sendSnapshotResult, responseSnapshotResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptCredentialSnapshot?: (id: string) => void; onRecordAttemptBranchPolicySnapshot?: (id: string) => void; onRecordAttemptRuntimeSnapshot?: (id: string) => void; onRecordAttemptAdapterRehearsalSnapshot?: (id: string) => void; onRecordAttemptAdapterBlueprintSnapshot?: (id: string) => void; onRecordAttemptExecutionLockSnapshot?: (id: string) => void; onRecordAttemptRequestEnvelopeSnapshot?: (id: string) => void; onRecordAttemptRequestValidationSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordArmingSnapshot?: () => void; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; snapshotLoading?: boolean; credentialSnapshotLoading?: boolean; branchPolicySnapshotLoading?: boolean; runtimeSnapshotLoading?: boolean; adapterRehearsalSnapshotLoading?: boolean; adapterBlueprintSnapshotLoading?: boolean; executionLockSnapshotLoading?: boolean; requestEnvelopeSnapshotLoading?: boolean; requestValidationSnapshotLoading?: boolean; activationSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; credentialSnapshotResult?: AnyRow; branchPolicySnapshotResult?: AnyRow; runtimeSnapshotResult?: AnyRow; adapterRehearsalSnapshotResult?: AnyRow; adapterBlueprintSnapshotResult?: AnyRow; executionLockSnapshotResult?: AnyRow; requestEnvelopeSnapshotResult?: AnyRow; requestValidationSnapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
   if (!value || value.kind !== 'project_template_provider_review_execute') return null;
   const request = value.execution_request || {};
   const guardrail = value.execution_guardrail || {};
@@ -2499,6 +2499,21 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
           <Tag>{String(requestEnvelopeSnapshotResult.provider_api_mutation || 'disabled')}</Tag>
         </Space>
       ) : null}
+      {requestValidationSnapshotResult ? (
+        <Space size={4} wrap>
+          <Tag color={requestValidationSnapshotResult.provider_review_attempt_request_validation_snapshot_written ? 'green' : requestValidationSnapshotResult.recording_state === 'asset_missing' ? 'red' : requestValidationSnapshotResult.recording_ready === false ? 'gold' : 'default'}>
+            request validation snapshot {String(requestValidationSnapshotResult.recording_state || 'unknown')}
+          </Tag>
+          <Tag>{requestValidationSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
+          <Tag>{requestValidationSnapshotResult.provider_review_attempt_asset_observed ? 'attempt asset observed' : 'attempt asset missing'}</Tag>
+          <Tag>{requestValidationSnapshotResult.snapshot?.dispatch_metadata_ready ? 'dispatch metadata' : 'dispatch blocked'}</Tag>
+          <Tag>{requestValidationSnapshotResult.snapshot?.preflight_ready ? 'preflight ready' : 'preflight blocked'}</Tag>
+          <Tag>{requestValidationSnapshotResult.request_validated ? 'request validated' : 'request not validated'}</Tag>
+          <Tag>{requestValidationSnapshotResult.request_materialized ? 'request materialized' : 'request not materialized'}</Tag>
+          <Tag>{requestValidationSnapshotResult.provider_request_sent ? 'provider request sent' : 'no provider request'}</Tag>
+          <Tag>{String(requestValidationSnapshotResult.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
       {sendSnapshotResult ? (
         <Space size={4} wrap>
           <Tag color={sendSnapshotResult.provider_review_attempt_send_snapshot_written ? 'green' : sendSnapshotResult.recording_state === 'asset_missing' ? 'red' : sendSnapshotResult.recording_ready === false ? 'gold' : 'default'}>
@@ -2824,6 +2839,11 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
               {onRecordAttemptRequestEnvelopeSnapshot ? (
                 <Button size="small" loading={requestEnvelopeSnapshotLoading} disabled={!operation.id || requestEnvelopeSnapshotLoading} onClick={() => onRecordAttemptRequestEnvelopeSnapshot(String(operation.id || ''))}>
                   Record envelope
+                </Button>
+              ) : null}
+              {onRecordAttemptRequestValidationSnapshot ? (
+                <Button size="small" loading={requestValidationSnapshotLoading} disabled={!operation.id || requestValidationSnapshotLoading} onClick={() => onRecordAttemptRequestValidationSnapshot(String(operation.id || ''))}>
+                  Record validation snapshot
                 </Button>
               ) : null}
               {onRecordAttemptBranchPolicySnapshot ? (
@@ -4977,6 +4997,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [providerReviewAdapterBlueprintSnapshotLoading, setProviderReviewAdapterBlueprintSnapshotLoading] = useState(false);
   const [providerReviewExecutionLockSnapshotLoading, setProviderReviewExecutionLockSnapshotLoading] = useState(false);
   const [providerReviewRequestEnvelopeSnapshotLoading, setProviderReviewRequestEnvelopeSnapshotLoading] = useState(false);
+  const [providerReviewRequestValidationSnapshotLoading, setProviderReviewRequestValidationSnapshotLoading] = useState(false);
   const [providerReviewActivationSnapshotLoading, setProviderReviewActivationSnapshotLoading] = useState(false);
   const [providerReviewSendSnapshotLoading, setProviderReviewSendSnapshotLoading] = useState(false);
   const [providerReviewResponseSnapshotLoading, setProviderReviewResponseSnapshotLoading] = useState(false);
@@ -4989,6 +5010,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [providerReviewAdapterBlueprintSnapshotResult, setProviderReviewAdapterBlueprintSnapshotResult] = useState<AnyRow>();
   const [providerReviewExecutionLockSnapshotResult, setProviderReviewExecutionLockSnapshotResult] = useState<AnyRow>();
   const [providerReviewRequestEnvelopeSnapshotResult, setProviderReviewRequestEnvelopeSnapshotResult] = useState<AnyRow>();
+  const [providerReviewRequestValidationSnapshotResult, setProviderReviewRequestValidationSnapshotResult] = useState<AnyRow>();
   const [providerReviewActivationSnapshotResult, setProviderReviewActivationSnapshotResult] = useState<AnyRow>();
   const [providerReviewSendSnapshotResult, setProviderReviewSendSnapshotResult] = useState<AnyRow>();
   const [providerReviewResponseSnapshotResult, setProviderReviewResponseSnapshotResult] = useState<AnyRow>();
@@ -5019,6 +5041,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     setProviderReviewAdapterBlueprintSnapshotResult(undefined);
     setProviderReviewExecutionLockSnapshotResult(undefined);
     setProviderReviewRequestEnvelopeSnapshotResult(undefined);
+    setProviderReviewRequestValidationSnapshotResult(undefined);
     setProviderReviewActivationSnapshotResult(undefined);
     setProviderReviewSendSnapshotResult(undefined);
     setProviderReviewResponseSnapshotResult(undefined);
@@ -5362,6 +5385,26 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
       setProviderReviewRequestEnvelopeSnapshotLoading(false);
     }
   }
+  async function recordProviderReviewAttemptRequestValidationSnapshot(id: string) {
+    if (!id || providerReviewRequestValidationSnapshotLoading) return;
+    setProviderReviewRequestValidationSnapshotResult(undefined);
+    setProviderReviewRequestValidationSnapshotLoading(true);
+    try {
+      const result = await api(`/api/provider-review-attempts/${id}/request-validation-snapshot`, { method: 'POST', body: JSON.stringify({}) });
+      setProviderReviewRequestValidationSnapshotResult(result);
+      if (result.recording_ready === false) {
+        message.warning(result.message || 'Provider review request validation snapshot is not ready yet');
+      } else {
+        message.success(result.provider_review_attempt_request_validation_snapshot_written ? 'Provider review request validation snapshot recorded' : 'Provider review request validation snapshot already current');
+      }
+    } catch (error: any) {
+      setProviderReviewRequestValidationSnapshotResult(undefined);
+      message.error(error.message || 'Could not record provider review request validation snapshot');
+    } finally {
+      approvalAudit.reload();
+      setProviderReviewRequestValidationSnapshotLoading(false);
+    }
+  }
   async function recordProviderReviewAttemptActivationSnapshot(id: string) {
     if (!id || providerReviewActivationSnapshotLoading) return;
     setProviderReviewActivationSnapshotResult(undefined);
@@ -5626,6 +5669,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             onRecordAttemptAdapterBlueprintSnapshot={recordProviderReviewAttemptAdapterBlueprintSnapshot}
             onRecordAttemptExecutionLockSnapshot={recordProviderReviewAttemptExecutionLockSnapshot}
             onRecordAttemptRequestEnvelopeSnapshot={recordProviderReviewAttemptRequestEnvelopeSnapshot}
+            onRecordAttemptRequestValidationSnapshot={recordProviderReviewAttemptRequestValidationSnapshot}
             onRecordAttemptActivationSnapshot={recordProviderReviewAttemptActivationSnapshot}
             onRecordAttemptSendSnapshot={recordProviderReviewAttemptSendSnapshot}
             onRecordAttemptResponseSnapshot={recordProviderReviewAttemptResponseSnapshot}
@@ -5641,6 +5685,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             adapterBlueprintSnapshotLoading={providerReviewAdapterBlueprintSnapshotLoading}
             executionLockSnapshotLoading={providerReviewExecutionLockSnapshotLoading}
             requestEnvelopeSnapshotLoading={providerReviewRequestEnvelopeSnapshotLoading}
+            requestValidationSnapshotLoading={providerReviewRequestValidationSnapshotLoading}
             activationSnapshotLoading={providerReviewActivationSnapshotLoading}
             sendSnapshotLoading={providerReviewSendSnapshotLoading}
             responseSnapshotLoading={providerReviewResponseSnapshotLoading}
@@ -5653,6 +5698,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             adapterBlueprintSnapshotResult={providerReviewAdapterBlueprintSnapshotResult}
             executionLockSnapshotResult={providerReviewExecutionLockSnapshotResult}
             requestEnvelopeSnapshotResult={providerReviewRequestEnvelopeSnapshotResult}
+            requestValidationSnapshotResult={providerReviewRequestValidationSnapshotResult}
             activationSnapshotResult={providerReviewActivationSnapshotResult}
             sendSnapshotResult={providerReviewSendSnapshotResult}
             responseSnapshotResult={providerReviewResponseSnapshotResult}
