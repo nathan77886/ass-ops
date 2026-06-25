@@ -711,6 +711,7 @@ func TestFirstVersionReadinessReportRequiresRepositoryGraphLinks(t *testing.T) {
 	}
 
 	withGraphLinks := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "project", "source_id": "1"},
 		{"asset_type": "repository", "source_id": "10"},
 		{"asset_type": "git_remote", "source_id": "100"},
 		{"asset_type": "git_remote", "source_id": "101"},
@@ -811,9 +812,14 @@ func TestCountRepositoryGraphLinks(t *testing.T) {
 			map[string]any{"from_asset_id": "repository:10", "to_asset_id": "webhook_connection:1", "relation_type": "has_remote"},
 		},
 	}
-	got := countRepositoryGraphLinks(graph, map[string]bool{"repository:10": true}, map[string]bool{"git_remote:100": true, "git_remote:101": true})
+	got := countRepositoryGraphLinks(graph, map[string]bool{"project:1": true}, map[string]bool{"repository:10": true}, map[string]bool{"git_remote:100": true, "git_remote:101": true})
 	if got.ProjectRepository != 1 || got.RepositoryRemotes != 2 || got.CompleteRepos != 1 || got.CompleteRepoAssets != 1 {
 		t.Fatalf("countRepositoryGraphLinks = %#v, want 1 project link, 2 remote links, 1 complete repo, and 1 repo asset path", got)
+	}
+
+	got = countRepositoryGraphLinks(graph, nil, map[string]bool{"repository:10": true}, map[string]bool{"git_remote:100": true, "git_remote:101": true})
+	if got.CompleteRepos != 1 || got.CompleteRepoAssets != 0 {
+		t.Fatalf("countRepositoryGraphLinks without canonical project asset = %#v, want graph-complete repo without repo asset path", got)
 	}
 }
 

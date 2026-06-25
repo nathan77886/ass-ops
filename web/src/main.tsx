@@ -764,10 +764,10 @@ function countGraphNodesByKnownIDs(graph: AnyRow = {}, knownIDs = new Set<string
   return graphItems(graph, 'nodes').filter((node: AnyRow) => knownIDs.has(String(node.id ?? ''))).length;
 }
 
-function countRepositoryGraphLinks(graph: AnyRow = {}, repositoryAssetIDs = new Set<string>(), remoteAssetIDs = new Set<string>()) {
-  const byRepository: Record<string, { project?: boolean; remotes: Record<string, boolean> }> = {};
+function countRepositoryGraphLinks(graph: AnyRow = {}, projectAssetIDs = new Set<string>(), repositoryAssetIDs = new Set<string>(), remoteAssetIDs = new Set<string>()) {
+  const byRepository: Record<string, { projects: Record<string, boolean>; remotes: Record<string, boolean> }> = {};
   const repositoryEntry = (assetID: string) => {
-    byRepository[assetID] ??= { remotes: {} };
+    byRepository[assetID] ??= { projects: {}, remotes: {} };
     return byRepository[assetID];
   };
   const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
@@ -776,7 +776,7 @@ function countRepositoryGraphLinks(graph: AnyRow = {}, repositoryAssetIDs = new 
     const to = String(edge.to_asset_id ?? '');
     if (relation === 'owns' && from.startsWith('project:') && to.startsWith('repository:')) {
       nextCounts.projectRepository += 1;
-      repositoryEntry(to).project = true;
+      repositoryEntry(to).projects[from] = true;
     }
     if (relation === 'has_remote' && from.startsWith('repository:') && to.startsWith('git_remote:')) {
       nextCounts.repositoryRemotes += 1;
@@ -784,9 +784,9 @@ function countRepositoryGraphLinks(graph: AnyRow = {}, repositoryAssetIDs = new 
     }
     return nextCounts;
   }, { projectRepository: 0, repositoryRemotes: 0, completeRepos: 0, completeRepoAssets: 0 });
-  counts.completeRepos = Object.values(byRepository).filter((entry) => entry.project && Object.keys(entry.remotes).length >= 2).length;
+  counts.completeRepos = Object.values(byRepository).filter((entry) => Object.keys(entry.projects).length > 0 && Object.keys(entry.remotes).length >= 2).length;
   counts.completeRepoAssets = Object.entries(byRepository).filter(([repositoryID, entry]) => (
-    entry.project &&
+    Object.keys(entry.projects).some((projectID) => projectAssetIDs.has(projectID)) &&
     repositoryAssetIDs.has(repositoryID) &&
     Object.keys(entry.remotes).filter((remoteID) => remoteAssetIDs.has(remoteID)).length >= 2
   )).length;
@@ -1265,7 +1265,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const operationLogs = countOperationRowsWithLogs(operations, assetIDsByType(assets, 'operation_run'));
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
   const contextGenerations = countContextGenerationEvidence(assets);
-  const repositoryGraphLinks = countRepositoryGraphLinks(graph, assetIDsByType(assets, 'repository'), assetIDsByType(assets, 'git_remote'));
+  const repositoryGraphLinks = countRepositoryGraphLinks(graph, assetIDsByType(assets, 'project'), assetIDsByType(assets, 'repository'), assetIDsByType(assets, 'git_remote'));
   const repoSyncGraphLinks = countRepoSyncGraphLinks(graph, assetIDsByType(assets, 'repo_sync'), assetIDsByType(assets, 'git_remote'));
   const syncOperationIDs = mergeSets(operationIDsByType(operations, 'repo.sync'), operationIDsByType(operations, 'repo.sync_remote'));
   const webhookSyncGraphLinks = countWebhookSyncGraphLinks(

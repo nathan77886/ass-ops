@@ -1398,7 +1398,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	graphEvidence := graphNodes + graphEdges
 	projectGraphNodes := countGraphNodesByPrefix(graph, "project:")
 	projectAssetGraphNodes := countGraphNodesByKnownIDs(graph, assetIDsByType(assets, "project"))
-	repositoryGraphLinks := countRepositoryGraphLinks(graph, assetIDsByType(assets, "repository"), assetIDsByType(assets, "git_remote"))
+	repositoryGraphLinks := countRepositoryGraphLinks(graph, assetIDsByType(assets, "project"), assetIDsByType(assets, "repository"), assetIDsByType(assets, "git_remote"))
 	repoSyncGraphLinks := countRepoSyncGraphLinks(graph, assetIDsByType(assets, "repo_sync"), assetIDsByType(assets, "git_remote"))
 	syncOperationIDs := mergeBoolMaps(operationIDsByType(operations, "repo.sync"), operationIDsByType(operations, "repo.sync_remote"))
 	webhookSyncGraphLinks := countWebhookSyncGraphLinks(
@@ -2084,17 +2084,17 @@ type repositoryGraphLinkCounts struct {
 	CompleteRepoAssets int
 }
 
-func countRepositoryGraphLinks(graph map[string]any, repositoryAssetIDs, remoteAssetIDs map[string]bool) repositoryGraphLinkCounts {
+func countRepositoryGraphLinks(graph map[string]any, projectAssetIDs, repositoryAssetIDs, remoteAssetIDs map[string]bool) repositoryGraphLinkCounts {
 	counts := repositoryGraphLinkCounts{}
 	type repositoryLinks struct {
-		project bool
-		remotes map[string]bool
+		projects map[string]bool
+		remotes  map[string]bool
 	}
 	byRepository := map[string]*repositoryLinks{}
 	repositoryEntry := func(assetID string) *repositoryLinks {
 		entry := byRepository[assetID]
 		if entry == nil {
-			entry = &repositoryLinks{remotes: map[string]bool{}}
+			entry = &repositoryLinks{projects: map[string]bool{}, remotes: map[string]bool{}}
 			byRepository[assetID] = entry
 		}
 		return entry
@@ -2106,7 +2106,7 @@ func countRepositoryGraphLinks(graph map[string]any, repositoryAssetIDs, remoteA
 		case "owns":
 			if strings.HasPrefix(from, "project:") && strings.HasPrefix(to, "repository:") {
 				counts.ProjectRepository++
-				repositoryEntry(to).project = true
+				repositoryEntry(to).projects[from] = true
 			}
 		case "has_remote":
 			if strings.HasPrefix(from, "repository:") && strings.HasPrefix(to, "git_remote:") {
@@ -2116,9 +2116,9 @@ func countRepositoryGraphLinks(graph map[string]any, repositoryAssetIDs, remoteA
 		}
 	}
 	for repositoryID, entry := range byRepository {
-		if entry.project && len(entry.remotes) >= 2 {
+		if len(entry.projects) > 0 && len(entry.remotes) >= 2 {
 			counts.CompleteRepos++
-			if repositoryAssetIDs[repositoryID] && countMatchingAssets(entry.remotes, remoteAssetIDs) >= 2 {
+			if hasAnyKnownID(entry.projects, projectAssetIDs) && repositoryAssetIDs[repositoryID] && countMatchingAssets(entry.remotes, remoteAssetIDs) >= 2 {
 				counts.CompleteRepoAssets++
 			}
 		}
