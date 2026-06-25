@@ -194,6 +194,17 @@ func run() error {
 			fmt.Print(plan)
 			return nil
 		}
+		if (len(args) == 4 || len(args) == 5) && args[1] == "agent-tool-rehearsal-plan" {
+			plan, err := releaseAgentToolRehearsalPlan(args[2], args[3])
+			if err != nil {
+				return err
+			}
+			if len(args) == 5 {
+				return writeTextFile(args[4], plan)
+			}
+			fmt.Print(plan)
+			return nil
+		}
 		if (len(args) == 5 || len(args) == 6) && args[1] == "branch-protection-plan" {
 			plan, err := releaseBranchProtectionPlan(args[2], args[3], args[4])
 			if err != nil {
@@ -210,7 +221,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release ssh-rehearsal-plan PROJECT_SLUG ENVIRONMENT [OUTPUT_FILE]|release tag-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release config-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release agent-code-rehearsal-plan PROJECT_SLUG RUNTIME_KEY [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release ssh-rehearsal-plan PROJECT_SLUG ENVIRONMENT [OUTPUT_FILE]|release tag-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release config-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release agent-code-rehearsal-plan PROJECT_SLUG RUNTIME_KEY [OUTPUT_FILE]|release agent-tool-rehearsal-plan PROJECT_SLUG RUNTIME_KEY [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -1417,6 +1428,78 @@ func releaseAgentCodeRehearsalPlan(projectSlug, runtimeKey string) (string, erro
 	fmt.Fprintf(&b, "# In ASSOPS UI: Agent task -> Record tool-call audit / tool-arming / code-audit snapshots\n")
 	fmt.Fprintf(&b, "```\n\n")
 	fmt.Fprintf(&b, "Run real agent code execution only after runtime verification, source remote review, workspace binding review, branch policy review, structured patch review, test-plan review, commit-push agent review, provider-review reconciliation, and raw I/O redaction review are confirmed out of band.\n")
+	return b.String(), nil
+}
+
+func releaseAgentToolRehearsalPlan(projectSlug, runtimeKey string) (string, error) {
+	projectSlug = strings.ToLower(strings.TrimSpace(projectSlug))
+	if !isSafeProjectSlug(projectSlug) {
+		return "", fmt.Errorf("project slug must contain letters or numbers and may include only internal dot, underscore, or hyphen")
+	}
+	runtimeKey = strings.ToLower(strings.TrimSpace(runtimeKey))
+	if !isSafeProjectSlug(runtimeKey) {
+		return "", fmt.Errorf("runtime key must contain letters or numbers and may include only internal dot, underscore, or hyphen")
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# ASSOPS Agent Tool Rehearsal Plan\n\n")
+	fmt.Fprintf(&b, "Project slug: `%s`\n\n", projectSlug)
+	fmt.Fprintf(&b, "Runtime key: `%s`\n\n", runtimeKey)
+	fmt.Fprintf(&b, "## Local Validation\n\n")
+	fmt.Fprintf(&b, "- Project slug and runtime key are safe local identifiers for matching ASSOPS agent tool execution evidence.\n")
+	fmt.Fprintf(&b, "- This plan intentionally does not accept prompts, runtime config, environment variables, tool input/output, raw tool input/output, workspace paths, repository URLs, patch content, diff content, provider URLs, token names, credentials, or worker secret material as inputs.\n")
+	fmt.Fprintf(&b, "- This plan does not invoke tools, materialize runtime config, materialize tool input, record tool output, start Codex CLI, apply patches, mutate repositories, call providers, update agent tasks, write operation logs, sync assets, or record snapshots.\n\n")
+	fmt.Fprintf(&b, "## Live Rehearsal Sequence\n\n")
+	for index, step := range []string{
+		"Confirm the ASSOPS project has a project-owned agent_task asset and selected AI runtime metadata for the runtime key.",
+		"Review the graph-backed context snapshot and verify the agent task is linked to the selected runtime.",
+		"Approve the audit-only `agent.execute` operation and wait for the worker claim plan to create a claimable audit job.",
+		"Confirm the allowlisted tool set remains limited to `context.generate`, `runtime.check`, `codex.execution.plan`, and `patch.prepare`.",
+		"Wait for terminal sanitized agent_tool_calls audit evidence before treating result callback recording as observed.",
+		"Review the result callback plan and verify it records sanitized audit status only, with raw tool input/output still suppressed.",
+		"Review the tool execution arming plan and keep worker tool invocation, tool input materialization, tool output recording, Codex CLI process start, patch apply, repository mutation, and provider calls disabled.",
+		"Review the allowlisted tool-invocation review plan only after runtime metadata, allowlist, terminal successful audit evidence, and result callback observation are ready.",
+		"Record the sanitized tool-call audit snapshot from terminal agent_tool_calls evidence only.",
+		"Record the sanitized tool-arming snapshot only when allowlist and successful audit evidence make the operator review preflight ready.",
+	} {
+		fmt.Fprintf(&b, "%d. %s\n", index+1, step)
+	}
+	fmt.Fprintf(&b, "\n## Required Evidence\n\n")
+	for _, item := range []string{
+		"project-owned agent_task asset",
+		"selected AI runtime metadata for the runtime key",
+		"agent_task to ai_runtime graph relation",
+		"approval request for agent.execute",
+		"worker claim plan audit job evidence",
+		"allowlisted tool names review",
+		"terminal sanitized agent_tool_calls evidence",
+		"sanitized result callback observation",
+		"tool execution arming plan state",
+		"allowlisted tool-invocation review plan state",
+		"sanitized tool-call audit snapshot status",
+		"sanitized tool-arming snapshot status",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## Suppressed Material\n\n")
+	for _, item := range []string{
+		"runtime config, environment variables, authorization headers, worker secrets, API keys, tokens, and credentials",
+		"prompt bodies, tool input, raw tool input, tool output, raw tool output, and runtime provider responses",
+		"workspace paths, repository URLs, source remote URLs, branch names, patch content, diff content, and file contents",
+		"provider URLs, provider request/response bodies, response headers, workflow logs, and command output",
+		"operation IDs, tool-call IDs, worker claim fields, idempotency keys, and operator notes containing sensitive execution details",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## No-Call Boundary\n\n")
+	fmt.Fprintf(&b, "- This plan is local documentation only; it does not invoke tools, materialize runtime config, materialize tool input, record tool output, start Codex CLI, apply patches, mutate repositories, call providers, update agent tasks, write operation logs, sync assets, or record snapshots.\n")
+	fmt.Fprintf(&b, "- Real allowlisted tool invocation remains disabled until a separate operator-reviewed execution backend, raw I/O redaction review, result callback review, and provider/repository mutation boundary are implemented and armed.\n\n")
+	fmt.Fprintf(&b, "## Verification Commands\n\n```bash\n")
+	fmt.Fprintf(&b, "assops-tool project readiness\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: Agent task -> worker dispatch and tool guardrails\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: Agent task -> Record tool-call audit / tool-arming snapshots\n")
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "Run real allowlisted tool invocation only after runtime verification, tool allowlist review, terminal audit review, result callback review, operator execution review, and raw I/O redaction review are confirmed out of band.\n")
 	return b.String(), nil
 }
 

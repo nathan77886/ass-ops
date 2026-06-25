@@ -366,6 +366,17 @@ assops-tool release config-rehearsal-plan \
 
 The plan accepts only a safe project slug and remote key. It lists the `repo_role=config` repository proof, scaffold-preview review, secret-scan gate, approval-gated `config.git_commit` audit workflow, read-only `git.refs.refresh`, config ref-refresh snapshot, config promotion snapshot, and dry-run `pin-config-commit` checks to collect without accepting or storing branch names, commit SHAs, refs, remote URLs, file contents, provider URLs, token names, Git output, provider responses, workflow logs, raw errors, or operator notes. It does not run Git, create files, commit, push refs, call providers, update ProjectVersion rows, enqueue workers, write operation logs, sync assets, pin config commits, or record snapshots.
 
+Before rehearsing agent allowlisted tool invocation, generate the no-call agent tool rehearsal plan:
+
+```bash
+assops-tool release agent-tool-rehearsal-plan \
+  assops-demo \
+  codex-cli \
+  .assops/release-notes/agent-tool-rehearsal-plan.md
+```
+
+The plan accepts only a safe project slug and runtime key. It lists agent task/runtime evidence, graph-backed context readiness, approval-gated `agent.execute`, worker claim evidence, allowlisted tool review, terminal `agent_tool_calls` audit evidence, sanitized result callback observation, tool execution arming, allowlisted tool-invocation review, tool-call audit snapshot, and tool-arming snapshot checks to collect without accepting or storing prompts, runtime config, environment variables, tool input/output, raw tool input/output, workspace paths, repository URLs, patch/diff/file content, provider URLs, command output, tokens, credentials, worker secrets, or operator notes. It does not invoke tools, materialize runtime config, materialize tool input, record tool output, start Codex CLI, apply patches, mutate repositories, call providers, update agent tasks, write operation logs, sync assets, or record snapshots.
+
 Before rehearsing agent-driven code modification, generate the no-call agent code rehearsal plan:
 
 ```bash

@@ -2953,6 +2953,83 @@ func TestReleaseAgentCodeRehearsalPlanRejectsUnsafeInput(t *testing.T) {
 	}
 }
 
+func TestReleaseAgentToolRehearsalPlan(t *testing.T) {
+	plan, err := releaseAgentToolRehearsalPlan("ASSOPS-Demo", "Codex-CLI")
+	if err != nil {
+		t.Fatalf("releaseAgentToolRehearsalPlan: %v", err)
+	}
+	for _, want := range []string{
+		"# ASSOPS Agent Tool Rehearsal Plan",
+		"Project slug: `assops-demo`",
+		"Runtime key: `codex-cli`",
+		"does not accept prompts, runtime config, environment variables, tool input/output, raw tool input/output, workspace paths, repository URLs, patch content, diff content, provider URLs, token names, credentials, or worker secret material as inputs",
+		"does not invoke tools, materialize runtime config, materialize tool input, record tool output, start Codex CLI, apply patches, mutate repositories, call providers, update agent tasks, write operation logs, sync assets, or record snapshots",
+		"audit-only `agent.execute` operation",
+		"`context.generate`, `runtime.check`, `codex.execution.plan`, and `patch.prepare`",
+		"terminal sanitized agent_tool_calls audit evidence",
+		"sanitized result callback observation",
+		"tool execution arming plan state",
+		"allowlisted tool-invocation review plan state",
+		"sanitized tool-call audit snapshot status",
+		"sanitized tool-arming snapshot status",
+		"worker tool invocation, tool input materialization, tool output recording, Codex CLI process start, patch apply, repository mutation, and provider calls disabled",
+		"assops-tool project readiness",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("agent tool rehearsal plan missing %q in:\n%s", want, plan)
+		}
+	}
+	for _, forbidden := range []string{
+		// Agent tool plans must never include concrete prompt, tool I/O, provider, repository, or credential examples.
+		// Descriptive suppressed-material labels such as "tokens" remain allowed above.
+		"Authorization:",
+		"token=",
+		"password=",
+		"PRIVATE KEY",
+		"https://github.com/",
+		"git@github.com:",
+		"/mnt/ssd/",
+		"refs/heads/",
+		"abcdef0123456789abcdef0123456789abcdef01",
+		"actual tool output",
+		"do-not-serialize",
+		"provider response:",
+		"diff --git",
+		"OPENAI_API_KEY",
+		"GITHUB_TOKEN",
+	} {
+		if strings.Contains(plan, forbidden) {
+			t.Fatalf("agent tool rehearsal plan should not contain %q:\n%s", forbidden, plan)
+		}
+	}
+}
+
+func TestReleaseAgentToolRehearsalPlanRejectsUnsafeInput(t *testing.T) {
+	cases := []struct {
+		name       string
+		slug       string
+		runtimeKey string
+		want       string
+	}{
+		{name: "empty slug", slug: "", runtimeKey: "codex-cli", want: "project slug"},
+		{name: "slash slug", slug: "owner/repo", runtimeKey: "codex-cli", want: "project slug"},
+		{name: "leading dot slug", slug: ".assops", runtimeKey: "codex-cli", want: "project slug"},
+		{name: "trailing dot slug", slug: "assops.", runtimeKey: "codex-cli", want: "project slug"},
+		{name: "empty runtime key", slug: "assops-demo", runtimeKey: "", want: "runtime key"},
+		{name: "runtime key slash", slug: "assops-demo", runtimeKey: "codex/cli", want: "runtime key"},
+		{name: "runtime key leading dot", slug: "assops-demo", runtimeKey: ".codex", want: "runtime key"},
+		{name: "runtime key trailing dot", slug: "assops-demo", runtimeKey: "codex.", want: "runtime key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := releaseAgentToolRehearsalPlan(tc.slug, tc.runtimeKey)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("releaseAgentToolRehearsalPlan error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestReleaseBackupSchedulePlanForArtifactSource(t *testing.T) {
 	plan, err := releaseBackupSchedulePlan("nathan77886/ass-ops", "production", "ubuntu-latest", "17 3 * * 1", "artifact:retained-assops-backup", "14")
 	if err != nil {
