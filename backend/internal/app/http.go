@@ -21060,7 +21060,7 @@ func agentWorkerDispatchPlan(runtime map[string]any, auditEvidenceRows ...map[st
 	resultCallbackPlan := agentWorkerResultCallbackPlan(auditEvidence)
 	toolExecutionArmingPlan := agentWorkerToolExecutionArmingPlan(dispatchPrerequisite, allowedToolNames, auditEvidence, resultCallbackPlan)
 	toolInvocationReviewPlan := agentWorkerToolInvocationReviewPlan(allowedToolNames, auditEvidence, toolExecutionArmingPlan)
-	resultObserved := boolOnlyFromAny(auditEvidence["has_tool_call_audit"])
+	resultRecorded := boolOnlyFromAny(auditEvidence["sanitized_result_recorded"])
 	return map[string]any{
 		"mode":                           "redacted_agent_worker_dispatch_plan",
 		"dispatch_state":                 "audit_queued",
@@ -21077,7 +21077,7 @@ func agentWorkerDispatchPlan(runtime map[string]any, auditEvidenceRows ...map[st
 		"external_call_made":             false,
 		"repository_mutation_allowed":    false,
 		"result_callback_enabled":        true,
-		"result_written":                 resultObserved,
+		"result_written":                 resultRecorded,
 		"context_snapshot_materialized":  true,
 		"tool_call_audit_evidence":       auditEvidence,
 		"worker_claim_plan":              claimPlan,
@@ -21537,10 +21537,10 @@ func agentWorkerResultCallbackPlan(auditEvidence map[string]any) map[string]any 
 		"callback_ready_reason":        readyReason,
 		"callback_enabled":             true,
 		"callback_scope":               "sanitized_audit_status_only",
-		"result_written":               resultObserved,
-		"operation_log_written":        resultObserved,
+		"result_written":               resultRecorded,
+		"operation_log_written":        resultRecorded,
 		"agent_task_status_written":    false,
-		"tool_call_status_written":     resultObserved,
+		"tool_call_status_written":     resultRecorded,
 		"canonical_asset_sync_queued":  false,
 		"status_snapshot_written":      false,
 		"raw_tool_output_recorded":     false,
