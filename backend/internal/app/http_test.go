@@ -8807,13 +8807,18 @@ func TestSSHMachineRehearsalEvidenceStatesAreSanitized(t *testing.T) {
 				t.Fatalf("unexpected evidence: %#v", evidence)
 			}
 			resultPlan := mapFromAny(preview["result_recording_plan"])
-			if resultPlan["recording_state"] != tt.wantState || resultPlan["recording_ready"] != true || resultPlan["result_written"] != true {
+			wantRecorded := tt.wantState == "recorded"
+			if resultPlan["recording_state"] != tt.wantState ||
+				resultPlan["recording_ready"] != wantRecorded ||
+				resultPlan["recording_enabled"] != wantRecorded ||
+				resultPlan["result_written"] != wantRecorded ||
+				resultPlan["auth_binding_recorded"] != wantRecorded {
 				t.Fatalf("unexpected result plan: %#v", resultPlan)
 			}
 			if preview["live_evidence_recorded"] != true {
 				t.Fatalf("preview should mark live evidence present: %#v", preview)
 			}
-			if got, want := preview["sanitized_result_recorded"], tt.wantState == "recorded"; got != want {
+			if got, want := preview["sanitized_result_recorded"], wantRecorded; got != want {
 				t.Fatalf("sanitized_result_recorded = %#v, want %v; preview=%#v", got, want, preview)
 			}
 			if resultPlan["stdout_included"] != false || resultPlan["stderr_included"] != false || resultPlan["raw_error_included"] != false || resultPlan["private_key_included"] != false {
@@ -9026,13 +9031,17 @@ func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
 		t.Fatalf("ssh result recording plan should stay disabled and redacted: %#v", resultPlan)
 	}
 	if hasLiveEvidence {
+		sanitizedResultRecorded := cleanPreviewString(evidence["evidence_state"]) == "recorded"
 		if resultPlan["recording_state"] != evidence["evidence_state"] ||
-			resultPlan["recording_ready"] != true ||
-			resultPlan["recording_enabled"] != true ||
-			resultPlan["result_written"] != true ||
-			resultPlan["auth_binding_recorded"] != true ||
+			resultPlan["recording_ready"] != sanitizedResultRecorded ||
+			resultPlan["recording_enabled"] != sanitizedResultRecorded ||
+			resultPlan["result_written"] != sanitizedResultRecorded ||
+			resultPlan["auth_binding_recorded"] != sanitizedResultRecorded ||
 			resultPlan["recording_ready_reason"] == "ssh_rehearsal_execution_not_performed" {
 			t.Fatalf("ssh result recording plan should reflect sanitized evidence: result=%#v evidence=%#v", resultPlan, evidence)
+		}
+		if !sanitizedResultRecorded && !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), "sanitized_ssh_result_not_recorded") {
+			t.Fatalf("non-recorded ssh evidence should keep sanitized result blocker: %#v", resultPlan)
 		}
 	} else if resultPlan["recording_state"] != "blocked" ||
 		resultPlan["recording_ready"] != false ||

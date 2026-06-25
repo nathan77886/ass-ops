@@ -23923,17 +23923,21 @@ func sshRehearsalResultRecordingPlan(evidence map[string]any) map[string]any {
 	if recordingState == "" {
 		recordingState = "blocked"
 	}
-	recordingReady := totalRuns > 0
+	evidenceObserved := totalRuns > 0
+	recordingReady := recordingState == "recorded"
 	recordingReason := "sanitized_ssh_result_recorded"
 	blockedReasons := []string{}
 	completedWithoutExitCode := intFromAny(evidence["completed_without_exit_code_runs"], 0)
 	message := "SSH rehearsal has recorded sanitized command-run metadata only; command output, raw errors, and auth material remain suppressed."
-	if !recordingReady {
+	if !evidenceObserved {
 		recordingState = "blocked"
 		recordingReason = "ssh_rehearsal_execution_not_performed"
 		blockedReasons = []string{"ssh_rehearsal_execution_not_performed", "sanitized_ssh_result_not_recorded", "canonical_asset_sync_not_performed"}
 		message = "SSH rehearsal results are not recorded by this preview; future execution must persist sanitized metadata without command output or auth material."
 	} else {
+		if !recordingReady {
+			blockedReasons = append(blockedReasons, "sanitized_ssh_result_not_recorded")
+		}
 		if completedWithoutExitCode > 0 {
 			blockedReasons = append(blockedReasons, "ssh_completed_result_exit_code_missing")
 		}
