@@ -25346,6 +25346,35 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnappr
 			},
 		},
 		{
+			name: "result-recording",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptResultRecordingSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptResultRecordingSnapshotRequest,
+			writeFlag: "provider_review_attempt_result_recording_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["provider_request_sent"] != false ||
+					got["provider_response_received"] != false ||
+					got["response_recorded"] != false ||
+					got["result_recorded"] != false ||
+					got["attempt_result_persisted"] != false ||
+					got["dependency_update_recorded"] != false ||
+					got["transaction_recorded"] != false ||
+					got["contains_token"] != false ||
+					got["contains_provider_url"] != false ||
+					got["contains_repository_ref"] != false ||
+					got["contains_branch_name"] != false ||
+					got["contains_file_content"] != false ||
+					got["status_snapshot_write_eligible"] != false ||
+					got["provider_review_attempt_asset_observed"] != false ||
+					got["operation_log_written"] != false ||
+					got["snapshot"] != nil {
+					t.Fatalf("result-recording unapproved response should stay uncalled: %#v", got)
+				}
+			},
+		},
+		{
 			name: "send",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptSendSnapshot(w, r)
@@ -25492,6 +25521,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 			request: newProviderReviewAttemptSendSnapshotRequest,
 		},
 		{
+			name: "result-recording",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptResultRecordingSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptResultRecordingSnapshotRequest,
+		},
+		{
 			name: "transaction",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptTransactionSnapshot(w, r)
@@ -25613,6 +25649,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptSendSnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/send-snapshot",
+		},
+		{
+			name: "result-recording",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptResultRecordingSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/result-recording-snapshot",
 		},
 		{
 			name: "transaction",
@@ -25974,6 +26017,392 @@ func TestRecordProviderReviewAttemptResponseSnapshotHandlerRequiresUpdatePolicy(
 
 	rr := httptest.NewRecorder()
 	server.recordProviderReviewAttemptResponseSnapshot(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptResultRecordingSnapshotWritesMetadataReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_result_recording_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_result_recording_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptResultRecordingSnapshot(context.Background(), store, ProviderReviewAttemptResultRecordingSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptResultRecordingSnapshot: %v", err)
+	}
+	if got["recording_state"] != "result_recording_metadata_ready" ||
+		got["recording_ready"] != true ||
+		got["status_snapshot_write_eligible"] != true ||
+		got["provider_review_attempt_result_recording_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["provider_response_received"] != false ||
+		got["response_recorded"] != false ||
+		got["result_recorded"] != false ||
+		got["attempt_result_persisted"] != false ||
+		got["dependency_update_recorded"] != false ||
+		got["transaction_recorded"] != false {
+		t.Fatalf("unexpected provider review result-recording snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["response_plan_observed"] != true ||
+		snapshot["result_recording_plan_observed"] != true ||
+		snapshot["response_metadata_ready"] != true ||
+		snapshot["result_recording_metadata_ready"] != true ||
+		snapshot["no_call_observed"] != true ||
+		snapshot["success_attempt_status"] != "completed" ||
+		snapshot["retry_attempt_status"] != "planned" ||
+		snapshot["failure_attempt_status"] != "failed" ||
+		len(stringSliceFromAny(snapshot["result_recording_sequence"])) == 0 ||
+		snapshot["provider_response_body_recorded"] != false ||
+		snapshot["provider_response_headers_recorded"] != false ||
+		snapshot["provider_request_id_included"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review result-recording snapshot payload: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptResultRecordingSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptResultRecordingSnapshot(context.Background(), store, ProviderReviewAttemptResultRecordingSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptResultRecordingSnapshot asset missing: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_result_recording_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected asset missing provider review result-recording response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptResultRecordingSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptResultRecordingSnapshot(context.Background(), store, ProviderReviewAttemptResultRecordingSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptResultRecordingSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_result_recording_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run provider review result-recording response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptResultRecordingSnapshotMissingPlanDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	candidate := mapFromAny(mapFromAny(ledger["orchestration"])["execution_candidate"])
+	responsePlan := mapFromAny(mapFromAny(candidate["dispatch_plan"])["response_plan"])
+	delete(responsePlan, "result_recording_plan")
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptResultRecordingSnapshot(context.Background(), store, ProviderReviewAttemptResultRecordingSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptResultRecordingSnapshot missing plan: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_result_recording_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_result_recording_plan_missing") {
+		t.Fatalf("unexpected missing-plan provider review result-recording response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptResultRecordingSnapshotNoCallPollutionDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	candidate := mapFromAny(mapFromAny(ledger["orchestration"])["execution_candidate"])
+	responsePlan := mapFromAny(mapFromAny(candidate["dispatch_plan"])["response_plan"])
+	resultPlan := mapFromAny(responsePlan["result_recording_plan"])
+	resultPlan["response_classified"] = true
+	resultPlan["response_body_included"] = true
+	resultPlan["provider_request_id_recorded"] = true
+	resultPlan["contains_token"] = true
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptResultRecordingSnapshot(context.Background(), store, ProviderReviewAttemptResultRecordingSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptResultRecordingSnapshot polluted: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_result_recording_snapshot_written"] != false ||
+		snapshot["no_call_observed"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		snapshot["response_classified"] != true ||
+		snapshot["response_body_included"] != true ||
+		snapshot["provider_request_id_recorded"] != true ||
+		snapshot["contains_token"] != true ||
+		!containsString(missing, "provider_review_result_recording_not_no_call") {
+		t.Fatalf("unexpected polluted provider review result-recording response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptResultRecordingSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_result_recording_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_result_recording_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptResultRecordingSnapshot(context.Background(), store, ProviderReviewAttemptResultRecordingSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptResultRecordingSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_result_recording_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown provider review result-recording response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptResultRecordingSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "planned", "independent", nil)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+	})
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_result_recording_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_result_recording_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptResultRecordingSnapshot(rr, newProviderReviewAttemptResultRecordingSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "result_recording_metadata_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_result_recording_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["result_recorded"] != false ||
+		got["attempt_result_persisted"] != false {
+		t.Fatalf("unexpected result-recording snapshot handler response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptResultRecordingSnapshotHandlerBlocksUnapprovedAttempt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApproval(mock, "planned", "independent", nil, "pending")
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptResultRecordingSnapshot(rr, newProviderReviewAttemptResultRecordingSnapshotRequest(`{"dry_run":true}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "operation_approval_not_approved" ||
+		got["recording_ready"] != false ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_result_recording_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["provider_response_received"] != false ||
+		got["response_recorded"] != false ||
+		got["result_recorded"] != false ||
+		got["attempt_result_persisted"] != false ||
+		got["transaction_recorded"] != false {
+		t.Fatalf("unexpected unapproved result-recording snapshot handler response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptResultRecordingSnapshotHandlerRejectsWrongApprovalAction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApprovalAction(mock, "planned", "independent", nil, "ssh.exec", "approved")
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptResultRecordingSnapshot(rr, newProviderReviewAttemptResultRecordingSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptResultRecordingSnapshotHandlerRequiresUpdatePolicy(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+		WithArgs("project-1", "user-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/result-recording-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "attempt-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "user-1", Role: "developer"}))
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptResultRecordingSnapshot(rr, req)
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
@@ -31397,6 +31826,12 @@ func newProviderReviewAttemptSendSnapshotRequest(body string) *http.Request {
 
 func newProviderReviewAttemptResponseSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/response-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptResultRecordingSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/result-recording-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
