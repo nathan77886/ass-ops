@@ -2012,7 +2012,7 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
   );
 }
 
-function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onRecordAttemptSnapshot, onRecordAttemptCredentialSnapshot, onRecordAttemptBranchPolicySnapshot, onRecordAttemptRuntimeSnapshot, onRecordAttemptAdapterRehearsalSnapshot, onRecordAttemptAdapterBlueprintSnapshot, onRecordAttemptLiveAdapterContractSnapshot, onRecordAttemptInvocationSnapshot, onRecordAttemptExecutionLockSnapshot, onRecordAttemptRequestEnvelopeSnapshot, onRecordAttemptRequestValidationSnapshot, onRecordAttemptRequestMaterializationSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptResponseSnapshot, onRecordAttemptResultRecordingSnapshot, onRecordAttemptProviderCallBoundarySnapshot, onRecordAttemptTransactionSnapshot, onRecordArmingSnapshot, canRecordArmingSnapshot, claimLoading, resultLoading, snapshotLoading, credentialSnapshotLoading, branchPolicySnapshotLoading, runtimeSnapshotLoading, adapterRehearsalSnapshotLoading, adapterBlueprintSnapshotLoading, liveAdapterContractSnapshotLoading, invocationSnapshotLoading, executionLockSnapshotLoading, requestEnvelopeSnapshotLoading, requestValidationSnapshotLoading, requestMaterializationSnapshotLoading, activationSnapshotLoading, sendSnapshotLoading, responseSnapshotLoading, resultRecordingSnapshotLoading, providerCallBoundarySnapshotLoading, transactionSnapshotLoading, armingSnapshotLoading, snapshotResult, credentialSnapshotResult, branchPolicySnapshotResult, runtimeSnapshotResult, adapterRehearsalSnapshotResult, adapterBlueprintSnapshotResult, liveAdapterContractSnapshotResult, invocationSnapshotResult, executionLockSnapshotResult, requestEnvelopeSnapshotResult, requestValidationSnapshotResult, requestMaterializationSnapshotResult, activationSnapshotResult, sendSnapshotResult, responseSnapshotResult, resultRecordingSnapshotResult, providerCallBoundarySnapshotResult, transactionSnapshotResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptCredentialSnapshot?: (id: string) => void; onRecordAttemptBranchPolicySnapshot?: (id: string) => void; onRecordAttemptRuntimeSnapshot?: (id: string) => void; onRecordAttemptAdapterRehearsalSnapshot?: (id: string) => void; onRecordAttemptAdapterBlueprintSnapshot?: (id: string) => void; onRecordAttemptLiveAdapterContractSnapshot?: (id: string) => void; onRecordAttemptInvocationSnapshot?: (id: string) => void; onRecordAttemptExecutionLockSnapshot?: (id: string) => void; onRecordAttemptRequestEnvelopeSnapshot?: (id: string) => void; onRecordAttemptRequestValidationSnapshot?: (id: string) => void; onRecordAttemptRequestMaterializationSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordAttemptResultRecordingSnapshot?: (id: string) => void; onRecordAttemptProviderCallBoundarySnapshot?: (id: string) => void; onRecordAttemptTransactionSnapshot?: (id: string) => void; onRecordArmingSnapshot?: () => void; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; snapshotLoading?: boolean; credentialSnapshotLoading?: boolean; branchPolicySnapshotLoading?: boolean; runtimeSnapshotLoading?: boolean; adapterRehearsalSnapshotLoading?: boolean; adapterBlueprintSnapshotLoading?: boolean; liveAdapterContractSnapshotLoading?: boolean; invocationSnapshotLoading?: boolean; executionLockSnapshotLoading?: boolean; requestEnvelopeSnapshotLoading?: boolean; requestValidationSnapshotLoading?: boolean; requestMaterializationSnapshotLoading?: boolean; activationSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; resultRecordingSnapshotLoading?: boolean; providerCallBoundarySnapshotLoading?: boolean; transactionSnapshotLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; credentialSnapshotResult?: AnyRow; branchPolicySnapshotResult?: AnyRow; runtimeSnapshotResult?: AnyRow; adapterRehearsalSnapshotResult?: AnyRow; adapterBlueprintSnapshotResult?: AnyRow; liveAdapterContractSnapshotResult?: AnyRow; invocationSnapshotResult?: AnyRow; executionLockSnapshotResult?: AnyRow; requestEnvelopeSnapshotResult?: AnyRow; requestValidationSnapshotResult?: AnyRow; requestMaterializationSnapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; resultRecordingSnapshotResult?: AnyRow; providerCallBoundarySnapshotResult?: AnyRow; transactionSnapshotResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
+function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onRecordAttemptSnapshot, onRecordAttemptCredentialSnapshot, onRecordAttemptBranchPolicySnapshot, onRecordAttemptRuntimeSnapshot, onRecordAttemptAdapterRehearsalSnapshot, onRecordAttemptAdapterBlueprintSnapshot, onRecordAttemptLiveAdapterContractSnapshot, onRecordAttemptInvocationSnapshot, onRecordAttemptExecutionLockSnapshot, onRecordAttemptRequestEnvelopeSnapshot, onRecordAttemptRequestValidationSnapshot, onRecordAttemptRequestMaterializationSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptRetryBackoffSnapshot, onRecordAttemptResponseSnapshot, onRecordAttemptResultRecordingSnapshot, onRecordAttemptProviderCallBoundarySnapshot, onRecordAttemptTransactionSnapshot, onRecordArmingSnapshot, canRecordArmingSnapshot, claimLoading, resultLoading, snapshotLoading, credentialSnapshotLoading, branchPolicySnapshotLoading, runtimeSnapshotLoading, adapterRehearsalSnapshotLoading, adapterBlueprintSnapshotLoading, liveAdapterContractSnapshotLoading, invocationSnapshotLoading, executionLockSnapshotLoading, requestEnvelopeSnapshotLoading, requestValidationSnapshotLoading, requestMaterializationSnapshotLoading, activationSnapshotLoading, sendSnapshotLoading, retryBackoffSnapshotLoading, responseSnapshotLoading, resultRecordingSnapshotLoading, providerCallBoundarySnapshotLoading, transactionSnapshotLoading, armingSnapshotLoading, snapshotResult, credentialSnapshotResult, branchPolicySnapshotResult, runtimeSnapshotResult, adapterRehearsalSnapshotResult, adapterBlueprintSnapshotResult, liveAdapterContractSnapshotResult, invocationSnapshotResult, executionLockSnapshotResult, requestEnvelopeSnapshotResult, requestValidationSnapshotResult, requestMaterializationSnapshotResult, activationSnapshotResult, sendSnapshotResult, retryBackoffSnapshotResult, responseSnapshotResult, resultRecordingSnapshotResult, providerCallBoundarySnapshotResult, transactionSnapshotResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptCredentialSnapshot?: (id: string) => void; onRecordAttemptBranchPolicySnapshot?: (id: string) => void; onRecordAttemptRuntimeSnapshot?: (id: string) => void; onRecordAttemptAdapterRehearsalSnapshot?: (id: string) => void; onRecordAttemptAdapterBlueprintSnapshot?: (id: string) => void; onRecordAttemptLiveAdapterContractSnapshot?: (id: string) => void; onRecordAttemptInvocationSnapshot?: (id: string) => void; onRecordAttemptExecutionLockSnapshot?: (id: string) => void; onRecordAttemptRequestEnvelopeSnapshot?: (id: string) => void; onRecordAttemptRequestValidationSnapshot?: (id: string) => void; onRecordAttemptRequestMaterializationSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptRetryBackoffSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordAttemptResultRecordingSnapshot?: (id: string) => void; onRecordAttemptProviderCallBoundarySnapshot?: (id: string) => void; onRecordAttemptTransactionSnapshot?: (id: string) => void; onRecordArmingSnapshot?: () => void; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; snapshotLoading?: boolean; credentialSnapshotLoading?: boolean; branchPolicySnapshotLoading?: boolean; runtimeSnapshotLoading?: boolean; adapterRehearsalSnapshotLoading?: boolean; adapterBlueprintSnapshotLoading?: boolean; liveAdapterContractSnapshotLoading?: boolean; invocationSnapshotLoading?: boolean; executionLockSnapshotLoading?: boolean; requestEnvelopeSnapshotLoading?: boolean; requestValidationSnapshotLoading?: boolean; requestMaterializationSnapshotLoading?: boolean; activationSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; retryBackoffSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; resultRecordingSnapshotLoading?: boolean; providerCallBoundarySnapshotLoading?: boolean; transactionSnapshotLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; credentialSnapshotResult?: AnyRow; branchPolicySnapshotResult?: AnyRow; runtimeSnapshotResult?: AnyRow; adapterRehearsalSnapshotResult?: AnyRow; adapterBlueprintSnapshotResult?: AnyRow; liveAdapterContractSnapshotResult?: AnyRow; invocationSnapshotResult?: AnyRow; executionLockSnapshotResult?: AnyRow; requestEnvelopeSnapshotResult?: AnyRow; requestValidationSnapshotResult?: AnyRow; requestMaterializationSnapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; retryBackoffSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; resultRecordingSnapshotResult?: AnyRow; providerCallBoundarySnapshotResult?: AnyRow; transactionSnapshotResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
   if (!value || value.kind !== 'project_template_provider_review_execute') return null;
   const request = value.execution_request || {};
   const guardrail = value.execution_guardrail || {};
@@ -2569,6 +2569,22 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
           <Tag>{String(sendSnapshotResult.provider_api_mutation || 'disabled')}</Tag>
         </Space>
       ) : null}
+      {retryBackoffSnapshotResult ? (
+        <Space size={4} wrap>
+          <Tag color={retryBackoffSnapshotResult.provider_review_attempt_retry_backoff_snapshot_written ? 'green' : retryBackoffSnapshotResult.recording_state === 'asset_missing' ? 'red' : retryBackoffSnapshotResult.recording_ready === false ? 'gold' : 'default'}>
+            retry snapshot {String(retryBackoffSnapshotResult.recording_state || 'unknown')}
+          </Tag>
+          <Tag>{retryBackoffSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
+          <Tag>{retryBackoffSnapshotResult.recording_state === 'operation_approval_not_approved' ? 'attempt asset not checked' : retryBackoffSnapshotResult.provider_review_attempt_asset_observed ? 'attempt asset observed' : 'attempt asset missing'}</Tag>
+          <Tag>{retryBackoffSnapshotResult.snapshot?.retry_backoff_metadata_ready ? 'retry metadata' : 'retry blocked'}</Tag>
+          <Tag>{retryBackoffSnapshotResult.snapshot?.no_call_observed ? 'no-call observed' : 'no-call blocked'}</Tag>
+          <Tag>classes {Array.isArray(retryBackoffSnapshotResult.snapshot?.retryable_status_classes) ? retryBackoffSnapshotResult.snapshot.retryable_status_classes.length : 0}</Tag>
+          <Tag>attempts {Number(retryBackoffSnapshotResult.snapshot?.max_attempts || 0)}</Tag>
+          <Tag>{retryBackoffSnapshotResult.snapshot?.retry_scheduled ? 'retry scheduled' : 'no retry scheduled'}</Tag>
+          <Tag>{retryBackoffSnapshotResult.snapshot?.provider_error_code_included ? 'provider error included' : 'provider error suppressed'}</Tag>
+          <Tag>{String(retryBackoffSnapshotResult.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
       {responseSnapshotResult ? (
         <Space size={4} wrap>
           <Tag color={responseSnapshotResult.provider_review_attempt_response_snapshot_written ? 'green' : responseSnapshotResult.recording_state === 'asset_missing' ? 'red' : responseSnapshotResult.recording_ready === false ? 'gold' : 'default'}>
@@ -2981,6 +2997,11 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
               {onRecordAttemptSendSnapshot ? (
                 <Button size="small" loading={sendSnapshotLoading} disabled={!operation.id || sendSnapshotLoading} onClick={() => onRecordAttemptSendSnapshot(String(operation.id || ''))}>
                   Record send
+                </Button>
+              ) : null}
+              {onRecordAttemptRetryBackoffSnapshot ? (
+                <Button size="small" loading={retryBackoffSnapshotLoading} disabled={!operation.id || retryBackoffSnapshotLoading} onClick={() => onRecordAttemptRetryBackoffSnapshot(String(operation.id || ''))}>
+                  Record retry
                 </Button>
               ) : null}
               {onRecordAttemptResponseSnapshot ? (
@@ -5120,6 +5141,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [providerReviewRequestMaterializationSnapshotLoading, setProviderReviewRequestMaterializationSnapshotLoading] = useState(false);
   const [providerReviewActivationSnapshotLoading, setProviderReviewActivationSnapshotLoading] = useState(false);
   const [providerReviewSendSnapshotLoading, setProviderReviewSendSnapshotLoading] = useState(false);
+  const [providerReviewRetryBackoffSnapshotLoading, setProviderReviewRetryBackoffSnapshotLoading] = useState(false);
   const [providerReviewResponseSnapshotLoading, setProviderReviewResponseSnapshotLoading] = useState(false);
   const [providerReviewResultRecordingSnapshotLoading, setProviderReviewResultRecordingSnapshotLoading] = useState(false);
   const [providerReviewProviderCallBoundarySnapshotLoading, setProviderReviewProviderCallBoundarySnapshotLoading] = useState(false);
@@ -5139,6 +5161,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [providerReviewRequestMaterializationSnapshotResult, setProviderReviewRequestMaterializationSnapshotResult] = useState<AnyRow>();
   const [providerReviewActivationSnapshotResult, setProviderReviewActivationSnapshotResult] = useState<AnyRow>();
   const [providerReviewSendSnapshotResult, setProviderReviewSendSnapshotResult] = useState<AnyRow>();
+  const [providerReviewRetryBackoffSnapshotResult, setProviderReviewRetryBackoffSnapshotResult] = useState<AnyRow>();
   const [providerReviewResponseSnapshotResult, setProviderReviewResponseSnapshotResult] = useState<AnyRow>();
   const [providerReviewResultRecordingSnapshotResult, setProviderReviewResultRecordingSnapshotResult] = useState<AnyRow>();
   const [providerReviewProviderCallBoundarySnapshotResult, setProviderReviewProviderCallBoundarySnapshotResult] = useState<AnyRow>();
@@ -5637,6 +5660,26 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
       setProviderReviewSendSnapshotLoading(false);
     }
   }
+  async function recordProviderReviewAttemptRetryBackoffSnapshot(id: string) {
+    if (!id || providerReviewRetryBackoffSnapshotLoading) return;
+    setProviderReviewRetryBackoffSnapshotResult(undefined);
+    setProviderReviewRetryBackoffSnapshotLoading(true);
+    try {
+      const result = await api(`/api/provider-review-attempts/${id}/retry-backoff-snapshot`, { method: 'POST', body: JSON.stringify({}) });
+      setProviderReviewRetryBackoffSnapshotResult(result);
+      if (result.recording_ready === false) {
+        message.warning(result.message || 'Provider review retry/backoff snapshot is not ready yet');
+      } else {
+        message.success(result.provider_review_attempt_retry_backoff_snapshot_written ? 'Provider review retry/backoff snapshot recorded' : 'Provider review retry/backoff snapshot already current');
+      }
+    } catch (error: any) {
+      setProviderReviewRetryBackoffSnapshotResult(undefined);
+      message.error(error.message || 'Could not record provider review retry/backoff snapshot');
+    } finally {
+      approvalAudit.reload();
+      setProviderReviewRetryBackoffSnapshotLoading(false);
+    }
+  }
   async function recordProviderReviewAttemptResponseSnapshot(id: string) {
     if (!id || providerReviewResponseSnapshotLoading) return;
     setProviderReviewResponseSnapshotResult(undefined);
@@ -5927,6 +5970,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             onRecordAttemptRequestMaterializationSnapshot={recordProviderReviewAttemptRequestMaterializationSnapshot}
             onRecordAttemptActivationSnapshot={recordProviderReviewAttemptActivationSnapshot}
             onRecordAttemptSendSnapshot={recordProviderReviewAttemptSendSnapshot}
+            onRecordAttemptRetryBackoffSnapshot={recordProviderReviewAttemptRetryBackoffSnapshot}
             onRecordAttemptResponseSnapshot={recordProviderReviewAttemptResponseSnapshot}
             onRecordAttemptResultRecordingSnapshot={recordProviderReviewAttemptResultRecordingSnapshot}
             onRecordAttemptProviderCallBoundarySnapshot={recordProviderReviewAttemptProviderCallBoundarySnapshot}
@@ -5949,6 +5993,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             requestMaterializationSnapshotLoading={providerReviewRequestMaterializationSnapshotLoading}
             activationSnapshotLoading={providerReviewActivationSnapshotLoading}
             sendSnapshotLoading={providerReviewSendSnapshotLoading}
+            retryBackoffSnapshotLoading={providerReviewRetryBackoffSnapshotLoading}
             responseSnapshotLoading={providerReviewResponseSnapshotLoading}
             resultRecordingSnapshotLoading={providerReviewResultRecordingSnapshotLoading}
             providerCallBoundarySnapshotLoading={providerReviewProviderCallBoundarySnapshotLoading}
@@ -5968,6 +6013,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             requestMaterializationSnapshotResult={providerReviewRequestMaterializationSnapshotResult}
             activationSnapshotResult={providerReviewActivationSnapshotResult}
             sendSnapshotResult={providerReviewSendSnapshotResult}
+            retryBackoffSnapshotResult={providerReviewRetryBackoffSnapshotResult}
             responseSnapshotResult={providerReviewResponseSnapshotResult}
             resultRecordingSnapshotResult={providerReviewResultRecordingSnapshotResult}
             providerCallBoundarySnapshotResult={providerReviewProviderCallBoundarySnapshotResult}

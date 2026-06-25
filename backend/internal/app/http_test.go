@@ -24779,6 +24779,414 @@ func TestRecordProviderReviewAttemptSendSnapshotRowsAffectedUnknownDoesNotClaimW
 	}
 }
 
+func TestRecordProviderReviewAttemptRetryBackoffSnapshotWritesMetadataReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_retry_backoff_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_retry_backoff_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptRetryBackoffSnapshot(context.Background(), store, ProviderReviewAttemptRetryBackoffSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRetryBackoffSnapshot: %v", err)
+	}
+	if got["recording_state"] != "retry_backoff_metadata_ready" ||
+		got["recording_ready"] != true ||
+		got["status_snapshot_write_eligible"] != true ||
+		got["provider_review_attempt_retry_backoff_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["retry_scheduled"] != false ||
+		got["retry_attempt_recorded"] != false ||
+		got["provider_request_sent"] != false {
+		t.Fatalf("unexpected retry/backoff snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != false ||
+		snapshot["provider_send_plan_observed"] != true ||
+		snapshot["retry_backoff_plan_observed"] != true ||
+		snapshot["retry_backoff_metadata_ready"] != true ||
+		snapshot["retry_backoff_ready_reason"] != "provider_retry_backoff_not_armed" ||
+		snapshot["retry_policy"] != "retry_only_after_response_diagnostics" ||
+		snapshot["max_attempts"] != 3 ||
+		snapshot["retry_scheduled"] != false ||
+		snapshot["retry_attempt_recorded"] != false ||
+		snapshot["retry_after_value_recorded"] != false ||
+		snapshot["retry_after_header_included"] != false ||
+		snapshot["provider_rate_limit_value_included"] != false ||
+		snapshot["provider_error_code_included"] != false ||
+		snapshot["provider_request_sent"] != false ||
+		snapshot["provider_response_received"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false ||
+		snapshot["no_call_observed"] != true {
+		t.Fatalf("unexpected retry/backoff snapshot payload: %#v", snapshot)
+	}
+	for _, field := range []string{"retryable_status_classes", "transport_retryable_status_classes", "retry_backoff_sequence", "retry_backoff_suppressed_fields"} {
+		if len(stringSliceFromAny(snapshot[field])) == 0 {
+			t.Fatalf("retry/backoff snapshot should include %s metadata: %#v", field, snapshot)
+		}
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "Retry-After", "rate-limit-remaining"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("retry/backoff snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRetryBackoffSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptRetryBackoffSnapshot(context.Background(), store, ProviderReviewAttemptRetryBackoffSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRetryBackoffSnapshot asset missing: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_retry_backoff_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected asset missing retry/backoff response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRetryBackoffSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptRetryBackoffSnapshot(context.Background(), store, ProviderReviewAttemptRetryBackoffSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRetryBackoffSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_retry_backoff_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run retry/backoff response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRetryBackoffSnapshotNotCurrentCandidateDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("completed", "dependency_satisfied")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptRetryBackoffSnapshot(context.Background(), store, ProviderReviewAttemptRetryBackoffSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRetryBackoffSnapshot not current: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_retry_backoff_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("unexpected not-current retry/backoff response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRetryBackoffSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_retry_backoff_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_retry_backoff_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptRetryBackoffSnapshot(context.Background(), store, ProviderReviewAttemptRetryBackoffSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRetryBackoffSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_retry_backoff_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown retry/backoff response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptRetryBackoffSnapshotPayloadRequiresRetryBackoffPlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	invocationPlan := mapFromAny(dispatchPlan["invocation_plan"])
+	providerSendPlan := mapFromAny(invocationPlan["provider_send_plan"])
+	delete(providerSendPlan, "retry_backoff_plan")
+
+	snapshot := providerReviewAttemptRetryBackoffSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptRetryBackoffSnapshotReadiness(snapshot)
+	if ready ||
+		state != "retry_backoff_blocked" ||
+		snapshot["retry_backoff_plan_observed"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_retry_backoff_plan_missing") {
+		t.Fatalf("retry/backoff snapshot without plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+}
+
+func TestProviderReviewAttemptRetryBackoffSnapshotPayloadRejectsScheduledOrSensitiveMarkers(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	invocationPlan := mapFromAny(dispatchPlan["invocation_plan"])
+	providerSendPlan := mapFromAny(invocationPlan["provider_send_plan"])
+	retryBackoffPlan := mapFromAny(providerSendPlan["retry_backoff_plan"])
+	retryBackoffPlan["retry_scheduled"] = true
+	retryBackoffPlan["retry_after_value_recorded"] = true
+	retryBackoffPlan["provider_error_code_included"] = true
+	retryBackoffPlan["contains_token"] = true
+	retryBackoffPlan["retry_backoff_ready_reason"] = "secret-token"
+
+	snapshot := providerReviewAttemptRetryBackoffSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptRetryBackoffSnapshotReadiness(snapshot)
+	if ready ||
+		state != "retry_backoff_blocked" ||
+		snapshot["retry_scheduled"] != true ||
+		snapshot["retry_after_value_recorded"] != true ||
+		snapshot["provider_error_code_included"] != true ||
+		snapshot["contains_token"] != true ||
+		snapshot["no_call_observed"] != false ||
+		snapshot["retry_backoff_ready_reason"] != "" ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_written"] != false ||
+		!containsString(missing, "provider_review_retry_backoff_not_no_call") {
+		t.Fatalf("retry/backoff snapshot with scheduled marker = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "Retry-After", "rate-limit-remaining"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("retry/backoff snapshot with sensitive marker leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestRecordProviderReviewAttemptRetryBackoffSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "planned", "independent", nil)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+	})
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_retry_backoff_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_retry_backoff_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptRetryBackoffSnapshot(rr, newProviderReviewAttemptRetryBackoffSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "retry_backoff_metadata_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_retry_backoff_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["retry_scheduled"] != false ||
+		got["provider_request_sent"] != false {
+		t.Fatalf("unexpected retry/backoff snapshot handler response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRetryBackoffSnapshotHandlerBlocksUnapprovedAttempt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApproval(mock, "planned", "independent", nil, "pending")
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptRetryBackoffSnapshot(rr, newProviderReviewAttemptRetryBackoffSnapshotRequest(`{"dry_run":true}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "operation_approval_not_approved" ||
+		got["recording_ready"] != false ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_retry_backoff_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["retry_scheduled"] != false ||
+		got["provider_request_sent"] != false ||
+		got["provider_response_received"] != false {
+		t.Fatalf("unexpected unapproved retry/backoff snapshot handler response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRetryBackoffSnapshotHandlerRejectsWrongApprovalAction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApprovalAction(mock, "planned", "independent", nil, "ssh.exec", "approved")
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptRetryBackoffSnapshot(rr, newProviderReviewAttemptRetryBackoffSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRetryBackoffSnapshotHandlerRequiresUpdatePolicy(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+		WithArgs("project-1", "user-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/retry-backoff-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "attempt-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "user-1", Role: "developer"}))
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptRetryBackoffSnapshot(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenReady(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -25012,6 +25420,25 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenRe
 				if got["provider_request_sent"] != false ||
 					got["send_attempted"] != false {
 					t.Fatalf("unexpected send snapshot response: %#v", got)
+				}
+			},
+		},
+		{
+			name: "retry-backoff",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRetryBackoffSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptRetryBackoffSnapshotRequest,
+			status:    "provider_review_attempt_retry_backoff_metadata_ready",
+			state:     "retry_backoff_metadata_ready",
+			health:    "low",
+			writeFlag: "provider_review_attempt_retry_backoff_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["retry_scheduled"] != false ||
+					got["retry_attempt_recorded"] != false ||
+					got["provider_request_sent"] != false {
+					t.Fatalf("unexpected retry/backoff snapshot response: %#v", got)
 				}
 			},
 		},
@@ -25421,6 +25848,23 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnappr
 				}
 			},
 		},
+		{
+			name: "retry-backoff",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRetryBackoffSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptRetryBackoffSnapshotRequest,
+			writeFlag: "provider_review_attempt_retry_backoff_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["retry_scheduled"] != false ||
+					got["retry_attempt_recorded"] != false ||
+					got["provider_request_sent"] != false ||
+					got["provider_response_received"] != false {
+					t.Fatalf("unexpected retry/backoff unapproved response: %#v", got)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -25551,6 +25995,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 				server.recordProviderReviewAttemptSendSnapshot(w, r)
 			},
 			request: newProviderReviewAttemptSendSnapshotRequest,
+		},
+		{
+			name: "retry-backoff",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRetryBackoffSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptRetryBackoffSnapshotRequest,
 		},
 		{
 			name: "result-recording",
@@ -25688,6 +26139,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptSendSnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/send-snapshot",
+		},
+		{
+			name: "retry-backoff",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRetryBackoffSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/retry-backoff-snapshot",
 		},
 		{
 			name: "result-recording",
@@ -32767,6 +33225,12 @@ func newProviderReviewAttemptExecutionLockSnapshotRequest(body string) *http.Req
 
 func newProviderReviewAttemptSendSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/send-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptRetryBackoffSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/retry-backoff-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
