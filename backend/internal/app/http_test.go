@@ -22482,6 +22482,314 @@ func TestProviderReviewAttemptRequestEnvelopeSnapshotPayloadRejectsMismatchedEnv
 	}
 }
 
+func TestRecordProviderReviewAttemptBranchPolicySnapshotWritesMetadataReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_branch_policy_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_branch_policy_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptBranchPolicySnapshot(context.Background(), store, ProviderReviewAttemptBranchPolicySnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptBranchPolicySnapshot: %v", err)
+	}
+	if got["recording_state"] != "branch_policy_metadata_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_branch_policy_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["branch_policy_verified"] != false ||
+		got["branch_ref_created"] != false ||
+		got["review_request_created"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" {
+		t.Fatalf("unexpected provider review branch policy snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["branch_policy_plan_observed"] != true ||
+		snapshot["branch_policy_contract_ready"] != true ||
+		snapshot["branch_policy_metadata_ready"] != true ||
+		snapshot["branch_policy_ready"] != false ||
+		snapshot["branch_policy_ready_reason"] != "provider_branch_policy_not_armed" ||
+		snapshot["policy_scope"] != "provider_review_attempt_operation" ||
+		snapshot["target_branch_policy"] != "protected_default_branch_no_direct_write" ||
+		snapshot["review_branch_policy"] != "required_before_starter_file_commit" ||
+		snapshot["requires_review_branch"] != true ||
+		snapshot["requires_default_branch_protection"] != true ||
+		snapshot["requires_review_request"] != true ||
+		snapshot["default_branch_direct_write_allowed"] != false ||
+		snapshot["protected_branch_direct_write_allowed"] != false ||
+		snapshot["starter_file_commit_to_default"] != false ||
+		snapshot["review_branch_materialized"] != false ||
+		snapshot["protected_branch_rules_materialized"] != false ||
+		snapshot["branch_policy_verified"] != false ||
+		snapshot["branch_ref_created"] != false ||
+		snapshot["review_request_created"] != false ||
+		snapshot["repository_ref_included"] != false ||
+		snapshot["branch_name_included"] != false ||
+		snapshot["protected_branch_rules_included"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review branch policy snapshot payload: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "main", "file content", "Authorization"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("branch policy snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptBranchPolicySnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptBranchPolicySnapshot(context.Background(), store, ProviderReviewAttemptBranchPolicySnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptBranchPolicySnapshot asset missing: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_branch_policy_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected asset missing provider review branch policy response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptBranchPolicySnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptBranchPolicySnapshot(context.Background(), store, ProviderReviewAttemptBranchPolicySnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptBranchPolicySnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_branch_policy_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run provider review branch policy response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptBranchPolicySnapshotNotCurrentCandidateDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("completed", "dependency_satisfied")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptBranchPolicySnapshot(context.Background(), store, ProviderReviewAttemptBranchPolicySnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptBranchPolicySnapshot not current: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_branch_policy_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("unexpected not-current provider review branch policy response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptBranchPolicySnapshotEmptyLedgerDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewAttemptLedgerSummary(nil)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptBranchPolicySnapshot(context.Background(), store, ProviderReviewAttemptBranchPolicySnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptBranchPolicySnapshot empty ledger: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_branch_policy_snapshot_written"] != false ||
+		snapshot["candidate_observed"] != true ||
+		snapshot["candidate_matches_attempt"] != false ||
+		snapshot["branch_policy_plan_observed"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("unexpected empty-ledger provider review branch policy response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptBranchPolicySnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_branch_policy_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_branch_policy_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptBranchPolicySnapshot(context.Background(), store, ProviderReviewAttemptBranchPolicySnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptBranchPolicySnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_branch_policy_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown provider review branch policy response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptBranchPolicySnapshotPayloadRequiresBranchPolicyPlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	delete(dispatchPlan, "branch_policy_plan")
+
+	snapshot := providerReviewAttemptBranchPolicySnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptBranchPolicySnapshotReadiness(snapshot)
+	if ready ||
+		state != "branch_policy_blocked" ||
+		snapshot["branch_policy_plan_observed"] != false ||
+		snapshot["branch_policy_contract_ready"] != false ||
+		snapshot["branch_policy_metadata_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_branch_policy_plan_missing") {
+		t.Fatalf("branch policy snapshot without plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "main", "file content", "Authorization"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("branch policy snapshot without plan leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestProviderReviewAttemptBranchPolicySnapshotPayloadRejectsMismatchedBranchPolicyContract(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	branchPolicyPlan := mapFromAny(dispatchPlan["branch_policy_plan"])
+	branchPolicyPlan["operation_name"] = "commit_starter_files"
+	branchPolicyPlan["endpoint_key"] = "github.commit_files"
+
+	snapshot := providerReviewAttemptBranchPolicySnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptBranchPolicySnapshotReadiness(snapshot)
+	if ready ||
+		state != "branch_policy_blocked" ||
+		snapshot["branch_policy_plan_observed"] != true ||
+		snapshot["branch_policy_contract_ready"] != false ||
+		snapshot["branch_policy_metadata_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		!containsString(missing, "provider_review_branch_policy_contract_not_ready") ||
+		!containsString(missing, "provider_review_branch_policy_metadata_not_ready") {
+		t.Fatalf("branch policy snapshot with mismatched contract = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "main", "file content", "Authorization"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("branch policy snapshot with mismatched contract leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
 func TestRecordProviderReviewAttemptExecutionLockSnapshotWritesMetadataReadyCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -23050,6 +23358,25 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenRe
 			},
 		},
 		{
+			name: "branch-policy",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptBranchPolicySnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptBranchPolicySnapshotRequest,
+			status:    "provider_review_attempt_branch_policy_metadata_ready",
+			state:     "branch_policy_metadata_ready",
+			health:    "low",
+			writeFlag: "provider_review_attempt_branch_policy_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["branch_policy_verified"] != false ||
+					got["branch_ref_created"] != false ||
+					got["review_request_created"] != false {
+					t.Fatalf("unexpected branch policy snapshot response: %#v", got)
+				}
+			},
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -23189,6 +23516,22 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnappr
 			},
 		},
 		{
+			name: "branch-policy",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptBranchPolicySnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptBranchPolicySnapshotRequest,
+			writeFlag: "provider_review_attempt_branch_policy_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["branch_policy_verified"] != false ||
+					got["branch_ref_created"] != false ||
+					got["review_request_created"] != false {
+					t.Fatalf("branch policy unapproved response should stay unverified: %#v", got)
+				}
+			},
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -23287,6 +23630,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 			request: newProviderReviewAttemptRequestEnvelopeSnapshotRequest,
 		},
 		{
+			name: "branch-policy",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptBranchPolicySnapshot(w, r)
+			},
+			request: newProviderReviewAttemptBranchPolicySnapshotRequest,
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -23352,6 +23702,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptRequestEnvelopeSnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/request-envelope-snapshot",
+		},
+		{
+			name: "branch-policy",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptBranchPolicySnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/branch-policy-snapshot",
 		},
 		{
 			name: "execution-lock",
@@ -28844,6 +29201,12 @@ func newProviderReviewAttemptCredentialSnapshotRequest(body string) *http.Reques
 
 func newProviderReviewAttemptRequestEnvelopeSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/request-envelope-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptBranchPolicySnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/branch-policy-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }

@@ -2012,7 +2012,7 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
   );
 }
 
-function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onRecordAttemptSnapshot, onRecordAttemptCredentialSnapshot, onRecordAttemptExecutionLockSnapshot, onRecordAttemptRequestEnvelopeSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptResponseSnapshot, onRecordArmingSnapshot, canRecordArmingSnapshot, claimLoading, resultLoading, snapshotLoading, credentialSnapshotLoading, executionLockSnapshotLoading, requestEnvelopeSnapshotLoading, activationSnapshotLoading, sendSnapshotLoading, responseSnapshotLoading, armingSnapshotLoading, snapshotResult, credentialSnapshotResult, executionLockSnapshotResult, requestEnvelopeSnapshotResult, activationSnapshotResult, sendSnapshotResult, responseSnapshotResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptCredentialSnapshot?: (id: string) => void; onRecordAttemptExecutionLockSnapshot?: (id: string) => void; onRecordAttemptRequestEnvelopeSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordArmingSnapshot?: () => void; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; snapshotLoading?: boolean; credentialSnapshotLoading?: boolean; executionLockSnapshotLoading?: boolean; requestEnvelopeSnapshotLoading?: boolean; activationSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; credentialSnapshotResult?: AnyRow; executionLockSnapshotResult?: AnyRow; requestEnvelopeSnapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
+function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onRecordAttemptSnapshot, onRecordAttemptCredentialSnapshot, onRecordAttemptBranchPolicySnapshot, onRecordAttemptExecutionLockSnapshot, onRecordAttemptRequestEnvelopeSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptResponseSnapshot, onRecordArmingSnapshot, canRecordArmingSnapshot, claimLoading, resultLoading, snapshotLoading, credentialSnapshotLoading, branchPolicySnapshotLoading, executionLockSnapshotLoading, requestEnvelopeSnapshotLoading, activationSnapshotLoading, sendSnapshotLoading, responseSnapshotLoading, armingSnapshotLoading, snapshotResult, credentialSnapshotResult, branchPolicySnapshotResult, executionLockSnapshotResult, requestEnvelopeSnapshotResult, activationSnapshotResult, sendSnapshotResult, responseSnapshotResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptCredentialSnapshot?: (id: string) => void; onRecordAttemptBranchPolicySnapshot?: (id: string) => void; onRecordAttemptExecutionLockSnapshot?: (id: string) => void; onRecordAttemptRequestEnvelopeSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordArmingSnapshot?: () => void; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; snapshotLoading?: boolean; credentialSnapshotLoading?: boolean; branchPolicySnapshotLoading?: boolean; executionLockSnapshotLoading?: boolean; requestEnvelopeSnapshotLoading?: boolean; activationSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; credentialSnapshotResult?: AnyRow; branchPolicySnapshotResult?: AnyRow; executionLockSnapshotResult?: AnyRow; requestEnvelopeSnapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
   if (!value || value.kind !== 'project_template_provider_review_execute') return null;
   const request = value.execution_request || {};
   const guardrail = value.execution_guardrail || {};
@@ -2410,6 +2410,19 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
           <Tag>{String(credentialSnapshotResult.provider_api_mutation || 'disabled')}</Tag>
         </Space>
       ) : null}
+      {branchPolicySnapshotResult ? (
+        <Space size={4} wrap>
+          <Tag color={branchPolicySnapshotResult.provider_review_attempt_branch_policy_snapshot_written ? 'green' : branchPolicySnapshotResult.recording_state === 'asset_missing' ? 'red' : branchPolicySnapshotResult.recording_ready === false ? 'gold' : 'default'}>
+            branch policy snapshot {String(branchPolicySnapshotResult.recording_state || 'unknown')}
+          </Tag>
+          <Tag>{branchPolicySnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
+          <Tag>{branchPolicySnapshotResult.provider_review_attempt_asset_observed ? 'attempt asset observed' : 'attempt asset missing'}</Tag>
+          <Tag>{branchPolicySnapshotResult.branch_policy_verified ? 'policy verified' : 'policy not verified'}</Tag>
+          <Tag>{branchPolicySnapshotResult.branch_ref_created ? 'branch created' : 'no branch ref'}</Tag>
+          <Tag>{branchPolicySnapshotResult.review_request_created ? 'review request created' : 'no review request'}</Tag>
+          <Tag>{String(branchPolicySnapshotResult.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
       {executionLockSnapshotResult ? (
         <Space size={4} wrap>
           <Tag color={executionLockSnapshotResult.provider_review_attempt_execution_lock_snapshot_written ? 'green' : executionLockSnapshotResult.recording_state === 'asset_missing' ? 'red' : executionLockSnapshotResult.recording_ready === false ? 'gold' : 'default'}>
@@ -2771,6 +2784,11 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
               {onRecordAttemptRequestEnvelopeSnapshot ? (
                 <Button size="small" loading={requestEnvelopeSnapshotLoading} disabled={!operation.id || requestEnvelopeSnapshotLoading} onClick={() => onRecordAttemptRequestEnvelopeSnapshot(String(operation.id || ''))}>
                   Record envelope
+                </Button>
+              ) : null}
+              {onRecordAttemptBranchPolicySnapshot ? (
+                <Button size="small" loading={branchPolicySnapshotLoading} disabled={!operation.id || branchPolicySnapshotLoading} onClick={() => onRecordAttemptBranchPolicySnapshot(String(operation.id || ''))}>
+                  Record branch policy
                 </Button>
               ) : null}
               {onRecordAttemptExecutionLockSnapshot ? (
@@ -4898,6 +4916,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [providerReviewResultLoading, setProviderReviewResultLoading] = useState(false);
   const [providerReviewSnapshotLoading, setProviderReviewSnapshotLoading] = useState(false);
   const [providerReviewCredentialSnapshotLoading, setProviderReviewCredentialSnapshotLoading] = useState(false);
+  const [providerReviewBranchPolicySnapshotLoading, setProviderReviewBranchPolicySnapshotLoading] = useState(false);
   const [providerReviewExecutionLockSnapshotLoading, setProviderReviewExecutionLockSnapshotLoading] = useState(false);
   const [providerReviewRequestEnvelopeSnapshotLoading, setProviderReviewRequestEnvelopeSnapshotLoading] = useState(false);
   const [providerReviewActivationSnapshotLoading, setProviderReviewActivationSnapshotLoading] = useState(false);
@@ -4906,6 +4925,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [providerReviewArmingSnapshotLoading, setProviderReviewArmingSnapshotLoading] = useState(false);
   const [providerReviewSnapshotResult, setProviderReviewSnapshotResult] = useState<AnyRow>();
   const [providerReviewCredentialSnapshotResult, setProviderReviewCredentialSnapshotResult] = useState<AnyRow>();
+  const [providerReviewBranchPolicySnapshotResult, setProviderReviewBranchPolicySnapshotResult] = useState<AnyRow>();
   const [providerReviewExecutionLockSnapshotResult, setProviderReviewExecutionLockSnapshotResult] = useState<AnyRow>();
   const [providerReviewRequestEnvelopeSnapshotResult, setProviderReviewRequestEnvelopeSnapshotResult] = useState<AnyRow>();
   const [providerReviewActivationSnapshotResult, setProviderReviewActivationSnapshotResult] = useState<AnyRow>();
@@ -4932,6 +4952,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     setOptimisticallyRecordedProviderReviewAttemptID(undefined);
     setProviderReviewSnapshotResult(undefined);
     setProviderReviewCredentialSnapshotResult(undefined);
+    setProviderReviewBranchPolicySnapshotResult(undefined);
     setProviderReviewExecutionLockSnapshotResult(undefined);
     setProviderReviewRequestEnvelopeSnapshotResult(undefined);
     setProviderReviewActivationSnapshotResult(undefined);
@@ -5155,6 +5176,26 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     } finally {
       approvalAudit.reload();
       setProviderReviewCredentialSnapshotLoading(false);
+    }
+  }
+  async function recordProviderReviewAttemptBranchPolicySnapshot(id: string) {
+    if (!id || providerReviewBranchPolicySnapshotLoading) return;
+    setProviderReviewBranchPolicySnapshotResult(undefined);
+    setProviderReviewBranchPolicySnapshotLoading(true);
+    try {
+      const result = await api(`/api/provider-review-attempts/${id}/branch-policy-snapshot`, { method: 'POST', body: JSON.stringify({}) });
+      setProviderReviewBranchPolicySnapshotResult(result);
+      if (result.recording_ready === false) {
+        message.warning(result.message || 'Provider review branch policy snapshot is not ready yet');
+      } else {
+        message.success(result.provider_review_attempt_branch_policy_snapshot_written ? 'Provider review branch policy snapshot recorded' : 'Provider review branch policy snapshot already current');
+      }
+    } catch (error: any) {
+      setProviderReviewBranchPolicySnapshotResult(undefined);
+      message.error(error.message || 'Could not record provider review branch policy snapshot');
+    } finally {
+      approvalAudit.reload();
+      setProviderReviewBranchPolicySnapshotLoading(false);
     }
   }
   async function recordProviderReviewAttemptExecutionLockSnapshot(id: string) {
@@ -5455,6 +5496,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             onRecordAttemptResult={recordProviderReviewAttemptResult}
             onRecordAttemptSnapshot={recordProviderReviewAttemptSnapshot}
             onRecordAttemptCredentialSnapshot={recordProviderReviewAttemptCredentialSnapshot}
+            onRecordAttemptBranchPolicySnapshot={recordProviderReviewAttemptBranchPolicySnapshot}
             onRecordAttemptExecutionLockSnapshot={recordProviderReviewAttemptExecutionLockSnapshot}
             onRecordAttemptRequestEnvelopeSnapshot={recordProviderReviewAttemptRequestEnvelopeSnapshot}
             onRecordAttemptActivationSnapshot={recordProviderReviewAttemptActivationSnapshot}
@@ -5466,6 +5508,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             resultLoading={providerReviewResultLoading}
             snapshotLoading={providerReviewSnapshotLoading}
             credentialSnapshotLoading={providerReviewCredentialSnapshotLoading}
+            branchPolicySnapshotLoading={providerReviewBranchPolicySnapshotLoading}
             executionLockSnapshotLoading={providerReviewExecutionLockSnapshotLoading}
             requestEnvelopeSnapshotLoading={providerReviewRequestEnvelopeSnapshotLoading}
             activationSnapshotLoading={providerReviewActivationSnapshotLoading}
@@ -5474,6 +5517,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             armingSnapshotLoading={providerReviewArmingSnapshotLoading}
             snapshotResult={providerReviewSnapshotResult}
             credentialSnapshotResult={providerReviewCredentialSnapshotResult}
+            branchPolicySnapshotResult={providerReviewBranchPolicySnapshotResult}
             executionLockSnapshotResult={providerReviewExecutionLockSnapshotResult}
             requestEnvelopeSnapshotResult={providerReviewRequestEnvelopeSnapshotResult}
             activationSnapshotResult={providerReviewActivationSnapshotResult}
