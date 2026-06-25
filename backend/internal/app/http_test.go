@@ -26872,6 +26872,487 @@ func TestRecordProviderReviewAttemptProviderCallBoundarySnapshotHandlerRequiresU
 	}
 }
 
+func TestRecordProviderReviewAttemptLiveAdapterContractSnapshotWritesMetadataReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_adapter_contract_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_adapter_contract_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptLiveAdapterContractSnapshot(context.Background(), store, ProviderReviewAttemptLiveAdapterContractSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveAdapterContractSnapshot: %v", err)
+	}
+	if got["recording_state"] != "live_adapter_contract_metadata_ready" ||
+		got["recording_ready"] != true ||
+		got["status_snapshot_write_eligible"] != true ||
+		got["provider_review_attempt_live_adapter_contract_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["live_adapter_implemented"] != false ||
+		got["provider_request_sent"] != false ||
+		got["request_contract_materialized"] != false ||
+		got["response_contract_materialized"] != false {
+		t.Fatalf("unexpected live-adapter contract snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != false ||
+		snapshot["live_adapter_plan_observed"] != true ||
+		snapshot["live_adapter_contract_plan_observed"] != true ||
+		snapshot["live_adapter_contract_metadata_ready"] != true ||
+		snapshot["contract_ready_reason"] != "provider_review_live_adapter_contract_not_armed" ||
+		snapshot["contract_registered"] != true ||
+		snapshot["contract_implemented"] != false ||
+		snapshot["request_contract_materialized"] != false ||
+		snapshot["response_contract_materialized"] != false ||
+		snapshot["error_contract_materialized"] != false ||
+		snapshot["result_contract_materialized"] != false ||
+		snapshot["provider_request_sent"] != false ||
+		snapshot["external_call_made"] != false ||
+		snapshot["provider_api_call_made"] != false ||
+		snapshot["provider_api_mutation"] != "disabled" ||
+		snapshot["request_body_included"] != false ||
+		snapshot["response_body_included"] != false ||
+		snapshot["headers_included"] != false ||
+		snapshot["authorization_header_included"] != false ||
+		snapshot["provider_url_included"] != false ||
+		snapshot["idempotency_key_included"] != false ||
+		snapshot["provider_request_id_included"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false ||
+		snapshot["no_call_observed"] != true {
+		t.Fatalf("unexpected live-adapter contract snapshot payload: %#v", snapshot)
+	}
+	for _, field := range []string{
+		"required_capabilities",
+		"contract_input_fields",
+		"contract_output_fields",
+		"contract_error_classes",
+		"contract_persisted_fields",
+		"contract_suppressed_fields",
+		"contract_sequence",
+	} {
+		if len(stringSliceFromAny(snapshot[field])) == 0 {
+			t.Fatalf("live-adapter contract snapshot should include %s metadata: %#v", field, snapshot)
+		}
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("live-adapter contract snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveAdapterContractSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptLiveAdapterContractSnapshot(context.Background(), store, ProviderReviewAttemptLiveAdapterContractSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveAdapterContractSnapshot asset missing: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_live_adapter_contract_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected asset missing live-adapter contract response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveAdapterContractSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptLiveAdapterContractSnapshot(context.Background(), store, ProviderReviewAttemptLiveAdapterContractSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveAdapterContractSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_live_adapter_contract_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run live-adapter contract response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveAdapterContractSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_adapter_contract_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_adapter_contract_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptLiveAdapterContractSnapshot(context.Background(), store, ProviderReviewAttemptLiveAdapterContractSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveAdapterContractSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_live_adapter_contract_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown live-adapter contract response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLiveAdapterContractSnapshotPayloadRequiresContractPlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	invocationPlan := mapFromAny(dispatchPlan["invocation_plan"])
+	activationPlan := mapFromAny(invocationPlan["adapter_activation_plan"])
+	liveAdapterPlan := mapFromAny(activationPlan["live_adapter_plan"])
+	delete(liveAdapterPlan, "contract_plan")
+
+	snapshot := providerReviewAttemptLiveAdapterContractSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptLiveAdapterContractSnapshotReadiness(snapshot)
+	if ready ||
+		state != "live_adapter_contract_blocked" ||
+		snapshot["live_adapter_contract_plan_observed"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_live_adapter_contract_plan_missing") {
+		t.Fatalf("live-adapter contract snapshot without plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+}
+
+func TestProviderReviewAttemptLiveAdapterContractSnapshotPayloadRequiresCapabilitiesAndRegistration(t *testing.T) {
+	tests := []struct {
+		name        string
+		mutate      func(map[string]any)
+		wantMissing string
+	}{
+		{
+			name: "capabilities",
+			mutate: func(contractPlan map[string]any) {
+				contractPlan["required_capabilities"] = []string{}
+			},
+			wantMissing: "provider_review_live_adapter_contract_capabilities_missing",
+		},
+		{
+			name: "registration",
+			mutate: func(contractPlan map[string]any) {
+				contractPlan["contract_registered"] = false
+			},
+			wantMissing: "provider_review_live_adapter_contract_not_registered",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+			ledger := providerReviewActivationSnapshotLedger(attempt)
+			orchestration := mapFromAny(ledger["orchestration"])
+			candidate := mapFromAny(orchestration["execution_candidate"])
+			dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+			invocationPlan := mapFromAny(dispatchPlan["invocation_plan"])
+			activationPlan := mapFromAny(invocationPlan["adapter_activation_plan"])
+			liveAdapterPlan := mapFromAny(activationPlan["live_adapter_plan"])
+			contractPlan := mapFromAny(liveAdapterPlan["contract_plan"])
+			tt.mutate(contractPlan)
+
+			snapshot := providerReviewAttemptLiveAdapterContractSnapshotPayload(attempt, ledger, true)
+			ready, state, missing := providerReviewAttemptLiveAdapterContractSnapshotReadiness(snapshot)
+			if ready ||
+				state != "live_adapter_contract_blocked" ||
+				snapshot["status_snapshot_write_eligible"] != false ||
+				!containsString(missing, tt.wantMissing) {
+				t.Fatalf("live-adapter contract snapshot missing %s = snapshot %#v, ready %v, state %s, missing %#v", tt.wantMissing, snapshot, ready, state, missing)
+			}
+		})
+	}
+}
+
+func TestProviderReviewAttemptLiveAdapterContractSnapshotPayloadRejectsMaterializedOrSensitiveMarkers(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	invocationPlan := mapFromAny(dispatchPlan["invocation_plan"])
+	activationPlan := mapFromAny(invocationPlan["adapter_activation_plan"])
+	liveAdapterPlan := mapFromAny(activationPlan["live_adapter_plan"])
+	contractPlan := mapFromAny(liveAdapterPlan["contract_plan"])
+	contractPlan["request_contract_materialized"] = true
+	contractPlan["response_contract_materialized"] = true
+	contractPlan["provider_request_sent"] = true
+	contractPlan["contains_token"] = true
+	contractPlan["provider_url_included"] = true
+	contractPlan["contract_ready_reason"] = "secret-token"
+
+	snapshot := providerReviewAttemptLiveAdapterContractSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptLiveAdapterContractSnapshotReadiness(snapshot)
+	if ready ||
+		state != "live_adapter_contract_blocked" ||
+		snapshot["request_contract_materialized"] != true ||
+		snapshot["response_contract_materialized"] != true ||
+		snapshot["provider_request_sent"] != true ||
+		snapshot["contains_token"] != true ||
+		snapshot["provider_url_included"] != true ||
+		snapshot["no_call_observed"] != false ||
+		snapshot["contract_ready_reason"] != "" ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_written"] != false ||
+		!containsString(missing, "provider_review_live_adapter_contract_not_no_call") {
+		t.Fatalf("live-adapter contract snapshot with materialized marker = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("live-adapter contract snapshot with sensitive marker leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveAdapterContractSnapshotHandlerDoesNotWriteWhenNotReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "completed", "dependency_satisfied", nil)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "completed", Dependency: "dependency_satisfied", Order: 10},
+	})
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLiveAdapterContractSnapshot(rr, newProviderReviewAttemptLiveAdapterContractSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["recording_state"] != "live_adapter_contract_blocked" ||
+		got["recording_ready"] != false ||
+		got["recording_enabled"] != false ||
+		got["provider_review_attempt_live_adapter_contract_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("unexpected not-ready live-adapter contract handler response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveAdapterContractSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "planned", "independent", nil)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+	})
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_adapter_contract_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_adapter_contract_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLiveAdapterContractSnapshot(rr, newProviderReviewAttemptLiveAdapterContractSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "live_adapter_contract_metadata_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_live_adapter_contract_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["live_adapter_implemented"] != false ||
+		got["provider_request_sent"] != false {
+		t.Fatalf("unexpected live-adapter contract snapshot handler response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveAdapterContractSnapshotHandlerBlocksUnapprovedAttempt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApproval(mock, "planned", "independent", nil, "pending")
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLiveAdapterContractSnapshot(rr, newProviderReviewAttemptLiveAdapterContractSnapshotRequest(`{"dry_run":true}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "operation_approval_not_approved" ||
+		got["recording_ready"] != false ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_live_adapter_contract_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["live_adapter_implemented"] != false ||
+		got["provider_request_sent"] != false {
+		t.Fatalf("unexpected unapproved live-adapter contract snapshot handler response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveAdapterContractSnapshotHandlerRejectsWrongApprovalAction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApprovalAction(mock, "planned", "independent", nil, "ssh.exec", "approved")
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLiveAdapterContractSnapshot(rr, newProviderReviewAttemptLiveAdapterContractSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveAdapterContractSnapshotHandlerRequiresUpdatePolicy(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+		WithArgs("project-1", "user-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/live-adapter-contract-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "attempt-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "user-1", Role: "developer"}))
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLiveAdapterContractSnapshot(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordProviderReviewAttemptTransactionSnapshotWritesMetadataReadyCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -32262,6 +32743,12 @@ func newProviderReviewAttemptAdapterRehearsalSnapshotRequest(body string) *http.
 
 func newProviderReviewAttemptAdapterBlueprintSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/adapter-blueprint-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptLiveAdapterContractSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/live-adapter-contract-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
