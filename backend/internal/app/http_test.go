@@ -5935,6 +5935,67 @@ func TestPinProjectVersionConfigCommitHandlerDryRunDoesNotWrite(t *testing.T) {
 	}
 }
 
+func TestPinProjectVersionConfigCommitHandlerRejectsNonConfigRepository(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	metadata := []byte(`{"repositories":[{"repository_id":"repo-1","repo_key":"service"}]}`)
+	mock.ExpectQuery(`SELECT project_id FROM project_versions WHERE id=\$1`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id, project_id, version, source, metadata, created_at\s+FROM project_versions\s+WHERE id=\$1\s+FOR UPDATE`).
+		WithArgs("version-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "version", "source", "metadata", "created_at"}).
+			AddRow("version-1", "project-1", "v0.1.0", "manual", metadata, time.Now()))
+	mock.ExpectQuery(`(?s)SELECT id, project_id, name, repo_key, repo_role, default_branch\s+FROM project_git_repositories\s+WHERE id=\$1 AND project_id=\$2`).
+		WithArgs("repo-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "repo_key", "repo_role", "default_branch"}).
+			AddRow("repo-1", "project-1", "Service", "service", "service", "main"))
+	mock.ExpectRollback()
+
+	body := strings.NewReader(`{"repository_id":"repo-1","remote_id":"remote-1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/project-versions/version-1/pin-config-commit", body)
+	req = withRouteParam(req, "id", "version-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.pinProjectVersionConfigCommit(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["error"] != "repository is not a config repository" ||
+		got["config_commit_sha_written"] != false ||
+		got["project_version_pin_written"] != false ||
+		got["external_call_made"] != false ||
+		got["git_fetch_performed"] != false ||
+		got["provider_api_called"] != false ||
+		got["operation_log_written"] != false ||
+		got["commit_sha_included"] != false ||
+		got["remote_url_included"] != false ||
+		got["secret_included"] != false {
+		t.Fatalf("unexpected non-config rejection response: %#v", got)
+	}
+	if reasons := stringSliceFromAny(got["blocked_reasons"]); len(reasons) != 1 || reasons[0] != "repository_role_is_not_config" {
+		t.Fatalf("blocked_reasons = %#v, want repository_role_is_not_config", got["blocked_reasons"])
+	}
+	if strings.Contains(rr.Body.String(), "remote-1") ||
+		strings.Contains(rr.Body.String(), "abc123") {
+		t.Fatalf("non-config rejection leaked pin details: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestPinProjectVersionConfigCommitHandlerAlreadyPinnedDoesNotWrite(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

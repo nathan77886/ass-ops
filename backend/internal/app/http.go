@@ -2546,6 +2546,24 @@ func (s *Server) pinProjectVersionConfigCommit(w http.ResponseWriter, r *http.Re
 		DryRun:           req.DryRun,
 	})
 	if err != nil {
+		if errors.Is(err, errRepositoryRoleNotConfig) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":                       "repository is not a config repository",
+				"blocked_reasons":             []string{"repository_role_is_not_config"},
+				"project_version_id":          versionID,
+				"repository_id":               strings.TrimSpace(req.RepositoryID),
+				"config_commit_sha_written":   false,
+				"project_version_pin_written": false,
+				"external_call_made":          false,
+				"git_fetch_performed":         false,
+				"provider_api_called":         false,
+				"operation_log_written":       false,
+				"commit_sha_included":         false,
+				"remote_url_included":         false,
+				"secret_included":             false,
+			})
+			return
+		}
 		if s.log != nil {
 			s.log.Warn("config commit pin failed", "project_version_id", versionID, "repository_id", strings.TrimSpace(req.RepositoryID), "error", err)
 		}

@@ -3,11 +3,14 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
 )
+
+var errRepositoryRoleNotConfig = errors.New("repository is not a config repository")
 
 type ConfigCommitPinOptions struct {
 	ProjectVersionID string
@@ -52,6 +55,9 @@ func PinConfigCommit(ctx context.Context, store *Store, opts ConfigCommitPinOpti
 		WHERE id=$1 AND project_id=$2`, repositoryID, projectID)
 	if err != nil {
 		return nil, err
+	}
+	if strings.ToLower(strings.TrimSpace(fmt.Sprint(repository["repo_role"]))) != "config" {
+		return nil, errRepositoryRoleNotConfig
 	}
 	remote, err := configCommitPinRemote(ctx, tx, repositoryID, remoteID)
 	if err != nil {
