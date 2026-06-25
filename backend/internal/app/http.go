@@ -10609,7 +10609,8 @@ func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summar
 	if len(executionPlan) == 0 {
 		return
 	}
-	workerBindingEvidence := projectVersionRefreshWorkerResultBindingEvidence(summary, stringSliceFromAny(executionPlan["planned_refresh_kinds"]))
+	plannedKinds := stringSliceFromAny(executionPlan["planned_refresh_kinds"])
+	workerBindingEvidence := projectVersionRefreshWorkerResultBindingEvidence(summary, plannedKinds)
 	refreshPlan["worker_result_binding_evidence"] = workerBindingEvidence
 	operationCount := intFromAny(summary["operation_count"], 0)
 	validationRecorded := summary["validation_rerun_recorded"] == true
@@ -10624,14 +10625,23 @@ func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summar
 	executionPlan["validation_rerun_evidence"] = rerunEvidence
 	if resultPlan := mapFromAny(executionPlan["result_recording_plan"]); len(resultPlan) > 0 {
 		terminalRefresh := operationCount > 0 && intFromAny(summary["active_count"], 0) == 0
-		resultPlan["result_recording_state"] = projectVersionRefreshResultRecordingState(summary)
-		resultPlan["result_recording_ready"] = terminalRefresh
-		resultPlan["result_recording_ready_reason"] = projectVersionRefreshResultRecordingReason(summary)
-		resultPlan["recording_enabled"] = terminalRefresh
-		resultPlan["result_written"] = terminalRefresh
-		resultPlan["operation_log_written"] = terminalRefresh
-		resultPlan["canonical_asset_sync_queued"] = terminalRefresh
-		resultPlan["status_snapshot_written"] = terminalRefresh
+		bindingState := cleanPreviewString(workerBindingEvidence["binding_state"])
+		resultState := projectVersionRefreshResultRecordingState(summary)
+		resultReason := projectVersionRefreshResultRecordingReason(summary)
+		resultReady := terminalRefresh
+		if resultState == "recorded" && len(plannedKinds) > 0 && bindingState != "recorded" {
+			resultState = "partial_recorded"
+			resultReason = "planned_refresh_result_missing"
+			resultReady = false
+		}
+		resultPlan["result_recording_state"] = resultState
+		resultPlan["result_recording_ready"] = resultReady
+		resultPlan["result_recording_ready_reason"] = resultReason
+		resultPlan["recording_enabled"] = resultReady
+		resultPlan["result_written"] = resultReady
+		resultPlan["operation_log_written"] = resultReady
+		resultPlan["canonical_asset_sync_queued"] = resultReady
+		resultPlan["status_snapshot_written"] = resultReady
 		resultPlan["validation_rerun_recorded"] = validationRecorded
 		resultPlan["git_ref_fetch_result_recorded"] = projectVersionRefreshKindTerminalObserved(summary, "git_ref_fetch")
 		resultPlan["github_actions_result_recorded"] = projectVersionRefreshKindTerminalObserved(summary, "github_actions_api_refresh")
@@ -10642,7 +10652,7 @@ func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summar
 		resultPlan["server_side_validation_recheck_observed"] = boolOnlyFromAny(rerunEvidence["server_side_validation_recheck"])
 		resultPlan["automatic_background_rerun"] = boolOnlyFromAny(rerunEvidence["automatic_background_rerun"])
 		resultPlan["validation_rerun_evidence"] = rerunEvidence
-		resultPlan["blocked_reasons"] = projectVersionRefreshResultBlockedReasons(summary)
+		resultPlan["blocked_reasons"] = projectVersionRefreshResultBlockedReasons(summary, workerBindingEvidence)
 	}
 }
 
@@ -10771,9 +10781,25 @@ func projectVersionRefreshKindTerminalObserved(summary map[string]any, kind stri
 	return intFromAny(counts["queued"], 0) == 0 && intFromAny(counts["running"], 0) == 0
 }
 
-func projectVersionRefreshResultBlockedReasons(summary map[string]any) []string {
+func projectVersionRefreshResultBlockedReasons(summary map[string]any, workerBindingEvidence map[string]any) []string {
 	switch strings.TrimSpace(fmt.Sprint(summary["validation_rerun_status"])) {
 	case "recorded":
+		if len(workerBindingEvidence) > 0 {
+			missingKinds := stringSliceFromAny(workerBindingEvidence["missing_planned_result_kinds"])
+			if len(stringSliceFromAny(workerBindingEvidence["planned_refresh_kinds"])) == 0 || len(missingKinds) == 0 {
+				return []string{}
+			}
+			bindingState := cleanPreviewString(workerBindingEvidence["binding_state"])
+			if bindingState != "" && bindingState != "recorded" {
+				reasons := []string{"planned_refresh_result_missing"}
+				for _, kind := range missingKinds {
+					if strings.TrimSpace(kind) != "" {
+						reasons = append(reasons, "missing_"+kind)
+					}
+				}
+				return reasons
+			}
+		}
 		return []string{}
 	case "waiting_for_workers":
 		return []string{"refresh_workers_still_running"}

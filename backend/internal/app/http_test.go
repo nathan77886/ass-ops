@@ -7559,6 +7559,69 @@ func TestProjectVersionRefreshWorkerResultBindingEvidenceRequiresPlannedKinds(t 
 	}
 }
 
+func TestProjectVersionRefreshResultPlanBlocksWhenPlannedKindMissing(t *testing.T) {
+	summary := projectVersionRefreshResultSummary([]map[string]any{
+		{"id": "op-git", "operation_type": "git.refs.refresh", "status": "completed", "input": map[string]any{"refresh_kind": "git_ref_fetch", "remote_url": "https://token@example.com/repo.git"}},
+	})
+	plannedKinds := []string{"git_ref_fetch", "github_actions_api_refresh"}
+	refreshPlan := map[string]any{
+		"execution_plan": map[string]any{
+			"planned_refresh_kinds": plannedKinds,
+			"result_recording_plan": projectVersionProviderRefreshResultRecordingPlan(plannedKinds),
+		},
+	}
+	rerunEvidence := projectVersionValidationRerunEvidence(summary, "partial", 1, 0, 1, 0)
+	attachProjectVersionRefreshResultSummary(refreshPlan, summary, rerunEvidence)
+	executionPlan := mapFromAny(refreshPlan["execution_plan"])
+	workerBinding := mapFromAny(executionPlan["worker_result_binding_evidence"])
+	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
+	if workerBinding["binding_state"] != "partial_recorded" ||
+		!containsString(stringSliceFromAny(workerBinding["missing_planned_result_kinds"]), "github_actions_api_refresh") {
+		t.Fatalf("worker binding should stay partial until every planned kind is observed: %#v", workerBinding)
+	}
+	if resultPlan["result_recording_state"] != "partial_recorded" ||
+		resultPlan["result_recording_ready"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["operation_log_written"] != false ||
+		resultPlan["canonical_asset_sync_queued"] != false ||
+		resultPlan["status_snapshot_written"] != false ||
+		resultPlan["validation_rerun_recorded"] != true ||
+		resultPlan["git_ref_fetch_result_recorded"] != true ||
+		resultPlan["github_actions_result_recorded"] != false ||
+		resultPlan["result_recording_ready_reason"] != "planned_refresh_result_missing" ||
+		!containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), "planned_refresh_result_missing") ||
+		!containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), "missing_github_actions_api_refresh") {
+		t.Fatalf("partial worker binding should block refresh result recording: %#v", resultPlan)
+	}
+	encoded, _ := json.Marshal(resultPlan)
+	for _, forbidden := range []string{"https://token@example.com", "Bearer secret", "raw_provider_response\":true", "raw_git_output\":\""} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("partial refresh result plan leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestProjectVersionRefreshResultPlanAllowsEmptyPlannedKindsFallback(t *testing.T) {
+	summary := projectVersionRefreshResultSummary([]map[string]any{
+		{"id": "op-git", "operation_type": "git.refs.refresh", "status": "completed", "input": map[string]any{"refresh_kind": "git_ref_fetch"}},
+	})
+	refreshPlan := map[string]any{
+		"execution_plan": map[string]any{
+			"result_recording_plan": projectVersionProviderRefreshResultRecordingPlan(nil),
+		},
+	}
+	rerunEvidence := projectVersionValidationRerunEvidence(summary, "ready", 1, 1, 0, 0)
+	attachProjectVersionRefreshResultSummary(refreshPlan, summary, rerunEvidence)
+	resultPlan := mapFromAny(mapFromAny(refreshPlan["execution_plan"])["result_recording_plan"])
+	if resultPlan["result_recording_state"] != "recorded" ||
+		resultPlan["result_recording_ready"] != true ||
+		resultPlan["result_written"] != true ||
+		resultPlan["result_recording_ready_reason"] != "validation_rerun_recorded" ||
+		len(stringSliceFromAny(resultPlan["blocked_reasons"])) != 0 {
+		t.Fatalf("empty planned kinds fallback should not falsely downgrade recorded refresh evidence: %#v", resultPlan)
+	}
+}
+
 func TestProjectVersionRefreshResultSummaryRecordsValidationRerunWhenTerminal(t *testing.T) {
 	summary := projectVersionRefreshResultSummary([]map[string]any{
 		{"id": "op-git", "operation_type": "git.refs.refresh", "status": "completed", "input": map[string]any{"refresh_kind": "git_ref_fetch"}},
@@ -7571,7 +7634,8 @@ func TestProjectVersionRefreshResultSummaryRecordsValidationRerunWhenTerminal(t 
 		summary["has_refresh_failures"] != false {
 		t.Fatalf("terminal refresh summary = %#v", summary)
 	}
-	if reasons := projectVersionRefreshResultBlockedReasons(summary); len(reasons) != 0 {
+	plannedKinds := []string{"git_ref_fetch", "github_actions_api_refresh"}
+	if reasons := projectVersionRefreshResultBlockedReasons(summary, projectVersionRefreshWorkerResultBindingEvidence(summary, plannedKinds)); len(reasons) != 0 {
 		t.Fatalf("terminal refresh summary should not have blocked reasons: %#v", reasons)
 	}
 	if !projectVersionRefreshKindTerminalObserved(summary, "git_ref_fetch") ||
@@ -7579,7 +7643,6 @@ func TestProjectVersionRefreshResultSummaryRecordsValidationRerunWhenTerminal(t 
 		projectVersionRefreshKindTerminalObserved(summary, "argocd_app_refresh") {
 		t.Fatalf("terminal refresh kind observation mismatch: %#v", summary)
 	}
-	plannedKinds := []string{"git_ref_fetch", "github_actions_api_refresh"}
 	refreshPlan := map[string]any{
 		"execution_plan": map[string]any{
 			"planned_refresh_kinds": plannedKinds,
@@ -7858,7 +7921,7 @@ func TestProjectVersionRefreshResultSummaryReportsFailures(t *testing.T) {
 		summary["has_refresh_failures"] != true {
 		t.Fatalf("failed refresh summary = %#v", summary)
 	}
-	if !containsString(projectVersionRefreshResultBlockedReasons(summary), "refresh_worker_failed") {
+	if !containsString(projectVersionRefreshResultBlockedReasons(summary, nil), "refresh_worker_failed") {
 		t.Fatalf("failed refresh summary should report refresh_worker_failed: %#v", summary)
 	}
 	items := sliceOfMapsFromAny(summary["items"])
@@ -7983,8 +8046,8 @@ func TestProjectVersionRefreshResultSummaryStatusCombinations(t *testing.T) {
 			if got := projectVersionRefreshKindTerminalObserved(summary, "git_ref_fetch"); got != tt.wantReady {
 				t.Fatalf("terminal kind observed = %v, want %v; summary=%#v", got, tt.wantReady, summary)
 			}
-			if tt.wantReason != "validation_rerun_recorded" && !containsString(projectVersionRefreshResultBlockedReasons(summary), tt.wantReason) {
-				t.Fatalf("blocked reasons missing %q: %#v", tt.wantReason, projectVersionRefreshResultBlockedReasons(summary))
+			if tt.wantReason != "validation_rerun_recorded" && !containsString(projectVersionRefreshResultBlockedReasons(summary, nil), tt.wantReason) {
+				t.Fatalf("blocked reasons missing %q: %#v", tt.wantReason, projectVersionRefreshResultBlockedReasons(summary, nil))
 			}
 		})
 	}
