@@ -22701,6 +22701,202 @@ func TestProviderReviewAttemptIdempotencySnapshotPayloadRejectsClaimedOrSensitiv
 	}
 }
 
+func TestRecordProviderReviewAttemptLiveExecutionReadinessSnapshotWritesReviewReadyEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_execution_review_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_execution_review_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptLiveExecutionReadinessSnapshot(context.Background(), store, ProviderReviewAttemptLiveExecutionReadinessSnapshotOptions{
+		AttemptID:                "attempt-1",
+		Attempt:                  attempt,
+		Ledger:                   ledger,
+		ObservedSnapshotStatuses: providerReviewAttemptAllRequiredLiveExecutionStatusesForTest(),
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveExecutionReadinessSnapshot: %v", err)
+	}
+	if got["recording_state"] != "live_execution_review_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_live_execution_readiness_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["future_live_execution_still_blocked"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_request_sent"] != false ||
+		got["provider_api_mutation"] != "disabled" {
+		t.Fatalf("unexpected live execution readiness response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["live_execution_review_ready"] != true ||
+		snapshot["future_live_execution_still_blocked"] != true ||
+		snapshot["all_required_snapshot_evidence_observed"] != true ||
+		snapshot["required_snapshot_count"] != len(providerReviewAttemptLiveExecutionRequiredEvidence()) ||
+		snapshot["observed_snapshot_count"] != len(providerReviewAttemptLiveExecutionRequiredEvidence()) ||
+		snapshot["live_adapter_implemented"] != false ||
+		snapshot["mutation_armed"] != false ||
+		snapshot["idempotency_claim_recorded"] != false ||
+		snapshot["idempotency_key_included"] != false {
+		t.Fatalf("unexpected live execution readiness snapshot payload: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "idempotency_key_hash", "raw_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("live execution readiness snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveExecutionReadinessSnapshotMissingEvidenceDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	observed := providerReviewAttemptAllRequiredLiveExecutionStatusesForTest()
+	delete(observed, "provider_review_attempt_transaction_metadata_ready")
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptLiveExecutionReadinessSnapshot(context.Background(), store, ProviderReviewAttemptLiveExecutionReadinessSnapshotOptions{
+		AttemptID:                "attempt-1",
+		Attempt:                  attempt,
+		Ledger:                   ledger,
+		ObservedSnapshotStatuses: observed,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveExecutionReadinessSnapshot missing evidence: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["recording_state"] != "live_execution_review_blocked" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_live_execution_readiness_snapshot_written"] != false ||
+		snapshot["all_required_snapshot_evidence_observed"] != false ||
+		!containsString(missing, "provider_review_required_snapshot_evidence_missing") {
+		t.Fatalf("unexpected missing-evidence live execution readiness response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveExecutionReadinessSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptLiveExecutionReadinessSnapshot(context.Background(), store, ProviderReviewAttemptLiveExecutionReadinessSnapshotOptions{
+		AttemptID:                "attempt-1",
+		Attempt:                  attempt,
+		Ledger:                   ledger,
+		DryRun:                   true,
+		ObservedSnapshotStatuses: providerReviewAttemptAllRequiredLiveExecutionStatusesForTest(),
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveExecutionReadinessSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_live_execution_readiness_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run live execution readiness response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLiveExecutionReadinessSnapshotRejectsMutationMarkers(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	snapshot := providerReviewAttemptLiveExecutionReadinessSnapshotPayload(attempt, ledger, true, providerReviewAttemptAllRequiredLiveExecutionStatusesForTest())
+	snapshot["provider_api_call_made"] = true
+	snapshot["mutation_armed"] = true
+
+	ready, state, missing := providerReviewAttemptLiveExecutionReadinessSnapshotReadiness(snapshot)
+	if ready ||
+		state != "live_execution_review_blocked" ||
+		!containsString(missing, "provider_review_live_execution_not_no_call") {
+		t.Fatalf("live execution readiness snapshot with mutation markers = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveExecutionReadinessSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "planned", "independent", nil)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+	})
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	statusRows := sqlmock.NewRows([]string{"status"})
+	for _, item := range providerReviewAttemptLiveExecutionRequiredEvidence() {
+		statusRows.AddRow(item.Status)
+	}
+	mock.ExpectQuery(`(?s)SELECT DISTINCT status\s+FROM asset_status_snapshots\s+WHERE asset_id=\$1\s+AND status = ANY\(\$2\)`).
+		WithArgs("asset-attempt-1", sqlmock.AnyArg()).
+		WillReturnRows(statusRows)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_execution_review_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_execution_review_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptLiveExecutionReadinessSnapshot(rr, newProviderReviewAttemptLiveExecutionReadinessSnapshotRequest(`{}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "live_execution_review_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_live_execution_readiness_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_request_sent"] != false ||
+		got["future_live_execution_still_blocked"] != true {
+		t.Fatalf("unexpected handler live execution readiness response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordProviderReviewAttemptRequestValidationSnapshotWritesMetadataReadyCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -26772,6 +26968,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 			},
 			request: newProviderReviewAttemptTransactionSnapshotRequest,
 		},
+		{
+			name: "live-execution-readiness",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptLiveExecutionReadinessSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptLiveExecutionReadinessSnapshotRequest,
+		},
 	}
 
 	for _, tt := range tests {
@@ -26929,6 +27132,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptTransactionSnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/transaction-snapshot",
+		},
+		{
+			name: "live-execution-readiness",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptLiveExecutionReadinessSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/live-execution-readiness-snapshot",
 		},
 	}
 
@@ -33913,6 +34123,12 @@ func newProviderReviewAttemptIdempotencySnapshotRequest(body string) *http.Reque
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
 
+func newProviderReviewAttemptLiveExecutionReadinessSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/live-execution-readiness-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
 func newProviderReviewMutationArmingSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/operation-approvals/approval-1/provider-review-arming-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "approval-1")
@@ -34138,6 +34354,14 @@ func addProviderReviewAttemptRow(rows *sqlmock.Rows, row providerReviewAttemptMo
 		row.ClaimedAt,
 		nil,
 	)
+}
+
+func providerReviewAttemptAllRequiredLiveExecutionStatusesForTest() map[string]bool {
+	out := map[string]bool{}
+	for _, item := range providerReviewAttemptLiveExecutionRequiredEvidence() {
+		out[item.Status] = true
+	}
+	return out
 }
 
 type providerReviewAttemptClaimSelectOptions struct {
