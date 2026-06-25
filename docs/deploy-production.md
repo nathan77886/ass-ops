@@ -344,6 +344,17 @@ assops-tool release demo-import-plan \
 
 The plan lists the provider-owned Gitea/GitHub repository setup, ASSOPS project/repository/remote/RepoSyncAsset evidence, callback rehearsal evidence, and readiness snapshot order without calling providers, running Git, creating rows, recording snapshots, or storing remote URLs, tokens, provider responses, Git output, SHAs, branch names, or operator notes.
 
+Before rehearsing a real GitHub remote tag and its Actions evidence, generate the no-call tag rehearsal plan:
+
+```bash
+assops-tool release tag-rehearsal-plan \
+  assops-demo \
+  github-main \
+  .assops/release-notes/tag-rehearsal-plan.md
+```
+
+The plan accepts only a safe project slug and remote key. It lists the approval-gated tag operation, read-only live lookup, GitHub Actions refresh, tag-result snapshot, Actions refresh snapshot, and graph-evidence checks to collect without accepting or storing tag names, commit SHAs, branches, remote URLs, workflow URLs, provider run IDs, token names, tag messages, Git output, provider request/response bodies, workflow logs, or operator notes. It does not call GitHub, run Git, create or push tags, refresh Actions, enqueue workers, write operation logs, sync assets, or record snapshots.
+
 Before rehearsing live Argo pod log retrieval for the demo environment, generate the no-call pod-log rehearsal plan:
 
 ```bash

@@ -161,6 +161,17 @@ func run() error {
 			fmt.Print(plan)
 			return nil
 		}
+		if (len(args) == 4 || len(args) == 5) && args[1] == "tag-rehearsal-plan" {
+			plan, err := releaseTagRehearsalPlan(args[2], args[3])
+			if err != nil {
+				return err
+			}
+			if len(args) == 5 {
+				return writeTextFile(args[4], plan)
+			}
+			fmt.Print(plan)
+			return nil
+		}
 		if (len(args) == 5 || len(args) == 6) && args[1] == "branch-protection-plan" {
 			plan, err := releaseBranchProtectionPlan(args[2], args[3], args[4])
 			if err != nil {
@@ -177,7 +188,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release ssh-rehearsal-plan PROJECT_SLUG ENVIRONMENT [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release ssh-rehearsal-plan PROJECT_SLUG ENVIRONMENT [OUTPUT_FILE]|release tag-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -1174,6 +1185,74 @@ func releaseSSHRehearsalPlan(projectSlug, environment string) (string, error) {
 	fmt.Fprintf(&b, "# In ASSOPS UI: SSH -> machine -> Record rehearsal snapshot after canonical graph evidence is synced\n")
 	fmt.Fprintf(&b, "```\n\n")
 	fmt.Fprintf(&b, "Run real verify/exec only after the target environment, authorized machine, secret reference, known_hosts scope, approval policy, and output-redaction review are confirmed out of band.\n")
+	return b.String(), nil
+}
+
+func releaseTagRehearsalPlan(projectSlug, remoteKey string) (string, error) {
+	projectSlug = strings.ToLower(strings.TrimSpace(projectSlug))
+	if !isSafeProjectSlug(projectSlug) {
+		return "", fmt.Errorf("project slug must contain letters or numbers and may include only internal dot, underscore, or hyphen")
+	}
+	remoteKey = strings.ToLower(strings.TrimSpace(remoteKey))
+	if !isSafeProjectSlug(remoteKey) {
+		return "", fmt.Errorf("remote key must contain letters or numbers and may include only internal dot, underscore, or hyphen")
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# ASSOPS GitHub Tag Rehearsal Plan\n\n")
+	fmt.Fprintf(&b, "Project slug: `%s`\n\n", projectSlug)
+	fmt.Fprintf(&b, "Remote key: `%s`\n\n", remoteKey)
+	fmt.Fprintf(&b, "## Local Validation\n\n")
+	fmt.Fprintf(&b, "- Project slug and remote key are safe local identifiers for matching ASSOPS release evidence.\n")
+	fmt.Fprintf(&b, "- This plan intentionally does not accept tag names, commit SHAs, branches, remote URLs, workflow URLs, provider run IDs, token names, messages, or Git output as inputs.\n")
+	fmt.Fprintf(&b, "- This plan does not call GitHub, run Git, create or push tags, refresh Actions, write operation logs, update repo_tag_runs, sync assets, or record snapshots.\n\n")
+	fmt.Fprintf(&b, "## Live Rehearsal Sequence\n\n")
+	for index, step := range []string{
+		"Confirm the selected remote is a project-owned GitHub remote for the intended logical repository.",
+		"Request the approval-gated remote-specific tag operation in ASSOPS with the real tag target reviewed outside this document.",
+		"Execute the tag operation only after approval, protected-branch/tag policy review, and credential scope review are complete.",
+		"Run the read-only live tag lookup for the recorded tag run and wait for sanitized terminal lookup evidence.",
+		"Run the GitHub Actions refresh for the tag target remote and wait for synced local Actions evidence.",
+		"Record the sanitized local tag-result snapshot from repo_tag_runs evidence only.",
+		"Record the sanitized Actions refresh snapshot from locally synced github_action_runs evidence only.",
+		"Run `assops-tool project readiness` after `assops-tool db sync-assets` confirms the tag run to Actions graph evidence.",
+	} {
+		fmt.Fprintf(&b, "%d. %s\n", index+1, step)
+	}
+	fmt.Fprintf(&b, "\n## Required Evidence\n\n")
+	for _, item := range []string{
+		"project-owned GitHub remote asset for the selected remote key",
+		"approval request for the tag operation",
+		"completed repo_tag_run asset linked to the project-owned remote",
+		"read-only live lookup operation terminal evidence",
+		"GitHub Actions refresh operation terminal evidence",
+		"repo_tag_run to github_action_run canonical graph edge",
+		"sanitized tag-result snapshot status",
+		"sanitized Actions refresh snapshot status",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## Suppressed Material\n\n")
+	for _, item := range []string{
+		"tag names, branch names, commit SHAs, and target refs",
+		"remote clone URLs, workflow URLs, run IDs, and provider request IDs",
+		"provider tokens, authorization headers, credentials, and token env names",
+		"tag messages, release notes, Git stdout/stderr, and command output",
+		"provider request/response bodies, workflow logs, and raw error details",
+		"operator notes containing repository, ref, credential, or provider details",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## No-Call Boundary\n\n")
+	fmt.Fprintf(&b, "- This plan is local documentation only; it does not call providers, run Git, create tags, push refs, refresh Actions, enqueue workers, write operation logs, sync assets, or record snapshots.\n")
+	fmt.Fprintf(&b, "- Tag creation, live lookup, Actions refresh, graph sync, and snapshot recording remain operator-owned staging tasks.\n\n")
+	fmt.Fprintf(&b, "## Verification Commands\n\n```bash\n")
+	fmt.Fprintf(&b, "assops-tool project readiness\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: Repo Sync -> selected tag run -> Live lookup\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: Repo Sync -> selected tag run -> Actions refresh\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: Repo Sync -> selected tag run -> Record tag and Actions snapshots\n")
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "Run the real tag rehearsal only after the target remote, approval policy, credential scope, tag protection posture, and Actions refresh expectations are confirmed out of band.\n")
 	return b.String(), nil
 }
 

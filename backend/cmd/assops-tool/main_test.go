@@ -2729,6 +2729,78 @@ func TestReleaseSSHRehearsalPlanRejectsUnsafeInput(t *testing.T) {
 	}
 }
 
+func TestReleaseTagRehearsalPlan(t *testing.T) {
+	plan, err := releaseTagRehearsalPlan("ASSOPS-Demo", "GitHub-Main")
+	if err != nil {
+		t.Fatalf("releaseTagRehearsalPlan: %v", err)
+	}
+	for _, want := range []string{
+		"# ASSOPS GitHub Tag Rehearsal Plan",
+		"Project slug: `assops-demo`",
+		"Remote key: `github-main`",
+		"does not accept tag names, commit SHAs, branches, remote URLs, workflow URLs, provider run IDs, token names, messages, or Git output as inputs",
+		"does not call GitHub, run Git, create or push tags, refresh Actions, write operation logs, update repo_tag_runs, sync assets, or record snapshots",
+		"approval-gated remote-specific tag operation",
+		"read-only live tag lookup",
+		"GitHub Actions refresh",
+		"repo_tag_run to github_action_run canonical graph edge",
+		"sanitized tag-result snapshot status",
+		"sanitized Actions refresh snapshot status",
+		"tag names, branch names, commit SHAs, and target refs",
+		"provider tokens, authorization headers, credentials, and token env names",
+		"Git stdout/stderr",
+		"does not call providers, run Git, create tags, push refs, refresh Actions, enqueue workers, write operation logs, sync assets, or record snapshots",
+		"assops-tool project readiness",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("tag rehearsal plan missing %q in:\n%s", want, plan)
+		}
+	}
+	for _, forbidden := range []string{
+		"Authorization:",
+		"token=",
+		"password=",
+		"PRIVATE KEY",
+		"refs/tags/",
+		"refs/heads/",
+		"abcdef0123456789abcdef0123456789abcdef01",
+		"https://github.com/",
+		"workflow run:",
+		"provider response:",
+		"git push",
+	} {
+		if strings.Contains(plan, forbidden) {
+			t.Fatalf("tag rehearsal plan should not contain %q:\n%s", forbidden, plan)
+		}
+	}
+}
+
+func TestReleaseTagRehearsalPlanRejectsUnsafeInput(t *testing.T) {
+	cases := []struct {
+		name      string
+		slug      string
+		remoteKey string
+		want      string
+	}{
+		{name: "empty slug", slug: "", remoteKey: "github-main", want: "project slug"},
+		{name: "slash slug", slug: "owner/repo", remoteKey: "github-main", want: "project slug"},
+		{name: "leading dot slug", slug: ".assops", remoteKey: "github-main", want: "project slug"},
+		{name: "trailing dot slug", slug: "assops.", remoteKey: "github-main", want: "project slug"},
+		{name: "empty remote key", slug: "assops-demo", remoteKey: "", want: "remote key"},
+		{name: "remote key slash", slug: "assops-demo", remoteKey: "github/main", want: "remote key"},
+		{name: "remote key leading dot", slug: "assops-demo", remoteKey: ".github", want: "remote key"},
+		{name: "remote key trailing dot", slug: "assops-demo", remoteKey: "github.", want: "remote key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := releaseTagRehearsalPlan(tc.slug, tc.remoteKey)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("releaseTagRehearsalPlan error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestReleaseBackupSchedulePlanForArtifactSource(t *testing.T) {
 	plan, err := releaseBackupSchedulePlan("nathan77886/ass-ops", "production", "ubuntu-latest", "17 3 * * 1", "artifact:retained-assops-backup", "14")
 	if err != nil {
