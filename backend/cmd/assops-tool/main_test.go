@@ -229,6 +229,14 @@ func TestWriteTextFileCreatesParentDirectory(t *testing.T) {
 	}
 }
 
+func TestWriteTextFileRejectsParentTraversal(t *testing.T) {
+	for _, path := range []string{"../values.yaml", "release/../values.yaml", `release\..\values.yaml`} {
+		if err := writeTextFile(path, "image:\n"); err == nil || !strings.Contains(err.Error(), "parent directory traversal") {
+			t.Fatalf("writeTextFile(%q) error = %v, want traversal rejection", path, err)
+		}
+	}
+}
+
 func TestFirstVersionReadinessReportRequiresArgoSync(t *testing.T) {
 	partial := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "deployment_target"},
@@ -2423,6 +2431,75 @@ func TestHelmStorageClassContract(t *testing.T) {
 				if !strings.Contains(source, want) {
 					t.Fatalf("%s missing %q", path, want)
 				}
+			}
+		})
+	}
+}
+
+func TestReleaseCallbackRehearsalPlan(t *testing.T) {
+	plan, err := releaseCallbackRehearsalPlan("https://assops-staging.example.com/")
+	if err != nil {
+		t.Fatalf("releaseCallbackRehearsalPlan: %v", err)
+	}
+	for _, want := range []string{
+		"# ASSOPS Provider Callback Rehearsal Plan",
+		"Public origin: `https://assops-staging.example.com`",
+		"Public origin is HTTPS",
+		"/api/webhooks/gitea/<webhook-connection-id>",
+		"/api/webhooks/github/<webhook-connection-id>",
+		"ASSOPS_GATEWAY_URL=https://assops-staging.example.com",
+		"provider test delivery",
+		"provider metrics comparison",
+		"threshold decision audit",
+		"provider callback rehearsal snapshot",
+		"does not call providers, send test deliveries, fetch metrics, open tunnels, configure DNS, or write ASSOPS rows",
+		"Provider test delivery, provider metrics comparison, DNS/TLS setup, and public ingress verification remain operator-owned",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("callback rehearsal plan missing %q in:\n%s", want, plan)
+		}
+	}
+	for _, forbidden := range []string{
+		"Authorization:",
+		"token=",
+		"secret=",
+		"payload:",
+		"X-GitHub-Delivery:",
+		"X-Gitea-Delivery:",
+		"PRIVATE KEY",
+	} {
+		if strings.Contains(plan, forbidden) {
+			t.Fatalf("callback rehearsal plan should not contain %q:\n%s", forbidden, plan)
+		}
+	}
+}
+
+func TestReleaseCallbackRehearsalPlanRejectsUnsafeOrigins(t *testing.T) {
+	cases := []struct {
+		name   string
+		origin string
+		want   string
+	}{
+		{name: "empty", origin: "", want: "public origin is required"},
+		{name: "http", origin: "http://assops.example.com", want: "must use https"},
+		{name: "path", origin: "https://assops.example.com/callback", want: "must not include a path"},
+		{name: "query", origin: "https://assops.example.com?token=bad", want: "must not include query or fragment"},
+		{name: "fragment", origin: "https://assops.example.com#callback", want: "must not include query or fragment"},
+		{name: "userinfo", origin: "https://user:pass@assops.example.com", want: "must not include userinfo"},
+		{name: "localhost", origin: "https://localhost", want: "public staging hostname"},
+		{name: "local domain", origin: "https://assops.local", want: "public staging hostname"},
+		{name: "local domain with port", origin: "https://assops.local:443", want: "public staging hostname"},
+		{name: "private ip", origin: "https://10.0.0.5", want: "must not use localhost, private, link-local, or unspecified IPs"},
+		{name: "loopback ip", origin: "https://127.0.0.1", want: "must not use localhost, private, link-local, or unspecified IPs"},
+		{name: "ipv6 loopback", origin: "https://[::1]", want: "must not use localhost, private, link-local, or unspecified IPs"},
+		{name: "ipv6 link local", origin: "https://[fe80::1]", want: "must not use localhost, private, link-local, or unspecified IPs"},
+		{name: "ipv6 multicast", origin: "https://[ff02::1]", want: "must not use localhost, private, link-local, or unspecified IPs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := releaseCallbackRehearsalPlan(tc.origin)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("releaseCallbackRehearsalPlan error = %v, want containing %q", err, tc.want)
 			}
 		})
 	}

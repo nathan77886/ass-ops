@@ -359,6 +359,15 @@ The gateway, control worker, and node worker all expose `/healthz` inside their 
 
 - Terminate TLS at a reverse proxy or load balancer in front of the `web` service.
 - Set `ASSOPS_GATEWAY_URL` to the public HTTP(S) origin before wiring Gitea/GitHub webhook callbacks, for example `https://assops.example.com` with no path, query string, or fragment.
+- Generate the no-call provider callback rehearsal plan before wiring staging providers:
+
+  ```bash
+  assops-tool release callback-rehearsal-plan \
+    https://assops.example.com \
+    .assops/release-notes/callback-rehearsal-plan.md
+  ```
+
+  The plan validates the public callback origin shape and lists the Gitea/GitHub test-delivery, replay-proof, threshold-audit, threshold-configuration, provider-metrics comparison, and sanitized snapshot evidence to collect without calling providers or storing payloads, headers, tokens, provider responses, or operator notes.
 - Keep `ASSOPS_WEBHOOK_SECRET_KEY` stable. Rotated webhook secrets are encrypted with it.
 - Keep `ASSOPS_LOCAL_BARE_BASE_DIRS` pointed at a dedicated ASSOPS-owned directory; project template `local_bare` remotes outside that path are rejected.
 - Do not mount writable SSH directories into the web service.

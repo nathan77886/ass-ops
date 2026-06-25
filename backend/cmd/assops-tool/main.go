@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -116,6 +117,17 @@ func run() error {
 			fmt.Print(plan)
 			return nil
 		}
+		if (len(args) == 3 || len(args) == 4) && args[1] == "callback-rehearsal-plan" {
+			plan, err := releaseCallbackRehearsalPlan(args[2])
+			if err != nil {
+				return err
+			}
+			if len(args) == 4 {
+				return writeTextFile(args[3], plan)
+			}
+			fmt.Print(plan)
+			return nil
+		}
 		if (len(args) == 5 || len(args) == 6) && args[1] == "branch-protection-plan" {
 			plan, err := releaseBranchProtectionPlan(args[2], args[3], args[4])
 			if err != nil {
@@ -132,7 +144,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -425,6 +437,9 @@ func writeTextFile(path, value string) error {
 	if path == "" {
 		return fmt.Errorf("output path is required")
 	}
+	if hasParentDirTraversal(path) {
+		return fmt.Errorf("output path must not contain parent directory traversal")
+	}
 	dir := filepath.Dir(path)
 	if dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -435,6 +450,17 @@ func writeTextFile(path, value string) error {
 		return fmt.Errorf("writing output: %w", err)
 	}
 	return nil
+}
+
+func hasParentDirTraversal(path string) bool {
+	for _, part := range strings.FieldsFunc(path, func(r rune) bool {
+		return r == '/' || r == '\\'
+	}) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func releaseHelmValues(owner, version string) (string, error) {
@@ -860,6 +886,50 @@ func releaseBranchProtectionPlan(repo, rulesetPath, codeownersPath string) (stri
 	return b.String(), nil
 }
 
+func releaseCallbackRehearsalPlan(publicOrigin string) (string, error) {
+	origin, err := normalizePublicCallbackOrigin(publicOrigin)
+	if err != nil {
+		return "", err
+	}
+	giteaEndpoint := origin + "/api/webhooks/gitea/<webhook-connection-id>"
+	githubEndpoint := origin + "/api/webhooks/github/<webhook-connection-id>"
+	var b strings.Builder
+	fmt.Fprintf(&b, "# ASSOPS Provider Callback Rehearsal Plan\n\n")
+	fmt.Fprintf(&b, "Public origin: `%s`\n\n", origin)
+	fmt.Fprintf(&b, "## Local Validation\n\n")
+	fmt.Fprintf(&b, "- Public origin is HTTPS, has no path/query/fragment/userinfo, and is not localhost or a private IP literal.\n")
+	fmt.Fprintf(&b, "- ASSOPS should expose provider callback routes under the same origin used by `ASSOPS_GATEWAY_URL`.\n")
+	fmt.Fprintf(&b, "- This plan uses placeholder connection IDs and never embeds delivery IDs, provider URLs, payloads, tokens, headers, request bodies, provider responses, or operator notes.\n\n")
+	fmt.Fprintf(&b, "## Provider Callback Endpoints\n\n")
+	fmt.Fprintf(&b, "- Gitea push callback: `%s`\n", giteaEndpoint)
+	fmt.Fprintf(&b, "- GitHub workflow callback: `%s`\n\n", githubEndpoint)
+	fmt.Fprintf(&b, "## Operator Rehearsal Sequence\n\n")
+	fmt.Fprintf(&b, "1. Set `ASSOPS_GATEWAY_URL=%s` in the staging environment and restart only after confirming the target environment.\n", origin)
+	fmt.Fprintf(&b, "2. Create or rotate webhook connections in ASSOPS so the UI shows provider-specific callback URLs with connection IDs.\n")
+	fmt.Fprintf(&b, "3. In the provider UI, configure the Gitea push webhook and GitHub workflow webhook with the ASSOPS callback URLs and provider-owned secret material.\n")
+	fmt.Fprintf(&b, "4. Send one provider test delivery for each provider, then trigger one real low-risk repository event per provider.\n")
+	fmt.Fprintf(&b, "5. Confirm ASSOPS records sanitized webhook event status, signature result, replay eligibility, and repo-sync binding evidence.\n")
+	fmt.Fprintf(&b, "6. Record the local threshold decision audit, apply local threshold configuration, and then record the provider callback rehearsal snapshot from already-observed local evidence.\n")
+	fmt.Fprintf(&b, "7. Compare provider-side delivery/limit metrics manually and store only safe counts/status in release notes; do not paste provider payloads or headers.\n\n")
+	fmt.Fprintf(&b, "## No-Call Boundary\n\n")
+	fmt.Fprintf(&b, "- This plan is local validation only; it does not call providers, send test deliveries, fetch metrics, open tunnels, configure DNS, or write ASSOPS rows.\n")
+	fmt.Fprintf(&b, "- Provider test delivery, provider metrics comparison, DNS/TLS setup, and public ingress verification remain operator-owned staging tasks.\n\n")
+	fmt.Fprintf(&b, "## Evidence To Attach To Release Notes\n\n")
+	for _, item := range []string{
+		"public origin and TLS owner",
+		"Gitea and GitHub callback routes observed in ASSOPS UI",
+		"sanitized callback event counts by provider",
+		"operator replay-proof state",
+		"threshold decision audit id/count only",
+		"applied threshold configuration keys only",
+		"provider metrics comparison status without provider payloads",
+		"provider callback rehearsal snapshot status",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	return b.String(), nil
+}
+
 func readBranchProtectionRuleset(path string) (map[string]any, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -1099,6 +1169,58 @@ func validateReleaseHelmValuesFile(path, owner, version string) (string, error) 
 	}
 	sum := sha256.Sum256(actual)
 	return fmt.Sprintf("%x", sum), nil
+}
+
+func normalizePublicCallbackOrigin(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("public origin is required")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parsing public origin: %w", err)
+	}
+	if parsed.Scheme != "https" {
+		return "", fmt.Errorf("public origin must use https")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("public origin must not include userinfo")
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("public origin host is required")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", fmt.Errorf("public origin must not include a path")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("public origin must not include query or fragment")
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "" {
+		return "", fmt.Errorf("public origin host is required")
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+		return "", fmt.Errorf("public origin must use a public staging hostname")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if !isPublicIP(ip) {
+			return "", fmt.Errorf("public origin must not use localhost, private, link-local, or unspecified IPs")
+		}
+	}
+	parsed.Path = ""
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
+func isPublicIP(ip net.IP) bool {
+	return !ip.IsLoopback() &&
+		!ip.IsPrivate() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() &&
+		!ip.IsUnspecified() &&
+		!ip.IsMulticast()
 }
 
 type simpleYAMLLevel struct {
