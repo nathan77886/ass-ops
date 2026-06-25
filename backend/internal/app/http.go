@@ -9920,7 +9920,8 @@ func repoTagActionsRefreshPlan(rehearsalState string, tagObserved, tagFailed boo
 	refreshRunning := refreshStatus == "queued" || refreshStatus == "running"
 	refreshFailed := refreshStatus == "failed" || refreshStatus == "timeout" || refreshStatus == "canceled" || refreshStatus == "cancelled"
 	syncedCount := intFromAny(refreshResult["count"], 0)
-	linkWritten := refreshPerformed && syncedCount > 0
+	actionsEvidenceFound := refreshPerformed && syncedCount > 0
+	linkWritten := actionsEvidenceFound
 	refreshState := "blocked"
 	if rehearsalState == "observed" {
 		refreshState = "planned"
@@ -9929,6 +9930,9 @@ func repoTagActionsRefreshPlan(rehearsalState string, tagObserved, tagFailed boo
 		refreshState = "running"
 	}
 	if refreshPerformed {
+		refreshState = "waiting_for_actions_refresh"
+	}
+	if actionsEvidenceFound {
 		refreshState = "recorded"
 	}
 	if tagFailed {
@@ -9947,7 +9951,7 @@ func repoTagActionsRefreshPlan(rehearsalState string, tagObserved, tagFailed boo
 	} else if linkWritten {
 		blockedReasons = []string{"provider_response_recording_not_performed"}
 	} else if refreshPerformed {
-		blockedReasons = []string{"github_action_run_link_write_not_performed"}
+		blockedReasons = []string{"github_actions_refresh_evidence_missing", "github_action_run_link_write_not_performed"}
 	}
 	if refreshFailed {
 		blockedReasons = []string{"github_actions_refresh_failed"}
@@ -9961,7 +9965,7 @@ func repoTagActionsRefreshPlan(rehearsalState string, tagObserved, tagFailed boo
 		"live_remote_tag_failed_observed":    tagFailed,
 		"github_actions_sync_enabled":        tagObserved && !tagFailed && !refreshRunning && !refreshPerformed,
 		"github_actions_refresh_performed":   refreshPerformed,
-		"github_action_runs_synced":          refreshPerformed,
+		"github_action_runs_synced":          actionsEvidenceFound,
 		"github_action_runs_synced_count":    syncedCount,
 		"repo_tag_run_link_written":          linkWritten,
 		"repo_tag_run_link_source":           "canonical_asset_relation",
@@ -9986,18 +9990,18 @@ func repoTagActionsRefreshPlan(rehearsalState string, tagObserved, tagFailed boo
 			"provider_response_headers",
 		},
 		"blocked_reasons":              blockedReasons,
-		"execution_blockers":           repoTagActionsRefreshExecutionBlockers(refreshPerformed, linkWritten),
+		"execution_blockers":           repoTagActionsRefreshExecutionBlockers(refreshPerformed, actionsEvidenceFound),
 		"live_remote_lookup_preflight": lookupPreflight,
 		"message":                      "GitHub Actions refresh after live tag success can enqueue the provider-backed sync worker; raw provider responses, remote URLs, tokens, and workflow logs stay suppressed while matched action-run links are derived through the canonical asset graph.",
 	}
 }
 
-func repoTagActionsRefreshExecutionBlockers(refreshPerformed, linkWritten bool) []string {
-	if linkWritten {
+func repoTagActionsRefreshExecutionBlockers(refreshPerformed, actionsEvidenceFound bool) []string {
+	if actionsEvidenceFound {
 		return []string{"provider_response_recording_not_performed"}
 	}
-	if refreshPerformed {
-		return []string{"github_action_run_link_write_not_performed"}
+	if refreshPerformed && !actionsEvidenceFound {
+		return []string{"github_actions_refresh_evidence_missing", "github_action_run_link_write_not_performed"}
 	}
 	return []string{"github_actions_refresh_not_performed"}
 }
