@@ -21330,6 +21330,7 @@ func TestRecordProviderReviewAttemptActivationSnapshotWritesBlockedCandidate(t *
 	}
 	snapshot := mapFromAny(got["snapshot"])
 	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
 		snapshot["activation_plan_observed"] != true ||
 		snapshot["provider_call_boundary_plan_observed"] != true ||
 		snapshot["provider_request_sent"] != false ||
@@ -21364,10 +21365,12 @@ func TestRecordProviderReviewAttemptActivationSnapshotAssetMissing(t *testing.T)
 	if err != nil {
 		t.Fatalf("RecordProviderReviewAttemptActivationSnapshot asset missing: %v", err)
 	}
+	snapshot := mapFromAny(got["snapshot"])
 	if got["recording_state"] != "asset_missing" ||
 		got["recording_ready"] != false ||
 		got["provider_review_attempt_activation_snapshot_written"] != false ||
-		got["asset_status_snapshot_written"] != false {
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
 		t.Fatalf("unexpected asset missing provider review activation response: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -21427,8 +21430,10 @@ func TestRecordProviderReviewAttemptActivationSnapshotNotCurrentCandidateDoesNot
 		t.Fatalf("RecordProviderReviewAttemptActivationSnapshot not current: %v", err)
 	}
 	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
 	if got["recording_ready"] != false ||
 		got["provider_review_attempt_activation_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
 		!containsString(missing, "provider_review_attempt_not_current_candidate") {
 		t.Fatalf("unexpected not-current provider review activation response: %#v", got)
 	}
@@ -21515,6 +21520,7 @@ func TestRecordProviderReviewAttemptSendSnapshotWritesBlockedCandidate(t *testin
 	}
 	snapshot := mapFromAny(got["snapshot"])
 	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
 		snapshot["provider_send_plan_observed"] != true ||
 		snapshot["transport_plan_observed"] != true ||
 		snapshot["retry_backoff_plan_observed"] != true ||
@@ -21553,10 +21559,12 @@ func TestRecordProviderReviewAttemptSendSnapshotAssetMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordProviderReviewAttemptSendSnapshot asset missing: %v", err)
 	}
+	snapshot := mapFromAny(got["snapshot"])
 	if got["recording_state"] != "asset_missing" ||
 		got["recording_ready"] != false ||
 		got["provider_review_attempt_send_snapshot_written"] != false ||
-		got["asset_status_snapshot_written"] != false {
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
 		t.Fatalf("unexpected asset missing provider review send response: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -21616,8 +21624,10 @@ func TestRecordProviderReviewAttemptSendSnapshotNotCurrentCandidateDoesNotWrite(
 		t.Fatalf("RecordProviderReviewAttemptSendSnapshot not current: %v", err)
 	}
 	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
 	if got["recording_ready"] != false ||
 		got["provider_review_attempt_send_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
 		!containsString(missing, "provider_review_attempt_not_current_candidate") {
 		t.Fatalf("unexpected not-current provider review send response: %#v", got)
 	}
@@ -21979,6 +21989,7 @@ func TestRecordProviderReviewAttemptResponseSnapshotWritesMetadataReadyCandidate
 	}
 	snapshot := mapFromAny(got["snapshot"])
 	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
 		snapshot["response_plan_observed"] != true ||
 		snapshot["result_recording_plan_observed"] != true ||
 		snapshot["transaction_plan_observed"] != true ||
@@ -22020,10 +22031,12 @@ func TestRecordProviderReviewAttemptResponseSnapshotAssetMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordProviderReviewAttemptResponseSnapshot asset missing: %v", err)
 	}
+	snapshot := mapFromAny(got["snapshot"])
 	if got["recording_state"] != "asset_missing" ||
 		got["recording_ready"] != false ||
 		got["provider_review_attempt_response_snapshot_written"] != false ||
-		got["asset_status_snapshot_written"] != false {
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
 		t.Fatalf("unexpected asset missing provider review response response: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -22083,8 +22096,10 @@ func TestRecordProviderReviewAttemptResponseSnapshotNotCurrentCandidateDoesNotWr
 		t.Fatalf("RecordProviderReviewAttemptResponseSnapshot not current: %v", err)
 	}
 	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
 	if got["recording_ready"] != false ||
 		got["provider_review_attempt_response_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
 		!containsString(missing, "provider_review_attempt_not_current_candidate") {
 		t.Fatalf("unexpected not-current provider review response response: %#v", got)
 	}

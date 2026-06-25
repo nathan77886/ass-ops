@@ -177,6 +177,7 @@ func providerReviewAttemptResponseSnapshotPayload(attempt, ledger map[string]any
 	transactionMetadataReady := providerReviewAttemptTransactionPlanReadyForOperation(transactionPlan, operationName, endpointKey)
 	providerCallBoundaryMetadataReady := boolOnlyFromAny(providerCallBoundaryPlan["provider_call_boundary_metadata_ready"]) &&
 		providerReviewAttemptPlanMatchesOperation(providerCallBoundaryPlan, "redacted_attempt_adapter_provider_call_boundary_plan", operationName, endpointKey)
+	statusSnapshotWriteEligible := assetObserved && candidateMatches && len(responsePlan) > 0 && len(resultPlan) > 0 && len(transactionPlan) > 0 && len(providerCallBoundaryPlan) > 0
 	return map[string]any{
 		"mode":                                        "provider_review_attempt_response_snapshot",
 		"provider_review_attempt_id":                  cleanOptionalID(fmt.Sprint(attempt["id"])),
@@ -258,7 +259,8 @@ func providerReviewAttemptResponseSnapshotPayload(attempt, ledger map[string]any
 		"contains_repository_ref":                     false,
 		"contains_branch_name":                        false,
 		"contains_file_content":                       false,
-		"status_snapshot_written":                     assetObserved && candidateMatches && len(responsePlan) > 0 && len(resultPlan) > 0 && len(transactionPlan) > 0 && len(providerCallBoundaryPlan) > 0,
+		"status_snapshot_write_eligible":              statusSnapshotWriteEligible,
+		"status_snapshot_written":                     statusSnapshotWriteEligible,
 		"response_boundary_redacted":                  true,
 		"result_recording_boundary_redacted":          true,
 		"transaction_boundary_redacted":               true,

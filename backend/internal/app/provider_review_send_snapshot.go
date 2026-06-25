@@ -176,6 +176,7 @@ func providerReviewAttemptSendSnapshotPayload(attempt, ledger map[string]any, as
 	transportReady := providerReviewAttemptTransportPlanReadyForOperation(transportPlan, operationName, endpointKey)
 	retryBackoffReady := boolOnlyFromAny(retryBackoffPlan["retry_backoff_metadata_ready"]) &&
 		providerReviewAttemptPlanMatchesOperation(retryBackoffPlan, "redacted_attempt_adapter_retry_backoff_plan", operationName, endpointKey)
+	statusSnapshotWriteEligible := assetObserved && candidateMatches && len(providerSendPlan) > 0 && len(transportPlan) > 0 && len(retryBackoffPlan) > 0
 	return map[string]any{
 		"mode":                                       "provider_review_attempt_send_snapshot",
 		"provider_review_attempt_id":                 cleanOptionalID(fmt.Sprint(attempt["id"])),
@@ -250,7 +251,8 @@ func providerReviewAttemptSendSnapshotPayload(attempt, ledger map[string]any, as
 		"contains_repository_ref":                    false,
 		"contains_branch_name":                       false,
 		"contains_file_content":                      false,
-		"status_snapshot_written":                    assetObserved && candidateMatches && len(providerSendPlan) > 0 && len(transportPlan) > 0 && len(retryBackoffPlan) > 0,
+		"status_snapshot_write_eligible":             statusSnapshotWriteEligible,
+		"status_snapshot_written":                    statusSnapshotWriteEligible,
 		"provider_send_boundary_redacted":            true,
 		"transport_boundary_redacted":                true,
 		"retry_backoff_boundary_redacted":            true,
