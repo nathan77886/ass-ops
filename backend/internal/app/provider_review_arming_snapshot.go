@@ -223,6 +223,7 @@ func providerReviewMutationArmingSnapshotPayload(approval, ledger map[string]any
 	blueprint := mapFromAny(reconciliation["execution_blueprint"])
 	executionRequest := mapFromAny(audit["execution_request"])
 	attemptCount := intFromAny(ledger["attempt_count"], 0)
+	statusSnapshotWriteEligible := assetObserved && attemptCount > 0
 	return map[string]any{
 		"mode":                                      "provider_review_mutation_arming_snapshot",
 		"operation_approval_id":                     cleanOptionalID(fmt.Sprint(approval["id"])),
@@ -267,7 +268,8 @@ func providerReviewMutationArmingSnapshotPayload(approval, ledger map[string]any
 		"contains_repository_ref":                   false,
 		"contains_branch_name":                      false,
 		"contains_file_content":                     false,
-		"status_snapshot_written":                   assetObserved && attemptCount > 0,
+		"status_snapshot_write_eligible":            statusSnapshotWriteEligible,
+		"status_snapshot_written":                   statusSnapshotWriteEligible,
 	}
 }
 

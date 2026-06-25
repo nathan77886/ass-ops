@@ -210,6 +210,7 @@ func providerReviewAttemptSnapshotPayload(attempt map[string]any, assetObserved 
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(attempt, "endpoint_key"))
 	dependencyStatus := safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(attempt, "dependency_status"))
 	claimRecorded := providerReviewAttemptClaimRecorded(attempt)
+	statusSnapshotWriteEligible := assetObserved && operationName != "" && endpointKey != "" && status != ""
 	return map[string]any{
 		"mode":                                   "provider_review_attempt_snapshot",
 		"provider_review_attempt_id":             cleanOptionalID(fmt.Sprint(attempt["id"])),
@@ -241,7 +242,8 @@ func providerReviewAttemptSnapshotPayload(attempt map[string]any, assetObserved 
 		"contains_repository_ref":                false,
 		"contains_branch_name":                   false,
 		"contains_file_content":                  false,
-		"status_snapshot_written":                assetObserved && operationName != "" && endpointKey != "" && status != "",
+		"status_snapshot_write_eligible":         statusSnapshotWriteEligible,
+		"status_snapshot_written":                statusSnapshotWriteEligible,
 	}
 }
 

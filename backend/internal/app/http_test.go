@@ -20436,7 +20436,9 @@ func TestProviderReviewAttemptSnapshotPayloadSanitizesAttempt(t *testing.T) {
 		t.Fatalf("readiness = %v/%s/%#v; snapshot=%#v", ready, state, missing, snapshot)
 	}
 	if snapshot["provider_review_attempt_asset_observed"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
 		snapshot["status_snapshot_written"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["provider_api_call_made"] != false ||
 		snapshot["external_call_made"] != false ||
 		snapshot["provider_api_mutation"] != "disabled" ||
@@ -20455,6 +20457,28 @@ func TestProviderReviewAttemptSnapshotPayloadSanitizesAttempt(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("provider review attempt snapshot leaked %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestProviderReviewAttemptSnapshotPayloadBlocksIncompleteIdentity(t *testing.T) {
+	snapshot := providerReviewAttemptSnapshotPayload(map[string]any{
+		"id":                      "attempt-1",
+		"operation_approval_id":   "approval-1",
+		"project_template_run_id": "run-1",
+		"provider_type":           "github",
+		"review_kind":             "pull_request",
+		"operation_name":          "create_branch_ref",
+		"endpoint_key":            "",
+		"status":                  "planned",
+		"dependency_status":       "independent",
+	}, true)
+	ready, state, missing := providerReviewAttemptSnapshotReadiness(snapshot)
+	if ready ||
+		state != "planned" ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
+		!containsString(missing, "provider_review_attempt_endpoint_missing") {
+		t.Fatalf("incomplete attempt identity should block snapshot write eligibility: ready=%v state=%s missing=%#v snapshot=%#v", ready, state, missing, snapshot)
 	}
 }
 
@@ -20592,7 +20616,8 @@ func TestRecordProviderReviewAttemptSnapshotHandlerAssetMissing(t *testing.T) {
 	if got["recording_state"] != "asset_missing" ||
 		got["recording_ready"] != false ||
 		got["provider_review_attempt_snapshot_written"] != false ||
-		got["asset_status_snapshot_written"] != false {
+		got["asset_status_snapshot_written"] != false ||
+		mapFromAny(got["snapshot"])["status_snapshot_write_eligible"] != false {
 		t.Fatalf("unexpected asset missing snapshot response: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -20892,6 +20917,8 @@ func TestRecordProviderReviewMutationArmingSnapshotWritesWhenReady(t *testing.T)
 	snapshot := mapFromAny(got["snapshot"])
 	if snapshot["attempt_count"] != 3 ||
 		snapshot["attempt_ledger_observed"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["contains_token"] != false ||
 		snapshot["contains_provider_url"] != false ||
 		snapshot["contains_repository_ref"] != false ||
@@ -20926,7 +20953,8 @@ func TestRecordProviderReviewMutationArmingSnapshotBlockedDoesNotWrite(t *testin
 	if got["recording_ready"] != false ||
 		got["recording_enabled"] != false ||
 		got["provider_review_mutation_arming_snapshot_written"] != false ||
-		got["asset_status_snapshot_written"] != false {
+		got["asset_status_snapshot_written"] != false ||
+		mapFromAny(got["snapshot"])["status_snapshot_write_eligible"] != true {
 		t.Fatalf("blocked provider review arming snapshot should not write: %#v", got)
 	}
 	missing := stringSliceFromAny(got["missing_evidence"])
@@ -20962,7 +20990,8 @@ func TestRecordProviderReviewMutationArmingSnapshotAssetMissing(t *testing.T) {
 	if got["recording_state"] != "asset_missing" ||
 		got["recording_ready"] != false ||
 		got["provider_review_mutation_arming_snapshot_written"] != false ||
-		got["asset_status_snapshot_written"] != false {
+		got["asset_status_snapshot_written"] != false ||
+		mapFromAny(got["snapshot"])["status_snapshot_write_eligible"] != false {
 		t.Fatalf("unexpected asset missing provider review arming response: %#v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -21204,6 +21233,7 @@ func TestRecordProviderReviewMutationArmingSnapshotHandlerWritesWhenReady(t *tes
 	snapshot := mapFromAny(got["snapshot"])
 	if snapshot["attempt_count"] != float64(3) && snapshot["attempt_count"] != 3 ||
 		snapshot["attempt_ledger_observed"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
 		snapshot["operation_approval_action"] != templateProviderReviewExecuteApprovalAction {
 		t.Fatalf("unexpected arming snapshot handler payload: %#v", snapshot)
 	}
