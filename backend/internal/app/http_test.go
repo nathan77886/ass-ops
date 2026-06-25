@@ -9606,7 +9606,9 @@ func TestSSHMachineRehearsalSnapshotPayloadSanitizesAttestation(t *testing.T) {
 		snapshot["environment_proof_ready"] != true ||
 		snapshot["live_rehearsal_controls_ready"] != true ||
 		snapshot["sanitized_result_recorded"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
 		snapshot["status_snapshot_written"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["external_call_made"] != false ||
 		snapshot["ssh_process_started"] != false ||
 		snapshot["command_executed"] != false ||
@@ -9750,6 +9752,8 @@ func TestRecordSSHMachineRehearsalSnapshotHandlerWritesWhenReady(t *testing.T) {
 	if snapshot["target_environment_attestation_ready"] != true ||
 		snapshot["environment_proof_ready"] != true ||
 		snapshot["live_rehearsal_controls_ready"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["stdout_included"] != false ||
 		snapshot["private_key_included"] != false ||
 		snapshot["environment_identifier_included"] != false {
@@ -9950,6 +9954,11 @@ func TestRecordSSHMachineRehearsalSnapshotHandlerAssetMissing(t *testing.T) {
 		got["ssh_machine_asset_observed"] != false ||
 		got["ssh_rehearsal_snapshot_written"] != false {
 		t.Fatalf("unexpected asset missing response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] {
+		t.Fatalf("unexpected asset-missing ssh snapshot write eligibility: %#v", snapshot)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

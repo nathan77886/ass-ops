@@ -387,6 +387,7 @@ func sshMachineRehearsalSnapshotPayload(preview map[string]any, assetObserved bo
 	controlEvidence := mapFromAny(preview["live_rehearsal_control_evidence"])
 	environmentProof := mapFromAny(preview["environment_proof_plan"])
 	attestation := mapFromAny(preview["target_environment_attestation_plan"])
+	statusSnapshotWriteEligible := true
 	return map[string]any{
 		"mode":                                      "ssh_rehearsal_attestation_snapshot",
 		"ssh_machine_id":                            cleanPreviewString(machine["id"]),
@@ -423,7 +424,8 @@ func sshMachineRehearsalSnapshotPayload(preview map[string]any, assetObserved bo
 		"target_environment_proof_observed":         boolOnlyFromAny(attestation["target_environment_proof_observed"]),
 		"verify_result_observed":                    boolOnlyFromAny(attestation["verify_result_observed"]),
 		"exec_result_observed":                      boolOnlyFromAny(attestation["exec_result_observed"]),
-		"status_snapshot_written":                   true,
+		"status_snapshot_write_eligible":            statusSnapshotWriteEligible,
+		"status_snapshot_written":                   statusSnapshotWriteEligible,
 		"canonical_asset_status_snapshot_attempted": assetObserved,
 		"external_call_made":                        false,
 		"ssh_process_started":                       false,
