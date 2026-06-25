@@ -2012,7 +2012,7 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
   );
 }
 
-function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onRecordAttemptSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptResponseSnapshot, onRecordArmingSnapshot, canRecordArmingSnapshot, claimLoading, resultLoading, snapshotLoading, activationSnapshotLoading, sendSnapshotLoading, responseSnapshotLoading, armingSnapshotLoading, snapshotResult, activationSnapshotResult, sendSnapshotResult, responseSnapshotResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordArmingSnapshot?: () => void; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; snapshotLoading?: boolean; activationSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
+function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onRecordAttemptSnapshot, onRecordAttemptRequestEnvelopeSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptResponseSnapshot, onRecordArmingSnapshot, canRecordArmingSnapshot, claimLoading, resultLoading, snapshotLoading, requestEnvelopeSnapshotLoading, activationSnapshotLoading, sendSnapshotLoading, responseSnapshotLoading, armingSnapshotLoading, snapshotResult, requestEnvelopeSnapshotResult, activationSnapshotResult, sendSnapshotResult, responseSnapshotResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptRequestEnvelopeSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordArmingSnapshot?: () => void; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; snapshotLoading?: boolean; requestEnvelopeSnapshotLoading?: boolean; activationSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; requestEnvelopeSnapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
   if (!value || value.kind !== 'project_template_provider_review_execute') return null;
   const request = value.execution_request || {};
   const guardrail = value.execution_guardrail || {};
@@ -2409,6 +2409,18 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
           <Tag>{String(activationSnapshotResult.provider_api_mutation || 'disabled')}</Tag>
         </Space>
       ) : null}
+      {requestEnvelopeSnapshotResult ? (
+        <Space size={4} wrap>
+          <Tag color={requestEnvelopeSnapshotResult.provider_review_attempt_request_envelope_snapshot_written ? 'green' : requestEnvelopeSnapshotResult.recording_state === 'asset_missing' ? 'red' : requestEnvelopeSnapshotResult.recording_ready === false ? 'gold' : 'default'}>
+            request envelope snapshot {String(requestEnvelopeSnapshotResult.recording_state || 'unknown')}
+          </Tag>
+          <Tag>{requestEnvelopeSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
+          <Tag>{requestEnvelopeSnapshotResult.provider_review_attempt_asset_observed ? 'attempt asset observed' : 'attempt asset missing'}</Tag>
+          <Tag>{requestEnvelopeSnapshotResult.request_envelope_materialized ? 'envelope materialized' : 'envelope blocked'}</Tag>
+          <Tag>{requestEnvelopeSnapshotResult.provider_request_sent ? 'provider request sent' : 'no provider request'}</Tag>
+          <Tag>{String(requestEnvelopeSnapshotResult.provider_api_mutation || 'disabled')}</Tag>
+        </Space>
+      ) : null}
       {sendSnapshotResult ? (
         <Space size={4} wrap>
           <Tag color={sendSnapshotResult.provider_review_attempt_send_snapshot_written ? 'green' : sendSnapshotResult.recording_state === 'asset_missing' ? 'red' : sendSnapshotResult.recording_ready === false ? 'gold' : 'default'}>
@@ -2724,6 +2736,11 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
               {onRecordAttemptSnapshot ? (
                 <Button size="small" loading={snapshotLoading} disabled={!operation.id || snapshotLoading} onClick={() => onRecordAttemptSnapshot(String(operation.id || ''))}>
                   Record snapshot
+                </Button>
+              ) : null}
+              {onRecordAttemptRequestEnvelopeSnapshot ? (
+                <Button size="small" loading={requestEnvelopeSnapshotLoading} disabled={!operation.id || requestEnvelopeSnapshotLoading} onClick={() => onRecordAttemptRequestEnvelopeSnapshot(String(operation.id || ''))}>
+                  Record envelope
                 </Button>
               ) : null}
               {onRecordAttemptActivationSnapshot ? (
@@ -4845,11 +4862,13 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [providerReviewClaimLoading, setProviderReviewClaimLoading] = useState(false);
   const [providerReviewResultLoading, setProviderReviewResultLoading] = useState(false);
   const [providerReviewSnapshotLoading, setProviderReviewSnapshotLoading] = useState(false);
+  const [providerReviewRequestEnvelopeSnapshotLoading, setProviderReviewRequestEnvelopeSnapshotLoading] = useState(false);
   const [providerReviewActivationSnapshotLoading, setProviderReviewActivationSnapshotLoading] = useState(false);
   const [providerReviewSendSnapshotLoading, setProviderReviewSendSnapshotLoading] = useState(false);
   const [providerReviewResponseSnapshotLoading, setProviderReviewResponseSnapshotLoading] = useState(false);
   const [providerReviewArmingSnapshotLoading, setProviderReviewArmingSnapshotLoading] = useState(false);
   const [providerReviewSnapshotResult, setProviderReviewSnapshotResult] = useState<AnyRow>();
+  const [providerReviewRequestEnvelopeSnapshotResult, setProviderReviewRequestEnvelopeSnapshotResult] = useState<AnyRow>();
   const [providerReviewActivationSnapshotResult, setProviderReviewActivationSnapshotResult] = useState<AnyRow>();
   const [providerReviewSendSnapshotResult, setProviderReviewSendSnapshotResult] = useState<AnyRow>();
   const [providerReviewResponseSnapshotResult, setProviderReviewResponseSnapshotResult] = useState<AnyRow>();
@@ -4873,6 +4892,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     setOptimisticallyClaimedProviderReviewAttemptID(undefined);
     setOptimisticallyRecordedProviderReviewAttemptID(undefined);
     setProviderReviewSnapshotResult(undefined);
+    setProviderReviewRequestEnvelopeSnapshotResult(undefined);
     setProviderReviewActivationSnapshotResult(undefined);
     setProviderReviewSendSnapshotResult(undefined);
     setProviderReviewResponseSnapshotResult(undefined);
@@ -5074,6 +5094,26 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
       message.error(error.message || 'Could not record provider review attempt snapshot');
     } finally {
       setProviderReviewSnapshotLoading(false);
+    }
+  }
+  async function recordProviderReviewAttemptRequestEnvelopeSnapshot(id: string) {
+    if (!id || providerReviewRequestEnvelopeSnapshotLoading) return;
+    setProviderReviewRequestEnvelopeSnapshotResult(undefined);
+    setProviderReviewRequestEnvelopeSnapshotLoading(true);
+    try {
+      const result = await api(`/api/provider-review-attempts/${id}/request-envelope-snapshot`, { method: 'POST', body: JSON.stringify({}) });
+      setProviderReviewRequestEnvelopeSnapshotResult(result);
+      if (result.recording_ready === false) {
+        message.warning(result.message || 'Provider review request envelope snapshot is not ready yet');
+      } else {
+        message.success(result.provider_review_attempt_request_envelope_snapshot_written ? 'Provider review request envelope snapshot recorded' : 'Provider review request envelope snapshot already current');
+      }
+    } catch (error: any) {
+      setProviderReviewRequestEnvelopeSnapshotResult(undefined);
+      message.error(error.message || 'Could not record provider review request envelope snapshot');
+    } finally {
+      approvalAudit.reload();
+      setProviderReviewRequestEnvelopeSnapshotLoading(false);
     }
   }
   async function recordProviderReviewAttemptActivationSnapshot(id: string) {
@@ -5333,6 +5373,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             onClaimAttempt={claimProviderReviewAttempt}
             onRecordAttemptResult={recordProviderReviewAttemptResult}
             onRecordAttemptSnapshot={recordProviderReviewAttemptSnapshot}
+            onRecordAttemptRequestEnvelopeSnapshot={recordProviderReviewAttemptRequestEnvelopeSnapshot}
             onRecordAttemptActivationSnapshot={recordProviderReviewAttemptActivationSnapshot}
             onRecordAttemptSendSnapshot={recordProviderReviewAttemptSendSnapshot}
             onRecordAttemptResponseSnapshot={recordProviderReviewAttemptResponseSnapshot}
@@ -5341,11 +5382,13 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             claimLoading={providerReviewClaimLoading}
             resultLoading={providerReviewResultLoading}
             snapshotLoading={providerReviewSnapshotLoading}
+            requestEnvelopeSnapshotLoading={providerReviewRequestEnvelopeSnapshotLoading}
             activationSnapshotLoading={providerReviewActivationSnapshotLoading}
             sendSnapshotLoading={providerReviewSendSnapshotLoading}
             responseSnapshotLoading={providerReviewResponseSnapshotLoading}
             armingSnapshotLoading={providerReviewArmingSnapshotLoading}
             snapshotResult={providerReviewSnapshotResult}
+            requestEnvelopeSnapshotResult={providerReviewRequestEnvelopeSnapshotResult}
             activationSnapshotResult={providerReviewActivationSnapshotResult}
             sendSnapshotResult={providerReviewSendSnapshotResult}
             responseSnapshotResult={providerReviewResponseSnapshotResult}

@@ -21964,6 +21964,237 @@ func TestRecordProviderReviewAttemptActivationSnapshotRowsAffectedUnknownDoesNot
 	}
 }
 
+func TestRecordProviderReviewAttemptRequestEnvelopeSnapshotWritesContractReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_request_envelope_contract_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_request_envelope_contract_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptRequestEnvelopeSnapshot(context.Background(), store, ProviderReviewAttemptRequestEnvelopeSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRequestEnvelopeSnapshot: %v", err)
+	}
+	if got["recording_state"] != "request_envelope_contract_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_request_envelope_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["provider_request_sent"] != false ||
+		got["request_envelope_materialized"] != false {
+		t.Fatalf("unexpected provider review request envelope snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["request_envelope_plan_observed"] != true ||
+		snapshot["request_envelope_contract_ready"] != true ||
+		snapshot["request_envelope_metadata_ready"] != false ||
+		snapshot["request_materialization_contract_ready"] != true ||
+		snapshot["branch_policy_contract_ready"] != true ||
+		snapshot["credential_binding_contract_ready"] != true ||
+		snapshot["transport_contract_ready"] != true ||
+		snapshot["method"] != "POST" ||
+		snapshot["payload_shape"] != "ref_from_target_branch" ||
+		snapshot["payload_builder"] != "build_redacted_branch_ref_request" ||
+		snapshot["request_envelope_materialized"] != false ||
+		snapshot["provider_request_sent"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review request envelope snapshot payload: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("request envelope snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRequestEnvelopeSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptRequestEnvelopeSnapshot(context.Background(), store, ProviderReviewAttemptRequestEnvelopeSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRequestEnvelopeSnapshot asset missing: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_request_envelope_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected asset missing provider review request envelope response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRequestEnvelopeSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptRequestEnvelopeSnapshot(context.Background(), store, ProviderReviewAttemptRequestEnvelopeSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRequestEnvelopeSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_request_envelope_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run provider review request envelope response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRequestEnvelopeSnapshotNotCurrentCandidateDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("completed", "dependency_satisfied")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptRequestEnvelopeSnapshot(context.Background(), store, ProviderReviewAttemptRequestEnvelopeSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRequestEnvelopeSnapshot not current: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_request_envelope_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("unexpected not-current provider review request envelope response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRequestEnvelopeSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_request_envelope_contract_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_request_envelope_contract_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptRequestEnvelopeSnapshot(context.Background(), store, ProviderReviewAttemptRequestEnvelopeSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRequestEnvelopeSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_request_envelope_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown provider review request envelope response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptRequestEnvelopeSnapshotPayloadRequiresEnvelopePlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	delete(dispatchPlan, "request_envelope_plan")
+
+	snapshot := providerReviewAttemptRequestEnvelopeSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptRequestEnvelopeSnapshotReadiness(snapshot)
+	if ready ||
+		state != "request_envelope_blocked" ||
+		snapshot["request_envelope_plan_observed"] != false ||
+		snapshot["request_envelope_contract_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_request_envelope_plan_missing") {
+		t.Fatalf("request envelope snapshot without envelope plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("request envelope snapshot without envelope plan leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
 func TestRecordProviderReviewAttemptSendSnapshotWritesBlockedCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -22189,6 +22420,24 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenRe
 			},
 		},
 		{
+			name: "request-envelope",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRequestEnvelopeSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptRequestEnvelopeSnapshotRequest,
+			status:    "provider_review_attempt_request_envelope_contract_ready",
+			state:     "request_envelope_contract_ready",
+			health:    "low",
+			writeFlag: "provider_review_attempt_request_envelope_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["provider_request_sent"] != false ||
+					got["request_envelope_materialized"] != false {
+					t.Fatalf("unexpected request envelope snapshot response: %#v", got)
+				}
+			},
+		},
+		{
 			name: "send",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptSendSnapshot(w, r)
@@ -22280,6 +22529,20 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnappr
 			},
 		},
 		{
+			name: "request-envelope",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRequestEnvelopeSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptRequestEnvelopeSnapshotRequest,
+			writeFlag: "provider_review_attempt_request_envelope_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["request_envelope_materialized"] != false {
+					t.Fatalf("request envelope unapproved response should keep envelope unmaterialized: %#v", got)
+				}
+			},
+		},
+		{
 			name: "send",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptSendSnapshot(w, r)
@@ -22349,6 +22612,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 			request: newProviderReviewAttemptActivationSnapshotRequest,
 		},
 		{
+			name: "request-envelope",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRequestEnvelopeSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptRequestEnvelopeSnapshotRequest,
+		},
+		{
 			name: "send",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptSendSnapshot(w, r)
@@ -22393,6 +22663,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptActivationSnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/activation-snapshot",
+		},
+		{
+			name: "request-envelope",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRequestEnvelopeSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/request-envelope-snapshot",
 		},
 		{
 			name: "send",
@@ -27866,6 +28143,12 @@ func newProviderReviewMutationArmingSnapshotRequest(body string) *http.Request {
 
 func newProviderReviewAttemptActivationSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/activation-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptRequestEnvelopeSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/request-envelope-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
