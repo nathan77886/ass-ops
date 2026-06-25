@@ -655,6 +655,24 @@ function assetIDsByTypeMetadata(rows: AnyRow[] = [], type: string, key: string, 
     .filter(Boolean));
 }
 
+function tagRunAssetIDsByOperation(rows: AnyRow[] = []) {
+  return rows.reduce<Record<string, Set<string>>>((result, row) => {
+    if (String(row.asset_type || '') !== 'repo_tag_run') return result;
+    const assetID = canonicalAssetGraphID(row, 'repo_tag_run');
+    const operationID = cleanOperationAssetID(row.metadata?.operation_run_id);
+    if (!assetID || !operationID) return result;
+    result[operationID] ??= new Set<string>();
+    result[operationID].add(assetID);
+    return result;
+  }, {});
+}
+
+function cleanOperationAssetID(raw: unknown) {
+  const value = String(raw || '').trim();
+  if (!value || value === '<nil>') return '';
+  return value.startsWith('operation_run:') ? value : `operation_run:${value}`;
+}
+
 function metadataValueEqual(raw: unknown, value: string) {
   return String(raw || '').trim().toLowerCase() === value.trim().toLowerCase();
 }
@@ -840,7 +858,7 @@ function countRepoSyncGraphLinks(graph: AnyRow = {}, repositoryAssetIDs = new Se
   return counts;
 }
 
-function countGitHubActionGraphLinks(graph: AnyRow = {}, projectAssetIDs = new Set<string>(), repositoryAssetIDs = new Set<string>(), remoteAssetIDs = new Set<string>(), actionAssetIDs = new Set<string>(), tagRunAssetIDs = new Set<string>(), tagOperationIDs = new Set<string>()) {
+function countGitHubActionGraphLinks(graph: AnyRow = {}, projectAssetIDs = new Set<string>(), repositoryAssetIDs = new Set<string>(), remoteAssetIDs = new Set<string>(), actionAssetIDs = new Set<string>(), tagRunAssetIDs = new Set<string>(), tagRunAssetIDsByOperation: Record<string, Set<string>> = {}, tagOperationIDs = new Set<string>()) {
   const repositoryProjects: Record<string, Record<string, boolean>> = {};
   const remoteRepositories: Record<string, Record<string, boolean>> = {};
   const remoteActionRuns: Record<string, Record<string, boolean>> = {};
@@ -919,7 +937,9 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}, projectAssetIDs = new S
   }, 0);
   counts.completeTaggedRemoteAssets = Object.entries(taggedRemoteOps).reduce((total, [remoteID, operations]) => {
     if (!hasCanonicalProjectRemote(remoteID) || !remoteAssetIDs.has(remoteID)) return total;
-    return total + Object.keys(operations).filter((operationID) => tagOperationIDs.has(operationID)).length;
+    return total + Object.keys(operations).filter((operationID) => (
+      tagOperationIDs.has(operationID) && Array.from(tagRunAssetIDsByOperation[operationID] || []).some((tagRunID) => tagRunAssetIDs.has(tagRunID))
+    )).length;
   }, 0);
   counts.linkedTagRuns = Object.values(tagActionRuns).filter((actionRuns) => (
     Object.keys(actionRuns).some((actionID) => projectLinkedActionRuns[actionID])
@@ -1318,6 +1338,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
     assetIDsByType(assets, 'git_remote'),
     assetIDsByGraphType(assets, 'pipeline_run', 'github_action_run'),
     assetIDsByType(assets, 'repo_tag_run'),
+    tagRunAssetIDsByOperation(assets),
     tagOperationIDs
   );
   const sshVerifyOperationIDs = operationIDsByType(operations, 'ssh.verify');

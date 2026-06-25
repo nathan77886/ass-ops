@@ -1416,6 +1416,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		assetIDsByType(assets, "git_remote"),
 		assetIDsByGraphType(assets, "pipeline_run", "github_action_run"),
 		assetIDsByType(assets, "repo_tag_run"),
+		tagRunAssetIDsByOperation(assets),
 		tagOperationIDs,
 	)
 	repoTagRuns := operationCounts["repo.tag"] + operationCounts["repo.create_tag"]
@@ -1526,6 +1527,40 @@ func assetIDsByTypeMetadata(rows []map[string]any, typ, key, value string) map[s
 		}
 	}
 	return ids
+}
+
+func tagRunAssetIDsByOperation(rows []map[string]any) map[string]map[string]bool {
+	ids := map[string]map[string]bool{}
+	for _, row := range rows {
+		if fmt.Sprint(row["asset_type"]) != "repo_tag_run" {
+			continue
+		}
+		assetID := canonicalAssetGraphID(row, "repo_tag_run")
+		if assetID == "" {
+			continue
+		}
+		metadata := mapFromAPI(row["metadata"])
+		operationID := cleanOperationAssetID(fmt.Sprint(metadata["operation_run_id"]))
+		if operationID == "" {
+			continue
+		}
+		if ids[operationID] == nil {
+			ids[operationID] = map[string]bool{}
+		}
+		ids[operationID][assetID] = true
+	}
+	return ids
+}
+
+func cleanOperationAssetID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "<nil>" {
+		return ""
+	}
+	if strings.HasPrefix(value, "operation_run:") {
+		return value
+	}
+	return "operation_run:" + value
 }
 
 func assetIDsByGraphType(rows []map[string]any, assetType, graphType string) map[string]bool {
@@ -2256,7 +2291,7 @@ type githubActionGraphLinkCounts struct {
 	LinkedTagRunAssets         int
 }
 
-func countGitHubActionGraphLinks(graph map[string]any, projectAssetIDs, repositoryAssetIDs, remoteAssetIDs, actionAssetIDs, tagRunAssetIDs, tagOperationIDs map[string]bool) githubActionGraphLinkCounts {
+func countGitHubActionGraphLinks(graph map[string]any, projectAssetIDs, repositoryAssetIDs, remoteAssetIDs, actionAssetIDs, tagRunAssetIDs map[string]bool, tagRunAssetIDsByOperation map[string]map[string]bool, tagOperationIDs map[string]bool) githubActionGraphLinkCounts {
 	counts := githubActionGraphLinkCounts{}
 	repositoryProjects := map[string]map[string]bool{}
 	remoteRepositories := map[string]map[string]bool{}
@@ -2359,7 +2394,7 @@ func countGitHubActionGraphLinks(graph map[string]any, projectAssetIDs, reposito
 			counts.CompleteTaggedRemotes += len(operations)
 			if hasCanonicalProjectRemote(remoteID, remoteRepositories, repositoryProjects, projectAssetIDs, repositoryAssetIDs) && remoteAssetIDs[remoteID] {
 				for operationID := range operations {
-					if tagOperationIDs[operationID] {
+					if tagOperationIDs[operationID] && hasAnyKnownID(tagRunAssetIDsByOperation[operationID], tagRunAssetIDs) {
 						counts.CompleteTaggedRemoteAssets++
 					}
 				}

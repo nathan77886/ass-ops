@@ -1279,7 +1279,7 @@ func TestFirstVersionReadinessReportRequiresGitHubActionGraphLink(t *testing.T) 
 		{"asset_type": "repository", "source_id": "10"},
 		{"asset_type": "pipeline_run", "source_id": "101"},
 		{"asset_type": "git_remote", "source_id": "42"},
-		{"asset_type": "repo_tag_run", "source_id": "201"},
+		{"asset_type": "repo_tag_run", "source_id": "201", "metadata": map[string]any{"operation_run_id": "201"}},
 	}, []map[string]any{
 		{"id": "201", "operation_type": "repo.create_tag"},
 	}, nil, map[string]any{
@@ -1334,6 +1334,7 @@ func TestCountGitHubActionGraphLinks(t *testing.T) {
 		map[string]bool{"git_remote:1": true},
 		map[string]bool{"github_action_run:1": true},
 		map[string]bool{"repo_tag_run:1": true},
+		map[string]map[string]bool{"operation_run:1": {"repo_tag_run:1": true}},
 		map[string]bool{"operation_run:1": true},
 	)
 	if got.ProjectRepositories != 1 || got.RepositoryRemotes != 2 || got.RemoteActionRuns != 2 || got.TaggedRemotes != 2 || got.TagActionRunLinks != 2 || got.CompleteActionRuns != 1 || got.CompleteActionAssets != 1 || got.CompleteTaggedRemotes != 1 || got.CompleteTaggedRemoteAssets != 1 || got.LinkedTagRuns != 1 || got.LinkedTagRunAssets != 1 {
@@ -1357,10 +1358,25 @@ func TestCountGitHubActionGraphLinksRequiresCanonicalRemoteAndActionAssets(t *te
 		map[string]bool{"git_remote:1": true},
 		map[string]bool{"github_action_run:2": true},
 		nil,
+		nil,
 		map[string]bool{"operation_run:1": true},
 	)
-	if remoteOnly.CompleteActionRuns != 1 || remoteOnly.CompleteActionAssets != 0 || remoteOnly.CompleteTaggedRemoteAssets != 1 {
-		t.Fatalf("countGitHubActionGraphLinks with only canonical remote = %#v, want graph action but no action asset chain", remoteOnly)
+	if remoteOnly.CompleteActionRuns != 1 || remoteOnly.CompleteActionAssets != 0 || remoteOnly.CompleteTaggedRemoteAssets != 0 {
+		t.Fatalf("countGitHubActionGraphLinks with only canonical remote = %#v, want graph action but no action or tag asset chain", remoteOnly)
+	}
+
+	withTagRunAsset := countGitHubActionGraphLinks(
+		graph,
+		map[string]bool{"project:1": true},
+		map[string]bool{"repository:1": true},
+		map[string]bool{"git_remote:1": true},
+		nil,
+		map[string]bool{"repo_tag_run:1": true},
+		map[string]map[string]bool{"operation_run:1": {"repo_tag_run:1": true}},
+		map[string]bool{"operation_run:1": true},
+	)
+	if withTagRunAsset.CompleteTaggedRemoteAssets != 1 {
+		t.Fatalf("countGitHubActionGraphLinks with canonical tag operation and tag run asset = %#v, want canonical tag asset chain", withTagRunAsset)
 	}
 
 	actionOnly := countGitHubActionGraphLinks(
@@ -1369,6 +1385,7 @@ func TestCountGitHubActionGraphLinksRequiresCanonicalRemoteAndActionAssets(t *te
 		map[string]bool{"repository:1": true},
 		map[string]bool{"git_remote:2": true},
 		map[string]bool{"github_action_run:1": true},
+		nil,
 		nil,
 		map[string]bool{"operation_run:1": true},
 	)
@@ -1382,6 +1399,7 @@ func TestCountGitHubActionGraphLinksRequiresCanonicalRemoteAndActionAssets(t *te
 		nil,
 		map[string]bool{"git_remote:1": true},
 		map[string]bool{"github_action_run:1": true},
+		nil,
 		nil,
 		map[string]bool{"operation_run:1": true},
 	)
@@ -1397,7 +1415,7 @@ func TestCountGitHubActionGraphLinksIgnoresInvalidTagActionTarget(t *testing.T) 
 			map[string]any{"from_asset_id": "operation_run:1", "to_asset_id": "github_action_run:1", "relation_type": "matched_action_run"},
 		},
 	}
-	got := countGitHubActionGraphLinks(graph, nil, nil, nil, nil, nil, nil)
+	got := countGitHubActionGraphLinks(graph, nil, nil, nil, nil, nil, nil, nil)
 	if got.TagActionRunLinks != 0 || got.LinkedTagRuns != 0 || got.LinkedTagRunAssets != 0 {
 		t.Fatalf("countGitHubActionGraphLinks with invalid tag-action targets = %#v, want no tag-action evidence", got)
 	}
@@ -1422,6 +1440,7 @@ func TestCountGitHubActionGraphLinksFindsCanonicalLinkedTagRunAcrossMultipleMatc
 		map[string]bool{"git_remote:1": true},
 		map[string]bool{"github_action_run:2": true},
 		map[string]bool{"repo_tag_run:1": true},
+		map[string]map[string]bool{"operation_run:1": {"repo_tag_run:1": true}},
 		map[string]bool{"operation_run:1": true},
 	)
 	if got.LinkedTagRuns != 1 || got.LinkedTagRunAssets != 1 {
@@ -1446,6 +1465,7 @@ func TestCountGitHubActionGraphLinksRequiresProjectLinkedTagActionRun(t *testing
 		map[string]bool{"git_remote:1": true},
 		map[string]bool{"github_action_run:1": true, "github_action_run:2": true},
 		map[string]bool{"repo_tag_run:1": true},
+		map[string]map[string]bool{"operation_run:1": {"repo_tag_run:1": true}},
 		map[string]bool{"operation_run:1": true},
 	)
 	if got.CompleteActionRuns != 1 || got.CompleteActionAssets != 1 || got.CompleteTaggedRemotes != 1 || got.CompleteTaggedRemoteAssets != 1 || got.TagActionRunLinks != 1 || got.LinkedTagRuns != 0 || got.LinkedTagRunAssets != 0 {
