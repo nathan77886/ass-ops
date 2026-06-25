@@ -2656,6 +2656,79 @@ func TestReleasePodLogRehearsalPlanRejectsUnsafeInput(t *testing.T) {
 	}
 }
 
+func TestReleaseSSHRehearsalPlan(t *testing.T) {
+	plan, err := releaseSSHRehearsalPlan("ASSOPS-Demo", "Prod")
+	if err != nil {
+		t.Fatalf("releaseSSHRehearsalPlan: %v", err)
+	}
+	for _, want := range []string{
+		"# ASSOPS SSH Target Rehearsal Plan",
+		"Project slug: `assops-demo`",
+		"Environment: `prod`",
+		"does not accept hostnames, usernames, SSH key paths, runbook URLs, fixture IDs, operator names, or command text as inputs",
+		"does not read SSH keys, read known_hosts, open sockets, start SSH processes, enqueue workers, create approvals, write operation logs, or record snapshots",
+		"approval-gated `ssh.verify` rehearsal",
+		"low-risk `ssh.exec` rehearsal command",
+		"operation-to-command-to-machine graph chains exist for both verify and exec",
+		"target-environment proof snapshot status",
+		"ssh rehearsal attestation snapshot status",
+		"hostnames, IP addresses, usernames, and ports",
+		"SSH private keys, public keys, known_hosts bodies, and key paths",
+		"commands, arguments, stdout, stderr, exit errors, and raw adapter output",
+		"does not probe environments, read key material, start SSH, create approvals, enqueue workers, write operation logs, sync assets, or record snapshots",
+		"assops-tool project readiness",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("ssh rehearsal plan missing %q in:\n%s", want, plan)
+		}
+	}
+	for _, forbidden := range []string{
+		"Authorization:",
+		"token=",
+		"password=",
+		"PRIVATE KEY",
+		"BEGIN OPENSSH",
+		"known_hosts:",
+		"stdout:",
+		"stderr:",
+		"10.0.0.",
+		"ssh://",
+		"deploy@",
+		"/etc/assops/ssh",
+		"runbooks.example.com",
+	} {
+		if strings.Contains(plan, forbidden) {
+			t.Fatalf("ssh rehearsal plan should not contain %q:\n%s", forbidden, plan)
+		}
+	}
+}
+
+func TestReleaseSSHRehearsalPlanRejectsUnsafeInput(t *testing.T) {
+	cases := []struct {
+		name        string
+		slug        string
+		environment string
+		want        string
+	}{
+		{name: "empty slug", slug: "", environment: "prod", want: "project slug"},
+		{name: "slash slug", slug: "owner/repo", environment: "prod", want: "project slug"},
+		{name: "leading dot slug", slug: ".assops", environment: "prod", want: "project slug"},
+		{name: "trailing dot slug", slug: "assops.", environment: "prod", want: "project slug"},
+		{name: "empty environment", slug: "assops-demo", environment: "", want: "environment"},
+		{name: "environment slash", slug: "assops-demo", environment: "prod/us", want: "environment"},
+		{name: "environment leading dot", slug: "assops-demo", environment: ".prod", want: "environment"},
+		{name: "environment trailing dot", slug: "assops-demo", environment: "prod.", want: "environment"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := releaseSSHRehearsalPlan(tc.slug, tc.environment)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("releaseSSHRehearsalPlan error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestReleaseBackupSchedulePlanForArtifactSource(t *testing.T) {
 	plan, err := releaseBackupSchedulePlan("nathan77886/ass-ops", "production", "ubuntu-latest", "17 3 * * 1", "artifact:retained-assops-backup", "14")
 	if err != nil {

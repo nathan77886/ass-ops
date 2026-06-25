@@ -395,4 +395,14 @@ The gateway, control worker, and node worker all expose `/healthz` inside their 
 - Keep `ASSOPS_WEBHOOK_SECRET_KEY` stable. Rotated webhook secrets are encrypted with it.
 - Keep `ASSOPS_LOCAL_BARE_BASE_DIRS` pointed at a dedicated ASSOPS-owned directory; project template `local_bare` remotes outside that path are rejected.
 - Do not mount writable SSH directories into the web service.
+- Before rehearsing SSH verify/exec against a real authorized machine, generate the no-call SSH rehearsal plan:
+
+  ```bash
+  assops-tool release ssh-rehearsal-plan \
+    assops-demo \
+    prod \
+    .assops/release-notes/ssh-rehearsal-plan.md
+  ```
+
+  The plan accepts only a safe project slug and environment label. It lists the approval-gated `ssh.verify`/`ssh.exec` evidence, operation-to-command-to-machine graph proof, target-environment proof, and rehearsal snapshot sequence without accepting or storing hostnames, IP addresses, usernames, ports, SSH key paths, known_hosts bodies, command text, stdout/stderr, runbook URLs, fixture IDs, operator identities, approval notes, or incident details. It does not read SSH keys, open sockets, start SSH, enqueue workers, create approvals, write operation logs, sync assets, or record snapshots.
 - Restrict access to the Compose host and Docker socket.

@@ -150,6 +150,17 @@ func run() error {
 			fmt.Print(plan)
 			return nil
 		}
+		if (len(args) == 4 || len(args) == 5) && args[1] == "ssh-rehearsal-plan" {
+			plan, err := releaseSSHRehearsalPlan(args[2], args[3])
+			if err != nil {
+				return err
+			}
+			if len(args) == 5 {
+				return writeTextFile(args[4], plan)
+			}
+			fmt.Print(plan)
+			return nil
+		}
 		if (len(args) == 5 || len(args) == 6) && args[1] == "branch-protection-plan" {
 			plan, err := releaseBranchProtectionPlan(args[2], args[3], args[4])
 			if err != nil {
@@ -166,7 +177,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release ssh-rehearsal-plan PROJECT_SLUG ENVIRONMENT [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -1096,6 +1107,73 @@ func releasePodLogRehearsalPlan(projectSlug, publicOrigin, environment, namespac
 	fmt.Fprintf(&b, "# In ASSOPS UI: Project -> Argo -> Record pod-log audit snapshot after terminal sanitized evidence\n")
 	fmt.Fprintf(&b, "```\n\n")
 	fmt.Fprintf(&b, "Run the live retrieval rehearsal only after the target environment, namespace, kubeconfig scope, RBAC review, approval, and redaction review are confirmed out of band.\n")
+	return b.String(), nil
+}
+
+func releaseSSHRehearsalPlan(projectSlug, environment string) (string, error) {
+	projectSlug = strings.ToLower(strings.TrimSpace(projectSlug))
+	if !isSafeProjectSlug(projectSlug) {
+		return "", fmt.Errorf("project slug must contain letters or numbers and may include only internal dot, underscore, or hyphen")
+	}
+	environment = strings.ToLower(strings.TrimSpace(environment))
+	if !isSafeProjectSlug(environment) {
+		return "", fmt.Errorf("environment must contain letters or numbers and may include only internal dot, underscore, or hyphen")
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# ASSOPS SSH Target Rehearsal Plan\n\n")
+	fmt.Fprintf(&b, "Project slug: `%s`\n\n", projectSlug)
+	fmt.Fprintf(&b, "Environment: `%s`\n\n", environment)
+	fmt.Fprintf(&b, "## Local Validation\n\n")
+	fmt.Fprintf(&b, "- Project slug and environment are safe local identifiers for matching ASSOPS release evidence.\n")
+	fmt.Fprintf(&b, "- This plan intentionally does not accept hostnames, usernames, SSH key paths, runbook URLs, fixture IDs, operator names, or command text as inputs.\n")
+	fmt.Fprintf(&b, "- This plan does not read SSH keys, read known_hosts, open sockets, start SSH processes, enqueue workers, create approvals, write operation logs, or record snapshots.\n\n")
+	fmt.Fprintf(&b, "## Live Rehearsal Sequence\n\n")
+	for index, step := range []string{
+		"Confirm the ASSOPS project and environment map to the intended authorized target machine outside this document.",
+		"Register or review the SSH machine row in ASSOPS with a configured secret reference and constrained known_hosts material.",
+		"Request the approval-gated `ssh.verify` rehearsal and wait for terminal sanitized exit-code evidence.",
+		"Request one low-risk `ssh.exec` rehearsal command through ASSOPS after approval and wait for terminal sanitized exit-code evidence.",
+		"Verify that operation runs, SSH command-run assets, and operation-to-command-to-machine graph chains exist for both verify and exec.",
+		"Register the target-environment proof only after verify and exec evidence, live controls, and operator attestation are ready.",
+		"Record the broader SSH rehearsal attestation snapshot after the canonical asset graph has been synced.",
+	} {
+		fmt.Fprintf(&b, "%d. %s\n", index+1, step)
+	}
+	fmt.Fprintf(&b, "\n## Required Evidence\n\n")
+	for _, item := range []string{
+		"project-owned ssh_machine or host asset",
+		"approval request for ssh.verify or ssh.exec",
+		"completed ssh.verify command-run evidence with exit-code metadata",
+		"completed ssh.exec command-run evidence with exit-code metadata",
+		"operation_run to ssh_command_run graph edge for verify",
+		"operation_run to ssh_command_run graph edge for exec",
+		"ssh_command_run to ssh_machine graph edge for both runs",
+		"target-environment proof snapshot status",
+		"ssh rehearsal attestation snapshot status",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## Suppressed Material\n\n")
+	for _, item := range []string{
+		"hostnames, IP addresses, usernames, and ports",
+		"SSH private keys, public keys, known_hosts bodies, and key paths",
+		"commands, arguments, stdout, stderr, exit errors, and raw adapter output",
+		"runbook URLs, fixture identifiers, environment identifiers beyond the safe label, and operator identity",
+		"approval notes, incident details, tokens, passwords, cookies, and session material",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## No-Call Boundary\n\n")
+	fmt.Fprintf(&b, "- This plan is local documentation only; it does not probe environments, read key material, start SSH, create approvals, enqueue workers, write operation logs, sync assets, or record snapshots.\n")
+	fmt.Fprintf(&b, "- Machine registration, credential binding, approval, verify/exec execution, environment proof, and snapshot recording remain operator-owned staging tasks.\n\n")
+	fmt.Fprintf(&b, "## Verification Commands\n\n```bash\n")
+	fmt.Fprintf(&b, "assops-tool project readiness\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: SSH -> machine -> rehearsal preview\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: SSH -> machine -> Register target-environment proof after completed verify and exec evidence\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: SSH -> machine -> Record rehearsal snapshot after canonical graph evidence is synced\n")
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "Run real verify/exec only after the target environment, authorized machine, secret reference, known_hosts scope, approval policy, and output-redaction review are confirmed out of band.\n")
 	return b.String(), nil
 }
 
