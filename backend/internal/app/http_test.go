@@ -22482,6 +22482,225 @@ func TestProviderReviewAttemptRequestEnvelopeSnapshotPayloadRejectsMismatchedEnv
 	}
 }
 
+func TestRecordProviderReviewAttemptIdempotencySnapshotWritesMetadataReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_idempotency_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_idempotency_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptIdempotencySnapshot(context.Background(), store, ProviderReviewAttemptIdempotencySnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptIdempotencySnapshot: %v", err)
+	}
+	if got["recording_state"] != "idempotency_metadata_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_idempotency_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["idempotency_claim_recorded"] != false ||
+		got["idempotency_key_included"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["provider_request_sent"] != false {
+		t.Fatalf("unexpected idempotency snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != false ||
+		snapshot["claim_plan_observed"] != true ||
+		snapshot["request_summary_observed"] != true ||
+		snapshot["idempotency_metadata_ready"] != true ||
+		snapshot["requires_idempotency_ledger"] != true ||
+		snapshot["idempotency_key_kind"] != "operation_scope_hash" ||
+		snapshot["idempotency_key_included"] != false ||
+		snapshot["idempotency_claim_recorded"] != false ||
+		snapshot["replay_check"] != "detect_existing_branch_ref" ||
+		snapshot["conflict_policy"] != "treat_existing_matching_ref_as_success" ||
+		snapshot["retry_policy"] != "retry_only_after_response_diagnostics" ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false ||
+		snapshot["no_call_observed"] != true {
+		t.Fatalf("unexpected idempotency snapshot payload: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "raw_key_material", "idempotency_key_hash"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("idempotency snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptIdempotencySnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptIdempotencySnapshot(context.Background(), store, ProviderReviewAttemptIdempotencySnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptIdempotencySnapshot asset missing: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_idempotency_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected asset missing idempotency response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptIdempotencySnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptIdempotencySnapshot(context.Background(), store, ProviderReviewAttemptIdempotencySnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptIdempotencySnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_idempotency_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run idempotency response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptIdempotencySnapshotNotCurrentCandidateDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("completed", "dependency_satisfied")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptIdempotencySnapshot(context.Background(), store, ProviderReviewAttemptIdempotencySnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptIdempotencySnapshot not current: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_idempotency_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("unexpected not-current idempotency response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptIdempotencySnapshotPayloadRequiresRequestSummary(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	delete(attempt, "request_summary")
+
+	snapshot := providerReviewAttemptIdempotencySnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptIdempotencySnapshotReadiness(snapshot)
+	if ready ||
+		state != "idempotency_blocked" ||
+		snapshot["request_summary_observed"] != false ||
+		snapshot["idempotency_metadata_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_request_summary_missing") {
+		t.Fatalf("idempotency snapshot without request summary = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+}
+
+func TestProviderReviewAttemptIdempotencySnapshotPayloadRejectsClaimedOrSensitiveMarkers(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	requestSummary := mapFromAny(attempt["request_summary"])
+	requestSummary["idempotency_key_included"] = true
+	requestSummary["contains_token"] = true
+	requestSummary["idempotency_key_hash"] = "idempotency_key_hash"
+	requestSummary["idempotency_key_material"] = "raw_key_material"
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	claimPlan := mapFromAny(candidate["claim_plan"])
+	claimPlan["idempotency_claim_recorded"] = true
+
+	snapshot := providerReviewAttemptIdempotencySnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptIdempotencySnapshotReadiness(snapshot)
+	if ready ||
+		state != "idempotency_blocked" ||
+		snapshot["idempotency_key_included"] != true ||
+		snapshot["idempotency_claim_recorded"] != true ||
+		snapshot["contains_token"] != true ||
+		snapshot["no_call_observed"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_written"] != false ||
+		!containsString(missing, "provider_review_idempotency_not_no_call") {
+		t.Fatalf("idempotency snapshot with sensitive marker = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "idempotency_key_hash", "raw_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("idempotency snapshot with sensitive marker leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
 func TestRecordProviderReviewAttemptRequestValidationSnapshotWritesMetadataReadyCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -25696,6 +25915,25 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenRe
 			},
 		},
 		{
+			name: "idempotency",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptIdempotencySnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptIdempotencySnapshotRequest,
+			status:    "provider_review_attempt_idempotency_metadata_ready",
+			state:     "idempotency_metadata_ready",
+			health:    "low",
+			writeFlag: "provider_review_attempt_idempotency_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["idempotency_claim_recorded"] != false ||
+					got["idempotency_key_included"] != false ||
+					got["provider_request_sent"] != false {
+					t.Fatalf("unexpected idempotency snapshot response: %#v", got)
+				}
+			},
+		},
+		{
 			name: "request-validation",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptRequestValidationSnapshot(w, r)
@@ -26021,6 +26259,23 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnappr
 				t.Helper()
 				if got["request_envelope_materialized"] != false {
 					t.Fatalf("request envelope unapproved response should keep envelope unmaterialized: %#v", got)
+				}
+			},
+		},
+		{
+			name: "idempotency",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptIdempotencySnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptIdempotencySnapshotRequest,
+			writeFlag: "provider_review_attempt_idempotency_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["idempotency_claim_recorded"] != false ||
+					got["idempotency_key_included"] != false ||
+					got["provider_request_sent"] != false ||
+					got["status_snapshot_write_eligible"] != false {
+					t.Fatalf("idempotency unapproved response should stay unclaimed: %#v", got)
 				}
 			},
 		},
@@ -26413,6 +26668,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 			request: newProviderReviewAttemptRequestEnvelopeSnapshotRequest,
 		},
 		{
+			name: "idempotency",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptIdempotencySnapshot(w, r)
+			},
+			request: newProviderReviewAttemptIdempotencySnapshotRequest,
+		},
+		{
 			name: "request-validation",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptRequestValidationSnapshot(w, r)
@@ -26562,6 +26824,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptRequestEnvelopeSnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/request-envelope-snapshot",
+		},
+		{
+			name: "idempotency",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptIdempotencySnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/idempotency-snapshot",
 		},
 		{
 			name: "request-validation",
@@ -33638,6 +33907,12 @@ func newProviderReviewAttemptSnapshotRequest(body string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
 
+func newProviderReviewAttemptIdempotencySnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/idempotency-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
 func newProviderReviewMutationArmingSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/operation-approvals/approval-1/provider-review-arming-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "approval-1")
@@ -33998,6 +34273,8 @@ func expectProviderReviewAttemptSnapshotSelectWithApprovalAction(mock sqlmock.Sq
 		"operation_order",
 		"depends_on_operation",
 		"dependency_status",
+		"request_summary",
+		"response_diagnostics",
 		"provider_api_call_made",
 		"provider_api_mutation",
 		"external_call_made",
@@ -34021,6 +34298,8 @@ func expectProviderReviewAttemptSnapshotSelectWithApprovalAction(mock sqlmock.Sq
 		10,
 		"",
 		dependency,
+		[]byte(`{"mode":"redacted_attempt_request_summary","operation_name":"create_branch_ref","endpoint_key":"github.create_branch_ref","payload_builder":"build_redacted_branch_ref_request","response_handler":"handle_branch_ref_response","execution_status":"ready_for_adapter_implementation","request_body_included":false,"headers_included":false,"idempotency_key_kind":"operation_scope_hash","idempotency_key_included":false,"requires_provider_client":true,"requires_request_builder":true,"requires_response_handler":true,"requires_idempotency_ledger":true,"requires_response_diagnostics":true,"provider_api_call_made":false,"provider_api_mutation":"disabled","external_call_made":false,"payload_redacted":true,"contains_token":false,"contains_provider_url":false,"contains_repository_ref":false,"contains_branch_name":false,"contains_file_content":false}`),
+		[]byte(`{"mode":"redacted_attempt_response_diagnostics","endpoint_key":"github.create_branch_ref","status":"pending","success_status_class":"2xx","retryable_status_classes":["5xx"],"response_body_included":false,"headers_included":false,"contains_token":false,"contains_provider_url":false,"provider_api_call_made":false,"provider_api_mutation":"disabled","external_call_made":false}`),
 		false,
 		"disabled",
 		false,
