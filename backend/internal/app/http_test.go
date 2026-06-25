@@ -22709,6 +22709,264 @@ func TestProviderReviewAttemptRequestValidationSnapshotPayloadRejectsMismatchedP
 	}
 }
 
+func TestRecordProviderReviewAttemptRequestMaterializationSnapshotWritesContractReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_request_materialization_contract_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_request_materialization_contract_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptRequestMaterializationSnapshot(context.Background(), store, ProviderReviewAttemptRequestMaterializationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRequestMaterializationSnapshot: %v", err)
+	}
+	if got["recording_state"] != "request_materialization_contract_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_request_materialization_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["request_materialized"] != false ||
+		got["request_validated"] != false ||
+		got["provider_request_sent"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" {
+		t.Fatalf("unexpected provider review request-materialization snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["request_materialization_plan_observed"] != true ||
+		snapshot["request_materialization_contract_ready"] != true ||
+		snapshot["request_materialization_ready"] != false ||
+		snapshot["request_materialization_ready_reason"] != "provider_request_materialization_not_armed" ||
+		snapshot["method"] != "POST" ||
+		snapshot["payload_shape"] != "ref_from_target_branch" ||
+		snapshot["payload_builder"] != "build_redacted_branch_ref_request" ||
+		snapshot["request_path_materialized"] != false ||
+		snapshot["request_url_materialized"] != false ||
+		snapshot["request_body_materialized"] != false ||
+		snapshot["headers_materialized"] != false ||
+		snapshot["authorization_header_materialized"] != false ||
+		snapshot["request_materialized"] != false ||
+		snapshot["request_validated"] != false ||
+		snapshot["provider_request_sent"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review request-materialization snapshot payload: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("request-materialization snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRequestMaterializationSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptRequestMaterializationSnapshot(context.Background(), store, ProviderReviewAttemptRequestMaterializationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRequestMaterializationSnapshot asset missing: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_request_materialization_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected asset missing provider review request-materialization response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRequestMaterializationSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptRequestMaterializationSnapshot(context.Background(), store, ProviderReviewAttemptRequestMaterializationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRequestMaterializationSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_request_materialization_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run provider review request-materialization response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptRequestMaterializationSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_request_materialization_contract_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_request_materialization_contract_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptRequestMaterializationSnapshot(context.Background(), store, ProviderReviewAttemptRequestMaterializationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptRequestMaterializationSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_request_materialization_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown provider review request-materialization response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptRequestMaterializationSnapshotPayloadRequiresPlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	delete(dispatchPlan, "request_materialization_plan")
+
+	snapshot := providerReviewAttemptRequestMaterializationSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptRequestMaterializationSnapshotReadiness(snapshot)
+	if ready ||
+		state != "request_materialization_blocked" ||
+		snapshot["request_materialization_plan_observed"] != false ||
+		snapshot["request_materialization_contract_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_request_materialization_plan_missing") {
+		t.Fatalf("request-materialization snapshot without plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("request-materialization snapshot without plan leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestProviderReviewAttemptRequestMaterializationSnapshotPayloadRejectsMismatchedPlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	requestPlan := mapFromAny(dispatchPlan["request_materialization_plan"])
+	requestPlan["operation_name"] = "commit_starter_files"
+	requestPlan["endpoint_key"] = "github.commit_files"
+
+	snapshot := providerReviewAttemptRequestMaterializationSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptRequestMaterializationSnapshotReadiness(snapshot)
+	if ready ||
+		state != "request_materialization_blocked" ||
+		snapshot["request_materialization_plan_observed"] != true ||
+		snapshot["request_materialization_contract_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_request_materialization_contract_not_ready") {
+		t.Fatalf("request-materialization snapshot with mismatched plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("request-materialization snapshot with mismatched plan leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestProviderReviewAttemptRequestMaterializationSnapshotPayloadRejectsIncludedRequestBody(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	requestPlan := mapFromAny(dispatchPlan["request_materialization_plan"])
+	requestPlan["request_body_included"] = true
+
+	snapshot := providerReviewAttemptRequestMaterializationSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptRequestMaterializationSnapshotReadiness(snapshot)
+	if ready ||
+		state != "request_materialization_contract_ready" ||
+		snapshot["request_materialization_plan_observed"] != true ||
+		snapshot["request_materialization_contract_ready"] != true ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_request_materialization_not_no_call") {
+		t.Fatalf("request-materialization snapshot with included request body = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("request-materialization snapshot with included request body leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
 func TestRecordProviderReviewAttemptRuntimeSnapshotWritesContractReadyCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -24310,6 +24568,25 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenRe
 			},
 		},
 		{
+			name: "request-materialization",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRequestMaterializationSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptRequestMaterializationSnapshotRequest,
+			status:    "provider_review_attempt_request_materialization_contract_ready",
+			state:     "request_materialization_contract_ready",
+			health:    "low",
+			writeFlag: "provider_review_attempt_request_materialization_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["request_materialized"] != false ||
+					got["request_validated"] != false ||
+					got["provider_request_sent"] != false {
+					t.Fatalf("unexpected request-materialization snapshot response: %#v", got)
+				}
+			},
+		},
+		{
 			name: "branch-policy",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptBranchPolicySnapshot(w, r)
@@ -24548,6 +24825,29 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnappr
 			},
 		},
 		{
+			name: "request-materialization",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRequestMaterializationSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptRequestMaterializationSnapshotRequest,
+			writeFlag: "provider_review_attempt_request_materialization_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["request_materialized"] != false ||
+					got["request_validated"] != false ||
+					got["provider_request_sent"] != false ||
+					got["mutation_armed"] != false ||
+					got["contains_token"] != false ||
+					got["contains_provider_url"] != false ||
+					got["contains_repository_ref"] != false ||
+					got["contains_branch_name"] != false ||
+					got["contains_file_content"] != false ||
+					got["status_snapshot_write_eligible"] != false {
+					t.Fatalf("request-materialization unapproved response should stay unmaterialized: %#v", got)
+				}
+			},
+		},
+		{
 			name: "branch-policy",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptBranchPolicySnapshot(w, r)
@@ -24736,6 +25036,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 			request: newProviderReviewAttemptRequestValidationSnapshotRequest,
 		},
 		{
+			name: "request-materialization",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRequestMaterializationSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptRequestMaterializationSnapshotRequest,
+		},
+		{
 			name: "branch-policy",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptBranchPolicySnapshot(w, r)
@@ -24836,6 +25143,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptRequestValidationSnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/request-validation-snapshot",
+		},
+		{
+			name: "request-materialization",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptRequestMaterializationSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/request-materialization-snapshot",
 		},
 		{
 			name: "branch-policy",
@@ -30362,6 +30676,12 @@ func newProviderReviewAttemptRequestEnvelopeSnapshotRequest(body string) *http.R
 
 func newProviderReviewAttemptRequestValidationSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/request-validation-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptRequestMaterializationSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/request-materialization-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
