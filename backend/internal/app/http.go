@@ -4819,7 +4819,7 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any, workf
 			"provider_response_headers",
 		},
 		"blocked_reasons": blockedReasons,
-		"message": "Config Git workflow result recording only reconciles sanitized audit operation metadata; no scaffold artifact, Git result, provider review, ProjectVersion pin write, or live validation record is persisted.",
+		"message":         "Config Git workflow result recording only reconciles sanitized audit operation metadata; no scaffold artifact, Git result, provider review, ProjectVersion pin write, or live validation record is persisted.",
 	}
 }
 
@@ -22900,32 +22900,34 @@ func argoPodLogResultRecordingPlan(auditReady bool, evidence, query, target map[
 	if resultObserved {
 		blockedReasons = []string{"live_log_backend_disabled"}
 	}
+	statusSnapshotWriteEligible := resultObserved
 	return map[string]any{
-		"mode":                          "pod_log_result_recording_plan",
-		"recording_state":               recordingState,
-		"recording_ready":               resultObserved,
-		"recording_ready_reason":        readyReason,
-		"recording_enabled":             resultObserved,
-		"result_written":                resultObserved,
-		"operation_log_written":         resultObserved,
-		"canonical_asset_sync_queued":   resultObserved,
-		"status_snapshot_written":       resultObserved,
-		"audit_operation_observed":      boolOnlyFromAny(evidence["has_audit_operations"]),
-		"sanitized_result_observed":     resultObserved,
-		"kubeconfig_binding_recorded":   false,
-		"pod_scope_recorded":            false,
-		"log_capture_recorded":          false,
-		"log_body_included":             false,
-		"redacted_log_body_included":    false,
-		"raw_response_included":         false,
-		"kubeconfig_included":           false,
-		"authorization_header_included": false,
-		"audit_evidence":                evidence,
-		"kubeconfig_readiness_plan":     argoPodLogNamespaceKubeconfigReadinessPlan(query, target, prerequisiteState, evidence),
-		"required_result_fields":        []string{"operation_run_id", "approval_request_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at", "kubeconfig_binding_status", "pod_scope_status", "log_capture_status", "redaction_status"},
-		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret", "raw_kubernetes_response"},
-		"blocked_reasons":               blockedReasons,
-		"message":                       "Preview does not write results; the audit worker records sanitized metadata only and never stores kubeconfig, raw response, or log bodies.",
+		"mode":                           "pod_log_result_recording_plan",
+		"recording_state":                recordingState,
+		"recording_ready":                resultObserved,
+		"recording_ready_reason":         readyReason,
+		"recording_enabled":              resultObserved,
+		"result_written":                 resultObserved,
+		"operation_log_written":          resultObserved,
+		"canonical_asset_sync_queued":    resultObserved,
+		"status_snapshot_write_eligible": statusSnapshotWriteEligible,
+		"status_snapshot_written":        statusSnapshotWriteEligible,
+		"audit_operation_observed":       boolOnlyFromAny(evidence["has_audit_operations"]),
+		"sanitized_result_observed":      resultObserved,
+		"kubeconfig_binding_recorded":    false,
+		"pod_scope_recorded":             false,
+		"log_capture_recorded":           false,
+		"log_body_included":              false,
+		"redacted_log_body_included":     false,
+		"raw_response_included":          false,
+		"kubeconfig_included":            false,
+		"authorization_header_included":  false,
+		"audit_evidence":                 evidence,
+		"kubeconfig_readiness_plan":      argoPodLogNamespaceKubeconfigReadinessPlan(query, target, prerequisiteState, evidence),
+		"required_result_fields":         []string{"operation_run_id", "approval_request_id", "deployment_target_id", "pod_name", "container_name", "status", "line_count", "truncated", "started_at", "finished_at", "kubeconfig_binding_status", "pod_scope_status", "log_capture_status", "redaction_status"},
+		"suppressed_fields":              []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "pod_env", "secret_env", "volume_secret", "raw_kubernetes_response"},
+		"blocked_reasons":                blockedReasons,
+		"message":                        "Preview does not write results; the audit worker records sanitized metadata only and never stores kubeconfig, raw response, or log bodies.",
 	}
 }
 

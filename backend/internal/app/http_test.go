@@ -1883,7 +1883,9 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 			resultPlan["result_written"] != hasSanitizedResult ||
 			resultPlan["operation_log_written"] != hasSanitizedResult ||
 			resultPlan["canonical_asset_sync_queued"] != hasSanitizedResult ||
+			resultPlan["status_snapshot_write_eligible"] != hasSanitizedResult ||
 			resultPlan["status_snapshot_written"] != hasSanitizedResult ||
+			resultPlan["status_snapshot_written"] != resultPlan["status_snapshot_write_eligible"] ||
 			resultPlan["sanitized_result_observed"] != hasSanitizedResult ||
 			resultPlan["recording_state"] != evidence["evidence_state"] {
 			t.Fatalf("pod log result recording plan should reflect sanitized evidence only: result=%#v evidence=%#v", resultPlan, evidence)
@@ -1899,7 +1901,7 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		t.Fatalf("pod log result recording plan should not report writes without evidence: %#v", resultPlan)
 	}
 	if executionPlan["prerequisite_state"] == "metadata_available" {
-		if !hasAuditEvidence && (resultPlan["recording_state"] != "planned" || resultPlan["recording_ready"] != false || resultPlan["recording_enabled"] != false || resultPlan["recording_ready_reason"] != "pod_log_audit_worker_not_observed" || resultPlan["status_snapshot_written"] != false || resultPlan["canonical_asset_sync_queued"] != false) {
+		if !hasAuditEvidence && (resultPlan["recording_state"] != "planned" || resultPlan["recording_ready"] != false || resultPlan["recording_enabled"] != false || resultPlan["recording_ready_reason"] != "pod_log_audit_worker_not_observed" || resultPlan["status_snapshot_write_eligible"] != false || resultPlan["status_snapshot_written"] != false || resultPlan["status_snapshot_written"] != resultPlan["status_snapshot_write_eligible"] || resultPlan["canonical_asset_sync_queued"] != false) {
 			t.Fatalf("metadata-ready pod log result recording plan should wait for sanitized audit result evidence: %#v", resultPlan)
 		}
 	} else if resultPlan["recording_state"] != "blocked" || resultPlan["recording_ready"] != false || resultPlan["recording_enabled"] != false {
