@@ -829,12 +829,16 @@ function countRepoSyncGraphLinks(graph: AnyRow = {}, repoSyncAssetIDs = new Set<
   return counts;
 }
 
-function countGitHubActionGraphLinks(graph: AnyRow = {}, remoteAssetIDs = new Set<string>(), actionAssetIDs = new Set<string>(), tagRunAssetIDs = new Set<string>(), tagOperationIDs = new Set<string>()) {
-  const repositoriesWithProject: Record<string, boolean> = {};
+function countGitHubActionGraphLinks(graph: AnyRow = {}, projectAssetIDs = new Set<string>(), repositoryAssetIDs = new Set<string>(), remoteAssetIDs = new Set<string>(), actionAssetIDs = new Set<string>(), tagRunAssetIDs = new Set<string>(), tagOperationIDs = new Set<string>()) {
+  const repositoryProjects: Record<string, Record<string, boolean>> = {};
   const remoteRepositories: Record<string, Record<string, boolean>> = {};
   const remoteActionRuns: Record<string, Record<string, boolean>> = {};
   const taggedRemoteOps: Record<string, Record<string, boolean>> = {};
   const tagActionRuns: Record<string, Record<string, boolean>> = {};
+  const addRepositoryProject = (repositoryID: string, projectID: string) => {
+    repositoryProjects[repositoryID] ??= {};
+    repositoryProjects[repositoryID][projectID] = true;
+  };
   const addRemoteRepository = (remoteID: string, repositoryID: string) => {
     remoteRepositories[remoteID] ??= {};
     remoteRepositories[remoteID][repositoryID] = true;
@@ -857,7 +861,7 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}, remoteAssetIDs = new Se
     const to = String(edge.to_asset_id || '');
     if (relation === 'owns' && from.startsWith('project:') && to.startsWith('repository:')) {
       nextCounts.projectRepositories += 1;
-      repositoriesWithProject[to] = true;
+      addRepositoryProject(to, from);
     }
     if (relation === 'has_remote' && from.startsWith('repository:') && to.startsWith('git_remote:')) {
       nextCounts.repositoryRemotes += 1;
@@ -879,24 +883,31 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}, remoteAssetIDs = new Se
     return nextCounts;
   }, { projectRepositories: 0, repositoryRemotes: 0, remoteActionRuns: 0, taggedRemotes: 0, tagActionRunLinks: 0, completeActionRuns: 0, completeActionAssets: 0, completeTaggedRemotes: 0, completeTaggedRemoteAssets: 0, linkedTagRuns: 0, linkedTagRunAssets: 0 });
   const projectLinkedActionRuns: Record<string, boolean> = {};
+  const canonicalProjectLinkedActionRuns: Record<string, boolean> = {};
+  const hasCanonicalProjectRemote = (remoteID: string) => Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => (
+    repositoryAssetIDs.has(repositoryID) &&
+    Object.keys(repositoryProjects[repositoryID] || {}).some((projectID) => projectAssetIDs.has(projectID))
+  ));
   counts.completeActionRuns = Object.entries(remoteActionRuns).reduce((total, [remoteID, actionRuns]) => {
-    const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
+    const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => Object.keys(repositoryProjects[repositoryID] || {}).length > 0);
     if (!hasProjectRepository) return total;
     Object.keys(actionRuns).forEach((actionID) => { projectLinkedActionRuns[actionID] = true; });
     return total + Object.keys(actionRuns).length;
   }, 0);
   counts.completeActionAssets = Object.entries(remoteActionRuns).reduce((total, [remoteID, actionRuns]) => {
-    const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
-    if (!hasProjectRepository || !remoteAssetIDs.has(remoteID)) return total;
-    return total + Object.keys(actionRuns).filter((actionID) => actionAssetIDs.has(actionID)).length;
+    if (!hasCanonicalProjectRemote(remoteID) || !remoteAssetIDs.has(remoteID)) return total;
+    return total + Object.keys(actionRuns).filter((actionID) => {
+      const linkedAsset = actionAssetIDs.has(actionID);
+      if (linkedAsset) canonicalProjectLinkedActionRuns[actionID] = true;
+      return linkedAsset;
+    }).length;
   }, 0);
   counts.completeTaggedRemotes = Object.entries(taggedRemoteOps).reduce((total, [remoteID, operations]) => {
-    const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
+    const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => Object.keys(repositoryProjects[repositoryID] || {}).length > 0);
     return hasProjectRepository ? total + Object.keys(operations).length : total;
   }, 0);
   counts.completeTaggedRemoteAssets = Object.entries(taggedRemoteOps).reduce((total, [remoteID, operations]) => {
-    const hasProjectRepository = Object.keys(remoteRepositories[remoteID] || {}).some((repositoryID) => repositoriesWithProject[repositoryID]);
-    if (!hasProjectRepository || !remoteAssetIDs.has(remoteID)) return total;
+    if (!hasCanonicalProjectRemote(remoteID) || !remoteAssetIDs.has(remoteID)) return total;
     return total + Object.keys(operations).filter((operationID) => tagOperationIDs.has(operationID)).length;
   }, 0);
   counts.linkedTagRuns = Object.values(tagActionRuns).filter((actionRuns) => (
@@ -904,7 +915,7 @@ function countGitHubActionGraphLinks(graph: AnyRow = {}, remoteAssetIDs = new Se
   )).length;
   counts.linkedTagRunAssets = Object.entries(tagActionRuns).filter(([tagRunID, actionRuns]) => (
     tagRunAssetIDs.has(tagRunID) &&
-    Object.keys(actionRuns).some((actionID) => actionAssetIDs.has(actionID) && projectLinkedActionRuns[actionID])
+    Object.keys(actionRuns).some((actionID) => actionAssetIDs.has(actionID) && canonicalProjectLinkedActionRuns[actionID])
   )).length;
   return counts;
 }
@@ -1279,6 +1290,8 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const tagOperationIDs = mergeSets(operationIDsByType(operations, 'repo.tag'), operationIDsByType(operations, 'repo.create_tag'));
   const githubActionLinks = countGitHubActionGraphLinks(
     graph,
+    assetIDsByType(assets, 'project'),
+    assetIDsByType(assets, 'repository'),
     assetIDsByType(assets, 'git_remote'),
     assetIDsByGraphType(assets, 'pipeline_run', 'github_action_run'),
     assetIDsByType(assets, 'repo_tag_run'),

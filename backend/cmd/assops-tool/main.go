@@ -1411,6 +1411,8 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	tagOperationIDs := mergeBoolMaps(operationIDsByType(operations, "repo.tag"), operationIDsByType(operations, "repo.create_tag"))
 	githubActionLinks := countGitHubActionGraphLinks(
 		graph,
+		assetIDsByType(assets, "project"),
+		assetIDsByType(assets, "repository"),
 		assetIDsByType(assets, "git_remote"),
 		assetIDsByGraphType(assets, "pipeline_run", "github_action_run"),
 		assetIDsByType(assets, "repo_tag_run"),
@@ -2231,13 +2233,19 @@ type githubActionGraphLinkCounts struct {
 	LinkedTagRunAssets         int
 }
 
-func countGitHubActionGraphLinks(graph map[string]any, remoteAssetIDs, actionAssetIDs, tagRunAssetIDs, tagOperationIDs map[string]bool) githubActionGraphLinkCounts {
+func countGitHubActionGraphLinks(graph map[string]any, projectAssetIDs, repositoryAssetIDs, remoteAssetIDs, actionAssetIDs, tagRunAssetIDs, tagOperationIDs map[string]bool) githubActionGraphLinkCounts {
 	counts := githubActionGraphLinkCounts{}
-	repositoriesWithProject := map[string]bool{}
+	repositoryProjects := map[string]map[string]bool{}
 	remoteRepositories := map[string]map[string]bool{}
 	remoteActionRuns := map[string]map[string]bool{}
 	taggedRemoteOps := map[string]map[string]bool{}
 	tagActionRuns := map[string]map[string]bool{}
+	addRepositoryProject := func(repositoryID, projectID string) {
+		if repositoryProjects[repositoryID] == nil {
+			repositoryProjects[repositoryID] = map[string]bool{}
+		}
+		repositoryProjects[repositoryID][projectID] = true
+	}
 	addRemoteRepository := func(remoteID, repositoryID string) {
 		if remoteRepositories[remoteID] == nil {
 			remoteRepositories[remoteID] = map[string]bool{}
@@ -2269,7 +2277,7 @@ func countGitHubActionGraphLinks(graph map[string]any, remoteAssetIDs, actionAss
 		case "owns":
 			if strings.HasPrefix(from, "project:") && strings.HasPrefix(to, "repository:") {
 				counts.ProjectRepositories++
-				repositoriesWithProject[to] = true
+				addRepositoryProject(to, from)
 			}
 		case "has_remote":
 			if strings.HasPrefix(from, "repository:") && strings.HasPrefix(to, "git_remote:") {
@@ -2296,10 +2304,11 @@ func countGitHubActionGraphLinks(graph map[string]any, remoteAssetIDs, actionAss
 		}
 	}
 	projectLinkedActionRuns := map[string]bool{}
+	canonicalProjectLinkedActionRuns := map[string]bool{}
 	for remoteID, actionRuns := range remoteActionRuns {
 		hasProjectRepository := false
 		for repositoryID := range remoteRepositories[remoteID] {
-			if repositoriesWithProject[repositoryID] {
+			if len(repositoryProjects[repositoryID]) > 0 {
 				hasProjectRepository = true
 				break
 			}
@@ -2308,8 +2317,9 @@ func countGitHubActionGraphLinks(graph map[string]any, remoteAssetIDs, actionAss
 			counts.CompleteActionRuns += len(actionRuns)
 			for actionID := range actionRuns {
 				projectLinkedActionRuns[actionID] = true
-				if remoteAssetIDs[remoteID] && actionAssetIDs[actionID] {
+				if hasCanonicalProjectRemote(remoteID, remoteRepositories, repositoryProjects, projectAssetIDs, repositoryAssetIDs) && remoteAssetIDs[remoteID] && actionAssetIDs[actionID] {
 					counts.CompleteActionAssets++
+					canonicalProjectLinkedActionRuns[actionID] = true
 				}
 			}
 		}
@@ -2317,14 +2327,14 @@ func countGitHubActionGraphLinks(graph map[string]any, remoteAssetIDs, actionAss
 	for remoteID, operations := range taggedRemoteOps {
 		hasProjectRepository := false
 		for repositoryID := range remoteRepositories[remoteID] {
-			if repositoriesWithProject[repositoryID] {
+			if len(repositoryProjects[repositoryID]) > 0 {
 				hasProjectRepository = true
 				break
 			}
 		}
 		if hasProjectRepository {
 			counts.CompleteTaggedRemotes += len(operations)
-			if remoteAssetIDs[remoteID] {
+			if hasCanonicalProjectRemote(remoteID, remoteRepositories, repositoryProjects, projectAssetIDs, repositoryAssetIDs) && remoteAssetIDs[remoteID] {
 				for operationID := range operations {
 					if tagOperationIDs[operationID] {
 						counts.CompleteTaggedRemoteAssets++
@@ -2339,7 +2349,7 @@ func countGitHubActionGraphLinks(graph map[string]any, remoteAssetIDs, actionAss
 		for actionID := range actionRuns {
 			if projectLinkedActionRuns[actionID] {
 				linked = true
-				if tagRunAssetIDs[tagRunID] && actionAssetIDs[actionID] {
+				if tagRunAssetIDs[tagRunID] && actionAssetIDs[actionID] && canonicalProjectLinkedActionRuns[actionID] {
 					linkedAsset = true
 				}
 			}
@@ -2352,6 +2362,18 @@ func countGitHubActionGraphLinks(graph map[string]any, remoteAssetIDs, actionAss
 		}
 	}
 	return counts
+}
+
+func hasCanonicalProjectRemote(remoteID string, remoteRepositories, repositoryProjects map[string]map[string]bool, projectAssetIDs, repositoryAssetIDs map[string]bool) bool {
+	for repositoryID := range remoteRepositories[remoteID] {
+		if !repositoryAssetIDs[repositoryID] {
+			continue
+		}
+		if hasAnyKnownID(repositoryProjects[repositoryID], projectAssetIDs) {
+			return true
+		}
+	}
+	return false
 }
 
 type webhookSyncGraphLinkCounts struct {
