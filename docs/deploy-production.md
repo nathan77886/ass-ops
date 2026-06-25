@@ -366,6 +366,17 @@ assops-tool release config-rehearsal-plan \
 
 The plan accepts only a safe project slug and remote key. It lists the `repo_role=config` repository proof, scaffold-preview review, secret-scan gate, approval-gated `config.git_commit` audit workflow, read-only `git.refs.refresh`, config ref-refresh snapshot, config promotion snapshot, and dry-run `pin-config-commit` checks to collect without accepting or storing branch names, commit SHAs, refs, remote URLs, file contents, provider URLs, token names, Git output, provider responses, workflow logs, raw errors, or operator notes. It does not run Git, create files, commit, push refs, call providers, update ProjectVersion rows, enqueue workers, write operation logs, sync assets, pin config commits, or record snapshots.
 
+Before rehearsing agent-driven code modification, generate the no-call agent code rehearsal plan:
+
+```bash
+assops-tool release agent-code-rehearsal-plan \
+  assops-demo \
+  codex-cli \
+  .assops/release-notes/agent-code-rehearsal-plan.md
+```
+
+The plan accepts only a safe project slug and runtime key. It lists agent task/runtime evidence, `context.generate`, approval-gated `agent.execute`, worker dispatch audit, `codex.execution.plan`, `patch.prepare`, source checkout/branch-policy review, execution arming, tool-call audit snapshot, tool-arming snapshot, and code-audit snapshot checks to collect without accepting or storing repository URLs, workspace paths, branch names, prompts, tool input/output, patch/diff/file content, test commands/output, provider URLs, Git output, command output, tokens, credentials, or operator notes. It does not start Codex CLI, materialize runtime config, checkout source, bind workspaces, create branches, prepare or apply patches, run tests, invoke commit_push_spark, commit, push refs, create provider reviews, update agent tasks, write operation logs, sync assets, or record snapshots.
+
 Before rehearsing live Argo pod log retrieval for the demo environment, generate the no-call pod-log rehearsal plan:
 
 ```bash
