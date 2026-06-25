@@ -13518,6 +13518,25 @@ func TestRecordProviderReviewAttemptLedgerCreatesPlannedAttempts(t *testing.T) {
 		candidateBranchPolicyPlan["branch_policy_boundary_redacted"] != true {
 		t.Fatalf("attempt execution candidate branch policy plan = %#v", candidateBranchPolicyPlan)
 	}
+	candidateBranchSafetySummary := mapFromAny(candidateBranchPolicyPlan["branch_safety_summary"])
+	if candidateBranchSafetySummary["mode"] != "redacted_provider_review_branch_safety_summary" ||
+		candidateBranchSafetySummary["operation_name"] != "create_branch_ref" ||
+		candidateBranchSafetySummary["operation_intent"] != "create_review_branch_ref_only" ||
+		candidateBranchSafetySummary["guardrail_focus"] != "review_branch_must_not_replace_protected_default" ||
+		candidateBranchSafetySummary["requires_existing_branch_replay_check"] != true ||
+		candidateBranchSafetySummary["default_branch_direct_write_allowed"] != false ||
+		candidateBranchSafetySummary["protected_branch_direct_write_allowed"] != false ||
+		candidateBranchSafetySummary["branch_ref_created"] != false ||
+		candidateBranchSafetySummary["provider_api_call_made"] != false ||
+		candidateBranchSafetySummary["provider_api_mutation"] != "disabled" ||
+		candidateBranchSafetySummary["repository_ref_included"] != false ||
+		candidateBranchSafetySummary["branch_name_included"] != false ||
+		candidateBranchSafetySummary["contains_repository_ref"] != false ||
+		candidateBranchSafetySummary["contains_branch_name"] != false ||
+		candidateBranchSafetySummary["contains_file_content"] != false ||
+		candidateBranchSafetySummary["summary_boundary_redacted"] != true {
+		t.Fatalf("attempt execution candidate branch safety summary = %#v", candidateBranchSafetySummary)
+	}
 	candidateBranchPolicySequence := stringSliceFromAny(candidateBranchPolicyPlan["branch_policy_sequence"])
 	if len(candidateBranchPolicySequence) != 5 ||
 		candidateBranchPolicySequence[0] != "verify_target_branch_policy" ||
@@ -16012,6 +16031,25 @@ func TestProviderReviewAttemptBranchPolicyPlan(t *testing.T) {
 				got["branch_policy_boundary_redacted"] != true {
 				t.Fatalf("branch policy plan = %#v", got)
 			}
+			summary := mapFromAny(got["branch_safety_summary"])
+			if summary["mode"] != "redacted_provider_review_branch_safety_summary" ||
+				summary["operation_name"] != "create_branch_ref" ||
+				summary["operation_intent"] != "create_review_branch_ref_only" ||
+				summary["guardrail_focus"] != "review_branch_must_not_replace_protected_default" ||
+				summary["requires_existing_branch_replay_check"] != true ||
+				summary["default_branch_direct_write_allowed"] != false ||
+				summary["protected_branch_direct_write_allowed"] != false ||
+				summary["provider_api_call_made"] != false ||
+				summary["provider_api_mutation"] != "disabled" ||
+				summary["repository_ref_included"] != false ||
+				summary["branch_name_included"] != false ||
+				summary["contains_token"] != false ||
+				summary["contains_repository_ref"] != false ||
+				summary["contains_branch_name"] != false ||
+				summary["contains_file_content"] != false ||
+				summary["summary_boundary_redacted"] != true {
+				t.Fatalf("branch safety summary = %#v", summary)
+			}
 			for _, reason := range []string{
 				"provider_branch_policy_not_armed",
 				"protected_default_branch_direct_write_disabled",
@@ -16026,6 +16064,84 @@ func TestProviderReviewAttemptBranchPolicyPlan(t *testing.T) {
 			for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "main", "file content", "Authorization"} {
 				if strings.Contains(string(encoded), leak) {
 					t.Fatalf("branch policy plan leaked %q: %s", leak, encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestProviderReviewAttemptBranchSafetySummaryByOperation(t *testing.T) {
+	tests := []struct {
+		name            string
+		operation       string
+		wantIntent      string
+		wantFocus       string
+		wantReplayCheck bool
+	}{
+		{
+			name:            "create review branch ref",
+			operation:       "create_branch_ref",
+			wantIntent:      "create_review_branch_ref_only",
+			wantFocus:       "review_branch_must_not_replace_protected_default",
+			wantReplayCheck: true,
+		},
+		{
+			name:            "commit starter files",
+			operation:       "commit_starter_files",
+			wantIntent:      "commit_starter_files_to_review_branch_only",
+			wantFocus:       "starter_file_commit_requires_review_branch",
+			wantReplayCheck: false,
+		},
+		{
+			name:            "open provider review",
+			operation:       "open_review_request",
+			wantIntent:      "open_provider_review_from_review_branch",
+			wantFocus:       "operator_review_required_before_merge",
+			wantReplayCheck: false,
+		},
+		{
+			name:            "unknown operation stays blocked and redacted",
+			operation:       "bad_op",
+			wantIntent:      "",
+			wantFocus:       "unknown_operation_blocked",
+			wantReplayCheck: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := providerReviewAttemptBranchSafetySummary(tt.operation)
+			wantOperation := safeProviderReviewAttemptOperationName(tt.operation)
+			if got["mode"] != "redacted_provider_review_branch_safety_summary" ||
+				got["operation_name"] != wantOperation ||
+				got["operation_intent"] != tt.wantIntent ||
+				got["guardrail_focus"] != tt.wantFocus ||
+				got["requires_existing_branch_replay_check"] != tt.wantReplayCheck ||
+				got["requires_review_branch"] != true ||
+				got["requires_protected_branch_check"] != true ||
+				got["requires_review_request_before_merge"] != true ||
+				got["default_branch_direct_write_allowed"] != false ||
+				got["protected_branch_direct_write_allowed"] != false ||
+				got["starter_file_commit_to_default"] != false ||
+				got["branch_ref_created"] != false ||
+				got["commit_written"] != false ||
+				got["review_request_created"] != false ||
+				got["provider_api_call_made"] != false ||
+				got["provider_api_mutation"] != "disabled" ||
+				got["repository_ref_included"] != false ||
+				got["branch_name_included"] != false ||
+				got["protected_branch_rules_included"] != false ||
+				got["contains_token"] != false ||
+				got["contains_provider_url"] != false ||
+				got["contains_repository_ref"] != false ||
+				got["contains_branch_name"] != false ||
+				got["contains_file_content"] != false ||
+				got["summary_boundary_redacted"] != true {
+				t.Fatalf("branch safety summary = %#v", got)
+			}
+			encoded, _ := json.Marshal(got)
+			for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+				if strings.Contains(string(encoded), leak) {
+					t.Fatalf("branch safety summary leaked %q: %s", leak, encoded)
 				}
 			}
 		})

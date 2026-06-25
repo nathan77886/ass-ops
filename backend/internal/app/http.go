@@ -18333,10 +18333,58 @@ func providerReviewAttemptBranchPolicyPlan(operation, requestPlan map[string]any
 		"contains_branch_name":                  false,
 		"contains_file_content":                 false,
 		"branch_policy_boundary_redacted":       true,
+		"branch_safety_summary":                 providerReviewAttemptBranchSafetySummary(operationName),
 		"branch_policy_sequence":                []string{"verify_target_branch_policy", "require_review_branch_strategy", "block_default_branch_direct_write", "require_review_request", "handoff_to_provider_adapter"},
 		"branch_policy_suppressed_fields":       []string{"default_branch", "target_branch", "review_branch", "branch_ref", "repository_ref", "protected_branch_rules", "provider_url", "authorization_header", "token", "file_content"},
 		"blocked_reasons":                       []string{"provider_branch_policy_not_armed", "protected_default_branch_direct_write_disabled", "provider_review_adapter_not_implemented", "provider_review_mutation_not_armed"},
 	}
+}
+
+func providerReviewAttemptBranchSafetySummary(operationName string) map[string]any {
+	// Keep this allowlist here too so direct callers cannot leak a raw operation name.
+	operationName = safeProviderReviewAttemptOperationName(operationName)
+	summary := map[string]any{
+		"mode":                                  "redacted_provider_review_branch_safety_summary",
+		"operation_name":                        operationName,
+		"target_branch_policy":                  "protected_default_branch_no_direct_write",
+		"review_branch_policy":                  "required_before_provider_review",
+		"requires_review_branch":                true,
+		"requires_protected_branch_check":       true,
+		"requires_existing_branch_replay_check": operationName == "create_branch_ref",
+		"requires_review_request_before_merge":  true,
+		"default_branch_direct_write_allowed":   false,
+		"protected_branch_direct_write_allowed": false,
+		"starter_file_commit_to_default":        false,
+		"branch_ref_created":                    false,
+		"commit_written":                        false,
+		"review_request_created":                false,
+		"provider_api_call_made":                false,
+		"provider_api_mutation":                 "disabled",
+		"repository_ref_included":               false,
+		"branch_name_included":                  false,
+		"protected_branch_rules_included":       false,
+		"contains_token":                        false,
+		"contains_provider_url":                 false,
+		"contains_repository_ref":               false,
+		"contains_branch_name":                  false,
+		"contains_file_content":                 false,
+		"summary_boundary_redacted":             true,
+	}
+	switch operationName {
+	case "create_branch_ref":
+		summary["operation_intent"] = "create_review_branch_ref_only"
+		summary["guardrail_focus"] = "review_branch_must_not_replace_protected_default"
+	case "commit_starter_files":
+		summary["operation_intent"] = "commit_starter_files_to_review_branch_only"
+		summary["guardrail_focus"] = "starter_file_commit_requires_review_branch"
+	case "open_review_request":
+		summary["operation_intent"] = "open_provider_review_from_review_branch"
+		summary["guardrail_focus"] = "operator_review_required_before_merge"
+	default:
+		summary["operation_intent"] = ""
+		summary["guardrail_focus"] = "unknown_operation_blocked"
+	}
+	return summary
 }
 
 func providerReviewAttemptAdapterActivationPlan(operation, claimPlan, executionLockPlan, credentialPlan, runtimePlan, requestPlan, transportPlan, providerSendPlan, responsePlan, transactionPlan map[string]any) map[string]any {
