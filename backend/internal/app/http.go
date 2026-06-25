@@ -4187,7 +4187,7 @@ func configRepositoryGitWorkflowAuditEvidence(operations []map[string]any) map[s
 	default:
 		state = "recorded"
 	}
-	sanitizedRecorded := len(operations) > 0 && active == 0
+	sanitizedRecorded := len(operations) > 0 && active == 0 && unknown == 0
 	return map[string]any{
 		"mode":                                      "config_repository_git_workflow_audit_evidence",
 		"evidence_state":                            state,
@@ -4719,12 +4719,12 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any, workf
 	} else if workflowState == "canceled" {
 		recordingState = "canceled"
 		recordingReason = "config_git_commit_audit_operation_canceled"
+	} else if workflowState == "unknown" {
+		recordingState = "blocked"
+		recordingReason = "config_git_commit_audit_operation_unknown"
 	} else if pinObserved && liveObserved && workflowRecorded {
 		recordingState = "recorded"
 		recordingReason = "audit_result_pin_and_live_validation_observed"
-	} else if pinObserved && liveObserved {
-		recordingState = "recorded"
-		recordingReason = "project_version_pin_and_live_validation_observed"
 	} else if workflowRecorded {
 		recordingState = "audit_recorded"
 		recordingReason = "sanitized_config_git_workflow_audit_result_observed"
@@ -4732,7 +4732,7 @@ func configRepositoryGitCommitResultRecordingPlan(evidence map[string]any, workf
 		recordingState = "partial"
 		recordingReason = "project_version_config_commit_pin_observed"
 	}
-	resultWritten := pinObserved || workflowRecorded
+	resultWritten := workflowRecorded
 	operationLogWritten := intFromAny(workflowEvidence["operation_log_count"], 0) > 0
 	return map[string]any{
 		"mode":                             "config_repository_git_commit_result_recording_plan",
@@ -4835,6 +4835,9 @@ func configRepositoryGitCommitPromotionReadinessPlan(evidence map[string]any, wo
 	case workflowState == "canceled":
 		promotionState = "canceled"
 		promotionReason = "config_git_commit_audit_operation_canceled"
+	case workflowState == "unknown":
+		promotionState = "unknown"
+		promotionReason = "config_git_commit_audit_operation_unknown"
 	case workflowRecorded && pinObserved && liveObserved:
 		promotionState = "ready_for_live_workflow_review"
 		promotionReason = "audit_result_pin_and_live_validation_ready_for_operator_review"
