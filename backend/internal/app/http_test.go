@@ -7056,6 +7056,7 @@ func TestProjectVersionValidationPreviewIncludesRefreshResultSummary(t *testing.
 	if resultPlan["result_recording_state"] != "waiting" ||
 		resultPlan["result_recording_ready"] != false ||
 		resultPlan["result_written"] != false ||
+		resultPlan["operation_log_written"] != false ||
 		resultPlan["canonical_asset_sync_queued"] != false ||
 		resultPlan["status_snapshot_written"] != false ||
 		resultPlan["git_ref_fetch_result_recorded"] != true ||
@@ -7180,6 +7181,23 @@ func TestProjectVersionRefreshResultSummaryRecordsValidationRerunWhenTerminal(t 
 		projectVersionRefreshKindTerminalObserved(summary, "argocd_app_refresh") {
 		t.Fatalf("terminal refresh kind observation mismatch: %#v", summary)
 	}
+	plannedKinds := []string{"git_ref_fetch", "github_actions_api_refresh"}
+	refreshPlan := map[string]any{
+		"execution_plan": map[string]any{
+			"planned_refresh_kinds": plannedKinds,
+			"result_recording_plan": projectVersionProviderRefreshResultRecordingPlan(plannedKinds),
+		},
+	}
+	rerunEvidence := projectVersionValidationRerunEvidence(summary, "ready", 2, 2, 0, 0)
+	attachProjectVersionRefreshResultSummary(refreshPlan, summary, rerunEvidence)
+	resultPlan := mapFromAny(mapFromAny(refreshPlan["execution_plan"])["result_recording_plan"])
+	if resultPlan["result_written"] != true ||
+		resultPlan["operation_log_written"] != true ||
+		resultPlan["canonical_asset_sync_queued"] != true ||
+		resultPlan["status_snapshot_written"] != true ||
+		resultPlan["validation_rerun_recorded"] != true {
+		t.Fatalf("terminal refresh result plan should mark sanitized writes recorded: %#v", resultPlan)
+	}
 }
 
 func TestProjectVersionValidationRerunEvidenceRecordsServerSideRecheck(t *testing.T) {
@@ -7234,6 +7252,8 @@ func TestProjectVersionValidationRerunEvidenceRecordsServerSideRecheck(t *testin
 			}
 			resultPlan := mapFromAny(executionPlan["result_recording_plan"])
 			if resultPlan["validation_rerun_recorded"] != tt.wantRecorded ||
+				resultPlan["result_written"] != true ||
+				resultPlan["operation_log_written"] != true ||
 				resultPlan["server_side_validation_recheck_observed"] != true ||
 				resultPlan["automatic_background_rerun"] != false {
 				t.Fatalf("result plan should reflect validation recheck evidence: %#v", resultPlan)

@@ -10615,7 +10615,7 @@ func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summar
 		resultPlan["result_recording_ready_reason"] = projectVersionRefreshResultRecordingReason(summary)
 		resultPlan["recording_enabled"] = terminalRefresh
 		resultPlan["result_written"] = terminalRefresh
-		resultPlan["operation_log_written"] = operationCount > 0
+		resultPlan["operation_log_written"] = terminalRefresh
 		resultPlan["canonical_asset_sync_queued"] = terminalRefresh
 		resultPlan["status_snapshot_written"] = terminalRefresh
 		resultPlan["validation_rerun_recorded"] = validationRecorded
