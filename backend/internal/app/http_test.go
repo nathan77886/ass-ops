@@ -22410,6 +22410,49 @@ func TestWebhookCallbackRehearsalReadinessReconcilesObservedEvidence(t *testing.
 	}
 }
 
+func TestWebhookCallbackRehearsalObservedDeliveryDoesNotRecordTerminalResult(t *testing.T) {
+	got := webhookCallbackRehearsalReadiness(map[string]any{
+		"provider":                   "gitea",
+		"webhook_url":                "https://assops.example.com/api/webhooks/gitea/hook-1",
+		"enabled":                    true,
+		"source_remote_id":           "remote-1",
+		"event_types":                []any{"push"},
+		"deliveries_7d":              int64(1),
+		"processed_7d":               int64(0),
+		"ignored_7d":                 int64(0),
+		"failures_7d":                int64(0),
+		"signature_valid_7d":         int64(1),
+		"matched_repo_sync_asset_7d": int64(0),
+		"operation_run_7d":           int64(0),
+		"replayed_7d":                int64(0),
+		"last_event_status":          "received",
+		"last_event_type":            "push",
+		"last_delivery_status":       "received",
+	}, "https://assops.example.com")
+
+	evidence := mapFromAny(got["callback_evidence"])
+	if evidence["evidence_state"] != "observed" ||
+		evidence["webhook_event_recorded"] != true ||
+		evidence["provider_delivery_observed"] != true ||
+		evidence["sanitized_result_recorded"] != false {
+		t.Fatalf("observed-only callback delivery should not claim terminal result recording: %#v", evidence)
+	}
+	plan := mapFromAny(got["provider_rehearsal_plan"])
+	if plan["provider_delivery_received"] != true ||
+		plan["webhook_event_created"] != true ||
+		plan["result_written"] != false {
+		t.Fatalf("observed-only callback plan should expose delivery without result write: %#v", plan)
+	}
+	resultPlan := mapFromAny(plan["result_recording_plan"])
+	if resultPlan["result_recording_state"] != "observed" ||
+		resultPlan["result_recording_ready"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["result_recording_ready_reason"] != "provider_callback_delivery_observed_without_terminal_result" ||
+		resultPlan["webhook_event_recorded"] != true {
+		t.Fatalf("observed-only callback result plan should wait for terminal result: %#v", resultPlan)
+	}
+}
+
 func TestWebhookCallbackRehearsalReadinessReconcilesFailedEvidence(t *testing.T) {
 	got := webhookCallbackRehearsalReadiness(map[string]any{
 		"provider":                   "github",
@@ -22885,6 +22928,98 @@ func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerWritesSanitizedSna
 	}
 }
 
+func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerWritesFailedSnapshot(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	expectProviderCallbackSnapshotConnection(mock, 1, 1)
+	expectProviderCallbackSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-webhook-1", "provider_callback_rehearsal_recorded").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-webhook-1", "provider_callback_rehearsal_recorded", "high", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := newProviderCallbackSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordWebhookProviderCallbackRehearsalSnapshot(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["recording_state"] != "recorded" ||
+		body["recording_ready"] != true ||
+		body["provider_callback_rehearsal_snapshot_written"] != true ||
+		body["asset_status_snapshot_written"] != true {
+		t.Fatalf("unexpected failed provider callback snapshot response: %#v", body)
+	}
+	snapshot := mapFromAny(body["snapshot"])
+	if snapshot["result_recording_state"] != "failed" ||
+		snapshot["sanitized_result_recorded"] != true ||
+		snapshot["webhook_event_recorded"] != true ||
+		intFromAny(snapshot["failed_count_7d"], 0) != 1 {
+		t.Fatalf("failed provider callback snapshot should record terminal failed evidence: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerWritesIgnoredSnapshot(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	expectProviderCallbackSnapshotConnectionState(mock, 1, 0, 1, 0)
+	expectProviderCallbackSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-webhook-1", "provider_callback_rehearsal_recorded").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-webhook-1", "provider_callback_rehearsal_recorded", "warning", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := newProviderCallbackSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordWebhookProviderCallbackRehearsalSnapshot(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["recording_state"] != "recorded" ||
+		body["recording_ready"] != true ||
+		body["provider_callback_rehearsal_snapshot_written"] != true ||
+		body["asset_status_snapshot_written"] != true {
+		t.Fatalf("unexpected ignored provider callback snapshot response: %#v", body)
+	}
+	snapshot := mapFromAny(body["snapshot"])
+	if snapshot["result_recording_state"] != "ignored" ||
+		snapshot["sanitized_result_recorded"] != true ||
+		snapshot["webhook_event_recorded"] != true ||
+		intFromAny(snapshot["ignored_count_7d"], 0) != 1 {
+		t.Fatalf("ignored provider callback snapshot should record terminal ignored evidence: %#v", snapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerBlocksWithoutEvidence(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -22930,6 +23065,63 @@ func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerBlocksWithoutEvide
 	if !containsString(stringSliceFromAny(body["missing_evidence"]), "sanitized_callback_result_not_ready") ||
 		!containsString(stringSliceFromAny(body["missing_evidence"]), "webhook_event_not_observed") {
 		t.Fatalf("blocked provider callback snapshot missing expected evidence: %#v", body["missing_evidence"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRecordWebhookProviderCallbackRehearsalSnapshotHandlerBlocksObservedOnlyDelivery(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 6, 24, 11, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
+		WithArgs("conn-1", "https://assops.example.com").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "project_id", "provider", "name", "source_remote_id", "enabled", "event_types", "last_delivery_status", "metadata", "created_at", "updated_at", "source_remote_name",
+			"deliveries_7d", "failures_7d", "processed_7d", "ignored_7d", "replayed_7d", "signature_valid_7d", "matched_repo_sync_asset_7d", "operation_run_7d",
+			"last_event_at", "last_event_status", "last_event_type", "last_event_signature_valid", "threshold_decision_audit_count", "last_threshold_decision_audit_at", "threshold_configuration_count", "last_threshold_configuration_at", "webhook_path", "webhook_url",
+		}).AddRow(
+			"conn-1", "project-1", "gitea", "main webhook", "remote-1", true, []byte(`["push"]`), "received", []byte(`{}`), now, now, "source",
+			1, 0, 0, 0, 0, 1, 0, 0,
+			now, "received", "push", true, 0, nil, 0, nil, "/api/webhooks/gitea/conn-1", "https://assops.example.com/api/webhooks/gitea/conn-1",
+		))
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='webhook_connection'`).
+		WithArgs("conn-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-webhook-1"))
+
+	server := &Server{cfg: Config{GatewayURL: "https://assops.example.com"}, store: &Store{DB: sqlx.NewDb(db, "postgres")}}
+	req := httptest.NewRequest(http.MethodPost, "/api/webhook-connections/conn-1/provider-callback-rehearsal-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "conn-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+	server.recordWebhookProviderCallbackRehearsalSnapshot(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["recording_state"] != "waiting_for_evidence" ||
+		body["recording_ready"] != false ||
+		body["provider_callback_rehearsal_snapshot_written"] != false ||
+		body["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected observed-only provider callback snapshot response: %#v", body)
+	}
+	if !containsString(stringSliceFromAny(body["missing_evidence"]), "sanitized_callback_result_not_ready") ||
+		containsString(stringSliceFromAny(body["missing_evidence"]), "webhook_event_not_observed") {
+		t.Fatalf("observed-only callback snapshot missing evidence should wait only for terminal result: %#v", body["missing_evidence"])
+	}
+	snapshot := mapFromAny(body["snapshot"])
+	if snapshot["result_recording_state"] != "observed" ||
+		snapshot["sanitized_result_recorded"] != false ||
+		snapshot["webhook_event_recorded"] != true ||
+		intFromAny(snapshot["delivery_count_7d"], 0) != 1 {
+		t.Fatalf("observed-only snapshot should preserve delivery evidence without terminal result: %#v", snapshot)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
@@ -23112,9 +23304,16 @@ func newProviderCallbackSnapshotRequest(body string) *http.Request {
 }
 
 func expectProviderCallbackSnapshotConnection(mock sqlmock.Sqlmock, deliveries, failures int) {
+	processed := 1
+	if failures > 0 {
+		processed = 0
+	}
+	expectProviderCallbackSnapshotConnectionState(mock, deliveries, processed, 0, failures)
+}
+
+func expectProviderCallbackSnapshotConnectionState(mock sqlmock.Sqlmock, deliveries, processed, ignored, failures int) {
 	now := time.Date(2026, 6, 24, 11, 0, 0, 0, time.UTC)
 	status := "processed"
-	processed := 1
 	matchedAsset := 1
 	operationRuns := 1
 	signatureValid := deliveries
@@ -23124,6 +23323,11 @@ func expectProviderCallbackSnapshotConnection(mock sqlmock.Sqlmock, deliveries, 
 		matchedAsset = 0
 		operationRuns = 0
 		signatureValid = 0
+	} else if ignored > 0 {
+		// Ignored events can still have valid signatures; they were classified after intake.
+		status = "ignored"
+		matchedAsset = 0
+		operationRuns = 0
 	}
 	mock.ExpectQuery(`(?s)SELECT wc\.id,.*FROM webhook_connections wc.*WHERE wc\.id=\$1`).
 		WithArgs("conn-1", "https://assops.example.com").
@@ -23133,7 +23337,7 @@ func expectProviderCallbackSnapshotConnection(mock sqlmock.Sqlmock, deliveries, 
 			"last_event_at", "last_event_status", "last_event_type", "last_event_signature_valid", "threshold_decision_audit_count", "last_threshold_decision_audit_at", "threshold_configuration_count", "last_threshold_configuration_at", "webhook_path", "webhook_url",
 		}).AddRow(
 			"conn-1", "project-1", "gitea", "main webhook", "remote-1", true, []byte(`["push"]`), status, []byte(`{}`), now, now, "source",
-			deliveries, failures, processed, 0, 1, signatureValid, matchedAsset, operationRuns,
+			deliveries, failures, processed, ignored, 1, signatureValid, matchedAsset, operationRuns,
 			now, status, "push", failures == 0, 1, now, 0, nil, "/api/webhooks/gitea/conn-1", "https://assops.example.com/api/webhooks/gitea/conn-1",
 		))
 }
@@ -23430,36 +23634,42 @@ func TestWebhookCallbackRehearsalEvidenceStateBoundaries(t *testing.T) {
 		row        map[string]any
 		wantState  string
 		wantResult string
+		wantReady  bool
 	}{
 		{
 			name:       "observed without terminal classification",
 			row:        map[string]any{"provider": "gitea", "deliveries_7d": int64(1), "last_event_status": "received"},
 			wantState:  "observed",
-			wantResult: "recorded",
+			wantResult: "observed",
+			wantReady:  false,
 		},
 		{
 			name:       "ignored",
 			row:        map[string]any{"provider": "gitea", "deliveries_7d": int64(1), "ignored_7d": int64(1), "last_event_status": "ignored"},
 			wantState:  "ignored",
 			wantResult: "ignored",
+			wantReady:  true,
 		},
 		{
 			name:       "github processed without operation run is not actions refresh evidence",
 			row:        map[string]any{"provider": "github", "deliveries_7d": int64(1), "processed_7d": int64(1), "operation_run_7d": int64(0), "last_event_status": "processed"},
 			wantState:  "recorded",
 			wantResult: "recorded",
+			wantReady:  true,
 		},
 		{
 			name:       "operator replay still waiting when no replay aggregate exists",
 			row:        map[string]any{"provider": "gitea", "deliveries_7d": int64(1), "processed_7d": int64(1), "last_event_status": "processed"},
 			wantState:  "recorded",
 			wantResult: "recorded",
+			wantReady:  true,
 		},
 		{
 			name:       "operator replay observed before processing or repo sync binding",
 			row:        map[string]any{"provider": "gitea", "deliveries_7d": int64(1), "replayed_7d": int64(1), "last_event_status": "received"},
 			wantState:  "observed",
-			wantResult: "recorded",
+			wantResult: "observed",
+			wantReady:  false,
 		},
 	}
 	for _, tt := range tests {
@@ -23471,6 +23681,9 @@ func TestWebhookCallbackRehearsalEvidenceStateBoundaries(t *testing.T) {
 			resultPlan := webhookProviderCallbackRehearsalResultRecordingPlan(evidence)
 			if resultPlan["result_recording_state"] != tt.wantResult {
 				t.Fatalf("result_recording_state = %v, want %s: %#v", resultPlan["result_recording_state"], tt.wantResult, resultPlan)
+			}
+			if resultPlan["result_recording_ready"] != tt.wantReady || resultPlan["result_written"] != tt.wantReady {
+				t.Fatalf("result recording ready/written = %v/%v, want %v: %#v", resultPlan["result_recording_ready"], resultPlan["result_written"], tt.wantReady, resultPlan)
 			}
 			if strings.Contains(tt.name, "github processed") && evidence["github_actions_refresh_observed"] != false {
 				t.Fatalf("github actions refresh should require operation_run evidence: %#v", evidence)

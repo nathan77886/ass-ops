@@ -6537,6 +6537,7 @@ func webhookProviderCallbackRehearsalEvidence(row map[string]any) map[string]any
 	default:
 		state = "observed"
 	}
+	sanitizedResultRecorded := deliveries > 0 && (processed > 0 || ignored > 0 || failures > 0)
 	return map[string]any{
 		"mode":                             "provider_callback_rehearsal_evidence",
 		"evidence_state":                   state,
@@ -6559,7 +6560,7 @@ func webhookProviderCallbackRehearsalEvidence(row map[string]any) map[string]any
 		"webhook_event_replay_observed":    replayed > 0,
 		"repo_sync_enqueue_observed":       operationRuns > 0 || matchedRepoSyncAsset > 0,
 		"github_actions_refresh_observed":  strings.EqualFold(strings.TrimSpace(fmt.Sprint(row["provider"])), "github") && processed > 0 && operationRuns > 0,
-		"sanitized_result_recorded":        deliveries > 0,
+		"sanitized_result_recorded":        sanitizedResultRecorded,
 		"operator_replay_proof":            webhookProviderCallbackOperatorReplayProof(deliveries, failures, processed, replayed, signatureValid, matchedRepoSyncAsset, operationRuns),
 		"external_call_made_by_assops":     false,
 		"provider_settings_written":        false,
@@ -7119,9 +7120,12 @@ func webhookProviderCallbackRehearsalResultRecordingPlan(evidence map[string]any
 	recordingState := "blocked"
 	recordingReason := "provider_callback_rehearsal_execution_not_performed"
 	switch evidenceState {
-	case "recorded", "observed":
+	case "recorded":
 		recordingState = "recorded"
-		recordingReason = "sanitized_provider_callback_event_observed"
+		recordingReason = "sanitized_provider_callback_result_recorded"
+	case "observed":
+		recordingState = "observed"
+		recordingReason = "provider_callback_delivery_observed_without_terminal_result"
 	case "failed":
 		recordingState = "failed"
 		recordingReason = "provider_callback_delivery_failed"
