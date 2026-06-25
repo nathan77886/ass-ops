@@ -10641,7 +10641,8 @@ func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summar
 		resultPlan["result_written"] = resultReady
 		resultPlan["operation_log_written"] = resultReady
 		resultPlan["canonical_asset_sync_queued"] = resultReady
-		resultPlan["status_snapshot_written"] = resultReady
+		resultPlan["status_snapshot_write_eligible"] = resultReady
+		resultPlan["status_snapshot_written"] = resultPlan["status_snapshot_write_eligible"]
 		resultPlan["validation_rerun_recorded"] = validationRecorded
 		resultPlan["git_ref_fetch_result_recorded"] = projectVersionRefreshKindTerminalObserved(summary, "git_ref_fetch")
 		resultPlan["github_actions_result_recorded"] = projectVersionRefreshKindTerminalObserved(summary, "github_actions_api_refresh")
@@ -11105,6 +11106,7 @@ func projectVersionProviderRefreshResultRecordingPlan(plannedKinds []string) map
 		"result_written":                 false,
 		"operation_log_written":          false,
 		"canonical_asset_sync_queued":    false,
+		"status_snapshot_write_eligible": false,
 		"status_snapshot_written":        false,
 		"validation_rerun_recorded":      false,
 		"git_ref_fetch_result_recorded":  false,

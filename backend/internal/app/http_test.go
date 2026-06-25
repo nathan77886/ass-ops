@@ -7473,7 +7473,9 @@ func TestProjectVersionValidationPreviewIncludesRefreshResultSummary(t *testing.
 		resultPlan["result_written"] != false ||
 		resultPlan["operation_log_written"] != false ||
 		resultPlan["canonical_asset_sync_queued"] != false ||
+		resultPlan["status_snapshot_write_eligible"] != false ||
 		resultPlan["status_snapshot_written"] != false ||
+		resultPlan["status_snapshot_written"] != resultPlan["status_snapshot_write_eligible"] ||
 		resultPlan["git_ref_fetch_result_recorded"] != true ||
 		resultPlan["github_actions_result_recorded"] != false ||
 		resultPlan["validation_rerun_recorded"] != false ||
@@ -7601,7 +7603,9 @@ func TestProjectVersionRefreshResultPlanBlocksWhenPlannedKindMissing(t *testing.
 		resultPlan["result_written"] != false ||
 		resultPlan["operation_log_written"] != false ||
 		resultPlan["canonical_asset_sync_queued"] != false ||
+		resultPlan["status_snapshot_write_eligible"] != false ||
 		resultPlan["status_snapshot_written"] != false ||
+		resultPlan["status_snapshot_written"] != resultPlan["status_snapshot_write_eligible"] ||
 		resultPlan["validation_rerun_recorded"] != true ||
 		resultPlan["git_ref_fetch_result_recorded"] != true ||
 		resultPlan["github_actions_result_recorded"] != false ||
@@ -7633,6 +7637,8 @@ func TestProjectVersionRefreshResultPlanAllowsEmptyPlannedKindsFallback(t *testi
 	if resultPlan["result_recording_state"] != "recorded" ||
 		resultPlan["result_recording_ready"] != true ||
 		resultPlan["result_written"] != true ||
+		resultPlan["status_snapshot_write_eligible"] != true ||
+		resultPlan["status_snapshot_written"] != resultPlan["status_snapshot_write_eligible"] ||
 		resultPlan["result_recording_ready_reason"] != "validation_rerun_recorded" ||
 		len(stringSliceFromAny(resultPlan["blocked_reasons"])) != 0 {
 		t.Fatalf("empty planned kinds fallback should not falsely downgrade recorded refresh evidence: %#v", resultPlan)
@@ -7672,7 +7678,9 @@ func TestProjectVersionRefreshResultSummaryRecordsValidationRerunWhenTerminal(t 
 	if resultPlan["result_written"] != true ||
 		resultPlan["operation_log_written"] != true ||
 		resultPlan["canonical_asset_sync_queued"] != true ||
+		resultPlan["status_snapshot_write_eligible"] != true ||
 		resultPlan["status_snapshot_written"] != true ||
+		resultPlan["status_snapshot_written"] != resultPlan["status_snapshot_write_eligible"] ||
 		resultPlan["validation_rerun_recorded"] != true {
 		t.Fatalf("terminal refresh result plan should mark sanitized writes recorded: %#v", resultPlan)
 	}
