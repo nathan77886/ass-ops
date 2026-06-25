@@ -24779,6 +24779,448 @@ func TestRecordProviderReviewAttemptSendSnapshotRowsAffectedUnknownDoesNotClaimW
 	}
 }
 
+func TestRecordProviderReviewAttemptTransportSnapshotWritesMetadataReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_transport_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_transport_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptTransportSnapshot(context.Background(), store, ProviderReviewAttemptTransportSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptTransportSnapshot: %v", err)
+	}
+	if got["recording_state"] != "transport_metadata_ready" ||
+		got["recording_ready"] != true ||
+		got["status_snapshot_write_eligible"] != true ||
+		got["provider_review_attempt_transport_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_client_bound"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["provider_request_sent"] != false ||
+		got["provider_response_received"] != false {
+		t.Fatalf("unexpected transport snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != false ||
+		snapshot["transport_plan_observed"] != true ||
+		snapshot["transport_metadata_ready"] != true ||
+		snapshot["transport_ready_reason"] != "ready" ||
+		snapshot["method"] != "POST" ||
+		snapshot["payload_shape"] != "ref_from_target_branch" ||
+		snapshot["auth_scheme"] != "bearer_token" ||
+		snapshot["accept_header"] != "application/vnd.github+json" ||
+		snapshot["content_type"] != "application/json" ||
+		snapshot["timeout_seconds"] != 15 ||
+		snapshot["auth_header_redacted"] != true ||
+		snapshot["provider_client_bound"] != false ||
+		snapshot["request_url_materialized"] != false ||
+		snapshot["request_body_materialized"] != false ||
+		snapshot["headers_materialized"] != false ||
+		snapshot["authorization_header_materialized"] != false ||
+		snapshot["provider_request_sent"] != false ||
+		snapshot["provider_response_received"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false ||
+		snapshot["no_call_observed"] != true {
+		t.Fatalf("unexpected transport snapshot payload: %#v", snapshot)
+	}
+	for _, field := range []string{"expected_success_classes", "retryable_status_classes", "diagnostic_fields"} {
+		if len(stringSliceFromAny(snapshot[field])) == 0 {
+			t.Fatalf("transport snapshot should include %s metadata: %#v", field, snapshot)
+		}
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("transport snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransportSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptTransportSnapshot(context.Background(), store, ProviderReviewAttemptTransportSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptTransportSnapshot asset missing: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_transport_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected asset missing transport response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransportSnapshotEmptyAssetIDDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='provider_review_attempt'\s+AND source_table='provider_review_attempts'`).
+		WithArgs("attempt-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(""))
+
+	got, err := RecordProviderReviewAttemptTransportSnapshot(context.Background(), store, ProviderReviewAttemptTransportSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptTransportSnapshot empty asset id: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_asset_observed"] != false ||
+		got["provider_review_attempt_transport_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["provider_review_attempt_asset_observed"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected empty asset id transport response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransportSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptTransportSnapshot(context.Background(), store, ProviderReviewAttemptTransportSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptTransportSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_transport_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run transport response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransportSnapshotNotCurrentCandidateDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("completed", "dependency_satisfied")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptTransportSnapshot(context.Background(), store, ProviderReviewAttemptTransportSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptTransportSnapshot not current: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_transport_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("unexpected not-current transport response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransportSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_transport_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_transport_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptTransportSnapshot(context.Background(), store, ProviderReviewAttemptTransportSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptTransportSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_transport_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown transport response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptTransportSnapshotPayloadRequiresTransportPlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	delete(dispatchPlan, "transport_plan")
+
+	snapshot := providerReviewAttemptTransportSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptTransportSnapshotReadiness(snapshot)
+	if ready ||
+		state != "transport_blocked" ||
+		snapshot["transport_plan_observed"] != false ||
+		snapshot["transport_metadata_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_transport_plan_missing") {
+		t.Fatalf("transport snapshot without plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+}
+
+func TestProviderReviewAttemptTransportSnapshotPayloadRejectsMaterializedOrSensitiveMarkers(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	transportPlan := mapFromAny(dispatchPlan["transport_plan"])
+	transportPlan["provider_request_sent"] = true
+	transportPlan["authorization_header_included"] = true
+	transportPlan["contains_token"] = true
+	transportPlan["transport_ready_reason"] = "secret-token"
+
+	snapshot := providerReviewAttemptTransportSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptTransportSnapshotReadiness(snapshot)
+	if ready ||
+		state != "transport_blocked" ||
+		snapshot["provider_request_sent"] != true ||
+		snapshot["authorization_header_included"] != true ||
+		snapshot["contains_token"] != true ||
+		snapshot["no_call_observed"] != false ||
+		snapshot["transport_ready_reason"] != "" ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_written"] != false ||
+		!containsString(missing, "provider_review_transport_not_no_call") {
+		t.Fatalf("transport snapshot with materialized marker = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("transport snapshot with sensitive marker leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestRecordProviderReviewAttemptTransportSnapshotHandlerWritesWhenReady(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "planned", "independent", nil)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+	})
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_transport_metadata_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_transport_metadata_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptTransportSnapshot(rr, newProviderReviewAttemptTransportSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "transport_metadata_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_transport_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_client_bound"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["provider_request_sent"] != false {
+		t.Fatalf("unexpected transport snapshot handler response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransportSnapshotHandlerBlocksUnapprovedAttempt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApproval(mock, "planned", "independent", nil, "pending")
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptTransportSnapshot(rr, newProviderReviewAttemptTransportSnapshotRequest(`{"dry_run":true}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "operation_approval_not_approved" ||
+		got["recording_ready"] != false ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_transport_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["provider_client_bound"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["provider_request_sent"] != false ||
+		got["provider_response_received"] != false {
+		t.Fatalf("unexpected unapproved transport snapshot handler response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransportSnapshotHandlerRejectsWrongApprovalAction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApprovalAction(mock, "planned", "independent", nil, "ssh.exec", "approved")
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptTransportSnapshot(rr, newProviderReviewAttemptTransportSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptTransportSnapshotHandlerRequiresUpdatePolicy(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+		WithArgs("project-1", "user-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/transport-snapshot", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "attempt-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "user-1", Role: "developer"}))
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewAttemptTransportSnapshot(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordProviderReviewAttemptRetryBackoffSnapshotWritesMetadataReadyCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -25424,6 +25866,25 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenRe
 			},
 		},
 		{
+			name: "transport",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptTransportSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptTransportSnapshotRequest,
+			status:    "provider_review_attempt_transport_metadata_ready",
+			state:     "transport_metadata_ready",
+			health:    "low",
+			writeFlag: "provider_review_attempt_transport_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["provider_client_bound"] != false ||
+					got["request_url_materialized"] != false ||
+					got["provider_request_sent"] != false {
+					t.Fatalf("unexpected transport snapshot response: %#v", got)
+				}
+			},
+		},
+		{
 			name: "retry-backoff",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptRetryBackoffSnapshot(w, r)
@@ -25849,6 +26310,24 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnappr
 			},
 		},
 		{
+			name: "transport",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptTransportSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptTransportSnapshotRequest,
+			writeFlag: "provider_review_attempt_transport_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["provider_client_bound"] != false ||
+					got["request_url_materialized"] != false ||
+					got["authorization_header_materialized"] != false ||
+					got["provider_request_sent"] != false ||
+					got["provider_response_received"] != false {
+					t.Fatalf("unexpected transport unapproved response: %#v", got)
+				}
+			},
+		},
+		{
 			name: "retry-backoff",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptRetryBackoffSnapshot(w, r)
@@ -25997,6 +26476,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 			request: newProviderReviewAttemptSendSnapshotRequest,
 		},
 		{
+			name: "transport",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptTransportSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptTransportSnapshotRequest,
+		},
+		{
 			name: "retry-backoff",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptRetryBackoffSnapshot(w, r)
@@ -26139,6 +26625,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptSendSnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/send-snapshot",
+		},
+		{
+			name: "transport",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptTransportSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/transport-snapshot",
 		},
 		{
 			name: "retry-backoff",
@@ -33225,6 +33718,12 @@ func newProviderReviewAttemptExecutionLockSnapshotRequest(body string) *http.Req
 
 func newProviderReviewAttemptSendSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/send-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptTransportSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/transport-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
