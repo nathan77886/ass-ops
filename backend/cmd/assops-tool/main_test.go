@@ -359,38 +359,38 @@ func TestFirstVersionReadinessReportRequiresSSHCommandGraphLinks(t *testing.T) {
 		{"operation_type": "ssh.verify"},
 		{"operation_type": "ssh.exec"},
 	}, nil, map[string]any{"edges": []any{}})
-	if got := readinessByKey(t, withoutGraphLinks, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 1 verify ops / 1 command ops / 1 command assets / 0 complete audit chains / 0 command asset chains" {
+	if got := readinessByKey(t, withoutGraphLinks, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 1 verify ops / 1 command ops / 1 command assets / 0 complete audit chains / 0 command asset chains / 0 verify chains / 0 run chains" {
 		t.Fatalf("ssh readiness without graph links = %#v, want partial with graph evidence", got)
 	}
 
 	withoutVerify := firstVersionReadinessReportWithGraph([]map[string]any{
-		{"asset_type": "host"},
+		{"asset_type": "host", "source_id": "30"},
 		{"asset_type": "ssh_command_run", "source_id": "20"},
 	}, []map[string]any{
-		{"operation_type": "ssh.exec"},
+		{"id": "10", "operation_type": "ssh.exec"},
 	}, nil, map[string]any{
 		"edges": []any{
 			map[string]any{"from_asset_id": "operation_run:10", "to_asset_id": "ssh_command_run:20", "relation_type": "ran_ssh_command"},
 			map[string]any{"from_asset_id": "ssh_command_run:20", "to_asset_id": "ssh_machine:30", "relation_type": "executed_on"},
 		},
 	})
-	if got := readinessByKey(t, withoutVerify, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 0 verify ops / 1 command ops / 1 command assets / 1 complete audit chains / 1 command asset chains" {
+	if got := readinessByKey(t, withoutVerify, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 0 verify ops / 1 command ops / 1 command assets / 1 complete audit chains / 1 command asset chains / 0 verify chains / 1 run chains" {
 		t.Fatalf("ssh readiness without verify op = %#v, want partial with verify gap", got)
 	}
 
 	singleCompleteChain := firstVersionReadinessReportWithGraph([]map[string]any{
-		{"asset_type": "host"},
+		{"asset_type": "host", "source_id": "30"},
 		{"asset_type": "ssh_command_run", "source_id": "20"},
 	}, []map[string]any{
-		{"operation_type": "ssh.verify"},
-		{"operation_type": "ssh.exec"},
+		{"id": "9", "operation_type": "ssh.verify"},
+		{"id": "10", "operation_type": "ssh.exec"},
 	}, nil, map[string]any{
 		"edges": []any{
 			map[string]any{"from_asset_id": "operation_run:10", "to_asset_id": "ssh_command_run:20", "relation_type": "ran_ssh_command"},
 			map[string]any{"from_asset_id": "ssh_command_run:20", "to_asset_id": "ssh_machine:30", "relation_type": "executed_on"},
 		},
 	})
-	if got := readinessByKey(t, singleCompleteChain, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 1 verify ops / 1 command ops / 1 command assets / 1 complete audit chains / 1 command asset chains" {
+	if got := readinessByKey(t, singleCompleteChain, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 1 verify ops / 1 command ops / 1 command assets / 1 complete audit chains / 1 command asset chains / 0 verify chains / 1 run chains" {
 		t.Fatalf("ssh readiness with only one complete command graph = %#v, want partial until verify and command audits are both represented", got)
 	}
 
@@ -409,17 +409,18 @@ func TestFirstVersionReadinessReportRequiresSSHCommandGraphLinks(t *testing.T) {
 			map[string]any{"from_asset_id": "ssh_command_run:21", "to_asset_id": "ssh_machine:30", "relation_type": "executed_on"},
 		},
 	})
-	if got := readinessByKey(t, withoutMatchingCommandAssets, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 1 verify ops / 1 command ops / 2 command assets / 2 complete audit chains / 0 command asset chains" {
+	if got := readinessByKey(t, withoutMatchingCommandAssets, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 1 verify ops / 1 command ops / 2 command assets / 2 complete audit chains / 0 command asset chains / 0 verify chains / 0 run chains" {
 		t.Fatalf("ssh readiness with unmatched command assets = %#v, want partial without canonical command asset chains", got)
 	}
 
-	ready := firstVersionReadinessReportWithGraph([]map[string]any{
-		{"asset_type": "host"},
+	twoVerifyChainsOnly := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "host", "source_id": "30"},
 		{"asset_type": "ssh_command_run", "source_id": "20"},
 		{"asset_type": "ssh_command_run", "source_id": "21"},
 	}, []map[string]any{
-		{"operation_type": "ssh.verify"},
-		{"operation_type": "ssh.exec"},
+		{"id": "10", "operation_type": "ssh.verify"},
+		{"id": "11", "operation_type": "ssh.verify"},
+		{"id": "12", "operation_type": "ssh.exec"},
 	}, nil, map[string]any{
 		"edges": []any{
 			map[string]any{"from_asset_id": "operation_run:10", "to_asset_id": "ssh_command_run:20", "relation_type": "ran_ssh_command"},
@@ -428,7 +429,26 @@ func TestFirstVersionReadinessReportRequiresSSHCommandGraphLinks(t *testing.T) {
 			map[string]any{"from_asset_id": "ssh_command_run:21", "to_asset_id": "ssh_machine:30", "relation_type": "executed_on"},
 		},
 	})
-	if got := readinessByKey(t, ready, "ssh"); got.Status != "ready" || got.Evidence != "1 hosts / 1 verify ops / 1 command ops / 2 command assets / 2 complete audit chains / 2 command asset chains" {
+	if got := readinessByKey(t, twoVerifyChainsOnly, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 2 verify ops / 1 command ops / 2 command assets / 2 complete audit chains / 2 command asset chains / 2 verify chains / 0 run chains" {
+		t.Fatalf("ssh readiness with only verify command chains = %#v, want partial until a run command chain is represented", got)
+	}
+
+	ready := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "host", "source_id": "30"},
+		{"asset_type": "ssh_command_run", "source_id": "20"},
+		{"asset_type": "ssh_command_run", "source_id": "21"},
+	}, []map[string]any{
+		{"id": "10", "operation_type": "ssh.verify"},
+		{"id": "11", "operation_type": "ssh.command"},
+	}, nil, map[string]any{
+		"edges": []any{
+			map[string]any{"from_asset_id": "operation_run:10", "to_asset_id": "ssh_command_run:20", "relation_type": "ran_ssh_command"},
+			map[string]any{"from_asset_id": "ssh_command_run:20", "to_asset_id": "ssh_machine:30", "relation_type": "executed_on"},
+			map[string]any{"from_asset_id": "operation_run:11", "to_asset_id": "ssh_command_run:21", "relation_type": "ran_ssh_command"},
+			map[string]any{"from_asset_id": "ssh_command_run:21", "to_asset_id": "ssh_machine:30", "relation_type": "executed_on"},
+		},
+	})
+	if got := readinessByKey(t, ready, "ssh"); got.Status != "ready" || got.Evidence != "1 hosts / 1 verify ops / 1 command ops / 2 command assets / 2 complete audit chains / 2 command asset chains / 1 verify chains / 1 run chains" {
 		t.Fatalf("ssh readiness with complete verify and command graphs = %#v, want ready", got)
 	}
 
@@ -445,7 +465,7 @@ func TestFirstVersionReadinessReportRequiresSSHCommandGraphLinks(t *testing.T) {
 			map[string]any{"from_asset_id": "ssh_command_run:21", "to_asset_id": "ssh_machine:30", "relation_type": "executed_on"},
 		},
 	})
-	if got := readinessByKey(t, crossCommandAggregation, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 1 verify ops / 1 command ops / 2 command assets / 0 complete audit chains / 0 command asset chains" {
+	if got := readinessByKey(t, crossCommandAggregation, "ssh"); got.Status != "partial" || got.Evidence != "1 hosts / 1 verify ops / 1 command ops / 2 command assets / 0 complete audit chains / 0 command asset chains / 0 verify chains / 0 run chains" {
 		t.Fatalf("ssh readiness with cross-command aggregate links = %#v, want partial without a complete command", got)
 	}
 }
@@ -1359,9 +1379,40 @@ func TestCountSSHGraphLinks(t *testing.T) {
 			map[string]any{"from_asset_id": "ssh_command_run:22", "to_asset_id": "ssh_machine:32", "relation_type": "executed_on"},
 		},
 	}
-	got := countSSHGraphLinks(graph, map[string]bool{"ssh_command_run:20": true})
-	if got.OperationCommands != 1 || got.CommandMachines != 2 || got.CompleteCommands != 1 || got.CompleteCommandAssets != 1 {
+	got := countSSHGraphLinks(
+		graph,
+		map[string]bool{"ssh_command_run:20": true},
+		map[string]bool{"ssh_machine:30": true},
+		map[string]bool{"operation_run:10": true},
+		map[string]bool{"operation_run:10": true},
+		nil,
+	)
+	if got.OperationCommands != 1 || got.CommandMachines != 2 || got.CompleteCommands != 1 || got.CompleteCommandAssets != 1 || got.CompleteVerifyCommandAssets != 1 || got.CompleteRunCommandAssets != 0 {
 		t.Fatalf("countSSHGraphLinks = %#v, want one operation-command, two command-machine, one complete command, and one command asset chain", got)
+	}
+
+	withoutKnownMachine := countSSHGraphLinks(
+		graph,
+		map[string]bool{"ssh_command_run:20": true},
+		nil,
+		map[string]bool{"operation_run:10": true},
+		map[string]bool{"operation_run:10": true},
+		nil,
+	)
+	if withoutKnownMachine.CompleteCommands != 1 || withoutKnownMachine.CompleteCommandAssets != 0 {
+		t.Fatalf("countSSHGraphLinks without known machine = %#v, want graph command but no canonical asset chain", withoutKnownMachine)
+	}
+
+	withoutKnownOperation := countSSHGraphLinks(
+		graph,
+		map[string]bool{"ssh_command_run:20": true},
+		map[string]bool{"ssh_machine:30": true},
+		nil,
+		nil,
+		nil,
+	)
+	if withoutKnownOperation.CompleteCommands != 1 || withoutKnownOperation.CompleteCommandAssets != 0 {
+		t.Fatalf("countSSHGraphLinks without known operation = %#v, want graph command but no canonical asset chain", withoutKnownOperation)
 	}
 }
 

@@ -1419,7 +1419,10 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		tagOperationIDs,
 	)
 	repoTagRuns := operationCounts["repo.tag"] + operationCounts["repo.create_tag"]
-	sshGraphLinks := countSSHGraphLinks(graph, assetIDsByType(assets, "ssh_command_run"))
+	sshVerifyOperationIDs := operationIDsByType(operations, "ssh.verify")
+	sshRunOperationIDs := mergeBoolMaps(operationIDsByType(operations, "ssh.exec"), operationIDsByType(operations, "ssh.command"))
+	sshOperationIDs := mergeBoolMaps(sshVerifyOperationIDs, sshRunOperationIDs)
+	sshGraphLinks := countSSHGraphLinks(graph, assetIDsByType(assets, "ssh_command_run"), assetIDsByGraphType(assets, "host", "ssh_machine"), sshOperationIDs, sshVerifyOperationIDs, sshRunOperationIDs)
 	argoGraphLinks := countArgoGraphLinks(
 		graph,
 		assetIDsByType(assets, "argo_connection"),
@@ -1466,7 +1469,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		readinessItem("repo_sync", "Define RepoSyncAsset", "Create a RepoSyncAsset between source and mirror remotes.", assetCounts["repo_sync"] > 0 && repoSyncGraphLinks.CompleteSyncAssets > 0, fmt.Sprintf("%d repo syncs / %d complete syncs / %d sync asset paths / %d repository links / %d source links / %d target links", assetCounts["repo_sync"], repoSyncGraphLinks.CompleteSyncs, repoSyncGraphLinks.CompleteSyncAssets, repoSyncGraphLinks.RepositorySync, repoSyncGraphLinks.SourceRemotes, repoSyncGraphLinks.TargetRemotes), assetCounts["repo_sync"] > 0 || repoSyncGraphLinks.RepositorySync > 0 || repoSyncGraphLinks.SourceRemotes > 0 || repoSyncGraphLinks.TargetRemotes > 0 || repoSyncGraphLinks.CompleteSyncAssets > 0),
 		readinessItem("sync_trigger", "Trigger sync manually and from webhook", "Run a manual sync and receive or replay a Gitea webhook event.", syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0 && webhookSyncGraphLinks.CompleteChainAssets > 0, syncTriggerEvidenceText, syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0 || webhookSyncGraphLinks.ConnectionEvents > 0 || webhookSyncGraphLinks.EventRepoSyncs > 0 || webhookSyncGraphLinks.EventOperations > 0 || webhookSyncGraphLinks.CompleteChainAssets > 0),
 		readinessItem("github_actions", "See GitHub tags and Actions state", "Create a repository tag and sync GitHub Actions for the mirror remote or receive workflow_run webhooks.", assetCounts["pipeline_run"] > 0 && githubActionLinks.CompleteActionAssets > 0 && repoTagRuns > 0 && githubActionLinks.CompleteTaggedRemoteAssets > 0 && githubActionLinks.LinkedTagRunAssets > 0, fmt.Sprintf("%d pipeline runs / %d complete action chains / %d action asset chains / %d tag ops / %d complete tag links / %d tag asset links / %d linked tag runs / %d linked tag assets / %d project links / %d remote links / %d action links / %d tag links / %d tag-action links", assetCounts["pipeline_run"], githubActionLinks.CompleteActionRuns, githubActionLinks.CompleteActionAssets, repoTagRuns, githubActionLinks.CompleteTaggedRemotes, githubActionLinks.CompleteTaggedRemoteAssets, githubActionLinks.LinkedTagRuns, githubActionLinks.LinkedTagRunAssets, githubActionLinks.ProjectRepositories, githubActionLinks.RepositoryRemotes, githubActionLinks.RemoteActionRuns, githubActionLinks.TaggedRemotes, githubActionLinks.TagActionRunLinks), assetCounts["pipeline_run"] > 0 || repoTagRuns > 0 || githubActionLinks.ProjectRepositories > 0 || githubActionLinks.RepositoryRemotes > 0 || githubActionLinks.RemoteActionRuns > 0 || githubActionLinks.TaggedRemotes > 0 || githubActionLinks.TagActionRunLinks > 0 || githubActionLinks.CompleteActionAssets > 0 || githubActionLinks.CompleteTaggedRemoteAssets > 0 || githubActionLinks.LinkedTagRunAssets > 0),
-		readinessItem("ssh", "Register SSH machines and audited commands", "Verify an SSH machine, then run an approval-gated command.", assetCounts["host"] > 0 && sshVerifyRuns > 0 && sshCommandRuns > 0 && sshGraphLinks.CompleteCommandAssets >= 2, fmt.Sprintf("%d hosts / %d verify ops / %d command ops / %d command assets / %d complete audit chains / %d command asset chains", assetCounts["host"], sshVerifyRuns, sshCommandRuns, assetCounts["ssh_command_run"], sshGraphLinks.CompleteCommands, sshGraphLinks.CompleteCommandAssets), assetCounts["host"] > 0 || sshVerifyRuns > 0 || sshCommandRuns > 0 || assetCounts["ssh_command_run"] > 0 || sshGraphLinks.OperationCommands > 0 || sshGraphLinks.CommandMachines > 0 || sshGraphLinks.CompleteCommandAssets > 0),
+		readinessItem("ssh", "Register SSH machines and audited commands", "Verify an SSH machine, then run an approval-gated command.", assetCounts["host"] > 0 && sshVerifyRuns > 0 && sshCommandRuns > 0 && sshGraphLinks.CompleteVerifyCommandAssets > 0 && sshGraphLinks.CompleteRunCommandAssets > 0, fmt.Sprintf("%d hosts / %d verify ops / %d command ops / %d command assets / %d complete audit chains / %d command asset chains / %d verify chains / %d run chains", assetCounts["host"], sshVerifyRuns, sshCommandRuns, assetCounts["ssh_command_run"], sshGraphLinks.CompleteCommands, sshGraphLinks.CompleteCommandAssets, sshGraphLinks.CompleteVerifyCommandAssets, sshGraphLinks.CompleteRunCommandAssets), assetCounts["host"] > 0 || sshVerifyRuns > 0 || sshCommandRuns > 0 || assetCounts["ssh_command_run"] > 0 || sshGraphLinks.OperationCommands > 0 || sshGraphLinks.CommandMachines > 0 || sshGraphLinks.CompleteCommandAssets > 0),
 		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["argo_app"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0 && argoGraphLinks.CompleteAppAssets > 0, argoEvidenceText, argoEvidence > 0),
 		readinessItem("operations", "View operation history and logs", "Run any controlled operation and inspect its logs.", operationAssets > 0 && operationLogs > 0, fmt.Sprintf("%d operation assets / %d listed runs / %d with logs", operationAssets, listedOperationRuns, operationLogs), operationAssets > 0 || listedOperationRuns > 0 || operationLogs > 0),
 		readinessItem("approval", "Enforce approval for high-risk operations", "Queue a high-risk action that creates an approval request.", approvalAssets > 0 && pendingApprovalOps > 0 && activeApprovalRules > 0 && approvalGraphLinks.CompleteApprovalAssetChains > 0, fmt.Sprintf("%d approvals / %d approval assets / %d pending ops / %d active rules / %d governed approvals / %d gated ops / %d complete approval chains / %d approval asset chains", approvalEvidence, approvalAssets, pendingApprovalOps, activeApprovalRules, approvalGraphLinks.RuleApprovals, approvalGraphLinks.ApprovalOperations, approvalGraphLinks.CompleteApprovalChains, approvalGraphLinks.CompleteApprovalAssetChains), approvalEvidence > 0 || approvalAssets > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0 || approvalGraphLinks.RuleApprovals > 0 || approvalGraphLinks.ApprovalOperations > 0 || approvalGraphLinks.CompleteApprovalAssetChains > 0),
@@ -2481,23 +2484,25 @@ func hasCanonicalOperationRepoSyncChain(repoSyncs, operations map[string]bool, o
 }
 
 type sshGraphLinkCounts struct {
-	OperationCommands     int
-	CommandMachines       int
-	CompleteCommands      int
-	CompleteCommandAssets int
+	OperationCommands           int
+	CommandMachines             int
+	CompleteCommands            int
+	CompleteCommandAssets       int
+	CompleteVerifyCommandAssets int
+	CompleteRunCommandAssets    int
 }
 
-func countSSHGraphLinks(graph map[string]any, commandAssetIDs map[string]bool) sshGraphLinkCounts {
+func countSSHGraphLinks(graph map[string]any, commandAssetIDs, machineAssetIDs, operationIDs, verifyOperationIDs, runOperationIDs map[string]bool) sshGraphLinkCounts {
 	counts := sshGraphLinkCounts{}
 	type commandLinks struct {
-		operation bool
-		machine   bool
+		operations map[string]bool
+		machines   map[string]bool
 	}
 	byCommand := map[string]*commandLinks{}
 	commandEntry := func(assetID string) *commandLinks {
 		entry := byCommand[assetID]
 		if entry == nil {
-			entry = &commandLinks{}
+			entry = &commandLinks{operations: map[string]bool{}, machines: map[string]bool{}}
 			byCommand[assetID] = entry
 		}
 		return entry
@@ -2509,20 +2514,26 @@ func countSSHGraphLinks(graph map[string]any, commandAssetIDs map[string]bool) s
 		case "ran_ssh_command":
 			if strings.HasPrefix(from, "operation_run:") && strings.HasPrefix(to, "ssh_command_run:") {
 				counts.OperationCommands++
-				commandEntry(to).operation = true
+				commandEntry(to).operations[from] = true
 			}
 		case "executed_on":
 			if strings.HasPrefix(from, "ssh_command_run:") && strings.HasPrefix(to, "ssh_machine:") {
 				counts.CommandMachines++
-				commandEntry(from).machine = true
+				commandEntry(from).machines[to] = true
 			}
 		}
 	}
 	for commandID, entry := range byCommand {
-		if entry.operation && entry.machine {
+		if len(entry.operations) > 0 && len(entry.machines) > 0 {
 			counts.CompleteCommands++
-			if commandAssetIDs[commandID] {
+			if commandAssetIDs[commandID] && hasAnyKnownID(entry.operations, operationIDs) && hasAnyKnownID(entry.machines, machineAssetIDs) {
 				counts.CompleteCommandAssets++
+				if hasAnyKnownID(entry.operations, verifyOperationIDs) {
+					counts.CompleteVerifyCommandAssets++
+				}
+				if hasAnyKnownID(entry.operations, runOperationIDs) {
+					counts.CompleteRunCommandAssets++
+				}
 			}
 		}
 	}
