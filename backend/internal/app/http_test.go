@@ -22215,6 +22215,204 @@ func TestProviderReviewCurrentAttemptLiveExecutionLaunchPlanHandlerReturnsErrorO
 	}
 }
 
+func TestProviderReviewCurrentLiveExecutionGateHandlerReturnsBlockedCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, templateProviderReviewExecuteApprovalAction, "approved", "ready_to_arm", true, true, false)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+		{ID: "attempt-2", Operation: "commit_starter_files", Endpoint: "github.commit_files", Status: "planned", Dependency: "waiting_for_dependency", Order: 20, DependsOn: "create_branch_ref"},
+	})
+	expectProviderReviewAttemptSnapshotSelect(mock, "running", "independent", time.Now())
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectQuery(`(?s)SELECT DISTINCT status\s+FROM asset_status_snapshots\s+WHERE asset_id=\$1\s+AND status = ANY\(\$2\)`).
+		WithArgs("asset-attempt-1", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("provider_review_attempt_live_execution_guard_ready"))
+
+	rr := httptest.NewRecorder()
+	server.providerReviewCurrentLiveExecutionGate(rr, newProviderReviewCurrentLiveExecutionGateRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	gate := mapFromAny(got["execution_gate"])
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["mode"] != "provider_review_current_live_execution_gate" ||
+		got["execution_gate_state"] != "provider_review_live_execution_gate_blocked" ||
+		got["execution_gate_ready"] != false ||
+		got["provider_review_attempt_id"] != "attempt-1" ||
+		got["current_launch_plan_state"] != "live_execution_launch_blocked" ||
+		got["current_launch_plan_ready"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["provider_request_materialized"] != false ||
+		got["provider_request_sent"] != false ||
+		got["transaction_recorded"] != false ||
+		gate["live_execution_gate_blocks_provider_send"] != true ||
+		gate["live_execution_gate_blocks_provider_write"] != true ||
+		gate["provider_url_included"] != false ||
+		!containsString(missing, "provider_review_live_adapter_not_implemented") ||
+		!containsString(missing, "provider_review_operator_final_approval_required") {
+		t.Fatalf("unexpected current live execution gate response: %#v", got)
+	}
+	if len(mapFromAny(got["launch_result"])) == 0 {
+		t.Fatalf("current live execution gate should include launch_result: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewCurrentLiveExecutionGateHandlerBlocksWithoutCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, templateProviderReviewExecuteApprovalAction, "approved", "ready_to_arm", true, true, false)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "completed", Dependency: "independent", Order: 10},
+	})
+
+	rr := httptest.NewRecorder()
+	server.providerReviewCurrentLiveExecutionGate(rr, newProviderReviewCurrentLiveExecutionGateRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["execution_gate_ready"] != false ||
+		got["candidate_observed"] != false ||
+		got["provider_request_sent"] != false ||
+		!containsString(missing, "provider_review_current_attempt_missing") {
+		t.Fatalf("current live execution gate should block without candidate: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewCurrentLiveExecutionGateHandlerBlocksPendingApproval(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, templateProviderReviewExecuteApprovalAction, "pending", "ready_to_arm", true, true, false)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+	})
+
+	rr := httptest.NewRecorder()
+	server.providerReviewCurrentLiveExecutionGate(rr, newProviderReviewCurrentLiveExecutionGateRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["execution_gate_ready"] != false ||
+		got["current_launch_plan_state"] != "operation_approval_not_approved" ||
+		got["provider_request_sent"] != false ||
+		!containsString(missing, "operation_approval_not_approved") {
+		t.Fatalf("pending approval should block current live execution gate: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewCurrentLiveExecutionGateHandlerReturnsIncorrectApprovalAction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, "project_template.other", "approved", "ready_to_arm", true, true, false)
+
+	rr := httptest.NewRecorder()
+	server.providerReviewCurrentLiveExecutionGate(rr, newProviderReviewCurrentLiveExecutionGateRequest())
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewCurrentLiveExecutionGateHandlerReturnsErrorOnApprovalLoadFailure(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(`(?s)SELECT id, project_id, operation_run_id, resource_type, resource_id, action, title, status, request_payload, created_at, updated_at\s+FROM operation_approvals\s+WHERE id=\$1`).
+		WithArgs("approval-1").
+		WillReturnError(sql.ErrNoRows)
+
+	rr := httptest.NewRecorder()
+	server.providerReviewCurrentLiveExecutionGate(rr, newProviderReviewCurrentLiveExecutionGateRequest())
+
+	if rr.Code == http.StatusOK {
+		t.Fatalf("status = 200, want error: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewCurrentLiveExecutionGateHandlerReturnsErrorOnLedgerLoadFailure(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, templateProviderReviewExecuteApprovalAction, "approved", "ready_to_arm", true, true, false)
+	mock.ExpectQuery(`(?s)SELECT\s+id,.*FROM provider_review_attempts\s+WHERE operation_approval_id=\$1`).
+		WithArgs("approval-1").
+		WillReturnError(sql.ErrNoRows)
+
+	rr := httptest.NewRecorder()
+	server.providerReviewCurrentLiveExecutionGate(rr, newProviderReviewCurrentLiveExecutionGateRequest())
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewCurrentLiveExecutionGateRejectsNilStore(t *testing.T) {
+	_, err := ProviderReviewCurrentLiveExecutionGate(context.Background(), nil, ProviderReviewCurrentLiveExecutionGateOptions{
+		OperationApprovalID: "approval-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "store is required") {
+		t.Fatalf("ProviderReviewCurrentLiveExecutionGate nil store error = %v, want store is required", err)
+	}
+}
+
 func TestProviderReviewCurrentAttemptCandidateFromLedger(t *testing.T) {
 	ledger := providerReviewAttemptLedgerSummary([]map[string]any{
 		{
@@ -35350,6 +35548,12 @@ func newProviderReviewCurrentAttemptLiveReadinessSnapshotRequest(body string) *h
 
 func newProviderReviewCurrentAttemptLiveExecutionLaunchPlanRequest() *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/operation-approvals/approval-1/provider-review-current-live-launch-plan", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "approval-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewCurrentLiveExecutionGateRequest() *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/operation-approvals/approval-1/provider-review-current-live-execution-gate", strings.NewReader(`{}`))
 	req = withRouteParam(req, "id", "approval-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }

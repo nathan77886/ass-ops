@@ -168,6 +168,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/operation-approvals/{id}/provider-review-arming-snapshot", s.recordProviderReviewMutationArmingSnapshot)
 		r.Post("/api/operation-approvals/{id}/provider-review-current-live-readiness-snapshot", s.recordProviderReviewCurrentAttemptLiveReadinessSnapshot)
 		r.Post("/api/operation-approvals/{id}/provider-review-current-live-launch-plan", s.providerReviewCurrentAttemptLiveExecutionLaunchPlan)
+		r.Post("/api/operation-approvals/{id}/provider-review-current-live-execution-gate", s.providerReviewCurrentLiveExecutionGate)
 		r.Post("/api/operation-approvals/{id}/delegations", s.createOperationApprovalDelegation)
 		r.Post("/api/operation-approvals/{id}/delegations/{delegationID}/revoke", s.revokeOperationApprovalDelegation)
 		r.Post("/api/provider-review-attempts/{id}/claim", s.claimProviderReviewAttempt)
@@ -14672,6 +14673,44 @@ func (s *Server) providerReviewCurrentAttemptLiveExecutionLaunchPlan(w http.Resp
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "provider review current attempt live launch plan failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) providerReviewCurrentLiveExecutionGate(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval"}, "update") {
+		return
+	}
+	approvalID := cleanOptionalID(chi.URLParam(r, "id"))
+	if approvalID == "" {
+		writeError(w, http.StatusBadRequest, "operation approval id is required")
+		return
+	}
+	approval, err := providerReviewApprovalForArmingSnapshot(r.Context(), s.store, approvalID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireApprovalRead(w, r, approval) {
+		return
+	}
+	if stringFromMap(approval, "action") != templateProviderReviewExecuteApprovalAction {
+		writeError(w, http.StatusConflict, "operation approval is not tied to provider review execution")
+		return
+	}
+	ledger, err := providerReviewAttemptLedgerForApprovalSnapshot(r.Context(), s.store, approvalID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load provider review attempts")
+		return
+	}
+	result, err := ProviderReviewCurrentLiveExecutionGate(r.Context(), s.store, ProviderReviewCurrentLiveExecutionGateOptions{
+		OperationApprovalID: approvalID,
+		Approval:            approval,
+		AttemptLedger:       ledger,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "provider review current live execution gate failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
