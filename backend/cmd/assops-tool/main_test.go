@@ -1928,6 +1928,24 @@ func TestHasAnyKnownID(t *testing.T) {
 	}
 }
 
+func TestAssetIDsByTypeMetadataMatchesProviderCaseInsensitively(t *testing.T) {
+	rows := []map[string]any{
+		{"asset_type": "webhook_connection", "source_id": "1", "metadata": map[string]any{"provider": "Gitea"}},
+		{"asset_type": "webhook_connection", "source_id": "2", "metadata": map[string]any{"provider": "GITEA"}},
+		{"asset_type": "webhook_connection", "source_id": "3", "metadata": map[string]any{"provider": "github"}},
+		{"asset_type": "webhook_connection", "source_id": "4"},
+		{"asset_type": "webhook_event", "source_id": "5", "metadata": map[string]any{"provider": "gitea"}},
+	}
+
+	got := assetIDsByTypeMetadata(rows, "webhook_connection", "provider", "gitea")
+	if len(got) != 2 || !got["webhook_connection:1"] || !got["webhook_connection:2"] {
+		t.Fatalf("assetIDsByTypeMetadata = %#v, want mixed-case Gitea connection ids only", got)
+	}
+	if count := countAPITypeMetadata(rows, "webhook_connection", "provider", "gitea"); count != 2 {
+		t.Fatalf("countAPITypeMetadata = %d, want 2 mixed-case Gitea connections", count)
+	}
+}
+
 func TestAssetGraphPayloadAvailableRequiresNodesOrEdgesKey(t *testing.T) {
 	cases := []struct {
 		name  string
