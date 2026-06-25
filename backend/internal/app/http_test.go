@@ -23127,6 +23127,252 @@ func TestRecordProviderReviewAttemptLiveExecutionReadinessSnapshotWritesReviewRe
 	}
 }
 
+func TestRecordProviderReviewAttemptLiveExecutionGuardSnapshotWritesWhenClaimedAndArmed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("running", "independent")
+	attempt["claimed_at"] = time.Now()
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_execution_guard_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_execution_guard_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptLiveExecutionGuardSnapshot(context.Background(), store, ProviderReviewAttemptLiveExecutionGuardSnapshotOptions{
+		AttemptID:                "attempt-1",
+		Attempt:                  attempt,
+		AttemptReadinessObserved: true,
+		ArmingObserved:           true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveExecutionGuardSnapshot: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "live_execution_guard_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_live_execution_guard_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["future_live_execution_still_blocked"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_request_sent"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		snapshot["live_execution_guard_ready"] != true ||
+		snapshot["claim_recorded"] != true ||
+		snapshot["attempt_live_execution_readiness_observed"] != true ||
+		snapshot["mutation_arming_review_observed"] != true ||
+		snapshot["live_adapter_implemented"] != false ||
+		snapshot["mutation_armed"] != false {
+		t.Fatalf("unexpected live execution guard response: %#v", got)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "idempotency_key_hash", "raw_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("live execution guard snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveExecutionGuardSnapshotBlocksWithoutArmingEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("running", "independent")
+	attempt["claimed_at"] = time.Now()
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectQuery(`(?s)SELECT DISTINCT snapshot\.status\s+FROM assets a\s+JOIN asset_status_snapshots snapshot ON snapshot\.asset_id=a\.id\s+WHERE a\.asset_type='operation_approval'`).
+		WithArgs("approval-1", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}))
+
+	got, err := RecordProviderReviewAttemptLiveExecutionGuardSnapshot(context.Background(), store, ProviderReviewAttemptLiveExecutionGuardSnapshotOptions{
+		AttemptID:                "attempt-1",
+		Attempt:                  attempt,
+		AttemptReadinessObserved: true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveExecutionGuardSnapshot missing arming: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "live_execution_guard_blocked" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_live_execution_guard_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["mutation_arming_review_observed"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_mutation_arming_review_missing") {
+		t.Fatalf("live execution guard should block without arming evidence: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveExecutionGuardSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("running", "independent")
+	attempt["claimed_at"] = time.Now()
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptLiveExecutionGuardSnapshot(context.Background(), store, ProviderReviewAttemptLiveExecutionGuardSnapshotOptions{
+		AttemptID:                "attempt-1",
+		Attempt:                  attempt,
+		DryRun:                   true,
+		AttemptReadinessObserved: true,
+		ArmingObserved:           true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveExecutionGuardSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_live_execution_guard_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["canonical_asset_status_snapshot_try"] != false {
+		t.Fatalf("unexpected dry-run live execution guard response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveExecutionGuardSnapshotBlocksWithoutClaim(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("running", "independent")
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptLiveExecutionGuardSnapshot(context.Background(), store, ProviderReviewAttemptLiveExecutionGuardSnapshotOptions{
+		AttemptID:                "attempt-1",
+		Attempt:                  attempt,
+		AttemptReadinessObserved: true,
+		ArmingObserved:           true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveExecutionGuardSnapshot without claim: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "live_execution_guard_blocked" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_live_execution_guard_written"] != false ||
+		snapshot["claim_recorded"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_claim_not_recorded") {
+		t.Fatalf("live execution guard should block without claim: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveExecutionGuardSnapshotBlocksWhenNotRunning(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	attempt["claimed_at"] = time.Now()
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptLiveExecutionGuardSnapshot(context.Background(), store, ProviderReviewAttemptLiveExecutionGuardSnapshotOptions{
+		AttemptID:                "attempt-1",
+		Attempt:                  attempt,
+		AttemptReadinessObserved: true,
+		ArmingObserved:           true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveExecutionGuardSnapshot not running: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "live_execution_guard_blocked" ||
+		got["recording_ready"] != false ||
+		snapshot["live_execution_guard_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_running") {
+		t.Fatalf("live execution guard should block when not running: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptLiveExecutionGuardSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("running", "independent")
+	attempt["claimed_at"] = time.Now()
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptLiveExecutionGuardSnapshot(context.Background(), store, ProviderReviewAttemptLiveExecutionGuardSnapshotOptions{
+		AttemptID:                "attempt-1",
+		Attempt:                  attempt,
+		AttemptReadinessObserved: true,
+		ArmingObserved:           true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptLiveExecutionGuardSnapshot asset missing: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_asset_observed"] != false ||
+		got["provider_review_attempt_live_execution_guard_written"] != false ||
+		!containsString(missing, "provider_review_attempt_asset_missing") {
+		t.Fatalf("live execution guard should block without asset: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLiveExecutionGuardSnapshotRejectsMutationMarkers(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("running", "independent")
+	attempt["claimed_at"] = time.Now()
+	snapshot := providerReviewAttemptLiveExecutionGuardSnapshotPayload(attempt, true, true, true)
+	snapshot["provider_api_call_made"] = true
+	snapshot["mutation_armed"] = true
+	snapshot["contains_token"] = true
+
+	ready, state, missing := providerReviewAttemptLiveExecutionGuardSnapshotReadiness(snapshot)
+	if ready ||
+		state != "live_execution_guard_blocked" ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		!containsString(missing, "provider_review_live_execution_guard_not_no_call") {
+		t.Fatalf("live execution guard should reject mutation markers: snapshot %#v ready %v state %s missing %#v", snapshot, ready, state, missing)
+	}
+}
+
 func TestRecordProviderReviewAttemptLiveExecutionReadinessSnapshotMissingEvidenceDoesNotWrite(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
