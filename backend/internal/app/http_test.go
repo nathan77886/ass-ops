@@ -21829,6 +21829,237 @@ func TestRecordProviderReviewMutationArmingSnapshotHandlerBlocksMissingAttemptRe
 	}
 }
 
+func TestRecordProviderReviewCurrentAttemptLiveReadinessSnapshotHandlerWritesCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, templateProviderReviewExecuteApprovalAction, "approved", "ready_to_arm", true, true, false)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+		{ID: "attempt-2", Operation: "commit_starter_files", Endpoint: "github.commit_files", Status: "planned", Dependency: "waiting_for_dependency", Order: 20, DependsOn: "create_branch_ref"},
+		{ID: "attempt-3", Operation: "open_review_request", Endpoint: "github.open_review", Status: "planned", Dependency: "waiting_for_dependency", Order: 30, DependsOn: "commit_starter_files"},
+	})
+	expectProviderReviewAttemptSnapshotSelect(mock, "planned", "independent", nil)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	expectProviderReviewAttemptLiveExecutionRequiredStatusQuery(mock, "asset-attempt-1")
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_execution_review_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_live_execution_review_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewCurrentAttemptLiveReadinessSnapshot(rr, newProviderReviewCurrentAttemptLiveReadinessSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["mode"] != "provider_review_current_attempt_live_execution_readiness_snapshot_recording" ||
+		got["provider_review_attempt_id"] != "attempt-1" ||
+		got["next_attempt_operation"] != "create_branch_ref" ||
+		got["endpoint_key"] != "github.create_branch_ref" ||
+		got["recording_state"] != "live_execution_review_ready" ||
+		got["provider_review_attempt_live_execution_readiness_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["provider_api_call_made"] != false ||
+		got["provider_request_sent"] != false ||
+		got["future_live_execution_still_blocked"] != true {
+		t.Fatalf("unexpected current live-readiness response: %#v", got)
+	}
+	if len(mapFromAny(got["attempt_result"])) == 0 {
+		t.Fatalf("current live-readiness response should include attempt_result: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewCurrentAttemptLiveReadinessSnapshotHandlerBlocksWithoutCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, templateProviderReviewExecuteApprovalAction, "approved", "ready_to_arm", true, true, false)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "completed", Dependency: "independent", Order: 10},
+		{ID: "attempt-2", Operation: "commit_starter_files", Endpoint: "github.commit_files", Status: "completed", Dependency: "dependency_satisfied", Order: 20, DependsOn: "create_branch_ref"},
+		{ID: "attempt-3", Operation: "open_review_request", Endpoint: "github.open_review", Status: "completed", Dependency: "dependency_satisfied", Order: 30, DependsOn: "commit_starter_files"},
+	})
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewCurrentAttemptLiveReadinessSnapshot(rr, newProviderReviewCurrentAttemptLiveReadinessSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_live_execution_readiness_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["candidate_observed"] != false ||
+		!containsString(missing, "provider_review_current_attempt_missing") {
+		t.Fatalf("current live-readiness should block without candidate: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewCurrentAttemptLiveReadinessSnapshotHandlerBlocksWaitingCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, templateProviderReviewExecuteApprovalAction, "approved", "ready_to_arm", true, true, false)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "waiting_for_dependency", Order: 10},
+		{ID: "attempt-2", Operation: "commit_starter_files", Endpoint: "github.commit_files", Status: "planned", Dependency: "waiting_for_dependency", Order: 20, DependsOn: "create_branch_ref"},
+		{ID: "attempt-3", Operation: "open_review_request", Endpoint: "github.open_review", Status: "planned", Dependency: "waiting_for_dependency", Order: 30, DependsOn: "commit_starter_files"},
+	})
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewCurrentAttemptLiveReadinessSnapshot(rr, newProviderReviewCurrentAttemptLiveReadinessSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["recording_ready"] != false ||
+		got["candidate_observed"] != false ||
+		got["provider_review_attempt_live_execution_readiness_snapshot_written"] != false ||
+		!containsString(missing, "provider_review_current_attempt_missing") {
+		t.Fatalf("waiting dependency chain should not expose current live-readiness candidate: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewCurrentAttemptLiveReadinessSnapshotHandlerBlocksPendingApproval(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewApprovalForArmingSnapshot(mock, templateProviderReviewExecuteApprovalAction, "pending", "ready_to_arm", true, true, false)
+	expectProviderReviewAttemptLedgerQuery(mock, "approval-1", []providerReviewAttemptMockRow{
+		{ID: "attempt-1", Operation: "create_branch_ref", Endpoint: "github.create_branch_ref", Status: "planned", Dependency: "independent", Order: 10},
+	})
+
+	rr := httptest.NewRecorder()
+	server.recordProviderReviewCurrentAttemptLiveReadinessSnapshot(rr, newProviderReviewCurrentAttemptLiveReadinessSnapshotRequest(`{}`))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["recording_state"] != "operation_approval_not_approved" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_live_execution_readiness_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		!containsString(missing, "operation_approval_not_approved") {
+		t.Fatalf("pending approval should not write current live-readiness snapshot: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewCurrentAttemptCandidateFromLedger(t *testing.T) {
+	ledger := providerReviewAttemptLedgerSummary([]map[string]any{
+		{
+			"id":                   "attempt-1",
+			"operation_name":       "create_branch_ref",
+			"endpoint_key":         "github.create_branch_ref",
+			"status":               "planned",
+			"dependency_status":    "independent",
+			"operation_order":      10,
+			"request_summary":      map[string]any{},
+			"response_diagnostics": map[string]any{},
+		},
+	})
+	if got := providerReviewCurrentAttemptCandidateFromLedger(ledger); cleanOptionalID(fmt.Sprint(got["id"])) != "attempt-1" {
+		t.Fatalf("candidate id = %#v, want attempt-1", got)
+	}
+	tests := []struct {
+		name   string
+		ledger map[string]any
+	}{
+		{
+			name: "missing next operation",
+			ledger: map[string]any{
+				"operations": ledger["operations"],
+				"orchestration": map[string]any{"execution_candidate": map[string]any{
+					"endpoint_key": "github.create_branch_ref",
+				}},
+			},
+		},
+		{
+			name: "missing endpoint",
+			ledger: map[string]any{
+				"operations": ledger["operations"],
+				"orchestration": map[string]any{"execution_candidate": map[string]any{
+					"next_operation": "create_branch_ref",
+				}},
+			},
+		},
+		{
+			name: "mismatched endpoint",
+			ledger: map[string]any{
+				"operations": ledger["operations"],
+				"orchestration": map[string]any{"execution_candidate": map[string]any{
+					"next_operation": "create_branch_ref",
+					"endpoint_key":   "github.open_review",
+				}},
+			},
+		},
+		{
+			name: "empty operations",
+			ledger: map[string]any{
+				"operations": []map[string]any{},
+				"orchestration": map[string]any{"execution_candidate": map[string]any{
+					"next_operation": "create_branch_ref",
+					"endpoint_key":   "github.create_branch_ref",
+				}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := providerReviewCurrentAttemptCandidateFromLedger(tt.ledger); len(got) != 0 {
+				t.Fatalf("candidate = %#v, want empty", got)
+			}
+		})
+	}
+}
+
 func TestRecordProviderReviewMutationArmingSnapshotHandlerRejectsWrongApprovalAction(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -34269,6 +34500,12 @@ func newProviderReviewMutationArmingSnapshotRequest(body string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
 
+func newProviderReviewCurrentAttemptLiveReadinessSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/operation-approvals/approval-1/provider-review-current-live-readiness-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "approval-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
 func newProviderReviewAttemptActivationSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/activation-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
@@ -35031,6 +35268,16 @@ func expectProviderReviewAttemptLiveExecutionReadinessForArmingSnapshot(mock sql
 	mock.ExpectQuery(`(?s)SELECT DISTINCT a\.source_id::text AS attempt_id\s+FROM assets a\s+JOIN asset_status_snapshots snapshot ON snapshot\.asset_id=a\.id\s+WHERE a\.asset_type='provider_review_attempt'\s+AND a\.source_table='provider_review_attempts'\s+AND a\.source_id::text = ANY\(\$1\)\s+AND snapshot\.status='provider_review_attempt_live_execution_review_ready'`).
 		WithArgs(providerReviewAttemptIDsArg(attemptIDs)).
 		WillReturnRows(rows)
+}
+
+func expectProviderReviewAttemptLiveExecutionRequiredStatusQuery(mock sqlmock.Sqlmock, assetID string) {
+	statusRows := sqlmock.NewRows([]string{"status"})
+	for _, item := range providerReviewAttemptLiveExecutionRequiredEvidence() {
+		statusRows.AddRow(item.Status)
+	}
+	mock.ExpectQuery(`(?s)SELECT DISTINCT status\s+FROM asset_status_snapshots\s+WHERE asset_id=\$1\s+AND status = ANY\(\$2\)`).
+		WithArgs(assetID, sqlmock.AnyArg()).
+		WillReturnRows(statusRows)
 }
 
 func expectAgentToolArmingSnapshotRuntime(mock sqlmock.Sqlmock, found bool) {

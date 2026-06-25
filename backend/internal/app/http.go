@@ -166,6 +166,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/operation-approvals/{id}/reject", s.rejectOperationApproval)
 		r.Post("/api/operation-approvals/{id}/remind", s.remindOperationApproval)
 		r.Post("/api/operation-approvals/{id}/provider-review-arming-snapshot", s.recordProviderReviewMutationArmingSnapshot)
+		r.Post("/api/operation-approvals/{id}/provider-review-current-live-readiness-snapshot", s.recordProviderReviewCurrentAttemptLiveReadinessSnapshot)
 		r.Post("/api/operation-approvals/{id}/delegations", s.createOperationApprovalDelegation)
 		r.Post("/api/operation-approvals/{id}/delegations/{delegationID}/revoke", s.revokeOperationApprovalDelegation)
 		r.Post("/api/provider-review-attempts/{id}/claim", s.claimProviderReviewAttempt)
@@ -14561,7 +14562,7 @@ func (s *Server) recordProviderReviewMutationArmingSnapshot(w http.ResponseWrite
 		writeError(w, http.StatusConflict, "operation approval is not tied to provider review execution")
 		return
 	}
-	ledger, err := s.providerReviewAttemptLedgerForApproval(r.Context(), approvalID)
+	ledger, err := providerReviewAttemptLedgerForApprovalSnapshot(r.Context(), s.store, approvalID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load provider review attempts")
 		return
@@ -14579,6 +14580,56 @@ func (s *Server) recordProviderReviewMutationArmingSnapshot(w http.ResponseWrite
 		}
 		log.Warn("provider review mutation arming snapshot failed", "operation_approval_id", approvalID, "error", err)
 		writeError(w, http.StatusInternalServerError, "record provider review mutation arming snapshot failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) recordProviderReviewCurrentAttemptLiveReadinessSnapshot(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval"}, "update") {
+		return
+	}
+	approvalID := cleanOptionalID(chi.URLParam(r, "id"))
+	if approvalID == "" {
+		writeError(w, http.StatusBadRequest, "operation approval id is required")
+		return
+	}
+	var req struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	approval, err := providerReviewApprovalForArmingSnapshot(r.Context(), s.store, approvalID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireApprovalRead(w, r, approval) {
+		return
+	}
+	if stringFromMap(approval, "action") != templateProviderReviewExecuteApprovalAction {
+		writeError(w, http.StatusConflict, "operation approval is not tied to provider review execution")
+		return
+	}
+	ledger, err := providerReviewAttemptLedgerForApprovalSnapshot(r.Context(), s.store, approvalID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load provider review attempts")
+		return
+	}
+	result, err := RecordProviderReviewCurrentAttemptLiveReadinessSnapshot(r.Context(), s.store, ProviderReviewCurrentAttemptLiveReadinessSnapshotOptions{
+		OperationApprovalID: approvalID,
+		DryRun:              req.DryRun,
+		Approval:            approval,
+		AttemptLedger:       ledger,
+	})
+	if err != nil {
+		log := s.log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("provider review current attempt live-readiness snapshot failed", "operation_approval_id", approvalID, "error", err)
+		writeError(w, http.StatusInternalServerError, "record provider review current attempt live-readiness snapshot failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
