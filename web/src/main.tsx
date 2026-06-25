@@ -9,6 +9,7 @@ import {
   DashboardOutlined,
   DeploymentUnitOutlined,
   PlayCircleOutlined,
+  QuestionCircleOutlined,
   RobotOutlined,
   SettingOutlined
 } from '@ant-design/icons';
@@ -33,12 +34,310 @@ import {
   Typography,
   message
 } from 'antd';
+import enUS from 'antd/locale/en_US';
+import zhCN from 'antd/locale/zh_CN';
 import './styles.css';
 
 const { Header, Sider, Content } = Layout;
 const API = import.meta.env.VITE_API_BASE || '';
 
 type AnyRow = Record<string, any>;
+type Language = 'en' | 'zh';
+
+const dictionaries: Record<Language, Record<string, string>> = {
+  en: {
+    'app.controlPlane': 'MVP Control Plane',
+    'app.signOut': 'Sign out',
+    'app.language': 'Language',
+    'lang.en': 'English',
+    'lang.zh': '中文',
+    'login.description': 'Operations cockpit for projects, workers, remotes, and AI runtime context.',
+    'login.email': 'Email',
+    'login.password': 'Password',
+    'login.signIn': 'Sign in',
+    'common.create': 'Create',
+    'common.cancel': 'Cancel',
+    'common.ok': 'OK',
+    'common.project': 'Project',
+    'common.repository': 'Repository',
+    'common.name': 'Name',
+    'common.provider': 'Provider',
+    'common.status': 'Status',
+    'common.type': 'Type',
+    'common.auth': 'Auth',
+    'common.refresh': 'Refresh',
+    'common.required': 'This field is required',
+    'common.validUrl': 'Enter a valid URL',
+    'title.sshMachines': 'SSH Machines',
+    'title.argoConnections': 'Argo Connections',
+    'form.createProject': 'Create project',
+    'form.createRepository': 'Create repository',
+    'form.createAIRuntime': 'Create AI runtime',
+    'form.createAgentTask': 'Create agent task',
+    'form.createRemote': 'Create remote',
+    'form.createTag': 'Create tag',
+    'form.saveRepoSyncAsset': 'Save repo sync asset',
+    'form.editRepoSyncAsset': 'Edit repo sync asset',
+    'form.createWebhook': 'Create webhook',
+    'form.createArgoConnection': 'Create Argo connection',
+    'form.createSSHMachine': 'Create SSH machine',
+    'form.runSSHCommand': 'Run SSH command',
+    'field.name': 'Name',
+    'field.slug': 'Slug',
+    'field.description': 'Description',
+    'field.repo_key': 'Repository key',
+    'field.display_name': 'Display name',
+    'field.repo_role': 'Repository role',
+    'field.remote_key': 'Remote key',
+    'field.provider_type': 'Provider type',
+    'field.remote_url': 'Clone URL',
+    'field.web_url': 'Web URL',
+    'field.remote_role': 'Remote role',
+    'field.urls': 'Clone URLs',
+    'field.default_branch': 'Default branch',
+    'field.tag_name': 'Tag name',
+    'field.target_sha': 'Target SHA',
+    'field.branch': 'Branch',
+    'field.tag_message': 'Tag message',
+    'field.trigger_mode': 'Trigger mode',
+    'field.sync_mode': 'Sync mode',
+    'field.transport': 'Transport',
+    'field.driver': 'Driver',
+    'field.enabled': 'Enabled',
+    'field.provider': 'Provider',
+    'field.secret_token': 'Webhook secret',
+    'field.server_url': 'Argo server URL',
+    'field.auth_type': 'Auth type',
+    'field.token': 'Token',
+    'field.insecure_skip_verify': 'Skip TLS verification',
+    'field.host': 'Host',
+    'field.port': 'Port',
+    'field.username': 'Username',
+    'field.command': 'Command',
+    'field.timeout_seconds': 'Timeout seconds',
+    'field.runtime_type': 'Runtime type',
+    'field.codex_binary': 'Codex binary',
+    'field.model': 'Model',
+    'field.prompt': 'Prompt',
+    'help.slug': 'Stable URL/API slug for this project.',
+    'help.repo_key': 'Stable short key used to identify this repository inside the project.',
+    'help.repo_role': 'Use service for application code and config for deployment/config repositories.',
+    'help.remote_key': 'Stable short key used by ASSOPS to identify this remote, such as gitea or github.',
+    'help.provider_type': 'Provider adapter used for API-backed features like Actions and tags.',
+    'help.remote_url': 'Git clone URL used by workers. Prefer SSH for repository sync.',
+    'help.web_url': 'Browser URL for the provider repository; used for operator navigation only.',
+    'help.remote_role': 'How this remote participates in the project: source, mirror, target, or config.',
+    'help.urls': 'Optional comma-separated clone URLs. ASSOPS stores them as alternative endpoints.',
+    'help.default_branch': 'Default branch name used when the provider has no synced branch metadata yet.',
+    'help.trigger_mode': 'When ASSOPS should run this sync asset.',
+    'help.sync_mode': 'Which refs are allowed to sync.',
+    'help.transport': 'Transport used by worker Git operations. SSH is the first-version default.',
+    'help.driver': 'Worker driver implementation. Keep the default unless you know another driver is deployed.',
+    'help.secret_token': 'Shared webhook secret. Store provider-side secret material carefully.',
+    'help.server_url': 'Base URL of the Argo CD API server, for example https://argo.example.com.',
+    'help.auth_type': 'Credential type the worker should use. Argo uses token; SSH uses key or password.',
+    'help.token': 'Argo bearer token. It is sent to the gateway and should be scoped for the target environment.',
+    'help.insecure_skip_verify': 'Only use for test clusters with self-signed TLS. Do not enable in production.',
+    'help.host': 'SSH host name or IP reachable from the worker environment.',
+    'help.port': 'SSH TCP port. Default is 22.',
+    'help.username': 'Remote SSH user used by the worker.',
+    'help.command': 'Command to run after approval. Avoid secrets and destructive operations.',
+    'help.timeout_seconds': 'Maximum command runtime before the worker treats it as timed out.',
+    'help.runtime_type': 'Runtime implementation. The first deployable version uses codex-cli.',
+    'help.codex_binary': 'Binary name or path the worker can execute.',
+    'help.model': 'Optional model override for the runtime.',
+    'help.prompt': 'Task prompt sent to the selected agent runtime.',
+    'option.code': 'Code',
+    'option.service': 'Service',
+    'option.github': 'GitHub',
+    'option.gitea': 'Gitea',
+    'option.git': 'Generic Git',
+    'option.source': 'Source',
+    'option.mirror': 'Mirror',
+    'option.target': 'Target',
+    'option.config': 'Config',
+    'option.origin': 'Origin',
+    'option.manual': 'Manual',
+    'option.webhook': 'Webhook',
+    'option.push': 'Push',
+    'option.manual_or_webhook': 'Manual or webhook',
+    'option.selected_refs': 'Selected refs',
+    'option.all_refs': 'All refs',
+    'option.ssh': 'SSH',
+    'option.https': 'HTTPS',
+    'option.projectops_worker_git_ssh': 'ProjectOps worker Git SSH',
+    'option.codex-cli': 'Codex CLI',
+    'option.token': 'Token',
+    'option.key': 'SSH key',
+    'option.password': 'Password',
+    'menu.dashboard': 'Dashboard',
+    'menu.assets': 'Assets',
+    'menu.projects': 'Projects',
+    'menu.providers': 'Providers',
+    'menu.detail': 'Project Detail',
+    'menu.remotes': 'Git Remotes',
+    'menu.operations': 'Operations',
+    'menu.nodes': 'Worker Nodes',
+    'menu.ai': 'AI Runtime',
+    'menu.agent': 'Agent Task',
+    'menu.config': 'Argo / SSH'
+  },
+  zh: {
+    'app.controlPlane': 'MVP 控制台',
+    'app.signOut': '退出登录',
+    'app.language': '语言',
+    'lang.en': 'English',
+    'lang.zh': '中文',
+    'login.description': '面向项目、Worker、代码远端和 AI 运行时上下文的运维控制台。',
+    'login.email': '邮箱',
+    'login.password': '密码',
+    'login.signIn': '登录',
+    'common.create': '创建',
+    'common.cancel': '取消',
+    'common.ok': '确定',
+    'common.project': '项目',
+    'common.repository': '代码仓库',
+    'common.name': '名称',
+    'common.provider': '提供方',
+    'common.status': '状态',
+    'common.type': '类型',
+    'common.auth': '认证',
+    'common.refresh': '刷新',
+    'common.required': '此项必填',
+    'common.validUrl': '请输入有效 URL',
+    'title.sshMachines': 'SSH 主机',
+    'title.argoConnections': 'Argo 连接',
+    'form.createProject': '创建项目',
+    'form.createRepository': '创建代码仓库',
+    'form.createAIRuntime': '创建 AI 运行时',
+    'form.createAgentTask': '创建 Agent 任务',
+    'form.createRemote': '创建代码远端',
+    'form.createTag': '创建标签',
+    'form.saveRepoSyncAsset': '保存同步资产',
+    'form.editRepoSyncAsset': '编辑同步资产',
+    'form.createWebhook': '创建 Webhook',
+    'form.createArgoConnection': '创建 Argo 连接',
+    'form.createSSHMachine': '创建 SSH 主机',
+    'form.runSSHCommand': '执行 SSH 命令',
+    'field.name': '名称',
+    'field.slug': '标识',
+    'field.description': '描述',
+    'field.repo_key': '仓库键',
+    'field.display_name': '显示名称',
+    'field.repo_role': '仓库角色',
+    'field.remote_key': '远端键',
+    'field.provider_type': '提供方类型',
+    'field.remote_url': '克隆地址',
+    'field.web_url': '网页地址',
+    'field.remote_role': '远端角色',
+    'field.urls': '克隆地址列表',
+    'field.default_branch': '默认分支',
+    'field.tag_name': '标签名',
+    'field.target_sha': '目标 SHA',
+    'field.branch': '分支',
+    'field.tag_message': '标签说明',
+    'field.trigger_mode': '触发方式',
+    'field.sync_mode': '同步范围',
+    'field.transport': '传输方式',
+    'field.driver': '执行驱动',
+    'field.enabled': '启用',
+    'field.provider': '提供方',
+    'field.secret_token': 'Webhook 密钥',
+    'field.server_url': 'Argo 服务地址',
+    'field.auth_type': '认证类型',
+    'field.token': '令牌',
+    'field.insecure_skip_verify': '跳过 TLS 校验',
+    'field.host': '主机',
+    'field.port': '端口',
+    'field.username': '用户名',
+    'field.command': '命令',
+    'field.timeout_seconds': '超时时间（秒）',
+    'field.runtime_type': '运行时类型',
+    'field.codex_binary': 'Codex 可执行文件',
+    'field.model': '模型',
+    'field.prompt': '提示词',
+    'help.slug': '项目在 URL/API 中使用的稳定标识。',
+    'help.repo_key': '项目内识别该仓库的稳定短键。',
+    'help.repo_role': '应用代码选择 service，部署/配置仓库选择 config。',
+    'help.remote_key': 'ASSOPS 用来识别该远端的稳定短键，例如 gitea 或 github。',
+    'help.provider_type': '用于 Actions、标签等 API 能力的提供方适配器。',
+    'help.remote_url': 'Worker 执行 Git 操作用的克隆地址，仓库同步优先使用 SSH。',
+    'help.web_url': '提供方仓库的浏览器地址，仅用于人工跳转和审查。',
+    'help.remote_role': '该远端在项目中的用途：源端、镜像、目标端或配置仓库。',
+    'help.urls': '可选的逗号分隔克隆地址，ASSOPS 会作为备用端点保存。',
+    'help.default_branch': '提供方尚未同步分支元数据时使用的默认分支。',
+    'help.trigger_mode': 'ASSOPS 何时运行该同步资产。',
+    'help.sync_mode': '允许同步哪些 Git refs。',
+    'help.transport': 'Worker Git 操作使用的传输方式，首版默认 SSH。',
+    'help.driver': 'Worker 执行驱动；除非部署了其它驱动，否则保持默认。',
+    'help.secret_token': 'Webhook 共享密钥，请谨慎保存提供方侧的密钥材料。',
+    'help.server_url': 'Argo CD API 服务基础地址，例如 https://argo.example.com。',
+    'help.auth_type': 'Worker 使用的凭证类型。Argo 使用 token，SSH 使用 key 或 password。',
+    'help.token': 'Argo bearer token，会提交给 gateway，应限制在目标环境权限内。',
+    'help.insecure_skip_verify': '仅用于自签 TLS 的测试集群；生产环境不要启用。',
+    'help.host': 'Worker 环境可以访问的 SSH 主机名或 IP。',
+    'help.port': 'SSH TCP 端口，默认 22。',
+    'help.username': 'Worker 登录远端主机使用的 SSH 用户。',
+    'help.command': '审批后执行的命令，避免包含密钥或破坏性操作。',
+    'help.timeout_seconds': '命令最大运行时间，超过后 Worker 会视为超时。',
+    'help.runtime_type': '运行时实现。首个可部署版本使用 codex-cli。',
+    'help.codex_binary': 'Worker 可以执行的二进制名称或路径。',
+    'help.model': '可选的运行时模型覆盖值。',
+    'help.prompt': '发送给选定 Agent 运行时的任务提示词。',
+    'option.code': '代码',
+    'option.service': '服务',
+    'option.github': 'GitHub',
+    'option.gitea': 'Gitea',
+    'option.git': '通用 Git',
+    'option.source': '源端',
+    'option.mirror': '镜像',
+    'option.target': '目标端',
+    'option.config': '配置',
+    'option.origin': '源仓库',
+    'option.manual': '手动',
+    'option.webhook': 'Webhook',
+    'option.push': 'Push',
+    'option.manual_or_webhook': '手动或 Webhook',
+    'option.selected_refs': '指定 refs',
+    'option.all_refs': '全部 refs',
+    'option.ssh': 'SSH',
+    'option.https': 'HTTPS',
+    'option.projectops_worker_git_ssh': 'ProjectOps Worker Git SSH',
+    'option.codex-cli': 'Codex CLI',
+    'option.token': 'Token',
+    'option.key': 'SSH Key',
+    'option.password': '密码',
+    'menu.dashboard': '仪表盘',
+    'menu.assets': '资产',
+    'menu.projects': '项目',
+    'menu.providers': '提供方',
+    'menu.detail': '项目详情',
+    'menu.remotes': 'Git 远端',
+    'menu.operations': '操作',
+    'menu.nodes': 'Worker 节点',
+    'menu.ai': 'AI 运行时',
+    'menu.agent': 'Agent 任务',
+    'menu.config': 'Argo / SSH'
+  }
+};
+
+const I18nContext = React.createContext({
+  lang: 'en' as Language,
+  setLang: (_lang: Language) => {},
+  t: (key: string) => dictionaries.en[key] || key
+});
+
+function useI18n() {
+  return React.useContext(I18nContext);
+}
+
+function createTranslator(lang: Language) {
+  return (key: string) => dictionaries[lang][key] || dictionaries.en[key] || key;
+}
+
+function getInitialLanguage(): Language {
+  return localStorage.getItem('assops_lang') === 'zh' ? 'zh' : 'en';
+}
 
 function authToken() {
   return localStorage.getItem('assops_token') || '';
@@ -89,12 +388,14 @@ function safeProviderEndpointTemplateLabel(value: unknown) {
 }
 
 function Login({ onLogin }: { onLogin: () => void }) {
+  const { t } = useI18n();
   const [loading, setLoading] = useState(false);
   return (
     <div className="loginPage">
       <div className="loginPanel">
+        <div className="loginLang"><LanguageSwitch /></div>
         <Typography.Title level={1}>ASSOPS</Typography.Title>
-        <Typography.Paragraph>Operations cockpit for projects, workers, remotes, and AI runtime context.</Typography.Paragraph>
+        <Typography.Paragraph>{t('login.description')}</Typography.Paragraph>
         <Form
           layout="vertical"
           initialValues={{ email: 'admin@assops.local', password: 'admin1234' }}
@@ -111,13 +412,13 @@ function Login({ onLogin }: { onLogin: () => void }) {
             }
           }}
         >
-          <Form.Item name="email" label="Email" rules={[{ required: true }]}>
+          <Form.Item name="email" label={t('login.email')} rules={[{ required: true, message: t('common.required') }]}>
             <Input autoComplete="username" />
           </Form.Item>
-          <Form.Item name="password" label="Password" rules={[{ required: true }]}>
+          <Form.Item name="password" label={t('login.password')} rules={[{ required: true, message: t('common.required') }]}>
             <Input.Password autoComplete="current-password" />
           </Form.Item>
-          <Button type="primary" htmlType="submit" loading={loading} block>Sign in</Button>
+          <Button type="primary" htmlType="submit" loading={loading} block>{t('login.signIn')}</Button>
         </Form>
       </div>
     </div>
@@ -7246,7 +7547,7 @@ function ConfigPage() {
         auth_type: values.auth_type || 'token',
         config: {
           token: values.token,
-          insecure_skip_verify: values.insecure_skip_verify === 'true'
+          insecure_skip_verify: values.insecure_skip_verify === true || values.insecure_skip_verify === 'true'
         }
       })
     });
@@ -7699,24 +8000,125 @@ function ConfigPage() {
 }
 
 function Toolbar({ title, onCreate, disabled = false }: { title: string; onCreate: () => void; disabled?: boolean }) {
-  return <div className="toolbar"><Typography.Title level={2}>{title}</Typography.Title><Button type="primary" onClick={onCreate} disabled={disabled}>Create</Button></div>;
+  const { t } = useI18n();
+  return <div className="toolbar"><Typography.Title level={2}>{translateTitle(title, t)}</Typography.Title><Button type="primary" onClick={onCreate} disabled={disabled}>{t('common.create')}</Button></div>;
 }
 
-function fieldRules(field: string) {
+const titleKeys: Record<string, string> = {
+  'SSH Machines': 'title.sshMachines',
+  'Argo Connections': 'title.argoConnections',
+  'Create project': 'form.createProject',
+  'Create repository': 'form.createRepository',
+  'Create AI runtime': 'form.createAIRuntime',
+  'Create agent task': 'form.createAgentTask',
+  'Create remote': 'form.createRemote',
+  'Create tag': 'form.createTag',
+  'Save repo sync asset': 'form.saveRepoSyncAsset',
+  'Edit repo sync asset': 'form.editRepoSyncAsset',
+  'Create webhook': 'form.createWebhook',
+  'Create Argo connection': 'form.createArgoConnection',
+  'Create SSH machine': 'form.createSSHMachine',
+  'Run SSH command': 'form.runSSHCommand'
+};
+
+function translateTitle(title: string, t: (key: string) => string) {
+  const key = titleKeys[title];
+  return key ? t(key) : title;
+}
+
+type FieldMeta = {
+  labelKey?: string;
+  helpKey?: string;
+  input?: 'text' | 'textarea' | 'password' | 'url' | 'number' | 'select' | 'checkbox';
+  options?: string[];
+  required?: boolean;
+  placeholder?: string;
+};
+
+const fieldMeta: Record<string, FieldMeta> = {
+  name: { required: true },
+  title: { required: true },
+  slug: { helpKey: 'help.slug' },
+  repo_key: { required: true, helpKey: 'help.repo_key', placeholder: 'service' },
+  display_name: {},
+  repo_role: { input: 'select', options: ['code', 'service', 'config'], helpKey: 'help.repo_role' },
+  description: { input: 'textarea' },
+  remote_key: { required: true, helpKey: 'help.remote_key', placeholder: 'github' },
+  provider_type: { input: 'select', options: ['github', 'gitea', 'git'], helpKey: 'help.provider_type', required: true },
+  provider: { input: 'select', options: ['github', 'gitea'], helpKey: 'help.provider_type', required: true },
+  remote_url: { input: 'url', helpKey: 'help.remote_url', placeholder: 'git@github.com:org/repo.git' },
+  web_url: { input: 'url', helpKey: 'help.web_url', placeholder: 'https://github.com/org/repo' },
+  remote_role: { input: 'select', options: ['source', 'mirror', 'target', 'config', 'origin'], helpKey: 'help.remote_role' },
+  urls: { input: 'textarea', helpKey: 'help.urls', placeholder: 'git@example.com:org/repo.git, https://example.com/org/repo.git' },
+  default_branch: { helpKey: 'help.default_branch', placeholder: 'main' },
+  tag_name: { required: true, placeholder: 'v1.0.0' },
+  target_sha: { required: true },
+  branch: { placeholder: 'main' },
+  tag_message: { input: 'textarea' },
+  trigger_mode: { input: 'select', options: ['manual', 'webhook', 'push', 'manual_or_webhook'], helpKey: 'help.trigger_mode' },
+  sync_mode: { input: 'select', options: ['selected_refs', 'all_refs'], helpKey: 'help.sync_mode' },
+  transport: { input: 'select', options: ['ssh', 'https'], helpKey: 'help.transport' },
+  driver: { input: 'select', options: ['projectops_worker_git_ssh'], helpKey: 'help.driver' },
+  enabled: { input: 'checkbox' },
+  secret_token: { input: 'password', helpKey: 'help.secret_token' },
+  server_url: { input: 'url', required: true, helpKey: 'help.server_url', placeholder: 'https://argo.example.com' },
+  auth_type: { input: 'select', options: ['token', 'key', 'password'], helpKey: 'help.auth_type' },
+  token: { input: 'password', helpKey: 'help.token' },
+  insecure_skip_verify: { input: 'checkbox', helpKey: 'help.insecure_skip_verify' },
+  host: { required: true, helpKey: 'help.host' },
+  port: { input: 'number', helpKey: 'help.port', placeholder: '22' },
+  username: { required: true, helpKey: 'help.username' },
+  command: { input: 'textarea', required: true, helpKey: 'help.command' },
+  timeout_seconds: { input: 'number', helpKey: 'help.timeout_seconds', placeholder: '60' },
+  runtime_type: { input: 'select', options: ['codex-cli'], helpKey: 'help.runtime_type' },
+  codex_binary: { helpKey: 'help.codex_binary', placeholder: 'codex' },
+  model: { helpKey: 'help.model' },
+  prompt: { input: 'textarea', required: true, helpKey: 'help.prompt' }
+};
+
+function fieldLabel(field: string, t: (key: string) => string) {
+  const meta = fieldMeta[field] || {};
+  const label = meta.labelKey ? t(meta.labelKey) : t(`field.${field}`);
+  const fallback = label === `field.${field}` ? field.replaceAll('_', ' ') : label;
+  if (!meta.helpKey) return fallback;
+  return (
+    <Space size={4}>
+      <span>{fallback}</span>
+      <Tooltip title={t(meta.helpKey)}>
+        <QuestionCircleOutlined className="fieldHelpIcon" />
+      </Tooltip>
+    </Space>
+  );
+}
+
+function fieldValuePropName(field: string) {
+  return fieldMeta[field]?.input === 'checkbox' ? 'checked' : 'value';
+}
+
+function fieldRules(field: string, t: (key: string) => string = createTranslator('en')) {
+  const meta = fieldMeta[field] || {};
   const rules: AnyRow[] = [];
-  if (field === 'name' || field === 'title' || field === 'command') rules.push({ required: true });
-  if (field === 'server_url') rules.push({ type: 'url', message: 'Enter a valid URL' });
+  if (meta.required || field === 'name' || field === 'title' || field === 'command') rules.push({ required: true, message: t('common.required') });
+  if (field === 'server_url' || field === 'web_url') rules.push({ type: 'url', message: t('common.validUrl') });
   return rules;
 }
 
-function fieldInput(field: string) {
-  if (field === 'command' || field.endsWith('_json')) return <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} />;
-  if (field === 'server_url' || field.endsWith('_url')) return <Input type="url" />;
-  if (field === 'token' || field === 'password' || field.endsWith('_password')) return <Input.Password />;
-  return <Input />;
+function fieldInput(field: string, t: (key: string) => string) {
+  const meta = fieldMeta[field] || {};
+  const placeholder = meta.placeholder;
+  if (meta.input === 'checkbox') return <Checkbox>{t(`field.${field}`)}</Checkbox>;
+  if (meta.input === 'select' && meta.options) {
+    return <Select options={meta.options.map((value) => ({ value, label: t(`option.${value}`) }))} />;
+  }
+  if (meta.input === 'textarea' || field === 'command' || field.endsWith('_json')) return <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder={placeholder} />;
+  if (meta.input === 'url' || field === 'server_url' || field.endsWith('_url')) return <Input type="url" placeholder={placeholder} />;
+  if (meta.input === 'password' || field === 'token' || field === 'password' || field.endsWith('_password')) return <Input.Password placeholder={placeholder} />;
+  if (meta.input === 'number') return <Input type="number" placeholder={placeholder} />;
+  return <Input placeholder={placeholder} />;
 }
 
 function CreateModal({ title, open, setOpen, fields, onSubmit }: { title: string; open: boolean; setOpen: (v: boolean) => void; fields: string[]; onSubmit: (values: AnyRow) => Promise<any> }) {
+  const { t } = useI18n();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   async function submit(values: AnyRow) {
@@ -7732,15 +8134,32 @@ function CreateModal({ title, open, setOpen, fields, onSubmit }: { title: string
     }
   }
   return (
-    <Modal title={title} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={submitting} okButtonProps={{ disabled: submitting }} destroyOnHidden>
+    <Modal title={translateTitle(title, t)} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={submitting} okButtonProps={{ disabled: submitting }} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
       <Form form={form} layout="vertical" onFinish={submit}>
         {fields.map((field) => (
-          <Form.Item key={field} name={field} label={field.replaceAll('_', ' ')} rules={fieldRules(field)}>
-            {fieldInput(field)}
+          <Form.Item key={field} name={field} label={fieldLabel(field, t)} rules={fieldRules(field, t)} valuePropName={fieldValuePropName(field)}>
+            {fieldInput(field, t)}
           </Form.Item>
         ))}
       </Form>
     </Modal>
+  );
+}
+
+function LanguageSwitch() {
+  const { lang, setLang, t } = useI18n();
+  return (
+    <Select
+      aria-label={t('app.language')}
+      className="languageSwitch"
+      size="small"
+      value={lang}
+      onChange={(value) => setLang(value as Language)}
+      options={[
+        { value: 'en', label: t('lang.en') },
+        { value: 'zh', label: t('lang.zh') }
+      ]}
+    />
   );
 }
 
@@ -7755,36 +8174,57 @@ function MobileAIHome({ setPage }: { setPage: (p: string) => void }) {
 }
 
 function App() {
+  const [lang, setLangState] = useState<Language>(getInitialLanguage);
   const [authed, setAuthed] = useState(Boolean(authToken()));
   const [page, setPage] = useState('dashboard');
+  const t = useMemo(() => createTranslator(lang), [lang]);
+  const setLang = (next: Language) => {
+    localStorage.setItem('assops_lang', next);
+    setLangState(next);
+  };
+  const i18nValue = useMemo(() => ({ lang, setLang, t }), [lang, t]);
   const menu = useMemo(() => [
-    { key: 'dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
-    { key: 'assets', icon: <AppstoreOutlined />, label: 'Assets' },
-    { key: 'projects', icon: <AppstoreOutlined />, label: 'Projects' },
-    { key: 'providers', icon: <ApiOutlined />, label: 'Providers' },
-    { key: 'detail', icon: <BranchesOutlined />, label: 'Project Detail' },
-    { key: 'remotes', icon: <ApiOutlined />, label: 'Git Remotes' },
-    { key: 'operations', icon: <PlayCircleOutlined />, label: 'Operations' },
-    { key: 'nodes', icon: <CloudServerOutlined />, label: 'Worker Nodes' },
-    { key: 'ai', icon: <CodeOutlined />, label: 'AI Runtime' },
-    { key: 'agent', icon: <RobotOutlined />, label: 'Agent Task' },
-    { key: 'config', icon: <DeploymentUnitOutlined />, label: 'Argo / SSH' }
-  ], []);
-  if (!authed) return <Login onLogin={() => setAuthed(true)} />;
+    { key: 'dashboard', icon: <DashboardOutlined />, label: t('menu.dashboard') },
+    { key: 'assets', icon: <AppstoreOutlined />, label: t('menu.assets') },
+    { key: 'projects', icon: <AppstoreOutlined />, label: t('menu.projects') },
+    { key: 'providers', icon: <ApiOutlined />, label: t('menu.providers') },
+    { key: 'detail', icon: <BranchesOutlined />, label: t('menu.detail') },
+    { key: 'remotes', icon: <ApiOutlined />, label: t('menu.remotes') },
+    { key: 'operations', icon: <PlayCircleOutlined />, label: t('menu.operations') },
+    { key: 'nodes', icon: <CloudServerOutlined />, label: t('menu.nodes') },
+    { key: 'ai', icon: <CodeOutlined />, label: t('menu.ai') },
+    { key: 'agent', icon: <RobotOutlined />, label: t('menu.agent') },
+    { key: 'config', icon: <DeploymentUnitOutlined />, label: t('menu.config') }
+  ], [t]);
   const content: Record<string, React.ReactNode> = {
     dashboard: <Dashboard />, assets: <AssetCenter />, projects: <Projects />, providers: <ProviderAccounts />, detail: <ProjectDetail />, remotes: <GitRemotes />, operations: <Operations />, nodes: <WorkerNodes />, ai: <AIRuntime />, agent: <AgentTasks />, config: <ConfigPage />
   };
-  return (
-    <ConfigProvider theme={{ token: { borderRadius: 6, colorPrimary: '#1677ff' } }}>
+  const body = !authed ? (
+    <Login onLogin={() => setAuthed(true)} />
+  ) : (
+    <>
       <MobileAIHome setPage={setPage} />
       <Layout className="appShell">
         <Sider width={240} breakpoint="lg" collapsedWidth={0}><div className="brand"><SettingOutlined /> ASSOPS</div><Menu theme="dark" mode="inline" selectedKeys={[page]} items={menu} onClick={(e) => setPage(e.key)} /></Sider>
         <Layout>
-          <Header className="topbar"><Typography.Text strong>MVP Control Plane</Typography.Text><Button onClick={() => { localStorage.removeItem('assops_token'); setAuthed(false); }}>Sign out</Button></Header>
+          <Header className="topbar">
+            <Typography.Text strong>{t('app.controlPlane')}</Typography.Text>
+            <Space className="topbarActions">
+              <LanguageSwitch />
+              <Button onClick={() => { localStorage.removeItem('assops_token'); setAuthed(false); }}>{t('app.signOut')}</Button>
+            </Space>
+          </Header>
           <Content className="content">{content[page]}</Content>
         </Layout>
       </Layout>
-    </ConfigProvider>
+    </>
+  );
+  return (
+    <I18nContext.Provider value={i18nValue}>
+      <ConfigProvider locale={lang === 'zh' ? zhCN : enUS} theme={{ token: { borderRadius: 6, colorPrimary: '#1677ff' } }}>
+        {body}
+      </ConfigProvider>
+    </I18nContext.Provider>
   );
 }
 
