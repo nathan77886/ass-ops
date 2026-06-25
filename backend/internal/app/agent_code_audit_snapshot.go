@@ -283,7 +283,7 @@ func agentCodeAuditSnapshotReadiness(snapshot map[string]any) (bool, string, []s
 		missing = append(missing, "agent_tool_call_audit_active")
 	}
 	if !boolOnlyFromAny(snapshot["sanitized_result_recorded"]) {
-		missing = append(missing, "terminal_tool_call_audit")
+		missing = append(missing, "sanitized_code_modification_result")
 	}
 	if !boolOnlyFromAny(snapshot["worker_dispatch_audit_recorded"]) {
 		missing = append(missing, "worker_dispatch_plan_audit")

@@ -20890,6 +20890,8 @@ func agentCodeModificationEvidence(auditEvidence map[string]any) map[string]any 
 	hasPatchPrepare := intFromAny(toolCounts["patch.prepare"], 0) > 0
 	hasWorkerDispatch := intFromAny(toolCounts["worker.dispatch.plan"], 0) > 0
 	auditState := cleanPreviewString(auditEvidence["evidence_state"])
+	terminalAuditRecorded := boolOnlyFromAny(auditEvidence["sanitized_result_recorded"])
+	sanitizedCodeResultRecorded := auditState == "recorded" && terminalAuditRecorded && hasWorkerDispatch && hasCodexPlan && hasPatchPrepare
 	evidenceState := "not_recorded"
 	switch {
 	case !hasAudit:
@@ -20898,9 +20900,9 @@ func agentCodeModificationEvidence(auditEvidence map[string]any) map[string]any 
 		evidenceState = "waiting_for_worker"
 	case auditState == "failed" || auditState == "canceled" || auditState == "mixed_failed" || auditState == "unknown" || auditState == "absent":
 		evidenceState = auditState
-	case boolOnlyFromAny(auditEvidence["sanitized_result_recorded"]) && hasWorkerDispatch && hasCodexPlan && hasPatchPrepare:
+	case sanitizedCodeResultRecorded:
 		evidenceState = "recorded"
-	case boolOnlyFromAny(auditEvidence["sanitized_result_recorded"]):
+	case terminalAuditRecorded:
 		evidenceState = "partial_recorded"
 	default:
 		evidenceState = "blocked"
@@ -20915,15 +20917,18 @@ func agentCodeModificationEvidence(auditEvidence map[string]any) map[string]any 
 	if !hasPatchPrepare {
 		missing = append(missing, "patch_prepare_audit")
 	}
-	if !boolOnlyFromAny(auditEvidence["sanitized_result_recorded"]) {
+	if !terminalAuditRecorded {
 		missing = append(missing, "terminal_tool_call_audit")
+	}
+	if !sanitizedCodeResultRecorded {
+		missing = append(missing, "sanitized_code_modification_result")
 	}
 	return map[string]any{
 		"mode":                              "redacted_agent_code_modification_evidence",
 		"evidence_state":                    evidenceState,
 		"tool_call_audit_state":             auditState,
 		"has_code_modification_audit":       hasAudit,
-		"sanitized_result_recorded":         hasAudit && activeCount == 0,
+		"sanitized_result_recorded":         sanitizedCodeResultRecorded,
 		"worker_dispatch_audit_recorded":    hasWorkerDispatch,
 		"codex_execution_plan_recorded":     hasCodexPlan,
 		"patch_prepare_audit_recorded":      hasPatchPrepare,
@@ -20931,7 +20936,7 @@ func agentCodeModificationEvidence(auditEvidence map[string]any) map[string]any 
 		"failed_tool_call_count":            intFromAny(auditEvidence["failed_count"], 0),
 		"active_tool_call_count":            activeCount,
 		"terminal_tool_call_count":          intFromAny(auditEvidence["terminal_count"], 0),
-		"required_audit_evidence":           []string{"worker_dispatch_plan_audit", "codex_execution_plan_audit", "patch_prepare_audit", "terminal_tool_call_audit"},
+		"required_audit_evidence":           []string{"worker_dispatch_plan_audit", "codex_execution_plan_audit", "patch_prepare_audit", "terminal_tool_call_audit", "sanitized_code_modification_result"},
 		"missing_audit_evidence":            missing,
 		"execution_enabled":                 false,
 		"mutation_enabled":                  false,
@@ -20979,7 +20984,11 @@ func agentCodeModificationResultRecordingPlan(evidenceRows ...map[string]any) ma
 		recordingState = cleanPreviewString(evidence["evidence_state"])
 		recordingEnabled = boolOnlyFromAny(evidence["sanitized_result_recorded"])
 		resultWritten = boolOnlyFromAny(evidence["sanitized_result_recorded"])
-		readyReason = "sanitized_agent_code_modification_audit_observed"
+		if resultWritten {
+			readyReason = "sanitized_agent_code_modification_audit_observed"
+		} else {
+			readyReason = "agent_code_modification_audit_incomplete"
+		}
 	}
 	return map[string]any{
 		"mode":                         "redacted_agent_code_modification_result_recording_plan",

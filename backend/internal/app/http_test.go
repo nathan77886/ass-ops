@@ -25462,9 +25462,60 @@ func TestRecordAgentCodeAuditSnapshotHandlerBlockedByPartialAudit(t *testing.T) 
 		t.Fatalf("unexpected blocked agent code audit snapshot response: %#v", got)
 	}
 	missing := stringSliceFromAny(got["missing_evidence"])
-	for _, want := range []string{"agent_code_modification_audit_incomplete", "worker_dispatch_plan_audit", "codex_execution_plan_audit"} {
+	for _, want := range []string{"agent_code_modification_audit_incomplete", "sanitized_code_modification_result", "worker_dispatch_plan_audit", "codex_execution_plan_audit"} {
 		if !containsString(missing, want) {
 			t.Fatalf("blocked code audit snapshot missing %s in %#v", want, missing)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentCodeAuditSnapshotHandlerBlocksFailedAuditResult(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "completed", toolName: "worker.dispatch.plan"},
+		{id: "call-2", status: "failed", toolName: "codex.execution.plan"},
+		{id: "call-3", status: "completed", toolName: "patch.prepare"},
+	})
+	expectAgentToolAuditSnapshotAsset(mock, true)
+
+	req := newAgentCodeAuditSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentCodeAuditSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "failed" ||
+		got["recording_ready"] != false ||
+		got["sanitized_result_recorded"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		got["agent_code_audit_snapshot_written"] != false {
+		t.Fatalf("failed code audit should not claim sanitized result recording: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["evidence_state"] != "failed" ||
+		snapshot["sanitized_result_recorded"] != false ||
+		snapshot["execution_arming_ready"] != false ||
+		snapshot["source_checkout_branch_review_ready"] != false {
+		t.Fatalf("failed code audit snapshot should stay blocked: %#v", snapshot)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	for _, want := range []string{"agent_code_modification_audit_incomplete", "sanitized_code_modification_result"} {
+		if !containsString(missing, want) {
+			t.Fatalf("failed code audit snapshot missing %s in %#v", want, missing)
 		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -26793,6 +26844,7 @@ func TestAgentCodeModificationPlanReconcilesAuditEvidence(t *testing.T) {
 	if recording["recording_state"] != "recorded" ||
 		recording["recording_enabled"] != true ||
 		recording["result_written"] != true ||
+		recording["recording_ready_reason"] != "sanitized_agent_code_modification_audit_observed" ||
 		recording["patch_artifact_written"] != false ||
 		recording["diff_artifact_written"] != false ||
 		recording["test_result_written"] != false ||
@@ -26915,18 +26967,86 @@ func TestAgentCodeModificationEvidenceRequiresWorkerDispatchAudit(t *testing.T) 
 	got := agentCodeModificationPlan(evidence)
 	codeEvidence := mapFromAny(got["code_modification_evidence"])
 	if codeEvidence["evidence_state"] != "partial_recorded" ||
-		codeEvidence["sanitized_result_recorded"] != true ||
+		codeEvidence["sanitized_result_recorded"] != false ||
 		codeEvidence["worker_dispatch_audit_recorded"] != false ||
 		codeEvidence["codex_execution_plan_recorded"] != true ||
 		codeEvidence["patch_prepare_audit_recorded"] != true ||
-		!containsString(stringSliceFromAny(codeEvidence["missing_audit_evidence"]), "worker_dispatch_plan_audit") {
+		!containsString(stringSliceFromAny(codeEvidence["missing_audit_evidence"]), "worker_dispatch_plan_audit") ||
+		!containsString(stringSliceFromAny(codeEvidence["missing_audit_evidence"]), "sanitized_code_modification_result") {
 		t.Fatalf("missing worker dispatch audit should keep code modification evidence partial: %#v", codeEvidence)
 	}
 	recording := mapFromAny(got["result_recording_plan"])
-	if recording["recording_state"] != "partial_recorded" || recording["result_written"] != true {
-		t.Fatalf("recording should reflect partial sanitized audit evidence: %#v", recording)
+	if recording["recording_state"] != "partial_recorded" ||
+		recording["result_written"] != false ||
+		recording["recording_enabled"] != false ||
+		recording["recording_ready_reason"] != "agent_code_modification_audit_incomplete" {
+		t.Fatalf("recording should require complete sanitized code audit evidence: %#v", recording)
 	}
 	assertAgentCodeModificationPlanSafe(t, got)
+}
+
+func TestAgentCodeModificationEvidenceRejectsFailedAuditComponents(t *testing.T) {
+	tests := []struct {
+		name       string
+		rows       []map[string]any
+		wantState  string
+		wantReason string
+	}{
+		{
+			name: "failed worker dispatch blocks code result",
+			rows: []map[string]any{
+				{"id": "call-worker", "operation_run_id": "op-1", "tool_name": "worker.dispatch.plan", "status": "failed"},
+				{"id": "call-codex", "operation_run_id": "op-1", "tool_name": "codex.execution.plan", "status": "completed"},
+				{"id": "call-patch", "operation_run_id": "op-1", "tool_name": "patch.prepare", "status": "completed"},
+			},
+			wantState:  "failed",
+			wantReason: "agent_code_modification_audit_incomplete",
+		},
+		{
+			name: "failed patch prepare blocks code result",
+			rows: []map[string]any{
+				{"id": "call-worker", "operation_run_id": "op-1", "tool_name": "worker.dispatch.plan", "status": "completed"},
+				{"id": "call-codex", "operation_run_id": "op-1", "tool_name": "codex.execution.plan", "status": "completed"},
+				{"id": "call-patch", "operation_run_id": "op-1", "tool_name": "patch.prepare", "status": "failed"},
+			},
+			wantState:  "failed",
+			wantReason: "agent_code_modification_audit_incomplete",
+		},
+		{
+			name: "mixed failed and canceled blocks code result",
+			rows: []map[string]any{
+				{"id": "call-worker", "operation_run_id": "op-1", "tool_name": "worker.dispatch.plan", "status": "failed"},
+				{"id": "call-codex", "operation_run_id": "op-1", "tool_name": "codex.execution.plan", "status": "canceled"},
+				{"id": "call-patch", "operation_run_id": "op-1", "tool_name": "patch.prepare", "status": "completed"},
+			},
+			wantState:  "mixed_failed",
+			wantReason: "agent_code_modification_audit_incomplete",
+		},
+		{
+			name:       "missing terminal audit blocks code result",
+			rows:       nil,
+			wantState:  "not_recorded",
+			wantReason: "agent_code_modification_result_not_recorded",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := agentCodeModificationPlan(agentToolCallAuditEvidence(tt.rows))
+			codeEvidence := mapFromAny(got["code_modification_evidence"])
+			if codeEvidence["evidence_state"] != tt.wantState ||
+				codeEvidence["sanitized_result_recorded"] != false ||
+				!containsString(stringSliceFromAny(codeEvidence["missing_audit_evidence"]), "sanitized_code_modification_result") {
+				t.Fatalf("failed or missing audit component should block sanitized code result: %#v", codeEvidence)
+			}
+			recording := mapFromAny(got["result_recording_plan"])
+			if recording["recording_enabled"] != false ||
+				recording["result_written"] != false ||
+				recording["recording_ready_reason"] != tt.wantReason {
+				t.Fatalf("failed or missing audit should not enable recording: %#v", recording)
+			}
+			assertAgentCodeModificationPlanSafe(t, got)
+		})
+	}
 }
 
 func TestAgentWorkerDispatchPlan(t *testing.T) {
