@@ -264,6 +264,9 @@ func providerReviewAttemptRequestEnvelopeSnapshotReadiness(snapshot map[string]a
 	if !boolOnlyFromAny(snapshot["request_envelope_plan_observed"]) {
 		missing = append(missing, "provider_review_request_envelope_plan_missing")
 	}
+	if !boolOnlyFromAny(snapshot["request_envelope_contract_ready"]) {
+		missing = append(missing, "provider_review_request_envelope_contract_not_ready")
+	}
 	if boolOnlyFromAny(snapshot["provider_api_call_made"]) ||
 		boolOnlyFromAny(snapshot["external_call_made"]) ||
 		stringFromMap(snapshot, "provider_api_mutation") != "disabled" ||
