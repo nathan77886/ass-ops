@@ -666,6 +666,13 @@ function operationIDsByType(rows: AnyRow[] = [], type: string) {
     .filter(Boolean));
 }
 
+function operationIDsByStatus(rows: AnyRow[] = [], status: string) {
+  return new Set(rows
+    .filter((row) => String(row.status || '') === status)
+    .map(operationRowAssetID)
+    .filter(Boolean));
+}
+
 function mergeSets<T>(...sets: Set<T>[]) {
   return new Set(sets.flatMap((set) => Array.from(set)));
 }
@@ -1016,20 +1023,33 @@ function countArgoGraphLinks(graph: AnyRow = {}, connectionAssetIDs = new Set<st
   return counts;
 }
 
-function countApprovalGraphLinks(graph: AnyRow = {}, activeRuleIDs = new Set<string>(), approvalAssetIDs = new Set<string>()) {
-  return graphItems(graph, 'edges').reduce((counts, edge: AnyRow) => {
+function countApprovalGraphLinks(graph: AnyRow = {}, activeRuleIDs = new Set<string>(), approvalAssetIDs = new Set<string>(), operationAssetIDs = new Set<string>(), pendingOperationIDs = new Set<string>()) {
+  const byApproval: Record<string, { rules: Record<string, boolean>; operations: Record<string, boolean> }> = {};
+  const approvalEntry = (assetID: string) => {
+    byApproval[assetID] ??= { rules: {}, operations: {} };
+    return byApproval[assetID];
+  };
+  const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
     const relation = String(edge.relation_type || '');
     const from = String(edge.from_asset_id || '');
     const to = String(edge.to_asset_id || '');
     if (relation === 'governs' && activeRuleIDs.has(from) && approvalAssetIDs.has(to)) {
-      counts.ruleApprovals += 1;
+      nextCounts.ruleApprovals += 1;
+      approvalEntry(to).rules[from] = true;
     }
-    // Pending approvals can be ready before a gated operation exists; keep this as display/future execution evidence.
     if (relation === 'gates_operation' && from.startsWith('operation_approval:') && to.startsWith('operation_run:')) {
-      counts.approvalOperations += 1;
+      nextCounts.approvalOperations += 1;
+      approvalEntry(from).operations[to] = true;
     }
-    return counts;
-  }, { ruleApprovals: 0, approvalOperations: 0 });
+    return nextCounts;
+  }, { ruleApprovals: 0, approvalOperations: 0, completeApprovalChains: 0, completeApprovalAssetChains: 0 });
+  counts.completeApprovalChains = Object.values(byApproval).filter((entry) => Object.keys(entry.rules).length > 0 && Object.keys(entry.operations).length > 0).length;
+  counts.completeApprovalAssetChains = Object.entries(byApproval).filter(([approvalID, entry]) => (
+    approvalAssetIDs.has(approvalID) &&
+    Object.keys(entry.rules).length > 0 &&
+    Object.keys(entry.operations).some((operationID) => operationAssetIDs.has(operationID) && pendingOperationIDs.has(operationID))
+  )).length;
+  return counts;
 }
 
 function graphPayloadAvailable(graph: AnyRow | null) {
@@ -1268,7 +1288,13 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
     operationIDsByType(operations, 'argo.apps.sync')
   );
   const activeApprovalRuleIDs = activeAssetIDsByTypeStatus(assets, 'operation_approval_rule', 'active');
-  const approvalGraphLinks = countApprovalGraphLinks(graph, activeApprovalRuleIDs, assetIDsByType(assets, 'operation_approval'));
+  const approvalGraphLinks = countApprovalGraphLinks(
+    graph,
+    activeApprovalRuleIDs,
+    assetIDsByType(assets, 'operation_approval'),
+    assetIDsByType(assets, 'operation_run'),
+    operationIDsByStatus(operations, 'pending_approval')
+  );
   const contextGraphLinks = countContextGraphLinks(assets, graph);
   const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.argo_app || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0) + argoGraphLinks.connectionApps + argoGraphLinks.appTargets + argoGraphLinks.completeAppAssets;
   const argoEvidenceText = `${assetCounts.deployment_target || 0} targets / ${assetCounts.argo_connection || 0} Argo connections / ${assetCounts.argo_app || 0} apps / ${operationCounts['argo.apps.sync'] || 0} sync ops / ${argoGraphLinks.completeApps} complete app links / ${argoGraphLinks.completeAppAssets} app asset chains${argoGraphLinks.completeApps > 0 && argoGraphLinks.completeAppAssets === 0 ? ' / canonical evidence missing' : ''}`;
@@ -1334,7 +1360,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'approval',
       label: 'Enforce approval for high-risk operations',
       next: 'Queue a high-risk action that creates an approval request.',
-      ...readinessState(approvalAssets > 0 && activeApprovalRules > 0 && approvalGraphLinks.ruleApprovals > 0, `${approvalEvidence} approvals / ${approvalAssets} approval assets / ${pendingApprovalOps} pending ops / ${activeApprovalRules} active rules / ${approvalGraphLinks.ruleApprovals} governed approvals`, approvalEvidence > 0 || approvalAssets > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0 || approvalGraphLinks.ruleApprovals > 0)
+      ...readinessState(approvalAssets > 0 && pendingApprovalOps > 0 && activeApprovalRules > 0 && approvalGraphLinks.completeApprovalAssetChains > 0, `${approvalEvidence} approvals / ${approvalAssets} approval assets / ${pendingApprovalOps} pending ops / ${activeApprovalRules} active rules / ${approvalGraphLinks.ruleApprovals} governed approvals / ${approvalGraphLinks.approvalOperations} gated ops / ${approvalGraphLinks.completeApprovalChains} complete approval chains / ${approvalGraphLinks.completeApprovalAssetChains} approval asset chains`, approvalEvidence > 0 || approvalAssets > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0 || approvalGraphLinks.ruleApprovals > 0 || approvalGraphLinks.approvalOperations > 0 || approvalGraphLinks.completeApprovalAssetChains > 0)
     },
     {
       key: 'context',

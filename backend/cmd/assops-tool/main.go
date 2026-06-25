@@ -1425,7 +1425,13 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		operationIDsByType(operations, "argo.apps.sync"),
 	)
 	activeApprovalRuleIDs := activeAssetIDsByTypeStatus(assets, "operation_approval_rule", "active")
-	approvalGraphLinks := countApprovalGraphLinks(graph, activeApprovalRuleIDs, assetIDsByType(assets, "operation_approval"))
+	approvalGraphLinks := countApprovalGraphLinks(
+		graph,
+		activeApprovalRuleIDs,
+		assetIDsByType(assets, "operation_approval"),
+		assetIDsByType(assets, "operation_run"),
+		operationIDsByStatus(operations, "pending_approval"),
+	)
 	contextGraphLinks := countContextGraphLinks(assets, graph)
 	argoEvidence := assetCounts["argo_connection"] + assetCounts["argo_app"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"] + argoGraphLinks.ConnectionApps + argoGraphLinks.AppTargets + argoGraphLinks.CompleteAppAssets
 
@@ -1459,7 +1465,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		readinessItem("ssh", "Register SSH machines and audited commands", "Verify an SSH machine, then run an approval-gated command.", assetCounts["host"] > 0 && sshVerifyRuns > 0 && sshCommandRuns > 0 && sshGraphLinks.CompleteCommandAssets >= 2, fmt.Sprintf("%d hosts / %d verify ops / %d command ops / %d command assets / %d complete audit chains / %d command asset chains", assetCounts["host"], sshVerifyRuns, sshCommandRuns, assetCounts["ssh_command_run"], sshGraphLinks.CompleteCommands, sshGraphLinks.CompleteCommandAssets), assetCounts["host"] > 0 || sshVerifyRuns > 0 || sshCommandRuns > 0 || assetCounts["ssh_command_run"] > 0 || sshGraphLinks.OperationCommands > 0 || sshGraphLinks.CommandMachines > 0 || sshGraphLinks.CompleteCommandAssets > 0),
 		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["argo_app"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0 && argoGraphLinks.CompleteAppAssets > 0, argoEvidenceText, argoEvidence > 0),
 		readinessItem("operations", "View operation history and logs", "Run any controlled operation and inspect its logs.", operationAssets > 0 && operationLogs > 0, fmt.Sprintf("%d operation assets / %d listed runs / %d with logs", operationAssets, listedOperationRuns, operationLogs), operationAssets > 0 || listedOperationRuns > 0 || operationLogs > 0),
-		readinessItem("approval", "Enforce approval for high-risk operations", "Queue a high-risk action that creates an approval request.", approvalAssets > 0 && activeApprovalRules > 0 && approvalGraphLinks.RuleApprovals > 0, fmt.Sprintf("%d approvals / %d approval assets / %d pending ops / %d active rules / %d governed approvals", approvalEvidence, approvalAssets, pendingApprovalOps, activeApprovalRules, approvalGraphLinks.RuleApprovals), approvalEvidence > 0 || approvalAssets > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0 || approvalGraphLinks.RuleApprovals > 0),
+		readinessItem("approval", "Enforce approval for high-risk operations", "Queue a high-risk action that creates an approval request.", approvalAssets > 0 && pendingApprovalOps > 0 && activeApprovalRules > 0 && approvalGraphLinks.CompleteApprovalAssetChains > 0, fmt.Sprintf("%d approvals / %d approval assets / %d pending ops / %d active rules / %d governed approvals / %d gated ops / %d complete approval chains / %d approval asset chains", approvalEvidence, approvalAssets, pendingApprovalOps, activeApprovalRules, approvalGraphLinks.RuleApprovals, approvalGraphLinks.ApprovalOperations, approvalGraphLinks.CompleteApprovalChains, approvalGraphLinks.CompleteApprovalAssetChains), approvalEvidence > 0 || approvalAssets > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0 || approvalGraphLinks.RuleApprovals > 0 || approvalGraphLinks.ApprovalOperations > 0 || approvalGraphLinks.CompleteApprovalAssetChains > 0),
 		readinessItem("context", "Generate AI-readable context from graph", "Create an agent task or AI runtime after syncing the canonical asset ledger.", contextEvidence > 0 && contextGenerations > 0 && graphEvidence > 0 && contextGraphLinks.CompleteContextTaskAssets > 0, fmt.Sprintf("%d context assets / %d context generations / %d complete context tasks / %d context asset tasks / %d runtime links / %d context tool links / %d graph nodes / %d graph edges", contextEvidence, contextGenerations, contextGraphLinks.CompleteContextTasks, contextGraphLinks.CompleteContextTaskAssets, contextGraphLinks.TaskRuntimes, contextGraphLinks.TaskContextToolCalls, graphNodes, graphEdges), contextEvidence > 0 || contextGenerations > 0 || graphEvidence > 0 || contextGraphLinks.TaskRuntimes > 0 || contextGraphLinks.TaskContextToolCalls > 0 || contextGraphLinks.CompleteContextTaskAssets > 0),
 	}
 
@@ -1554,6 +1560,19 @@ func operationIDsByType(rows []map[string]any, typ string) map[string]bool {
 	ids := map[string]bool{}
 	for _, row := range rows {
 		if fmt.Sprint(row["operation_type"]) != typ {
+			continue
+		}
+		if assetID := operationRowAssetID(row); assetID != "" {
+			ids[assetID] = true
+		}
+	}
+	return ids
+}
+
+func operationIDsByStatus(rows []map[string]any, status string) map[string]bool {
+	ids := map[string]bool{}
+	for _, row := range rows {
+		if fmt.Sprint(row["status"]) != status {
 			continue
 		}
 		if assetID := operationRowAssetID(row); assetID != "" {
@@ -1678,6 +1697,15 @@ func countContextGraphLinks(assets []map[string]any, graph map[string]any) conte
 func hasAnyKnownID(ids, knownIDs map[string]bool) bool {
 	for id := range ids {
 		if knownIDs[id] {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnyIDInBoth(ids, firstKnownIDs, secondKnownIDs map[string]bool) bool {
+	for id := range ids {
+		if firstKnownIDs[id] && secondKnownIDs[id] {
 			return true
 		}
 	}
@@ -2564,12 +2592,27 @@ func hasCanonicalSyncedOperation(operationIDs, syncOperationIDs map[string]bool)
 }
 
 type approvalGraphLinkCounts struct {
-	RuleApprovals      int
-	ApprovalOperations int
+	RuleApprovals               int
+	ApprovalOperations          int
+	CompleteApprovalChains      int
+	CompleteApprovalAssetChains int
 }
 
-func countApprovalGraphLinks(graph map[string]any, activeRuleIDs, approvalAssetIDs map[string]bool) approvalGraphLinkCounts {
+func countApprovalGraphLinks(graph map[string]any, activeRuleIDs, approvalAssetIDs, operationAssetIDs, pendingOperationIDs map[string]bool) approvalGraphLinkCounts {
 	counts := approvalGraphLinkCounts{}
+	type approvalLinks struct {
+		rules      map[string]bool
+		operations map[string]bool
+	}
+	byApproval := map[string]*approvalLinks{}
+	approvalEntry := func(assetID string) *approvalLinks {
+		entry := byApproval[assetID]
+		if entry == nil {
+			entry = &approvalLinks{rules: map[string]bool{}, operations: map[string]bool{}}
+			byApproval[assetID] = entry
+		}
+		return entry
+	}
 	for _, edge := range apiItemsByKey(graph, "edges") {
 		from := fmt.Sprint(edge["from_asset_id"])
 		to := fmt.Sprint(edge["to_asset_id"])
@@ -2577,12 +2620,22 @@ func countApprovalGraphLinks(graph map[string]any, activeRuleIDs, approvalAssetI
 		case "governs":
 			if activeRuleIDs[from] && approvalAssetIDs[to] {
 				counts.RuleApprovals++
+				approvalEntry(to).rules[from] = true
 			}
 		case "gates_operation":
-			// Pending approvals can be ready before a gated operation exists; keep this
-			// as display/future execution evidence rather than a readiness requirement.
 			if strings.HasPrefix(from, "operation_approval:") && strings.HasPrefix(to, "operation_run:") {
 				counts.ApprovalOperations++
+				approvalEntry(from).operations[to] = true
+			}
+		}
+	}
+	for approvalID, entry := range byApproval {
+		if len(entry.rules) > 0 && len(entry.operations) > 0 {
+			counts.CompleteApprovalChains++
+			// operation_run asset_inventory.source_id is emitted from operations.id,
+			// matching the operation_run:<id> graph edges used for pending operations.
+			if approvalAssetIDs[approvalID] && hasAnyIDInBoth(entry.operations, operationAssetIDs, pendingOperationIDs) {
+				counts.CompleteApprovalAssetChains++
 			}
 		}
 	}
