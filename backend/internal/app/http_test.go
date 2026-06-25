@@ -19513,6 +19513,8 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 			claimPlan["claim_metadata_ready"] != false ||
 			claimPlan["operation_name"] != "" ||
 			claimPlan["endpoint_key"] != "" ||
+			claimPlan["provider_type"] != "" ||
+			claimPlan["operation_endpoint_ready"] != false ||
 			claimPlan["attempt_status"] != "blocked" ||
 			claimPlan["dependency_status"] != "blocked" ||
 			claimPlan["dependency_ready"] != false ||
@@ -19527,13 +19529,14 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 			t.Fatalf("unknown operation claim plan should be redacted: %#v", claimPlan)
 		}
 		blockedReasons := stringSliceFromAny(claimPlan["blocked_reasons"])
-		if len(blockedReasons) != 6 ||
-			blockedReasons[0] != "provider_review_response_diagnostics_missing" ||
-			blockedReasons[1] != "provider_review_idempotency_metadata_missing" ||
-			blockedReasons[2] != "provider_review_dependency_not_ready" ||
-			blockedReasons[3] != "provider_review_attempt_status_not_planned" ||
-			blockedReasons[4] != "provider_review_adapter_not_implemented" ||
-			blockedReasons[5] != "provider_review_mutation_not_armed" {
+		if len(blockedReasons) != 7 ||
+			blockedReasons[0] != "provider_review_attempt_operation_endpoint_invalid" ||
+			blockedReasons[1] != "provider_review_response_diagnostics_missing" ||
+			blockedReasons[2] != "provider_review_idempotency_metadata_missing" ||
+			blockedReasons[3] != "provider_review_dependency_not_ready" ||
+			blockedReasons[4] != "provider_review_attempt_status_not_planned" ||
+			blockedReasons[5] != "provider_review_adapter_not_implemented" ||
+			blockedReasons[6] != "provider_review_mutation_not_armed" {
 			t.Fatalf("unknown operation claim blocked reasons = %#v", blockedReasons)
 		}
 		encoded, _ := json.Marshal(claimPlan)
@@ -19541,6 +19544,38 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 			if strings.Contains(string(encoded), leak) {
 				t.Fatalf("unknown operation claim plan leaked %q: %s", leak, encoded)
 			}
+		}
+	})
+	t.Run("blocks claim metadata when operation and endpoint mismatch", func(t *testing.T) {
+		for _, tt := range []struct {
+			name      string
+			operation string
+			endpoint  string
+		}{
+			{name: "branch with commit endpoint", operation: "create_branch_ref", endpoint: "github.commit_files"},
+			{name: "commit with branch endpoint", operation: "commit_starter_files", endpoint: "github.create_branch_ref"},
+			{name: "review with commit endpoint", operation: "open_review_request", endpoint: "gitea.commit_files"},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				claimPlan := providerReviewAttemptExecutionClaimPlan(
+					map[string]any{
+						"name":              tt.operation,
+						"endpoint_key":      tt.endpoint,
+						"status":            "planned",
+						"dependency_status": "independent",
+						"operation_order":   10,
+					},
+					true,
+					true,
+				)
+				if claimPlan["claim_metadata_ready"] != false ||
+					claimPlan["operation_endpoint_ready"] != false ||
+					claimPlan["operation_name"] != tt.operation ||
+					claimPlan["endpoint_key"] != tt.endpoint ||
+					!containsString(stringSliceFromAny(claimPlan["blocked_reasons"]), "provider_review_attempt_operation_endpoint_invalid") {
+					t.Fatalf("mismatched endpoint claim plan should stay blocked: %#v", claimPlan)
+				}
+			})
 		}
 	})
 	t.Run("redacts unknown adapter contract operation name", func(t *testing.T) {
@@ -19763,6 +19798,51 @@ func TestClaimProviderReviewAttemptHandlerBlocksDependencyNotReady(t *testing.T)
 	}
 	if !containsString(stringSliceFromAny(claimPlan["blocked_reasons"]), "provider_review_dependency_not_ready") {
 		t.Fatalf("blocked claim missing dependency reason: %#v", claimPlan["blocked_reasons"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestClaimProviderReviewAttemptHandlerBlocksOperationEndpointMismatch(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectBegin()
+	expectProviderReviewAttemptClaimSelectWithApproval(mock, providerReviewAttemptClaimSelectOptions{
+		Status:         "planned",
+		Dependency:     "independent",
+		Operation:      "create_branch_ref",
+		Endpoint:       "github.commit_files",
+		ApprovalAction: templateProviderReviewExecuteApprovalAction,
+		ApprovalStatus: "approved",
+	})
+
+	rr := httptest.NewRecorder()
+	server.claimProviderReviewAttempt(rr, newProviderReviewAttemptClaimRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["claimed"] != false ||
+		got["claim_state"] != "provider_review_attempt_claim_metadata_not_ready" ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" {
+		t.Fatalf("unexpected endpoint-mismatch claim response: %#v", got)
+	}
+	claimPlan := mapFromAny(got["claim_plan"])
+	if claimPlan["claim_metadata_ready"] != false ||
+		claimPlan["operation_endpoint_ready"] != false ||
+		!containsString(stringSliceFromAny(claimPlan["blocked_reasons"]), "provider_review_attempt_operation_endpoint_invalid") {
+		t.Fatalf("endpoint-mismatch claim should be metadata-blocked: %#v", claimPlan)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -27175,6 +27255,8 @@ func addProviderReviewAttemptRow(rows *sqlmock.Rows, row providerReviewAttemptMo
 type providerReviewAttemptClaimSelectOptions struct {
 	Status         string
 	Dependency     string
+	Operation      string
+	Endpoint       string
 	ApprovalAction string
 	ApprovalStatus string
 	ClaimedAt      any
@@ -27195,6 +27277,12 @@ func expectProviderReviewAttemptClaimSelectWithApproval(mock sqlmock.Sqlmock, op
 	}
 	if opts.ApprovalStatus == "" {
 		opts.ApprovalStatus = "approved"
+	}
+	if opts.Operation == "" {
+		opts.Operation = "create_branch_ref"
+	}
+	if opts.Endpoint == "" {
+		opts.Endpoint = "github.create_branch_ref"
 	}
 	rows := sqlmock.NewRows([]string{
 		"id",
@@ -27228,8 +27316,8 @@ func expectProviderReviewAttemptClaimSelectWithApproval(mock sqlmock.Sqlmock, op
 		"run-1",
 		"github",
 		"pull_request",
-		"create_branch_ref",
-		"github.create_branch_ref",
+		opts.Operation,
+		opts.Endpoint,
 		opts.Status,
 		"detect_existing_branch_ref",
 		"treat_existing_matching_ref_as_success",
@@ -27237,8 +27325,8 @@ func expectProviderReviewAttemptClaimSelectWithApproval(mock sqlmock.Sqlmock, op
 		10,
 		"",
 		opts.Dependency,
-		providerReviewAttemptRequestSummaryJSON("create_branch_ref", "github.create_branch_ref"),
-		providerReviewAttemptResponseDiagnosticsJSON("github.create_branch_ref"),
+		providerReviewAttemptRequestSummaryJSON(opts.Operation, opts.Endpoint),
+		providerReviewAttemptResponseDiagnosticsJSON(opts.Endpoint),
 		false,
 		"disabled",
 		false,

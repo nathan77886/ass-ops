@@ -19081,12 +19081,16 @@ func providerReviewAttemptExecutionClaimPlan(operation map[string]any, idempoten
 	if len(operation) == 0 {
 		return map[string]any{}
 	}
+	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+	providerType := providerReviewProviderFromEndpointKey(endpointKey)
+	operationEndpointReady := providerReviewAttemptEndpointMatchesOperation(providerType, operationName, endpointKey)
 	status := safeProviderReviewAttemptStatus(stringFromMap(operation, "status"))
 	rawDependencyStatus := cleanOptionalText(stringFromMap(operation, "dependency_status"))
 	dependencyStatus := safeProviderReviewAttemptClaimDependencyStatus(rawDependencyStatus)
 	dependencyReady := providerReviewAttemptClaimDependencyReady(dependencyStatus)
 	claimRecorded := providerReviewAttemptClaimRecorded(operation)
-	claimMetadataReady := status == "planned" && dependencyReady && idempotencyReady && responseDiagnosticsReady
+	claimMetadataReady := status == "planned" && dependencyReady && idempotencyReady && responseDiagnosticsReady && operationEndpointReady
 	claimState := "blocked"
 	if claimRecorded {
 		claimState = "claimed"
@@ -19107,17 +19111,22 @@ func providerReviewAttemptExecutionClaimPlan(operation map[string]any, idempoten
 	if !responseDiagnosticsReady {
 		blockedReasons = append([]string{"provider_review_response_diagnostics_missing"}, blockedReasons...)
 	}
+	if !operationEndpointReady {
+		blockedReasons = append([]string{"provider_review_attempt_operation_endpoint_invalid"}, blockedReasons...)
+	}
 	return map[string]any{
 		"mode":                            "redacted_attempt_execution_claim_plan",
 		"claim_state":                     claimState,
 		"claim_ready":                     false,
 		"claim_metadata_ready":            claimMetadataReady,
-		"operation_name":                  safeProviderReviewAttemptOperationName(stringFromMap(operation, "name")),
-		"endpoint_key":                    safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key")),
+		"operation_name":                  operationName,
+		"endpoint_key":                    endpointKey,
+		"provider_type":                   providerType,
 		"operation_order":                 intFromAny(operation["operation_order"], 0),
 		"attempt_status":                  status,
 		"dependency_status":               dependencyStatus,
 		"dependency_ready":                dependencyReady,
+		"operation_endpoint_ready":        operationEndpointReady,
 		"claim_status_from":               "planned",
 		"claim_status_to":                 "running",
 		"replay_check":                    safeProviderReviewReplayCheck(stringFromMap(operation, "replay_check")),
