@@ -557,6 +557,145 @@ func TestDeploymentExecutionReadinessDryRun(t *testing.T) {
 	}
 }
 
+func TestDeploymentTargetExecutionGateHandlerReturnsNoCallGate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectDeploymentTargetExecutionGateQuery(mock, "target-1", "healthy", "prod-cluster", "billing", 2)
+
+	rr := httptest.NewRecorder()
+	server.deploymentTargetExecutionGate(rr, newDeploymentTargetExecutionGateRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	plan := mapFromAny(got["execution_plan"])
+	if got["mode"] != "deployment_target_execution_gate" ||
+		got["execution_gate_state"] != "deployment_execution_gate_blocked" ||
+		got["execution_gate_ready"] != false ||
+		got["deployment_target_id"] != "target-1" ||
+		got["readiness_state"] != "planned" ||
+		got["target_metadata_ready"] != true ||
+		got["deployment_request_materialized"] != false ||
+		got["manifest_rendered"] != false ||
+		got["dry_run_performed"] != false ||
+		got["kubernetes_client_constructed"] != false ||
+		got["rollout_started"] != false ||
+		got["external_call_made"] != false ||
+		got["kubernetes_api_call_made"] != false ||
+		got["helm_command_invoked"] != false ||
+		got["argocd_api_call_made"] != false ||
+		got["deployment_mutation"] != "disabled" ||
+		got["contains_token"] != false ||
+		got["contains_kubeconfig"] != false ||
+		got["contains_secret"] != false ||
+		plan["mode"] != "redacted_deployment_execution_plan" ||
+		plan["plan_state"] != "blocked" {
+		t.Fatalf("unexpected deployment execution gate response: %#v", got)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, leak := range []string{"apiVersion:", "kind: Secret", "Bearer ", "kubeconfig-data", "helm-values-secret"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("deployment execution gate leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestDeploymentTargetExecutionGateHandlerBlocksMissingMetadata(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectDeploymentTargetExecutionGateQuery(mock, "target-1", "degraded", "", "", 0)
+
+	rr := httptest.NewRecorder()
+	server.deploymentTargetExecutionGate(rr, newDeploymentTargetExecutionGateRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["readiness_state"] != "blocked" ||
+		got["target_metadata_ready"] != false ||
+		got["cluster_name_observed"] != false ||
+		got["namespace_observed"] != false ||
+		!containsString(missing, "deployment_execution_backend_disabled") ||
+		!containsStringContaining(missing, "cluster name is missing") ||
+		!containsStringContaining(missing, "namespace is missing") ||
+		!containsStringContaining(missing, "no Argo apps") {
+		t.Fatalf("missing metadata should block deployment execution gate: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestDeploymentTargetExecutionGateHandlerReturnsNotFound(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(deploymentTargetExecutionGateQueryPattern()).
+		WithArgs("target-1").
+		WillReturnError(sql.ErrNoRows)
+
+	rr := httptest.NewRecorder()
+	server.deploymentTargetExecutionGate(rr, newDeploymentTargetExecutionGateRequest())
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestDeploymentTargetExecutionGateHandlerRejectsProjectNonMember(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectDeploymentTargetExecutionGateQuery(mock, "target-1", "healthy", "prod-cluster", "billing", 2)
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+		WithArgs("project-1", "viewer-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	req := newDeploymentTargetExecutionGateRequestForUser(&User{ID: "viewer-1", Role: "viewer"})
+	rr := httptest.NewRecorder()
+	server.deploymentTargetExecutionGate(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "deployment_target_execution_gate") ||
+		strings.Contains(rr.Body.String(), "execution_gate_ready") {
+		t.Fatalf("unauthorized response should not expose execution gate payload: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestArgoPodLogQueryPreviewIsReadOnlyAndRedacted(t *testing.T) {
 	preview := argoPodLogQueryPreview("api-7d9f", "web", 5000, 999999999, map[string]any{
 		"id":           "target-1",
@@ -37886,6 +38025,62 @@ func containsString(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func containsStringContaining(items []string, target string) bool {
+	for _, item := range items {
+		if strings.Contains(item, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func expectDeploymentTargetExecutionGateQuery(mock sqlmock.Sqlmock, targetID, status, clusterName, namespace string, appCount int) {
+	now := time.Now()
+	mock.ExpectQuery(deploymentTargetExecutionGateQueryPattern()).
+		WithArgs(targetID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"project_id",
+			"argo_connection_id",
+			"name",
+			"environment",
+			"cluster_name",
+			"namespace",
+			"status",
+			"created_at",
+			"updated_at",
+			"argo_connection_name",
+			"argo_app_count",
+		}).AddRow(
+			targetID,
+			"project-1",
+			"argo-1",
+			"prod",
+			"prod",
+			clusterName,
+			namespace,
+			status,
+			now,
+			now,
+			"argo-main",
+			appCount,
+		))
+}
+
+func deploymentTargetExecutionGateQueryPattern() string {
+	return `(?s)SELECT dt\.id,\s+dt\.project_id,\s+dt\.name,\s+dt\.environment,\s+dt\.cluster_name,\s+dt\.namespace,\s+dt\.status,\s+dt\.created_at,\s+dt\.updated_at,\s+ac\.name AS argo_connection_name,\s+COUNT\(aa\.id\) AS argo_app_count\s+FROM deployment_targets dt`
+}
+
+func newDeploymentTargetExecutionGateRequest() *http.Request {
+	return newDeploymentTargetExecutionGateRequestForUser(&User{ID: "admin-1", Role: "admin"})
+}
+
+func newDeploymentTargetExecutionGateRequestForUser(user *User) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/deployment-targets/target-1/execution-gate", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "target-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, user))
 }
 
 func sliceOfMapsFromAny(value any) []map[string]any {

@@ -223,6 +223,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/argo/connections/{id}/apps/sync", s.syncArgoApps)
 		r.Get("/api/projects/{id}/argo/apps", s.listArgoApps)
 		r.Get("/api/projects/{id}/deployment-targets", s.listDeploymentTargets)
+		r.Post("/api/deployment-targets/{id}/execution-gate", s.deploymentTargetExecutionGate)
 		r.Get("/api/projects/{id}/deployment-records", s.listDeploymentRecords)
 		r.Get("/api/projects/{id}/rollback-points", s.listRollbackPoints)
 		r.Post("/api/projects/{id}/argo/pod-log-query-preview", s.previewArgoPodLogQuery)
@@ -23871,6 +23872,28 @@ func (s *Server) listDeploymentTargets(w http.ResponseWriter, r *http.Request) {
 	writeQueryResult(w, items, err)
 }
 
+func (s *Server) deploymentTargetExecutionGate(w http.ResponseWriter, r *http.Request) {
+	targetID := cleanOptionalID(chi.URLParam(r, "id"))
+	if targetID == "" {
+		writeError(w, http.StatusBadRequest, "deployment target id is required")
+		return
+	}
+	target, err := loadDeploymentTargetForExecutionGate(r.Context(), s.store.DB, targetID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "deployment target not found")
+			return
+		}
+		writeQueryOne(w, nil, err)
+		return
+	}
+	projectID := cleanOptionalID(fmt.Sprint(target["project_id"]))
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "deployment_target", ID: targetID, ProjectID: projectID}, "read") {
+		return
+	}
+	writeJSON(w, http.StatusOK, deploymentTargetExecutionGatePayload(target))
+}
+
 func (s *Server) listDeploymentRecords(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "deployment_record", ProjectID: projectID}, "read") {
@@ -23885,6 +23908,80 @@ func (s *Server) listDeploymentRecords(w http.ResponseWriter, r *http.Request) {
 		ORDER BY dr.observed_at DESC
 		LIMIT 500`, projectID)
 	writeQueryResult(w, items, err)
+}
+
+func loadDeploymentTargetForExecutionGate(ctx context.Context, db sqlx.ExtContext, deploymentTargetID string) (map[string]any, error) {
+	return queryOne(ctx, db, `
+		SELECT dt.id,
+			dt.project_id,
+			dt.name,
+			dt.environment,
+			dt.cluster_name,
+			dt.namespace,
+			dt.status,
+			dt.created_at,
+			dt.updated_at,
+			ac.name AS argo_connection_name,
+			COUNT(aa.id) AS argo_app_count
+		FROM deployment_targets dt
+		LEFT JOIN argo_connections ac ON ac.id=dt.argo_connection_id
+		LEFT JOIN argo_apps aa ON aa.deployment_target_id=dt.id
+		WHERE dt.id=$1
+		GROUP BY dt.id, ac.name`, deploymentTargetID)
+}
+
+func deploymentTargetExecutionGatePayload(target map[string]any) map[string]any {
+	readiness := deploymentExecutionReadiness(target)
+	executionPlan := mapFromAny(readiness["execution_plan"])
+	return map[string]any{
+		"mode":                            "deployment_target_execution_gate",
+		"execution_gate_state":            "deployment_execution_gate_blocked",
+		"execution_gate_ready":            false,
+		"deployment_target_id":            cleanOptionalID(fmt.Sprint(target["id"])),
+		"project_id":                      cleanOptionalID(fmt.Sprint(target["project_id"])),
+		"deployment_target_name":          cleanOptionalText(fmt.Sprint(target["name"])),
+		"environment":                     cleanOptionalText(fmt.Sprint(target["environment"])),
+		"cluster_name_observed":           cleanOptionalText(fmt.Sprint(target["cluster_name"])) != "",
+		"namespace_observed":              cleanOptionalText(fmt.Sprint(target["namespace"])) != "",
+		"argo_app_count":                  intFromAny(target["argo_app_count"], 0),
+		"readiness_state":                 cleanOptionalText(fmt.Sprint(readiness["status"])),
+		"readiness":                       readiness,
+		"execution_plan":                  executionPlan,
+		"target_metadata_ready":           boolOnlyFromAny(executionPlan["target_metadata_ready"]),
+		"requires_approval":               true,
+		"requires_environment_review":     true,
+		"requires_kubeconfig_binding":     true,
+		"requires_manifest_render":        true,
+		"requires_dry_run_preflight":      true,
+		"requires_rollback_plan":          true,
+		"requires_operator_confirmation":  true,
+		"deployment_request_materialized": false,
+		"manifest_rendered":               false,
+		"dry_run_performed":               false,
+		"helm_release_bound":              false,
+		"kubernetes_client_constructed":   false,
+		"rollout_started":                 false,
+		"rollback_point_selected":         false,
+		"external_call_made":              false,
+		"kubernetes_api_call_made":        false,
+		"helm_command_invoked":            false,
+		"argocd_api_call_made":            false,
+		"deployment_mutation":             "disabled",
+		"kubeconfig_included":             false,
+		"secret_included":                 false,
+		"manifest_body_included":          false,
+		"helm_values_included":            false,
+		"cluster_credential_included":     false,
+		"contains_token":                  false,
+		"contains_kubeconfig":             false,
+		"contains_secret":                 false,
+		"contains_manifest_body":          false,
+		"execution_boundary_redacted":     true,
+		"disabled_backends":               stringSliceFromAny(executionPlan["disabled_backends"]),
+		"suppressed_fields":               stringSliceFromAny(executionPlan["suppressed_fields"]),
+		"missing_evidence":                stringSliceFromAny(executionPlan["blocked_reasons"]),
+		"message":                         "Deployment execution gate is blocked; Helm, kubectl, Argo rollout, kubeconfig binding, manifest rendering, dry-run, rollback selection, and rollout mutation remain disabled.",
+	}
 }
 
 func (s *Server) listRollbackPoints(w http.ResponseWriter, r *http.Request) {

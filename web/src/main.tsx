@@ -7028,6 +7028,29 @@ function deploymentExecutionReadinessView(row: AnyRow) {
   );
 }
 
+function deploymentExecutionGateView(gate: AnyRow) {
+  const plan = gate.execution_plan || {};
+  const disabledBackends = Array.isArray(gate.disabled_backends) ? gate.disabled_backends : [];
+  const suppressedFields = Array.isArray(gate.suppressed_fields) ? gate.suppressed_fields : [];
+  return (
+    <Space direction="vertical" size={2}>
+      <Space size={4} wrap>
+        <Tag color={gate.execution_gate_ready === true ? 'green' : 'red'}>{gate.execution_gate_state || 'gate_blocked'}</Tag>
+        <Tag color={gate.readiness_state === 'planned' ? 'blue' : 'gold'}>readiness {gate.readiness_state || 'blocked'}</Tag>
+        <Tag>{gate.target_metadata_ready ? 'metadata ready' : 'metadata blocked'}</Tag>
+        <Tag>{gate.kubernetes_api_call_made ? 'k8s called' : 'no k8s call'}</Tag>
+        <Tag>{gate.helm_command_invoked ? 'helm invoked' : 'helm disabled'}</Tag>
+        <Tag>{gate.rollout_started ? 'rollout started' : 'no rollout'}</Tag>
+        <Tag>{gate.deployment_mutation || 'disabled'}</Tag>
+        <Tag>{disabledBackends.length || plan.disabled_backends?.length || 0} disabled backends</Tag>
+        <Tag>{suppressedFields.length || plan.suppressed_fields?.length || 0} suppressed</Tag>
+        <Tag>{gate.secret_included || gate.kubeconfig_included ? 'sensitive material present' : 'no secrets/kubeconfig'}</Tag>
+      </Space>
+      {gate.message ? <Typography.Text type="secondary">{shortText(String(gate.message), 96)}</Typography.Text> : null}
+    </Space>
+  );
+}
+
 function rollbackExecutionPlanView(row: AnyRow) {
   const plan = row.rollback_execution_plan || {};
   const requiredControls = Array.isArray(plan.required_controls) ? plan.required_controls : [];
@@ -7073,6 +7096,8 @@ function ConfigPage() {
   const [podLogRunResult, setPodLogRunResult] = useState<AnyRow>();
   const [podLogSnapshotLoading, setPodLogSnapshotLoading] = useState(false);
   const [podLogSnapshotResult, setPodLogSnapshotResult] = useState<AnyRow>();
+  const [deploymentExecutionGateLoadingID, setDeploymentExecutionGateLoadingID] = useState('');
+  const [deploymentExecutionGateResults, setDeploymentExecutionGateResults] = useState<Record<string, AnyRow>>({});
   const [sshOpen, setSSHOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [sshSnapshotLoading, setSSHSnapshotLoading] = useState(false);
@@ -7129,6 +7154,10 @@ function ConfigPage() {
     setSSHSnapshotResult(undefined);
     setSSHProofResult(undefined);
   }, [sshPick.selectedID]);
+  useEffect(() => {
+    setDeploymentExecutionGateLoadingID('');
+    setDeploymentExecutionGateResults({});
+  }, [project?.id]);
   const deploymentPosture = buildDeploymentPosture(
     deploymentTargets.data?.items || [],
     deploymentRecords.data?.items || [],
@@ -7207,6 +7236,19 @@ function ConfigPage() {
       argoConnections.reload();
     } catch (error: any) {
       message.error(error.message);
+    }
+  }
+  async function checkDeploymentExecutionGate(targetID: string) {
+    if (!targetID || deploymentExecutionGateLoadingID) return;
+    setDeploymentExecutionGateLoadingID(targetID);
+    try {
+      const result = await api(`/api/deployment-targets/${targetID}/execution-gate`, { method: 'POST', body: '{}' });
+      setDeploymentExecutionGateResults((current) => ({ ...current, [targetID]: result }));
+      message.warning(result.message || 'Deployment execution gate is blocked');
+    } catch (error: any) {
+      message.error(error.message || 'Could not check deployment execution gate');
+    } finally {
+      setDeploymentExecutionGateLoadingID('');
     }
   }
   async function previewPodLogs(values: AnyRow) {
@@ -7573,7 +7615,8 @@ function ConfigPage() {
             { title: 'Namespace', dataIndex: 'namespace' },
             { title: 'Cluster', dataIndex: 'cluster_name' },
             { title: 'Apps', dataIndex: 'argo_app_count' },
-            { title: 'Execution', render: (_, row) => deploymentExecutionReadinessView(row) },
+            { title: 'Execution', render: (_, row) => <Space direction="vertical" size={4}>{deploymentExecutionReadinessView(row)}{deploymentExecutionGateResults[row.id] ? deploymentExecutionGateView(deploymentExecutionGateResults[row.id]) : null}</Space> },
+            { title: 'Action', render: (_, row) => <Button size="small" onClick={() => checkDeploymentExecutionGate(String(row.id || ''))} loading={deploymentExecutionGateLoadingID === row.id} disabled={!row.id || Boolean(deploymentExecutionGateLoadingID)}>Check gate</Button> },
             { title: 'Status', render: (_, row) => <Tag color={argoStatusColor(row.status)}>{row.status}</Tag> }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={deploymentRecords.data?.items || []} pagination={{ pageSize: 6 }} columns={[
