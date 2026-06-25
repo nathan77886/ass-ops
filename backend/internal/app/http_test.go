@@ -23373,6 +23373,169 @@ func TestProviderReviewAttemptLiveExecutionGuardSnapshotRejectsMutationMarkers(t
 	}
 }
 
+func TestProviderReviewAttemptLiveExecutionPreflightBlocksUntilAdapterAndMutationArmed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("running", "independent")
+	attempt["claimed_at"] = time.Now()
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := ProviderReviewAttemptLiveExecutionPreflight(context.Background(), store, ProviderReviewAttemptLiveExecutionPreflightOptions{
+		AttemptID:         "attempt-1",
+		Attempt:           attempt,
+		LiveGuardObserved: true,
+	})
+	if err != nil {
+		t.Fatalf("ProviderReviewAttemptLiveExecutionPreflight: %v", err)
+	}
+	preflight := mapFromAny(got["preflight"])
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["preflight_state"] != "live_execution_preflight_blocked" ||
+		got["preflight_ready"] != false ||
+		got["provider_request_sent"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		preflight["live_execution_preflight_metadata_ready"] != true ||
+		preflight["live_execution_guard_observed"] != true ||
+		preflight["live_adapter_implemented"] != false ||
+		preflight["mutation_armed"] != false ||
+		preflight["provider_send_armed"] != false ||
+		!containsString(missing, "provider_review_live_adapter_not_implemented") ||
+		!containsString(missing, "provider_review_mutation_not_armed") ||
+		!containsString(missing, "provider_request_send_not_armed") {
+		t.Fatalf("unexpected live execution preflight response: %#v", got)
+	}
+	encoded, _ := json.Marshal(preflight)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "idempotency_key_hash", "raw_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("live execution preflight leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLiveExecutionPreflightBlocksWithoutGuard(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("running", "independent")
+	attempt["claimed_at"] = time.Now()
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectQuery(`(?s)SELECT DISTINCT status\s+FROM asset_status_snapshots\s+WHERE asset_id=\$1\s+AND status = ANY\(\$2\)`).
+		WithArgs("asset-attempt-1", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}))
+
+	got, err := ProviderReviewAttemptLiveExecutionPreflight(context.Background(), store, ProviderReviewAttemptLiveExecutionPreflightOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+	})
+	if err != nil {
+		t.Fatalf("ProviderReviewAttemptLiveExecutionPreflight missing guard: %v", err)
+	}
+	preflight := mapFromAny(got["preflight"])
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["preflight_state"] != "live_execution_preflight_blocked" ||
+		got["preflight_ready"] != false ||
+		preflight["live_execution_guard_observed"] != false ||
+		preflight["live_execution_preflight_metadata_ready"] != false ||
+		!containsString(missing, "provider_review_live_execution_guard_missing") {
+		t.Fatalf("live execution preflight should block without guard: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLiveExecutionPreflightHandlerReturnsBlockedNoCallPreflight(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelect(mock, "running", "independent", time.Now())
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectQuery(`(?s)SELECT DISTINCT status\s+FROM asset_status_snapshots\s+WHERE asset_id=\$1\s+AND status = ANY\(\$2\)`).
+		WithArgs("asset-attempt-1", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("provider_review_attempt_live_execution_guard_ready"))
+
+	rr := httptest.NewRecorder()
+	server.providerReviewAttemptLiveExecutionPreflight(rr, newProviderReviewAttemptLiveExecutionPreflightRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	preflight := mapFromAny(got["preflight"])
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["preflight_state"] != "live_execution_preflight_blocked" ||
+		got["preflight_ready"] != false ||
+		got["provider_request_sent"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		preflight["live_execution_guard_observed"] != true ||
+		preflight["live_execution_preflight_metadata_ready"] != true ||
+		!containsString(missing, "provider_review_live_adapter_not_implemented") ||
+		!containsString(missing, "provider_review_mutation_not_armed") {
+		t.Fatalf("unexpected live execution preflight handler response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptLiveExecutionPreflightHandlerReturnsNotApproved(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	expectProviderReviewAttemptSnapshotSelectWithApproval(mock, "running", "independent", time.Now(), "pending")
+
+	rr := httptest.NewRecorder()
+	server.providerReviewAttemptLiveExecutionPreflight(rr, newProviderReviewAttemptLiveExecutionPreflightRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	if got["preflight_state"] != "operation_approval_not_approved" ||
+		got["preflight_ready"] != false ||
+		got["provider_review_attempt_asset_observed"] != false ||
+		got["preflight"] != nil ||
+		got["provider_request_sent"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" ||
+		got["external_call_made"] != false ||
+		got["operation_log_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		!containsString(missing, "operation_approval_not_approved") {
+		t.Fatalf("unexpected not-approved live execution preflight response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordProviderReviewAttemptLiveExecutionReadinessSnapshotMissingEvidenceDoesNotWrite(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -34736,6 +34899,12 @@ func newProviderReviewAttemptIdempotencySnapshotRequest(body string) *http.Reque
 
 func newProviderReviewAttemptLiveExecutionReadinessSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/live-execution-readiness-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptLiveExecutionPreflightRequest() *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/live-execution-preflight", strings.NewReader(`{}`))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
