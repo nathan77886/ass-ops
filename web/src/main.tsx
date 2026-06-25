@@ -690,6 +690,8 @@ function apiAssetGraphID(row: AnyRow = {}) {
 }
 
 function countContextGraphLinks(assets: AnyRow[] = [], graph: AnyRow = {}) {
+  const taskAssetIDs = assetIDsByType(assets, 'agent_task');
+  const runtimeAssetIDs = assetIDsByType(assets, 'ai_runtime');
   const contextToolCalls = new Set(
     assets
       .filter((row) =>
@@ -700,9 +702,9 @@ function countContextGraphLinks(assets: AnyRow[] = [], graph: AnyRow = {}) {
       .map(apiAssetGraphID)
       .filter((assetID) => assetID.startsWith('agent_tool_call:'))
   );
-  const byTask: Record<string, { runtime?: boolean; contextTool?: boolean }> = {};
+  const byTask: Record<string, { runtimes: Record<string, boolean>; contextTools: Record<string, boolean> }> = {};
   const taskEntry = (assetID: string) => {
-    byTask[assetID] ??= {};
+    byTask[assetID] ??= { runtimes: {}, contextTools: {} };
     return byTask[assetID];
   };
   const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
@@ -711,15 +713,20 @@ function countContextGraphLinks(assets: AnyRow[] = [], graph: AnyRow = {}) {
     const to = String(edge.to_asset_id ?? '');
     if (relation === 'uses_runtime' && from.startsWith('agent_task:') && to.startsWith('ai_runtime:')) {
       nextCounts.taskRuntimes += 1;
-      taskEntry(from).runtime = true;
+      taskEntry(from).runtimes[to] = true;
     }
     if (relation === 'records_tool_call' && from.startsWith('agent_task:') && contextToolCalls.has(to)) {
       nextCounts.taskContextToolCalls += 1;
-      taskEntry(from).contextTool = true;
+      taskEntry(from).contextTools[to] = true;
     }
     return nextCounts;
-  }, { taskRuntimes: 0, taskContextToolCalls: 0, completeContextTasks: 0 });
-  counts.completeContextTasks = Object.values(byTask).filter((entry) => entry.runtime && entry.contextTool).length;
+  }, { taskRuntimes: 0, taskContextToolCalls: 0, completeContextTasks: 0, completeContextTaskAssets: 0 });
+  counts.completeContextTasks = Object.values(byTask).filter((entry) => Object.keys(entry.runtimes).length > 0 && Object.keys(entry.contextTools).length > 0).length;
+  counts.completeContextTaskAssets = Object.entries(byTask).filter(([taskID, entry]) => (
+    taskAssetIDs.has(taskID) &&
+    Object.keys(entry.runtimes).some((runtimeID) => runtimeAssetIDs.has(runtimeID)) &&
+    Object.keys(entry.contextTools).some((toolID) => contextToolCalls.has(toolID))
+  )).length;
   return counts;
 }
 
@@ -1333,7 +1340,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'context',
       label: 'Generate AI-readable context from graph',
       next: 'Create an agent task or AI runtime after syncing the canonical asset ledger.',
-      ...readinessState(contextEvidence > 0 && contextGenerations > 0 && graphEvidence > 0 && contextGraphLinks.completeContextTasks > 0, `${contextEvidence} context assets / ${contextGenerations} context generations / ${contextGraphLinks.completeContextTasks} complete context tasks / ${contextGraphLinks.taskRuntimes} runtime links / ${contextGraphLinks.taskContextToolCalls} context tool links / ${graphNodes} graph nodes / ${graphEdges} graph edges`, contextEvidence > 0 || contextGenerations > 0 || graphEvidence > 0 || contextGraphLinks.taskRuntimes > 0 || contextGraphLinks.taskContextToolCalls > 0)
+      ...readinessState(contextEvidence > 0 && contextGenerations > 0 && graphEvidence > 0 && contextGraphLinks.completeContextTaskAssets > 0, `${contextEvidence} context assets / ${contextGenerations} context generations / ${contextGraphLinks.completeContextTasks} complete context tasks / ${contextGraphLinks.completeContextTaskAssets} context asset tasks / ${contextGraphLinks.taskRuntimes} runtime links / ${contextGraphLinks.taskContextToolCalls} context tool links / ${graphNodes} graph nodes / ${graphEdges} graph edges`, contextEvidence > 0 || contextGenerations > 0 || graphEvidence > 0 || contextGraphLinks.taskRuntimes > 0 || contextGraphLinks.taskContextToolCalls > 0 || contextGraphLinks.completeContextTaskAssets > 0)
     }
   ];
 }

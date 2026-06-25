@@ -1460,7 +1460,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 		readinessItem("argo", "Sync Argo apps to deployment targets", "Create an Argo connection, sync apps, and inspect deployment targets.", assetCounts["argo_connection"] > 0 && assetCounts["argo_app"] > 0 && assetCounts["deployment_target"] > 0 && operationCounts["argo.apps.sync"] > 0 && argoGraphLinks.CompleteAppAssets > 0, argoEvidenceText, argoEvidence > 0),
 		readinessItem("operations", "View operation history and logs", "Run any controlled operation and inspect its logs.", operationAssets > 0 && operationLogs > 0, fmt.Sprintf("%d operation assets / %d listed runs / %d with logs", operationAssets, listedOperationRuns, operationLogs), operationAssets > 0 || listedOperationRuns > 0 || operationLogs > 0),
 		readinessItem("approval", "Enforce approval for high-risk operations", "Queue a high-risk action that creates an approval request.", approvalAssets > 0 && activeApprovalRules > 0 && approvalGraphLinks.RuleApprovals > 0, fmt.Sprintf("%d approvals / %d approval assets / %d pending ops / %d active rules / %d governed approvals", approvalEvidence, approvalAssets, pendingApprovalOps, activeApprovalRules, approvalGraphLinks.RuleApprovals), approvalEvidence > 0 || approvalAssets > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0 || approvalGraphLinks.RuleApprovals > 0),
-		readinessItem("context", "Generate AI-readable context from graph", "Create an agent task or AI runtime after syncing the canonical asset ledger.", contextEvidence > 0 && contextGenerations > 0 && graphEvidence > 0 && contextGraphLinks.CompleteContextTasks > 0, fmt.Sprintf("%d context assets / %d context generations / %d complete context tasks / %d runtime links / %d context tool links / %d graph nodes / %d graph edges", contextEvidence, contextGenerations, contextGraphLinks.CompleteContextTasks, contextGraphLinks.TaskRuntimes, contextGraphLinks.TaskContextToolCalls, graphNodes, graphEdges), contextEvidence > 0 || contextGenerations > 0 || graphEvidence > 0 || contextGraphLinks.TaskRuntimes > 0 || contextGraphLinks.TaskContextToolCalls > 0),
+		readinessItem("context", "Generate AI-readable context from graph", "Create an agent task or AI runtime after syncing the canonical asset ledger.", contextEvidence > 0 && contextGenerations > 0 && graphEvidence > 0 && contextGraphLinks.CompleteContextTaskAssets > 0, fmt.Sprintf("%d context assets / %d context generations / %d complete context tasks / %d context asset tasks / %d runtime links / %d context tool links / %d graph nodes / %d graph edges", contextEvidence, contextGenerations, contextGraphLinks.CompleteContextTasks, contextGraphLinks.CompleteContextTaskAssets, contextGraphLinks.TaskRuntimes, contextGraphLinks.TaskContextToolCalls, graphNodes, graphEdges), contextEvidence > 0 || contextGenerations > 0 || graphEvidence > 0 || contextGraphLinks.TaskRuntimes > 0 || contextGraphLinks.TaskContextToolCalls > 0 || contextGraphLinks.CompleteContextTaskAssets > 0),
 	}
 
 	counts := map[string]int{"ready": 0, "partial": 0, "missing": 0}
@@ -1609,14 +1609,17 @@ func apiAssetGraphID(row map[string]any) string {
 }
 
 type contextGraphLinkCounts struct {
-	TaskRuntimes         int
-	TaskContextToolCalls int
-	CompleteContextTasks int
+	TaskRuntimes              int
+	TaskContextToolCalls      int
+	CompleteContextTasks      int
+	CompleteContextTaskAssets int
 }
 
 func countContextGraphLinks(assets []map[string]any, graph map[string]any) contextGraphLinkCounts {
 	counts := contextGraphLinkCounts{}
 	contextToolCalls := map[string]bool{}
+	taskAssetIDs := assetIDsByType(assets, "agent_task")
+	runtimeAssetIDs := assetIDsByType(assets, "ai_runtime")
 	for _, row := range assets {
 		metadata := mapFromAPI(row["metadata"])
 		if metadata == nil {
@@ -1633,14 +1636,14 @@ func countContextGraphLinks(assets []map[string]any, graph map[string]any) conte
 	}
 
 	type taskLinks struct {
-		runtime     bool
-		contextTool bool
+		runtimes     map[string]bool
+		contextTools map[string]bool
 	}
 	byTask := map[string]*taskLinks{}
 	taskEntry := func(assetID string) *taskLinks {
 		entry := byTask[assetID]
 		if entry == nil {
-			entry = &taskLinks{}
+			entry = &taskLinks{runtimes: map[string]bool{}, contextTools: map[string]bool{}}
 			byTask[assetID] = entry
 		}
 		return entry
@@ -1652,21 +1655,33 @@ func countContextGraphLinks(assets []map[string]any, graph map[string]any) conte
 		case "uses_runtime":
 			if strings.HasPrefix(from, "agent_task:") && strings.HasPrefix(to, "ai_runtime:") {
 				counts.TaskRuntimes++
-				taskEntry(from).runtime = true
+				taskEntry(from).runtimes[to] = true
 			}
 		case "records_tool_call":
 			if strings.HasPrefix(from, "agent_task:") && contextToolCalls[to] {
 				counts.TaskContextToolCalls++
-				taskEntry(from).contextTool = true
+				taskEntry(from).contextTools[to] = true
 			}
 		}
 	}
-	for _, entry := range byTask {
-		if entry.runtime && entry.contextTool {
+	for taskID, entry := range byTask {
+		if len(entry.runtimes) > 0 && len(entry.contextTools) > 0 {
 			counts.CompleteContextTasks++
+			if taskAssetIDs[taskID] && hasAnyKnownID(entry.runtimes, runtimeAssetIDs) && hasAnyKnownID(entry.contextTools, contextToolCalls) {
+				counts.CompleteContextTaskAssets++
+			}
 		}
 	}
 	return counts
+}
+
+func hasAnyKnownID(ids, knownIDs map[string]bool) bool {
+	for id := range ids {
+		if knownIDs[id] {
+			return true
+		}
+	}
+	return false
 }
 
 func countGraphNodesByPrefix(graph map[string]any, prefix string) int {
