@@ -1399,7 +1399,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	projectGraphNodes := countGraphNodesByPrefix(graph, "project:")
 	projectAssetGraphNodes := countGraphNodesByKnownIDs(graph, assetIDsByType(assets, "project"))
 	repositoryGraphLinks := countRepositoryGraphLinks(graph, assetIDsByType(assets, "project"), assetIDsByType(assets, "repository"), assetIDsByType(assets, "git_remote"))
-	repoSyncGraphLinks := countRepoSyncGraphLinks(graph, assetIDsByType(assets, "repo_sync"), assetIDsByType(assets, "git_remote"))
+	repoSyncGraphLinks := countRepoSyncGraphLinks(graph, assetIDsByType(assets, "repository"), assetIDsByType(assets, "repo_sync"), assetIDsByType(assets, "git_remote"))
 	syncOperationIDs := mergeBoolMaps(operationIDsByType(operations, "repo.sync"), operationIDsByType(operations, "repo.sync_remote"))
 	webhookSyncGraphLinks := countWebhookSyncGraphLinks(
 		graph,
@@ -1468,7 +1468,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	rows := []readinessRow{
 		projectRow,
 		repositoriesRow,
-		readinessItem("repo_sync", "Define RepoSyncAsset", "Create a RepoSyncAsset between source and mirror remotes.", assetCounts["repo_sync"] > 0 && repoSyncGraphLinks.CompleteSyncAssets > 0, fmt.Sprintf("%d repo syncs / %d complete syncs / %d sync asset paths / %d repository links / %d source links / %d target links", assetCounts["repo_sync"], repoSyncGraphLinks.CompleteSyncs, repoSyncGraphLinks.CompleteSyncAssets, repoSyncGraphLinks.RepositorySync, repoSyncGraphLinks.SourceRemotes, repoSyncGraphLinks.TargetRemotes), assetCounts["repo_sync"] > 0 || repoSyncGraphLinks.RepositorySync > 0 || repoSyncGraphLinks.SourceRemotes > 0 || repoSyncGraphLinks.TargetRemotes > 0 || repoSyncGraphLinks.CompleteSyncAssets > 0),
+		readinessItem("repo_sync", "Define RepoSyncAsset", "Create a RepoSyncAsset between source and mirror remotes.", assetCounts["repo_sync"] > 0 && repoSyncGraphLinks.CompleteSyncAssets > 0, fmt.Sprintf("%d repo syncs / %d graph-complete syncs / %d sync asset paths / %d repository links / %d source links / %d target links", assetCounts["repo_sync"], repoSyncGraphLinks.CompleteSyncs, repoSyncGraphLinks.CompleteSyncAssets, repoSyncGraphLinks.RepositorySync, repoSyncGraphLinks.SourceRemotes, repoSyncGraphLinks.TargetRemotes), assetCounts["repo_sync"] > 0 || repoSyncGraphLinks.RepositorySync > 0 || repoSyncGraphLinks.SourceRemotes > 0 || repoSyncGraphLinks.TargetRemotes > 0 || repoSyncGraphLinks.CompleteSyncAssets > 0),
 		readinessItem("sync_trigger", "Trigger sync manually and from webhook", "Run a manual sync and receive or replay a Gitea webhook event.", syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0 && webhookSyncGraphLinks.CompleteChainAssets > 0, syncTriggerEvidenceText, syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0 || webhookSyncGraphLinks.ConnectionEvents > 0 || webhookSyncGraphLinks.EventRepoSyncs > 0 || webhookSyncGraphLinks.EventOperations > 0 || webhookSyncGraphLinks.CompleteChainAssets > 0),
 		readinessItem("github_actions", "See GitHub tags and Actions state", "Create a repository tag and sync GitHub Actions for the mirror remote or receive workflow_run webhooks.", assetCounts["pipeline_run"] > 0 && githubActionLinks.CompleteActionAssets > 0 && repoTagRuns > 0 && githubActionLinks.CompleteTaggedRemoteAssets > 0 && githubActionLinks.LinkedTagRunAssets > 0, fmt.Sprintf("%d pipeline runs / %d complete action chains / %d action asset chains / %d tag ops / %d complete tag links / %d tag asset links / %d linked tag runs / %d linked tag assets / %d project links / %d remote links / %d action links / %d tag links / %d tag-action links", assetCounts["pipeline_run"], githubActionLinks.CompleteActionRuns, githubActionLinks.CompleteActionAssets, repoTagRuns, githubActionLinks.CompleteTaggedRemotes, githubActionLinks.CompleteTaggedRemoteAssets, githubActionLinks.LinkedTagRuns, githubActionLinks.LinkedTagRunAssets, githubActionLinks.ProjectRepositories, githubActionLinks.RepositoryRemotes, githubActionLinks.RemoteActionRuns, githubActionLinks.TaggedRemotes, githubActionLinks.TagActionRunLinks), assetCounts["pipeline_run"] > 0 || repoTagRuns > 0 || githubActionLinks.ProjectRepositories > 0 || githubActionLinks.RepositoryRemotes > 0 || githubActionLinks.RemoteActionRuns > 0 || githubActionLinks.TaggedRemotes > 0 || githubActionLinks.TagActionRunLinks > 0 || githubActionLinks.CompleteActionAssets > 0 || githubActionLinks.CompleteTaggedRemoteAssets > 0 || githubActionLinks.LinkedTagRunAssets > 0),
 		readinessItem("ssh", "Register SSH machines and audited commands", "Verify an SSH machine, then run an approval-gated command.", sshMachineAssets > 0 && sshVerifyRuns > 0 && sshCommandRuns > 0 && sshGraphLinks.CompleteVerifyCommandAssets > 0 && sshGraphLinks.CompleteRunCommandAssets > 0, fmt.Sprintf("%d machines / %d verify ops / %d command ops / %d command assets / %d complete audit chains / %d command asset chains / %d verify chains / %d run chains", sshMachineAssets, sshVerifyRuns, sshCommandRuns, assetCounts["ssh_command_run"], sshGraphLinks.CompleteCommands, sshGraphLinks.CompleteCommandAssets, sshGraphLinks.CompleteVerifyCommandAssets, sshGraphLinks.CompleteRunCommandAssets), sshMachineAssets > 0 || sshVerifyRuns > 0 || sshCommandRuns > 0 || assetCounts["ssh_command_run"] > 0 || sshGraphLinks.OperationCommands > 0 || sshGraphLinks.CommandMachines > 0 || sshGraphLinks.CompleteCommandAssets > 0),
@@ -2169,18 +2169,18 @@ type repoSyncGraphLinkCounts struct {
 	CompleteSyncAssets int
 }
 
-func countRepoSyncGraphLinks(graph map[string]any, repoSyncAssetIDs, remoteAssetIDs map[string]bool) repoSyncGraphLinkCounts {
+func countRepoSyncGraphLinks(graph map[string]any, repositoryAssetIDs, repoSyncAssetIDs, remoteAssetIDs map[string]bool) repoSyncGraphLinkCounts {
 	counts := repoSyncGraphLinkCounts{}
 	type syncLinks struct {
-		repository bool
-		sources    map[string]bool
-		targets    map[string]bool
+		repositories map[string]bool
+		sources      map[string]bool
+		targets      map[string]bool
 	}
 	bySync := map[string]*syncLinks{}
 	syncEntry := func(assetID string) *syncLinks {
 		entry := bySync[assetID]
 		if entry == nil {
-			entry = &syncLinks{sources: map[string]bool{}, targets: map[string]bool{}}
+			entry = &syncLinks{repositories: map[string]bool{}, sources: map[string]bool{}, targets: map[string]bool{}}
 			bySync[assetID] = entry
 		}
 		return entry
@@ -2192,7 +2192,7 @@ func countRepoSyncGraphLinks(graph map[string]any, repoSyncAssetIDs, remoteAsset
 		case "has_sync":
 			if strings.HasPrefix(from, "repository:") && strings.HasPrefix(to, "repo_sync:") {
 				counts.RepositorySync++
-				syncEntry(to).repository = true
+				syncEntry(to).repositories[from] = true
 			}
 		case "synced_from":
 			if strings.HasPrefix(from, "repo_sync:") && strings.HasPrefix(to, "git_remote:") {
@@ -2207,9 +2207,9 @@ func countRepoSyncGraphLinks(graph map[string]any, repoSyncAssetIDs, remoteAsset
 		}
 	}
 	for syncID, entry := range bySync {
-		if entry.repository && hasDistinctSourceTarget(entry.sources, entry.targets) {
+		if len(entry.repositories) > 0 && hasDistinctSourceTarget(entry.sources, entry.targets) {
 			counts.CompleteSyncs++
-			if repoSyncAssetIDs[syncID] && hasDistinctKnownSourceTarget(entry.sources, entry.targets, remoteAssetIDs) {
+			if repoSyncAssetIDs[syncID] && hasAnyKnownID(entry.repositories, repositoryAssetIDs) && hasDistinctKnownSourceTarget(entry.sources, entry.targets, remoteAssetIDs) {
 				counts.CompleteSyncAssets++
 			}
 		}

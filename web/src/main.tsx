@@ -804,10 +804,10 @@ function countRepositoryGraphLinks(graph: AnyRow = {}, projectAssetIDs = new Set
   return counts;
 }
 
-function countRepoSyncGraphLinks(graph: AnyRow = {}, repoSyncAssetIDs = new Set<string>(), remoteAssetIDs = new Set<string>()) {
-  const bySync: Record<string, { repository?: boolean; sources: Record<string, boolean>; targets: Record<string, boolean> }> = {};
+function countRepoSyncGraphLinks(graph: AnyRow = {}, repositoryAssetIDs = new Set<string>(), repoSyncAssetIDs = new Set<string>(), remoteAssetIDs = new Set<string>()) {
+  const bySync: Record<string, { repositories: Record<string, boolean>; sources: Record<string, boolean>; targets: Record<string, boolean> }> = {};
   const syncEntry = (assetID: string) => {
-    bySync[assetID] ||= { sources: {}, targets: {} };
+    bySync[assetID] ||= { repositories: {}, sources: {}, targets: {} };
     return bySync[assetID];
   };
   const counts = graphItems(graph, 'edges').reduce((nextCounts, edge: AnyRow) => {
@@ -816,7 +816,7 @@ function countRepoSyncGraphLinks(graph: AnyRow = {}, repoSyncAssetIDs = new Set<
     const to = String(edge.to_asset_id || '');
     if (relation === 'has_sync' && from.startsWith('repository:') && to.startsWith('repo_sync:')) {
       nextCounts.repositorySync += 1;
-      syncEntry(to).repository = true;
+      syncEntry(to).repositories[from] = true;
     }
     if (relation === 'synced_from' && from.startsWith('repo_sync:') && to.startsWith('git_remote:')) {
       nextCounts.sourceRemotes += 1;
@@ -829,12 +829,12 @@ function countRepoSyncGraphLinks(graph: AnyRow = {}, repoSyncAssetIDs = new Set<
     return nextCounts;
   }, { repositorySync: 0, sourceRemotes: 0, targetRemotes: 0, completeSyncs: 0, completeSyncAssets: 0 });
   counts.completeSyncs = Object.values(bySync).filter((entry) => (
-    entry.repository &&
+    Object.keys(entry.repositories).length > 0 &&
     Object.keys(entry.sources).some((source) => Object.keys(entry.targets).some((target) => source !== target))
   )).length;
   counts.completeSyncAssets = Object.entries(bySync).filter(([syncID, entry]) => (
-    entry.repository &&
     repoSyncAssetIDs.has(syncID) &&
+    Object.keys(entry.repositories).some((repositoryID) => repositoryAssetIDs.has(repositoryID)) &&
     Object.keys(entry.sources).some((source) => remoteAssetIDs.has(source) && Object.keys(entry.targets).some((target) => source !== target && remoteAssetIDs.has(target)))
   )).length;
   return counts;
@@ -1300,7 +1300,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const contextEvidence = (assetCounts.agent_task || 0) + (assetCounts.ai_runtime || 0);
   const contextGenerations = countContextGenerationEvidence(assets);
   const repositoryGraphLinks = countRepositoryGraphLinks(graph, assetIDsByType(assets, 'project'), assetIDsByType(assets, 'repository'), assetIDsByType(assets, 'git_remote'));
-  const repoSyncGraphLinks = countRepoSyncGraphLinks(graph, assetIDsByType(assets, 'repo_sync'), assetIDsByType(assets, 'git_remote'));
+  const repoSyncGraphLinks = countRepoSyncGraphLinks(graph, assetIDsByType(assets, 'repository'), assetIDsByType(assets, 'repo_sync'), assetIDsByType(assets, 'git_remote'));
   const syncOperationIDs = mergeSets(operationIDsByType(operations, 'repo.sync'), operationIDsByType(operations, 'repo.sync_remote'));
   const webhookSyncGraphLinks = countWebhookSyncGraphLinks(
     graph,
@@ -1371,7 +1371,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       key: 'repo_sync',
       label: 'Define RepoSyncAsset',
       next: 'Create a RepoSyncAsset between source and mirror remotes.',
-      ...readinessState((assetCounts.repo_sync || 0) > 0 && repoSyncGraphLinks.completeSyncAssets > 0, `${assetCounts.repo_sync || 0} repo syncs / ${repoSyncGraphLinks.completeSyncs} complete syncs / ${repoSyncGraphLinks.completeSyncAssets} sync asset paths / ${repoSyncGraphLinks.repositorySync} repository links / ${repoSyncGraphLinks.sourceRemotes} source links / ${repoSyncGraphLinks.targetRemotes} target links`, (assetCounts.repo_sync || 0) > 0 || repoSyncGraphLinks.repositorySync > 0 || repoSyncGraphLinks.sourceRemotes > 0 || repoSyncGraphLinks.targetRemotes > 0 || repoSyncGraphLinks.completeSyncAssets > 0)
+      ...readinessState((assetCounts.repo_sync || 0) > 0 && repoSyncGraphLinks.completeSyncAssets > 0, `${assetCounts.repo_sync || 0} repo syncs / ${repoSyncGraphLinks.completeSyncs} graph-complete syncs / ${repoSyncGraphLinks.completeSyncAssets} sync asset paths / ${repoSyncGraphLinks.repositorySync} repository links / ${repoSyncGraphLinks.sourceRemotes} source links / ${repoSyncGraphLinks.targetRemotes} target links`, (assetCounts.repo_sync || 0) > 0 || repoSyncGraphLinks.repositorySync > 0 || repoSyncGraphLinks.sourceRemotes > 0 || repoSyncGraphLinks.targetRemotes > 0 || repoSyncGraphLinks.completeSyncAssets > 0)
     },
     {
       key: 'sync_trigger',
