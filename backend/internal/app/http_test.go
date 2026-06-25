@@ -24028,6 +24028,68 @@ func assertWebhookThresholdDecisionAuditPlanSafe(t *testing.T, plan map[string]a
 	}
 }
 
+func TestWebhookProviderCallbackOperatorReplayProofResultRecordedBoundaries(t *testing.T) {
+	tests := []struct {
+		name               string
+		failures           int
+		processed          int
+		replayed           int
+		matchedRepoSync    int
+		operationRuns      int
+		wantState          string
+		wantResultRecorded bool
+	}{
+		{
+			name:               "waiting without replay aggregate",
+			wantState:          "waiting_for_operator_replay",
+			wantResultRecorded: false,
+		},
+		{
+			name:               "observed replay without terminal result or binding",
+			replayed:           1,
+			wantState:          "observed",
+			wantResultRecorded: false,
+		},
+		{
+			name:               "recorded replay with processed delivery",
+			processed:          1,
+			replayed:           1,
+			wantState:          "recorded",
+			wantResultRecorded: true,
+		},
+		{
+			name:               "recorded replay with repo sync binding",
+			replayed:           1,
+			matchedRepoSync:    1,
+			wantState:          "recorded",
+			wantResultRecorded: true,
+		},
+		{
+			name:               "recorded replay with operation binding",
+			replayed:           1,
+			operationRuns:      1,
+			wantState:          "recorded",
+			wantResultRecorded: true,
+		},
+		{
+			name:               "failed terminal replay",
+			failures:           1,
+			replayed:           1,
+			wantState:          "failed",
+			wantResultRecorded: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proof := webhookProviderCallbackOperatorReplayProof(1, tt.failures, tt.processed, tt.replayed, 0, tt.matchedRepoSync, tt.operationRuns)
+			if proof["proof_state"] != tt.wantState ||
+				proof["sanitized_replay_result_recorded"] != tt.wantResultRecorded {
+				t.Fatalf("replay proof = %#v, want state %s and result recorded %v", proof, tt.wantState, tt.wantResultRecorded)
+			}
+		})
+	}
+}
+
 func TestWebhookCallbackRehearsalEvidenceStateBoundaries(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -24096,8 +24158,8 @@ func TestWebhookCallbackRehearsalEvidenceStateBoundaries(t *testing.T) {
 			}
 			if strings.Contains(tt.name, "operator replay observed") {
 				replayProof := mapFromAny(evidence["operator_replay_proof"])
-				if replayProof["proof_state"] != "observed" || replayProof["manual_replay_required"] != false || replayProof["operator_replay_observed"] != true || replayProof["sanitized_replay_result_recorded"] != true {
-					t.Fatalf("operator replay proof should be observed before processing or repo sync binding: %#v", replayProof)
+				if replayProof["proof_state"] != "observed" || replayProof["manual_replay_required"] != false || replayProof["operator_replay_observed"] != true || replayProof["sanitized_replay_result_recorded"] != false {
+					t.Fatalf("operator replay proof should be observed without claiming sanitized result before processing or repo sync binding: %#v", replayProof)
 				}
 			}
 		})

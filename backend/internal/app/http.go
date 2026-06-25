@@ -6595,13 +6595,14 @@ func webhookProviderCallbackOperatorReplayProof(deliveries, failures, processed,
 	case replayed > 0:
 		proofState = "observed"
 	}
+	replayResultRecorded := proofState == "recorded" || proofState == "failed"
 	return map[string]any{
 		"mode":                               "operator_guided_webhook_replay_proof",
 		"proof_state":                        proofState,
 		"proof_source":                       "webhook_events_aggregate",
 		"manual_replay_required":             replayed == 0,
 		"operator_replay_observed":           replayed > 0,
-		"sanitized_replay_result_recorded":   replayed > 0,
+		"sanitized_replay_result_recorded":   replayResultRecorded,
 		"delivery_evidence_count_7d":         deliveries,
 		"replayed_event_count_7d":            replayed,
 		"processed_delivery_count_7d":        processed,
