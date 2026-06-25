@@ -64,6 +64,14 @@ helm template assops deploy/helm/assops \
   -f /tmp/assops-release-values.yaml
 ```
 
+Generate a local environment-readiness plan before any cluster-mutating promotion. This reads only the reviewed values overlay and checks that production-shaped guardrails are present: external Secret, external PostgreSQL, HTTPS/TLS ingress, ServiceAccount token isolation, NetworkPolicy, PodDisruptionBudget, persistent volumes, resource requests/limits, and non-root/drop-capability runtime posture.
+
+```bash
+assops-tool release helm-readiness-plan \
+  deploy/helm/assops/values.production.example.yaml \
+  .assops/release-notes/helm-readiness-plan.md
+```
+
 The GitHub `Promote Production` workflow accepts an `environment_values` input. Point it at the reviewed production overlay; the workflow then adds the generated release image overlay on top.
 
 For GitHub-based promotion, review `deploy/k8s/promotion-rbac.yaml` as a namespace-scoped starting point for the kubeconfig stored in `KUBE_CONFIG_B64`. Avoid using cluster-admin credentials for the promotion workflow.

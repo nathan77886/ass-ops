@@ -323,6 +323,16 @@ To deploy, run the workflow with `deploy=true`. The deploy job is attached to th
 
 The workflow accepts an `environment_values` input. Use a reviewed production overlay, starting from `deploy/helm/assops/values.production.example.yaml`, so production renders with an external Secret, external PostgreSQL, and TLS ingress. When `deploy=true`, the workflow runs `helm upgrade --install`, then waits for gateway, worker, node-worker, and web deployments to finish their rollout and prints a deployment/pod summary. Keep `deploy=false` until the production environment, namespace, storage class, TLS ingress, and external secrets are reviewed.
 
+Before setting `deploy=true`, generate a local Helm environment-readiness plan from the same overlay:
+
+```bash
+assops-tool release helm-readiness-plan \
+  deploy/helm/assops/values.production.example.yaml \
+  .assops/release-notes/helm-readiness-plan.md
+```
+
+The plan validates the local overlay for external Secret usage, external PostgreSQL, HTTPS/TLS ingress, ServiceAccount token isolation, NetworkPolicy, PodDisruptionBudget, persistent volumes, resource requests/limits, and non-root/drop-capability runtime posture. It does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs, and the listed `kubectl` checks should only be run after the target cluster, namespace, and kubeconfig are confirmed out of band.
+
 The production values example enables stricter pod/container security settings for Go workloads and migration jobs. Review these settings with the actual images and cluster policy before rollout, especially if you override images.
 
 It also enables chart-managed NetworkPolicies. Confirm that your CNI enforces NetworkPolicy and that the configured web ingress CIDRs match the ingress controller or load balancer path used by the cluster.

@@ -83,6 +83,17 @@ func run() error {
 			fmt.Print(values)
 			return nil
 		}
+		if (len(args) == 3 || len(args) == 4) && args[1] == "helm-readiness-plan" {
+			plan, err := releaseHelmReadinessPlan(args[2])
+			if err != nil {
+				return err
+			}
+			if len(args) == 4 {
+				return writeTextFile(args[3], plan)
+			}
+			fmt.Print(plan)
+			return nil
+		}
 		if (len(args) == 8 || len(args) == 9) && args[1] == "promotion-plan" {
 			plan, err := releasePromotionPlan(args[2], args[3], args[4], args[5], args[6], args[7])
 			if err != nil {
@@ -121,7 +132,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -539,6 +550,118 @@ func releasePromotionPlan(repo, owner, version, artifactDir, rehearsalReport, he
 	fmt.Fprintf(&b, "```\n\n")
 	fmt.Fprintf(&b, "## Rollback Note\n\n")
 	fmt.Fprintf(&b, "Keep the previous Helm values overlay and database backup path with the release notes before rollout.\n")
+	return b.String(), nil
+}
+
+func releaseHelmReadinessPlan(valuesPath string) (string, error) {
+	valuesPath = strings.TrimSpace(valuesPath)
+	if valuesPath == "" {
+		return "", fmt.Errorf("Helm values path is required")
+	}
+	values, err := readSimpleHelmValues(valuesPath)
+	if err != nil {
+		return "", err
+	}
+	requiredBooleans := []struct {
+		key  string
+		want string
+	}{
+		{key: "secret.create", want: "false"},
+		{key: "postgres.enabled", want: "false"},
+		{key: "ingress.enabled", want: "true"},
+		{key: "serviceAccount.automountServiceAccountToken", want: "false"},
+		{key: "networkPolicy.enabled", want: "true"},
+		{key: "podDisruptionBudget.enabled", want: "true"},
+	}
+	for _, required := range requiredBooleans {
+		if got := values[required.key]; got != required.want {
+			return "", fmt.Errorf("Helm readiness requires %s=%s", required.key, required.want)
+		}
+	}
+	for _, key := range []string{"secret.name", "gatewayURL", "ingress.className", "ingress.host", "ingress.tlsSecretName"} {
+		if strings.TrimSpace(values[key]) == "" {
+			return "", fmt.Errorf("Helm readiness requires %s", key)
+		}
+	}
+	if !strings.HasPrefix(values["gatewayURL"], "https://") {
+		return "", fmt.Errorf("Helm readiness requires gatewayURL to use https")
+	}
+	if strings.Contains(values["gatewayURL"], "@") {
+		return "", fmt.Errorf("Helm readiness requires gatewayURL without embedded credentials")
+	}
+	if values["web.service.type"] != "ClusterIP" {
+		return "", fmt.Errorf("Helm readiness requires web.service.type=ClusterIP before ingress rollout")
+	}
+	for _, key := range []string{"persistence.context.enabled", "persistence.bareRepos.enabled", "persistence.ssh.enabled", "persistence.backups.enabled"} {
+		if values[key] != "true" {
+			return "", fmt.Errorf("Helm readiness requires %s=true", key)
+		}
+	}
+	for _, key := range []string{"persistence.context.size", "persistence.bareRepos.size", "persistence.ssh.size", "persistence.backups.size"} {
+		if strings.TrimSpace(values[key]) == "" {
+			return "", fmt.Errorf("Helm readiness requires %s", key)
+		}
+	}
+	for _, key := range []string{"resources.requests.cpu", "resources.requests.memory", "resources.limits.cpu", "resources.limits.memory"} {
+		if strings.TrimSpace(values[key]) == "" {
+			return "", fmt.Errorf("Helm readiness requires %s", key)
+		}
+	}
+	for _, key := range []string{
+		"securityContext.containers.default.allowPrivilegeEscalation",
+		"securityContext.containers.default.readOnlyRootFilesystem",
+		"securityContext.containers.default.runAsNonRoot",
+		"securityContext.containers.migrate.allowPrivilegeEscalation",
+		"securityContext.containers.migrate.readOnlyRootFilesystem",
+		"securityContext.containers.migrate.runAsNonRoot",
+		"securityContext.containers.web.allowPrivilegeEscalation",
+	} {
+		want := "true"
+		if strings.Contains(key, "allowPrivilegeEscalation") {
+			want = "false"
+		}
+		if got := values[key]; got != want {
+			return "", fmt.Errorf("Helm readiness requires %s=%s", key, want)
+		}
+	}
+	for _, key := range []string{"securityContext.containers.default.capabilities.drop", "securityContext.containers.migrate.capabilities.drop"} {
+		if !toolContainsString(strings.Split(values[key], ","), "ALL") {
+			return "", fmt.Errorf("Helm readiness requires %s to include ALL", key)
+		}
+	}
+	sum, err := sha256File(valuesPath)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# ASSOPS Helm Environment Readiness Plan\n\n")
+	fmt.Fprintf(&b, "Values overlay: `%s`\n\n", valuesPath)
+	fmt.Fprintf(&b, "Values sha256: `%s`\n\n", sum)
+	fmt.Fprintf(&b, "## Local Validation\n\n")
+	fmt.Fprintf(&b, "- External Secret is required via `%s`; chart-managed production secrets are disabled.\n", values["secret.name"])
+	fmt.Fprintf(&b, "- Built-in PostgreSQL is disabled; `DATABASE_URL` must point at managed PostgreSQL from the external Secret.\n")
+	fmt.Fprintf(&b, "- HTTPS gateway and TLS ingress are configured for `%s` with ingress class `%s` and TLS Secret `%s`.\n", values["ingress.host"], values["ingress.className"], values["ingress.tlsSecretName"])
+	fmt.Fprintf(&b, "- Application ServiceAccount token automount is disabled.\n")
+	fmt.Fprintf(&b, "- NetworkPolicy and PodDisruptionBudget are enabled for first-version rollout review.\n")
+	fmt.Fprintf(&b, "- Persistent volumes, resource requests/limits, and non-root/drop-capability runtime posture are present.\n\n")
+	fmt.Fprintf(&b, "## Required External Secret Keys\n\n")
+	for _, key := range requiredExternalSecretKeys() {
+		fmt.Fprintf(&b, "- `%s`\n", key)
+	}
+	fmt.Fprintf(&b, "\n## Storage Review\n\n")
+	for _, key := range []string{"context", "bareRepos", "ssh", "backups"} {
+		fmt.Fprintf(&b, "- `%s`: `%s`\n", key, values["persistence."+key+".size"])
+	}
+	fmt.Fprintf(&b, "\n## No-Call Boundary\n\n")
+	fmt.Fprintf(&b, "- This plan reads only the local values file; it does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs.\n")
+	fmt.Fprintf(&b, "- It does not render manifests, bind kubeconfigs, read external Secret values, or write deployment records.\n\n")
+	fmt.Fprintf(&b, "## Preflight Commands\n\n```bash\n")
+	fmt.Fprintf(&b, "helm lint deploy/helm/assops -f %q\n", valuesPath)
+	fmt.Fprintf(&b, "helm template assops deploy/helm/assops -f deploy/helm/assops/values.yaml -f %q >/tmp/assops-rendered.yaml\n", valuesPath)
+	fmt.Fprintf(&b, "kubectl -n assops get secret %q\n", values["secret.name"])
+	fmt.Fprintf(&b, "kubectl -n assops get secret %q\n", values["ingress.tlsSecretName"])
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "Run the `kubectl` checks only after confirming the target cluster, namespace, and kubeconfig out of band. Keep promotion in preflight-only mode until those checks, restore rehearsal, and operator approval are recorded.\n")
 	return b.String(), nil
 }
 
@@ -970,6 +1093,132 @@ func validateReleaseHelmValuesFile(path, owner, version string) (string, error) 
 	}
 	sum := sha256.Sum256(actual)
 	return fmt.Sprintf("%x", sum), nil
+}
+
+type simpleYAMLLevel struct {
+	indent int
+	key    string
+}
+
+func readSimpleHelmValues(path string) (map[string]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading Helm values: %w", err)
+	}
+	stack := []simpleYAMLLevel{}
+	values := map[string]string{}
+	for lineNo, rawLine := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(rawLine) == "" || strings.HasPrefix(strings.TrimSpace(rawLine), "#") {
+			continue
+		}
+		if strings.Contains(rawLine, "\t") {
+			return nil, fmt.Errorf("Helm values line %d uses tabs; use spaces", lineNo+1)
+		}
+		indent := leadingSpaces(rawLine)
+		line := strings.TrimSpace(stripYAMLComment(rawLine))
+		if line == "" {
+			continue
+		}
+		for len(stack) > 0 && indent <= stack[len(stack)-1].indent {
+			stack = stack[:len(stack)-1]
+		}
+		if strings.HasPrefix(line, "- ") {
+			pathKey := strings.Join(yamlPath(stack), ".")
+			if pathKey == "" {
+				return nil, fmt.Errorf("Helm values line %d has list item without parent", lineNo+1)
+			}
+			item := trimYAMLScalar(strings.TrimSpace(strings.TrimPrefix(line, "- ")))
+			if item == "" {
+				return nil, fmt.Errorf("Helm values line %d has empty list item", lineNo+1)
+			}
+			if values[pathKey] == "" {
+				values[pathKey] = item
+			} else {
+				values[pathKey] += "," + item
+			}
+			continue
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			return nil, fmt.Errorf("Helm values line %d must be key: value", lineNo+1)
+		}
+		key = strings.TrimSpace(key)
+		if key == "" || strings.ContainsAny(key, " .\r\n") {
+			return nil, fmt.Errorf("Helm values line %d has invalid key", lineNo+1)
+		}
+		value = strings.TrimSpace(value)
+		pathParts := append(yamlPath(stack), key)
+		if value == "" {
+			stack = append(stack, simpleYAMLLevel{indent: indent, key: key})
+			continue
+		}
+		values[strings.Join(pathParts, ".")] = trimYAMLScalar(value)
+	}
+	return values, nil
+}
+
+func yamlPath(stack []simpleYAMLLevel) []string {
+	out := make([]string, 0, len(stack))
+	for _, item := range stack {
+		out = append(out, item.key)
+	}
+	return out
+}
+
+func leadingSpaces(value string) int {
+	count := 0
+	for _, char := range value {
+		if char != ' ' {
+			return count
+		}
+		count++
+	}
+	return count
+}
+
+func stripYAMLComment(value string) string {
+	inSingle := false
+	inDouble := false
+	for index, char := range value {
+		switch char {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case '#':
+			if !inSingle && !inDouble && (index == 0 || value[index-1] == ' ') {
+				return value[:index]
+			}
+		}
+	}
+	return value
+}
+
+func trimYAMLScalar(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		if (value[0] == '\'' && value[len(value)-1] == '\'') || (value[0] == '"' && value[len(value)-1] == '"') {
+			return strings.TrimSpace(value[1 : len(value)-1])
+		}
+	}
+	return value
+}
+
+func requiredExternalSecretKeys() []string {
+	return []string{
+		"DATABASE_URL",
+		"ASSOPS_JWT_SECRET",
+		"ASSOPS_WEBHOOK_SECRET_KEY",
+		"ASSOPS_ADMIN_EMAIL",
+		"ASSOPS_ADMIN_PASSWORD",
+		"ASSOPS_APPROVAL_WEBHOOK_TOKEN",
+		"ASSOPS_GITHUB_ACTIONS_READ_TOKEN",
+		"ASSOPS_ARGO_READ_TOKEN",
+	}
 }
 
 func isOwnerRepo(value string) bool {
