@@ -22771,16 +22771,21 @@ func argoPodLogAuditEvidenceSummary(rows []map[string]any) map[string]any {
 func argoPodLogResultRecordingPlan(auditReady bool, evidence, query, target map[string]any, prerequisiteState string) map[string]any {
 	recordingState := "blocked"
 	readyReason := "pod_log_metadata_incomplete"
+	resultObserved := auditReady && boolOnlyFromAny(evidence["sanitized_result_recorded"])
 	if auditReady {
 		recordingState = "planned"
-		readyReason = "sanitized_audit_result_ready_after_worker"
+		readyReason = "pod_log_audit_worker_not_observed"
 	}
 	if auditReady && boolOnlyFromAny(evidence["has_audit_operations"]) {
 		recordingState = cleanPreviewString(evidence["evidence_state"])
 		if recordingState == "waiting_for_worker" {
 			readyReason = "pod_log_audit_worker_still_running"
 		} else if recordingState == "recorded" {
-			readyReason = "sanitized_pod_log_audit_result_recorded"
+			if resultObserved {
+				readyReason = "sanitized_pod_log_audit_result_recorded"
+			} else {
+				readyReason = "pod_log_audit_result_missing_operation_log"
+			}
 		} else if recordingState == "failed" {
 			readyReason = "pod_log_audit_worker_failed"
 		} else if recordingState == "canceled" {
@@ -22789,7 +22794,6 @@ func argoPodLogResultRecordingPlan(auditReady bool, evidence, query, target map[
 			readyReason = "pod_log_audit_worker_status_unknown"
 		}
 	}
-	resultObserved := auditReady && boolOnlyFromAny(evidence["sanitized_result_recorded"])
 	blockedReasons := []string{"live_log_backend_disabled", "sanitized_log_result_not_recorded"}
 	if resultObserved {
 		blockedReasons = []string{"live_log_backend_disabled"}
@@ -22797,9 +22801,9 @@ func argoPodLogResultRecordingPlan(auditReady bool, evidence, query, target map[
 	return map[string]any{
 		"mode":                          "pod_log_result_recording_plan",
 		"recording_state":               recordingState,
-		"recording_ready":               auditReady,
+		"recording_ready":               resultObserved,
 		"recording_ready_reason":        readyReason,
-		"recording_enabled":             auditReady,
+		"recording_enabled":             resultObserved,
 		"result_written":                resultObserved,
 		"operation_log_written":         resultObserved,
 		"canonical_asset_sync_queued":   resultObserved,

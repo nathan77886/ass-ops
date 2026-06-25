@@ -679,6 +679,8 @@ func TestArgoPodLogQueryPreviewReconcilesAuditEvidence(t *testing.T) {
 	}
 	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
 	if resultPlan["recording_state"] != "recorded" ||
+		resultPlan["recording_ready"] != true ||
+		resultPlan["recording_enabled"] != true ||
 		resultPlan["result_written"] != true ||
 		resultPlan["operation_log_written"] != true ||
 		resultPlan["canonical_asset_sync_queued"] != true ||
@@ -765,19 +767,22 @@ func TestArgoPodLogQueryPreviewDoesNotRecordResultWhileAuditWorkerRuns(t *testin
 
 func TestArgoPodLogQueryPreviewDoesNotRecordResultForUnsuccessfulTerminalAudit(t *testing.T) {
 	tests := []struct {
-		name      string
-		rows      []map[string]any
-		wantState string
+		name       string
+		rows       []map[string]any
+		wantState  string
+		wantReason string
 	}{
 		{
-			name:      "failed only",
-			rows:      []map[string]any{{"id": "op-pod-logs-failed", "status": "failed", "operation_log_count": int64(2), "input": map[string]any{"log_body": "actual log line"}}},
-			wantState: "failed",
+			name:       "failed only",
+			rows:       []map[string]any{{"id": "op-pod-logs-failed", "status": "failed", "operation_log_count": int64(2), "input": map[string]any{"log_body": "actual log line"}}},
+			wantState:  "failed",
+			wantReason: "pod_log_audit_worker_failed",
 		},
 		{
-			name:      "canceled only",
-			rows:      []map[string]any{{"id": "op-pod-logs-canceled", "status": "canceled", "operation_log_count": int64(2), "input": map[string]any{"kubeconfig": "secret kubeconfig"}}},
-			wantState: "canceled",
+			name:       "canceled only",
+			rows:       []map[string]any{{"id": "op-pod-logs-canceled", "status": "canceled", "operation_log_count": int64(2), "input": map[string]any{"kubeconfig": "secret kubeconfig"}}},
+			wantState:  "canceled",
+			wantReason: "pod_log_audit_worker_canceled",
 		},
 		{
 			name: "failed takes priority over completed",
@@ -785,7 +790,14 @@ func TestArgoPodLogQueryPreviewDoesNotRecordResultForUnsuccessfulTerminalAudit(t
 				{"id": "op-pod-logs-completed", "status": "completed", "operation_log_count": int64(2), "input": map[string]any{"log_body": "actual log line"}},
 				{"id": "op-pod-logs-failed", "status": "failed", "operation_log_count": int64(1), "input": map[string]any{"kubeconfig": "secret kubeconfig"}},
 			},
-			wantState: "failed",
+			wantState:  "failed",
+			wantReason: "pod_log_audit_worker_failed",
+		},
+		{
+			name:       "unknown status only",
+			rows:       []map[string]any{{"id": "op-pod-logs-unknown", "status": "bogus_status", "operation_log_count": int64(0), "input": map[string]any{"log_body": "actual log line"}}},
+			wantState:  "unknown",
+			wantReason: "pod_log_audit_worker_status_unknown",
 		},
 	}
 	for _, tt := range tests {
@@ -807,6 +819,9 @@ func TestArgoPodLogQueryPreviewDoesNotRecordResultForUnsuccessfulTerminalAudit(t
 			executionPlan := mapFromAny(mapFromAny(preview["retrieval_plan"])["execution_plan"])
 			resultPlan := mapFromAny(executionPlan["result_recording_plan"])
 			if resultPlan["recording_state"] != tt.wantState ||
+				resultPlan["recording_ready"] != false ||
+				resultPlan["recording_enabled"] != false ||
+				resultPlan["recording_ready_reason"] != tt.wantReason ||
 				resultPlan["result_written"] != false ||
 				resultPlan["operation_log_written"] != false ||
 				resultPlan["canonical_asset_sync_queued"] != false ||
@@ -1353,6 +1368,16 @@ func TestArgoPodLogLiveStreamReviewPlanReportsMissingAuditLog(t *testing.T) {
 		!containsString(stringSliceFromAny(liveStreamPlan["blocked_reasons"]), "sanitized_log_result_not_recorded") {
 		t.Fatalf("live stream plan should report missing sanitized operation log: %#v", liveStreamPlan)
 	}
+	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
+	if resultPlan["recording_state"] != "recorded" ||
+		resultPlan["recording_ready"] != false ||
+		resultPlan["recording_enabled"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["operation_log_written"] != false ||
+		resultPlan["recording_ready_reason"] != "pod_log_audit_result_missing_operation_log" ||
+		!containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), "sanitized_log_result_not_recorded") {
+		t.Fatalf("pod log result recording should not be ready without sanitized operation log: %#v", resultPlan)
+	}
 }
 
 func TestCleanArgoPodLogRequestClampsRanges(t *testing.T) {
@@ -1853,6 +1878,8 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 	}
 	if hasAuditEvidence && executionPlan["prerequisite_state"] == "metadata_available" {
 		if resultPlan["audit_operation_observed"] != true ||
+			resultPlan["recording_ready"] != hasSanitizedResult ||
+			resultPlan["recording_enabled"] != hasSanitizedResult ||
 			resultPlan["result_written"] != hasSanitizedResult ||
 			resultPlan["operation_log_written"] != hasSanitizedResult ||
 			resultPlan["canonical_asset_sync_queued"] != hasSanitizedResult ||
@@ -1872,8 +1899,8 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		t.Fatalf("pod log result recording plan should not report writes without evidence: %#v", resultPlan)
 	}
 	if executionPlan["prerequisite_state"] == "metadata_available" {
-		if !hasAuditEvidence && (resultPlan["recording_state"] != "planned" || resultPlan["recording_ready"] != true || resultPlan["recording_enabled"] != true || resultPlan["status_snapshot_written"] != false || resultPlan["canonical_asset_sync_queued"] != false) {
-			t.Fatalf("metadata-ready pod log result recording plan should be planned for sanitized audit metadata: %#v", resultPlan)
+		if !hasAuditEvidence && (resultPlan["recording_state"] != "planned" || resultPlan["recording_ready"] != false || resultPlan["recording_enabled"] != false || resultPlan["recording_ready_reason"] != "pod_log_audit_worker_not_observed" || resultPlan["status_snapshot_written"] != false || resultPlan["canonical_asset_sync_queued"] != false) {
+			t.Fatalf("metadata-ready pod log result recording plan should wait for sanitized audit result evidence: %#v", resultPlan)
 		}
 	} else if resultPlan["recording_state"] != "blocked" || resultPlan["recording_ready"] != false || resultPlan["recording_enabled"] != false {
 		t.Fatalf("metadata-blocked pod log result recording plan should stay blocked: %#v", resultPlan)
