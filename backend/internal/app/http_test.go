@@ -25964,7 +25964,9 @@ func TestAgentToolAuditSnapshotPayloadSanitizesEvidence(t *testing.T) {
 	}
 	if snapshot["has_tool_call_audit"] != true ||
 		snapshot["sanitized_result_recorded"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
 		snapshot["status_snapshot_written"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["external_call_made"] != false ||
 		snapshot["tool_invoked"] != false ||
 		snapshot["raw_tool_output_recorded"] != false ||
@@ -26124,7 +26126,9 @@ func TestRecordAgentToolAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
 	}
 	snapshot := mapFromAny(got["snapshot"])
 	if snapshot["sanitized_result_recorded"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
 		snapshot["status_snapshot_written"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["raw_tool_output_recorded"] != false ||
 		snapshot["input_included"] != false ||
 		snapshot["output_included"] != false ||
@@ -26247,6 +26251,11 @@ func TestRecordAgentToolAuditSnapshotHandlerAssetMissing(t *testing.T) {
 		got["agent_tool_audit_snapshot_written"] != false {
 		t.Fatalf("unexpected asset missing response: %#v", got)
 	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] {
+		t.Fatalf("unexpected asset-missing agent audit snapshot write eligibility: %#v", snapshot)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
 	}
@@ -26361,6 +26370,8 @@ func TestAgentToolArmingSnapshotPayloadSanitizesEvidence(t *testing.T) {
 		snapshot["result_callback_observed"] != true ||
 		snapshot["arming_ready_for_operator_review"] != true ||
 		snapshot["tool_review_ready_for_operator"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["live_tool_invocation_allowed"] != false ||
 		snapshot["tool_invocation_enabled"] != false ||
 		snapshot["tool_invoked"] != false ||
@@ -26590,6 +26601,8 @@ func TestRecordAgentToolArmingSnapshotHandlerWritesWhenReady(t *testing.T) {
 	snapshot := mapFromAny(got["snapshot"])
 	if snapshot["arming_ready_for_operator_review"] != true ||
 		snapshot["tool_review_ready_for_operator"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["live_tool_invocation_allowed"] != false ||
 		snapshot["raw_tool_input_materialized"] != false ||
 		snapshot["raw_tool_output_recorded"] != false {
@@ -26804,6 +26817,11 @@ func TestRecordAgentToolArmingSnapshotHandlerAssetMissing(t *testing.T) {
 	if !containsString(stringSliceFromAny(got["missing_evidence"]), "agent_task_asset_missing") {
 		t.Fatalf("asset-missing response missing evidence: %#v", got["missing_evidence"])
 	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] {
+		t.Fatalf("unexpected asset-missing tool arming snapshot write eligibility: %#v", snapshot)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
 	}
@@ -26857,7 +26875,9 @@ func TestAgentCodeAuditSnapshotPayloadSanitizesEvidence(t *testing.T) {
 		snapshot["patch_prepare_audit_recorded"] != true ||
 		snapshot["execution_arming_ready"] != true ||
 		snapshot["source_checkout_branch_review_ready"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
 		snapshot["status_snapshot_written"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["source_checkout_performed"] != false ||
 		snapshot["branch_created"] != false ||
 		snapshot["diff_materialized"] != false ||
@@ -27093,7 +27113,9 @@ func TestRecordAgentCodeAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
 	if snapshot["sanitized_result_recorded"] != true ||
 		snapshot["execution_arming_ready"] != true ||
 		snapshot["source_checkout_branch_review_ready"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
 		snapshot["status_snapshot_written"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] ||
 		snapshot["source_checkout_performed"] != false ||
 		snapshot["raw_diff_recorded"] != false ||
 		snapshot["contains_file_content"] != false {
@@ -27220,6 +27242,11 @@ func TestRecordAgentCodeAuditSnapshotHandlerAssetMissing(t *testing.T) {
 		got["agent_task_asset_observed"] != false ||
 		got["agent_code_audit_snapshot_written"] != false {
 		t.Fatalf("unexpected asset missing response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["status_snapshot_written"] != snapshot["status_snapshot_write_eligible"] {
+		t.Fatalf("unexpected asset-missing agent code audit snapshot write eligibility: %#v", snapshot)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

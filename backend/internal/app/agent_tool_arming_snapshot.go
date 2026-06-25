@@ -163,13 +163,15 @@ func agentToolArmingSnapshotPayload(task, dispatchPlan map[string]any, assetObse
 	reviewPlan := mapFromAny(dispatchPlan["tool_invocation_review_plan"])
 	callbackPlan := mapFromAny(dispatchPlan["result_callback_plan"])
 	evidence := mapFromAny(dispatchPlan["tool_call_audit_evidence"])
+	statusSnapshotWriteEligible := assetObserved
 	return map[string]any{
 		"mode":                                 "agent_tool_invocation_arming_snapshot",
 		"agent_task_id":                        cleanPreviewString(task["id"]),
 		"project_id":                           cleanPreviewString(task["project_id"]),
 		"agent_task_status":                    cleanPreviewString(task["status"]),
 		"agent_task_asset_observed":            assetObserved,
-		"status_snapshot_written":              assetObserved,
+		"status_snapshot_write_eligible":       statusSnapshotWriteEligible,
+		"status_snapshot_written":              statusSnapshotWriteEligible,
 		"dispatch_state":                       cleanPreviewString(dispatchPlan["dispatch_state"]),
 		"dispatch_prerequisite_state":          cleanPreviewString(dispatchPlan["prerequisite_state"]),
 		"runtime_metadata_ready":               boolOnlyFromAny(armingPlan["metadata_ready"]),

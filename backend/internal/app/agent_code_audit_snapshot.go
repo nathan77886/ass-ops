@@ -186,6 +186,8 @@ func agentCodeAuditSnapshotStatusHealth(state string) (string, string) {
 }
 
 func agentCodeAuditSnapshotPayload(task, codeEvidence, resultRecordingPlan, executionArmingPlan, sourceReviewPlan map[string]any, assetObserved bool) map[string]any {
+	// Code audit snapshots are structurally complete from local audit plans; the handler still gates actual writes on asset presence.
+	statusSnapshotWriteEligible := true
 	return map[string]any{
 		"mode":                                "agent_code_modification_audit_snapshot",
 		"agent_task_id":                       cleanPreviewString(task["id"]),
@@ -212,7 +214,8 @@ func agentCodeAuditSnapshotPayload(task, codeEvidence, resultRecordingPlan, exec
 		"source_checkout_branch_review_ready": boolOnlyFromAny(sourceReviewPlan["review_ready"]),
 		"review_branch_required":              boolOnlyFromAny(sourceReviewPlan["review_branch_required"]),
 		"default_branch_direct_write_blocked": boolOnlyFromAny(sourceReviewPlan["default_branch_direct_write_blocked"]),
-		"status_snapshot_written":             true,
+		"status_snapshot_write_eligible":      statusSnapshotWriteEligible,
+		"status_snapshot_written":             statusSnapshotWriteEligible,
 		"canonical_asset_status_snapshot_try": assetObserved,
 		"operation_log_written":               false,
 		"patch_artifact_written":              false,

@@ -210,6 +210,8 @@ func agentTaskAssetID(ctx context.Context, db sqlx.ExtContext, taskID string) (s
 }
 
 func agentToolAuditSnapshotPayload(task, evidence, callbackPlan map[string]any, assetObserved bool) map[string]any {
+	// Audit snapshots are structurally complete from local task/evidence data; the handler still gates actual writes on asset presence.
+	statusSnapshotWriteEligible := true
 	return map[string]any{
 		"mode":                                "agent_tool_call_audit_snapshot",
 		"agent_task_id":                       cleanPreviewString(task["id"]),
@@ -237,7 +239,8 @@ func agentToolAuditSnapshotPayload(task, evidence, callbackPlan map[string]any, 
 		"result_callback_enabled":             boolOnlyFromAny(callbackPlan["callback_enabled"]),
 		"result_written":                      boolOnlyFromAny(callbackPlan["result_written"]),
 		"tool_call_status_written":            boolOnlyFromAny(callbackPlan["tool_call_status_written"]),
-		"status_snapshot_written":             true,
+		"status_snapshot_write_eligible":      statusSnapshotWriteEligible,
+		"status_snapshot_written":             statusSnapshotWriteEligible,
 		"canonical_asset_status_snapshot_try": assetObserved,
 		"external_call_made":                  false,
 		"tool_invocation_enabled":             false,
