@@ -648,6 +648,17 @@ function assetIDsByType(rows: AnyRow[] = [], type: string) {
     .filter(Boolean));
 }
 
+function assetIDsByTypeMetadata(rows: AnyRow[] = [], type: string, key: string, value: string) {
+  return new Set(rows
+    .filter((row) => String(row.asset_type || '') === type && metadataValueEqual(row.metadata?.[key], value))
+    .map((row) => canonicalAssetGraphID(row, type))
+    .filter(Boolean));
+}
+
+function metadataValueEqual(raw: unknown, value: string) {
+  return String(raw || '').trim().toLowerCase() === value.trim().toLowerCase();
+}
+
 function assetIDsByGraphType(rows: AnyRow[] = [], assetType: string, graphType: string) {
   return new Set(rows
     .filter((row) => String(row.asset_type || '') === assetType)
@@ -749,7 +760,7 @@ function activeAssetIDsByTypeStatus(rows: AnyRow[] = [], type: string, status: s
 }
 
 function countRowsByTypeMetadata(rows: AnyRow[] = [], type: string, key: string, value: string) {
-  return rows.filter((row) => String(row.asset_type || '') === type && String(row.metadata?.[key] || '') === value).length;
+  return rows.filter((row) => String(row.asset_type || '') === type && metadataValueEqual(row.metadata?.[key], value)).length;
 }
 
 function graphItems(graph: AnyRow = {}, key: string) {
@@ -1293,8 +1304,8 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const syncOperationIDs = mergeSets(operationIDsByType(operations, 'repo.sync'), operationIDsByType(operations, 'repo.sync_remote'));
   const webhookSyncGraphLinks = countWebhookSyncGraphLinks(
     graph,
-    assetIDsByType(assets, 'webhook_connection'),
-    assetIDsByType(assets, 'webhook_event'),
+    assetIDsByTypeMetadata(assets, 'webhook_connection', 'provider', 'gitea'),
+    assetIDsByTypeMetadata(assets, 'webhook_event', 'provider', 'gitea'),
     assetIDsByType(assets, 'repo_sync'),
     syncOperationIDs
   );
@@ -1333,7 +1344,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const contextGraphLinks = countContextGraphLinks(assets, graph);
   const argoEvidence = (assetCounts.argo_connection || 0) + (assetCounts.argo_app || 0) + (assetCounts.deployment_target || 0) + (operationCounts['argo.apps.sync'] || 0) + argoGraphLinks.connectionApps + argoGraphLinks.appTargets + argoGraphLinks.completeAppAssets;
   const argoEvidenceText = `${assetCounts.deployment_target || 0} targets / ${assetCounts.argo_connection || 0} Argo connections / ${assetCounts.argo_app || 0} apps / ${operationCounts['argo.apps.sync'] || 0} sync ops / ${argoGraphLinks.completeApps} complete app links / ${argoGraphLinks.completeAppAssets} app asset chains${argoGraphLinks.completeApps > 0 && argoGraphLinks.completeAppAssets === 0 ? ' / canonical evidence missing' : ''}`;
-  const syncTriggerEvidenceText = `${syncTriggered} sync ops / ${giteaWebhooks} Gitea webhooks / ${giteaWebhookEvents} Gitea events / ${webhookSyncGraphLinks.completeChains} complete webhook chains / ${webhookSyncGraphLinks.completeChainAssets} webhook asset chains${webhookSyncGraphLinks.completeChains > 0 && webhookSyncGraphLinks.completeChainAssets === 0 ? ' / canonical evidence missing' : ''}`;
+  const syncTriggerEvidenceText = `${syncTriggered} sync ops / ${giteaWebhooks} Gitea webhooks / ${giteaWebhookEvents} Gitea events / ${webhookSyncGraphLinks.completeChains} any-provider complete webhook chains / ${webhookSyncGraphLinks.completeChainAssets} webhook asset chains${webhookSyncGraphLinks.completeChains > 0 && webhookSyncGraphLinks.completeChainAssets === 0 ? ' / canonical evidence missing' : ''}`;
   const graphNodes = graphItems(graph, 'nodes').length;
   const graphEdges = graphItems(graph, 'edges').length;
   const graphEvidence = graphNodes + graphEdges;

@@ -1403,8 +1403,8 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	syncOperationIDs := mergeBoolMaps(operationIDsByType(operations, "repo.sync"), operationIDsByType(operations, "repo.sync_remote"))
 	webhookSyncGraphLinks := countWebhookSyncGraphLinks(
 		graph,
-		assetIDsByType(assets, "webhook_connection"),
-		assetIDsByType(assets, "webhook_event"),
+		assetIDsByTypeMetadata(assets, "webhook_connection", "provider", "gitea"),
+		assetIDsByTypeMetadata(assets, "webhook_event", "provider", "gitea"),
 		assetIDsByType(assets, "repo_sync"),
 		syncOperationIDs,
 	)
@@ -1461,7 +1461,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	if argoGraphLinks.CompleteApps > 0 && argoGraphLinks.CompleteAppAssets == 0 {
 		argoEvidenceText += " / canonical evidence missing"
 	}
-	syncTriggerEvidenceText := fmt.Sprintf("%d sync ops / %d Gitea webhooks / %d Gitea events / %d complete webhook chains / %d webhook asset chains", syncTriggered, giteaWebhooks, giteaWebhookEvents, webhookSyncGraphLinks.CompleteChains, webhookSyncGraphLinks.CompleteChainAssets)
+	syncTriggerEvidenceText := fmt.Sprintf("%d sync ops / %d Gitea webhooks / %d Gitea events / %d any-provider complete webhook chains / %d webhook asset chains", syncTriggered, giteaWebhooks, giteaWebhookEvents, webhookSyncGraphLinks.CompleteChains, webhookSyncGraphLinks.CompleteChainAssets)
 	if webhookSyncGraphLinks.CompleteChains > 0 && webhookSyncGraphLinks.CompleteChainAssets == 0 {
 		syncTriggerEvidenceText += " / canonical evidence missing"
 	}
@@ -1505,6 +1505,20 @@ func assetIDsByType(rows []map[string]any, typ string) map[string]bool {
 	ids := map[string]bool{}
 	for _, row := range rows {
 		if fmt.Sprint(row["asset_type"]) != typ {
+			continue
+		}
+		if assetID := canonicalAssetGraphID(row, typ); assetID != "" {
+			ids[assetID] = true
+		}
+	}
+	return ids
+}
+
+func assetIDsByTypeMetadata(rows []map[string]any, typ, key, value string) map[string]bool {
+	ids := map[string]bool{}
+	for _, row := range rows {
+		metadata := mapFromAPI(row["metadata"])
+		if fmt.Sprint(row["asset_type"]) != typ || !metadataValueEqual(metadata[key], value) {
 			continue
 		}
 		if assetID := canonicalAssetGraphID(row, typ); assetID != "" {
@@ -2077,11 +2091,15 @@ func countAPITypeMetadata(rows []map[string]any, typ, key, value string) int {
 	count := 0
 	for _, row := range rows {
 		metadata := mapFromAPI(row["metadata"])
-		if fmt.Sprint(row["asset_type"]) == typ && fmt.Sprint(metadata[key]) == value {
+		if fmt.Sprint(row["asset_type"]) == typ && metadataValueEqual(metadata[key], value) {
 			count++
 		}
 	}
 	return count
+}
+
+func metadataValueEqual(raw any, value string) bool {
+	return strings.EqualFold(strings.TrimSpace(fmt.Sprint(raw)), strings.TrimSpace(value))
 }
 
 type repositoryGraphLinkCounts struct {
