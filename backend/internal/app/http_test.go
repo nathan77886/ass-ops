@@ -22796,6 +22796,132 @@ func TestProviderReviewAttemptRuntimeSnapshotPayloadRejectsMismatchedRuntimeCont
 	}
 }
 
+func TestRecordProviderReviewAttemptAdapterRehearsalSnapshotWritesContractReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_adapter_rehearsal_contract_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_adapter_rehearsal_contract_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptAdapterRehearsalSnapshot(context.Background(), store, ProviderReviewAttemptAdapterRehearsalSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptAdapterRehearsalSnapshot: %v", err)
+	}
+	if got["recording_state"] != "adapter_rehearsal_contract_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_adapter_rehearsal_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["live_adapter_implemented"] != false ||
+		got["provider_client_constructed"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" {
+		t.Fatalf("unexpected provider review adapter rehearsal snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["adapter_rehearsal_observed"] != true ||
+		snapshot["adapter_rehearsal_contract_ready"] != true ||
+		snapshot["mutation_arming_contract_ready"] != true ||
+		snapshot["adapter_rehearsal_status"] != "blocked" ||
+		snapshot["adapter_rehearsal_ready"] != false ||
+		snapshot["mutation_arming_candidate"] != false ||
+		snapshot["operation_count"] != 1 ||
+		snapshot["provider_type"] != "github" ||
+		snapshot["live_adapter_implemented"] != false ||
+		snapshot["provider_client_constructed"] != false ||
+		snapshot["mutation_armed"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review adapter rehearsal snapshot payload: %#v", snapshot)
+	}
+	operations := mapSliceFromAny(snapshot["operations"])
+	if len(operations) != 1 ||
+		operations[0]["name"] != "create_branch_ref" ||
+		operations[0]["endpoint_key"] != "github.create_branch_ref" ||
+		operations[0]["provider_api_call_made"] != false {
+		t.Fatalf("unexpected rehearsal operations: %#v", operations)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("adapter rehearsal snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptAdapterRehearsalSnapshotPayloadRequiresRehearsalPlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	delete(candidate, "dispatch_plan")
+
+	snapshot := providerReviewAttemptAdapterRehearsalSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptAdapterRehearsalSnapshotReadiness(snapshot)
+	if ready ||
+		state != "adapter_rehearsal_blocked" ||
+		snapshot["adapter_rehearsal_observed"] != false ||
+		snapshot["adapter_rehearsal_contract_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_adapter_rehearsal_missing") {
+		t.Fatalf("adapter rehearsal snapshot without plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("adapter rehearsal snapshot without plan leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestProviderReviewAttemptAdapterRehearsalSnapshotPayloadRejectsMismatchedCandidate(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	candidate["next_operation"] = "commit_starter_files"
+	candidate["endpoint_key"] = "github.commit_files"
+
+	snapshot := providerReviewAttemptAdapterRehearsalSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptAdapterRehearsalSnapshotReadiness(snapshot)
+	if ready ||
+		state != "adapter_rehearsal_contract_ready" ||
+		snapshot["candidate_matches_attempt"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("adapter rehearsal snapshot with mismatched candidate = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("adapter rehearsal snapshot with mismatched candidate leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
 func TestRecordProviderReviewAttemptBranchPolicySnapshotWritesMetadataReadyCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -23710,6 +23836,25 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenRe
 			},
 		},
 		{
+			name: "adapter-rehearsal",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptAdapterRehearsalSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptAdapterRehearsalSnapshotRequest,
+			status:    "provider_review_attempt_adapter_rehearsal_contract_ready",
+			state:     "adapter_rehearsal_contract_ready",
+			health:    "low",
+			writeFlag: "provider_review_attempt_adapter_rehearsal_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["live_adapter_implemented"] != false ||
+					got["provider_client_constructed"] != false ||
+					got["mutation_armed"] != false {
+					t.Fatalf("unexpected adapter rehearsal snapshot response: %#v", got)
+				}
+			},
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -23887,6 +24032,28 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnappr
 			},
 		},
 		{
+			name: "adapter-rehearsal",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptAdapterRehearsalSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptAdapterRehearsalSnapshotRequest,
+			writeFlag: "provider_review_attempt_adapter_rehearsal_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["live_adapter_implemented"] != false ||
+					got["provider_client_constructed"] != false ||
+					got["mutation_armed"] != false ||
+					got["contains_token"] != false ||
+					got["contains_provider_url"] != false ||
+					got["contains_repository_ref"] != false ||
+					got["contains_branch_name"] != false ||
+					got["contains_file_content"] != false ||
+					got["status_snapshot_write_eligible"] != false {
+					t.Fatalf("adapter rehearsal unapproved response should stay unbound: %#v", got)
+				}
+			},
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -23999,6 +24166,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 			request: newProviderReviewAttemptRuntimeSnapshotRequest,
 		},
 		{
+			name: "adapter-rehearsal",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptAdapterRehearsalSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptAdapterRehearsalSnapshotRequest,
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -24078,6 +24252,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptRuntimeSnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/runtime-snapshot",
+		},
+		{
+			name: "adapter-rehearsal",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptAdapterRehearsalSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/adapter-rehearsal-snapshot",
 		},
 		{
 			name: "execution-lock",
@@ -29582,6 +29763,12 @@ func newProviderReviewAttemptBranchPolicySnapshotRequest(body string) *http.Requ
 
 func newProviderReviewAttemptRuntimeSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/runtime-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptAdapterRehearsalSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/adapter-rehearsal-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }

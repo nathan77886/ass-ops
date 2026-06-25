@@ -175,6 +175,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/provider-review-attempts/{id}/branch-policy-snapshot", s.recordProviderReviewAttemptBranchPolicySnapshot)
 		r.Post("/api/provider-review-attempts/{id}/execution-lock-snapshot", s.recordProviderReviewAttemptExecutionLockSnapshot)
 		r.Post("/api/provider-review-attempts/{id}/runtime-snapshot", s.recordProviderReviewAttemptRuntimeSnapshot)
+		r.Post("/api/provider-review-attempts/{id}/adapter-rehearsal-snapshot", s.recordProviderReviewAttemptAdapterRehearsalSnapshot)
 		r.Post("/api/provider-review-attempts/{id}/request-envelope-snapshot", s.recordProviderReviewAttemptRequestEnvelopeSnapshot)
 		r.Post("/api/provider-review-attempts/{id}/activation-snapshot", s.recordProviderReviewAttemptActivationSnapshot)
 		r.Post("/api/provider-review-attempts/{id}/send-snapshot", s.recordProviderReviewAttemptSendSnapshot)
@@ -15400,6 +15401,79 @@ func (s *Server) recordProviderReviewAttemptRuntimeSnapshot(w http.ResponseWrite
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) recordProviderReviewAttemptAdapterRehearsalSnapshot(w http.ResponseWriter, r *http.Request) {
+	attemptID := cleanOptionalID(chi.URLParam(r, "id"))
+	if attemptID == "" {
+		writeError(w, http.StatusBadRequest, "provider review attempt id is required")
+		return
+	}
+	var req struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !s.requireProviderReviewAttemptUpdatePolicy(w, r, attemptID) {
+		return
+	}
+	attempt, err := providerReviewAttemptForActivationSnapshot(r.Context(), s.store, attemptID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if stringFromMap(attempt, "approval_action") != templateProviderReviewExecuteApprovalAction {
+		writeError(w, http.StatusConflict, "provider review attempt is not tied to provider review execution approval")
+		return
+	}
+	if stringFromMap(attempt, "approval_status") != "approved" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"mode":                           "provider_review_attempt_adapter_rehearsal_snapshot_recording",
+			"recording_state":                "operation_approval_not_approved",
+			"recording_ready":                false,
+			"recording_enabled":              false,
+			"dry_run":                        req.DryRun,
+			"provider_review_attempt_id":     attemptID,
+			"operation_approval_id":          cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])),
+			"project_template_run_id":        cleanOptionalID(fmt.Sprint(attempt["project_template_run_id"])),
+			"snapshots_written":              0,
+			"snapshots_skipped_as_duplicate": 0,
+			"provider_review_attempt_adapter_rehearsal_snapshot_written": false,
+			"asset_status_snapshot_written":                              false,
+			"external_call_made":                                         false,
+			"provider_api_call_made":                                     false,
+			"provider_api_mutation":                                      "disabled",
+			"live_adapter_implemented":                                   false,
+			"provider_client_constructed":                                false,
+			"mutation_armed":                                             false,
+			"contains_token":                                             false,
+			"contains_provider_url":                                      false,
+			"contains_repository_ref":                                    false,
+			"contains_branch_name":                                       false,
+			"contains_file_content":                                      false,
+			"status_snapshot_write_eligible":                             false,
+			"message":                                                    "Provider review attempt adapter rehearsal snapshot is waiting for an approved provider review execution approval.",
+		})
+		return
+	}
+	ledger, err := s.providerReviewAttemptLedgerForApproval(r.Context(), cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load provider review attempts")
+		return
+	}
+	result, err := RecordProviderReviewAttemptAdapterRehearsalSnapshot(r.Context(), s.store, ProviderReviewAttemptAdapterRehearsalSnapshotOptions{
+		AttemptID: attemptID,
+		DryRun:    req.DryRun,
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		s.log.Warn("provider review attempt adapter rehearsal snapshot failed", "provider_review_attempt_id", attemptID, "error", err)
+		writeError(w, http.StatusInternalServerError, "record provider review attempt adapter rehearsal snapshot failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) recordProviderReviewAttemptCredentialSnapshot(w http.ResponseWriter, r *http.Request) {
 	attemptID := cleanOptionalID(chi.URLParam(r, "id"))
 	if attemptID == "" {
@@ -15985,18 +16059,27 @@ func safeProviderReviewAdapterStatus(value string) string {
 
 func safeProviderReviewBlockedReasons(items []string) []string {
 	allowed := map[string]bool{
-		"provider_supported":                  true,
-		"starter_file_payload_staged":         true,
-		"provider_api_request_plan_ready":     true,
-		"provider_review_execution_enabled":   true,
-		"provider_credential_configured":      true,
-		"provider_token_env_present":          true,
-		"provider_review_api_adapter":         true,
-		"provider_review_adapter_rehearsal":   true,
-		"provider_review_mutation_armed":      true,
-		"review_branches_valid":               true,
-		"review_target_summary_ready":         true,
-		"provider_review_target_summary_safe": true,
+		"provider_supported":                      true,
+		"starter_file_payload_staged":             true,
+		"provider_api_request_plan_ready":         true,
+		"provider_review_execution_enabled":       true,
+		"provider_credential_configured":          true,
+		"provider_token_env_present":              true,
+		"provider_review_api_adapter":             true,
+		"provider_review_adapter_rehearsal":       true,
+		"provider_review_claim_metadata":          true,
+		"provider_review_adapter_contract":        true,
+		"provider_review_request_materialization": true,
+		"provider_review_branch_policy":           true,
+		"provider_review_credential_binding":      true,
+		"provider_review_adapter_runtime":         true,
+		"provider_review_transport_metadata":      true,
+		"provider_review_response_recording":      true,
+		"provider_review_transaction_boundary":    true,
+		"provider_review_mutation_armed":          true,
+		"review_branches_valid":                   true,
+		"review_target_summary_ready":             true,
+		"provider_review_target_summary_safe":     true,
 	}
 	out := make([]string, 0, len(items))
 	seen := map[string]bool{}
