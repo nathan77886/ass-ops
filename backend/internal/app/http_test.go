@@ -6880,10 +6880,12 @@ func TestProjectVersionValidationPreviewIncludesRefreshResultSummary(t *testing.
 	}
 	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
 	if resultPlan["result_recording_state"] != "waiting" ||
-		resultPlan["result_recording_ready"] != true ||
-		resultPlan["result_written"] != true ||
+		resultPlan["result_recording_ready"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["canonical_asset_sync_queued"] != false ||
+		resultPlan["status_snapshot_written"] != false ||
 		resultPlan["git_ref_fetch_result_recorded"] != true ||
-		resultPlan["github_actions_result_recorded"] != true ||
+		resultPlan["github_actions_result_recorded"] != false ||
 		resultPlan["validation_rerun_recorded"] != false ||
 		!containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), "refresh_workers_still_running") {
 		t.Fatalf("refresh result recording plan = %#v", resultPlan)
@@ -6998,6 +7000,11 @@ func TestProjectVersionRefreshResultSummaryRecordsValidationRerunWhenTerminal(t 
 	}
 	if reasons := projectVersionRefreshResultBlockedReasons(summary); len(reasons) != 0 {
 		t.Fatalf("terminal refresh summary should not have blocked reasons: %#v", reasons)
+	}
+	if !projectVersionRefreshKindTerminalObserved(summary, "git_ref_fetch") ||
+		!projectVersionRefreshKindTerminalObserved(summary, "github_actions_api_refresh") ||
+		projectVersionRefreshKindTerminalObserved(summary, "argocd_app_refresh") {
+		t.Fatalf("terminal refresh kind observation mismatch: %#v", summary)
 	}
 }
 
@@ -7275,6 +7282,7 @@ func TestProjectVersionRefreshResultSummaryStatusCombinations(t *testing.T) {
 		wantStatus   string
 		wantReason   string
 		wantState    string
+		wantReady    bool
 		wantActive   int
 		wantFailed   bool
 		wantCanceled int
@@ -7285,6 +7293,7 @@ func TestProjectVersionRefreshResultSummaryStatusCombinations(t *testing.T) {
 			wantStatus: "waiting_for_workers",
 			wantReason: "refresh_workers_still_running",
 			wantState:  "waiting",
+			wantReady:  false,
 			wantActive: 1,
 		},
 		{
@@ -7293,6 +7302,7 @@ func TestProjectVersionRefreshResultSummaryStatusCombinations(t *testing.T) {
 			wantStatus:   "refresh_canceled",
 			wantReason:   "refresh_worker_canceled",
 			wantState:    "canceled",
+			wantReady:    true,
 			wantCanceled: 1,
 		},
 		{
@@ -7301,6 +7311,7 @@ func TestProjectVersionRefreshResultSummaryStatusCombinations(t *testing.T) {
 			wantStatus: "waiting_for_workers",
 			wantReason: "refresh_workers_still_running",
 			wantState:  "waiting",
+			wantReady:  false,
 			wantActive: 1,
 			wantFailed: true,
 		},
@@ -7310,6 +7321,7 @@ func TestProjectVersionRefreshResultSummaryStatusCombinations(t *testing.T) {
 			wantStatus:   "waiting_for_workers",
 			wantReason:   "refresh_workers_still_running",
 			wantState:    "waiting",
+			wantReady:    false,
 			wantActive:   1,
 			wantCanceled: 1,
 		},
@@ -7319,6 +7331,7 @@ func TestProjectVersionRefreshResultSummaryStatusCombinations(t *testing.T) {
 			wantStatus:   "waiting_for_workers",
 			wantReason:   "refresh_workers_still_running",
 			wantState:    "waiting",
+			wantReady:    false,
 			wantActive:   1,
 			wantFailed:   true,
 			wantCanceled: 1,
@@ -7329,8 +7342,26 @@ func TestProjectVersionRefreshResultSummaryStatusCombinations(t *testing.T) {
 			wantStatus:   "refresh_failed",
 			wantReason:   "refresh_worker_failed",
 			wantState:    "failed",
+			wantReady:    true,
 			wantFailed:   true,
 			wantCanceled: 1,
+		},
+		{
+			name:       "completed only records result",
+			statuses:   []string{"completed"},
+			wantStatus: "recorded",
+			wantReason: "validation_rerun_recorded",
+			wantState:  "recorded",
+			wantReady:  true,
+		},
+		{
+			name:       "same kind queued and completed still waits",
+			statuses:   []string{"queued", "completed"},
+			wantStatus: "waiting_for_workers",
+			wantReason: "refresh_workers_still_running",
+			wantState:  "waiting",
+			wantReady:  false,
+			wantActive: 1,
 		},
 	}
 	for _, tt := range tests {
@@ -7357,7 +7388,10 @@ func TestProjectVersionRefreshResultSummaryStatusCombinations(t *testing.T) {
 			if got := projectVersionRefreshResultRecordingReason(summary); got != tt.wantReason {
 				t.Fatalf("recording reason = %q, want %q", got, tt.wantReason)
 			}
-			if !containsString(projectVersionRefreshResultBlockedReasons(summary), tt.wantReason) {
+			if got := projectVersionRefreshKindTerminalObserved(summary, "git_ref_fetch"); got != tt.wantReady {
+				t.Fatalf("terminal kind observed = %v, want %v; summary=%#v", got, tt.wantReady, summary)
+			}
+			if tt.wantReason != "validation_rerun_recorded" && !containsString(projectVersionRefreshResultBlockedReasons(summary), tt.wantReason) {
 				t.Fatalf("blocked reasons missing %q: %#v", tt.wantReason, projectVersionRefreshResultBlockedReasons(summary))
 			}
 		})

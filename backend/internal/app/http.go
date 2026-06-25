@@ -10602,18 +10602,19 @@ func attachProjectVersionRefreshResultSummary(refreshPlan map[string]any, summar
 	executionPlan["automatic_background_rerun"] = boolOnlyFromAny(rerunEvidence["automatic_background_rerun"])
 	executionPlan["validation_rerun_evidence"] = rerunEvidence
 	if resultPlan := mapFromAny(executionPlan["result_recording_plan"]); len(resultPlan) > 0 {
+		terminalRefresh := operationCount > 0 && intFromAny(summary["active_count"], 0) == 0
 		resultPlan["result_recording_state"] = projectVersionRefreshResultRecordingState(summary)
-		resultPlan["result_recording_ready"] = operationCount > 0
+		resultPlan["result_recording_ready"] = terminalRefresh
 		resultPlan["result_recording_ready_reason"] = projectVersionRefreshResultRecordingReason(summary)
-		resultPlan["recording_enabled"] = operationCount > 0
-		resultPlan["result_written"] = operationCount > 0
+		resultPlan["recording_enabled"] = terminalRefresh
+		resultPlan["result_written"] = terminalRefresh
 		resultPlan["operation_log_written"] = operationCount > 0
-		resultPlan["canonical_asset_sync_queued"] = operationCount > 0
-		resultPlan["status_snapshot_written"] = operationCount > 0
+		resultPlan["canonical_asset_sync_queued"] = terminalRefresh
+		resultPlan["status_snapshot_written"] = terminalRefresh
 		resultPlan["validation_rerun_recorded"] = validationRecorded
-		resultPlan["git_ref_fetch_result_recorded"] = projectVersionRefreshKindObserved(summary, "git_ref_fetch")
-		resultPlan["github_actions_result_recorded"] = projectVersionRefreshKindObserved(summary, "github_actions_api_refresh")
-		resultPlan["argo_revision_result_recorded"] = projectVersionRefreshKindObserved(summary, "argocd_app_refresh")
+		resultPlan["git_ref_fetch_result_recorded"] = projectVersionRefreshKindTerminalObserved(summary, "git_ref_fetch")
+		resultPlan["github_actions_result_recorded"] = projectVersionRefreshKindTerminalObserved(summary, "github_actions_api_refresh")
+		resultPlan["argo_revision_result_recorded"] = projectVersionRefreshKindTerminalObserved(summary, "argocd_app_refresh")
 		resultPlan["refresh_result_summary"] = summary
 		resultPlan["worker_result_binding_evidence"] = workerBindingEvidence
 		resultPlan["worker_result_binding_state"] = workerBindingEvidence["binding_state"]
@@ -10737,13 +10738,16 @@ func projectVersionRefreshResultRecordingReason(summary map[string]any) string {
 	}
 }
 
-func projectVersionRefreshKindObserved(summary map[string]any, kind string) bool {
+func projectVersionRefreshKindTerminalObserved(summary map[string]any, kind string) bool {
 	counts := mapFromAny(mapFromAny(summary["status_counts_by_kind"])[kind])
 	total := 0
-	for _, value := range counts {
-		total += intFromAny(value, 0)
+	for _, status := range []string{"queued", "running", "completed", "failed", "canceled"} {
+		total += intFromAny(counts[status], 0)
 	}
-	return total > 0
+	if total == 0 {
+		return false
+	}
+	return intFromAny(counts["queued"], 0) == 0 && intFromAny(counts["running"], 0) == 0
 }
 
 func projectVersionRefreshResultBlockedReasons(summary map[string]any) []string {
