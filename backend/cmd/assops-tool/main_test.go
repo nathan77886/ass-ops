@@ -597,7 +597,7 @@ func TestFirstVersionReadinessReportRequiresWebhookEventForSyncTrigger(t *testin
 
 func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 	withoutEvidence := firstVersionReadinessReportWithGraph(nil, nil, nil, nil)
-	if got := readinessByKey(t, withoutEvidence, "project"); got.Status != "missing" || got.Evidence != "0 project assets / 0 project graph nodes" {
+	if got := readinessByKey(t, withoutEvidence, "project"); got.Status != "missing" || got.Evidence != "0 project assets / 0 project graph nodes / 0 project asset nodes" {
 		t.Fatalf("project readiness without evidence = %#v, want missing", got)
 	} else {
 		plan := mapFromAny(got.DemoDataRehearsalPlan)
@@ -613,7 +613,7 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 	withNilGraph := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "project"},
 	}, nil, nil, nil)
-	if got := readinessByKey(t, withNilGraph, "project"); got.Status != "partial" || got.Evidence != "1 project assets / 0 project graph nodes" {
+	if got := readinessByKey(t, withNilGraph, "project"); got.Status != "partial" || got.Evidence != "1 project assets / 0 project graph nodes / 0 project asset nodes" {
 		t.Fatalf("project readiness with nil graph = %#v, want partial", got)
 	} else {
 		plan := mapFromAny(got.DemoDataRehearsalPlan)
@@ -621,6 +621,7 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 		if plan["plan_state"] != "planned" ||
 			counts["project_assets"] != 1 ||
 			counts["project_graph_nodes"] != 0 ||
+			counts["project_asset_nodes"] != 0 ||
 			!containsString(stringSliceFromAny(plan["blocked_reasons"]), "live_demo_graph_evidence_incomplete") {
 			t.Fatalf("project demo rehearsal plan with nil graph = %#v", plan)
 		}
@@ -630,7 +631,7 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 	withoutGraphNode := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "project"},
 	}, nil, nil, map[string]any{"nodes": []any{}})
-	if got := readinessByKey(t, withoutGraphNode, "project"); got.Status != "partial" || got.Evidence != "1 project assets / 0 project graph nodes" {
+	if got := readinessByKey(t, withoutGraphNode, "project"); got.Status != "partial" || got.Evidence != "1 project assets / 0 project graph nodes / 0 project asset nodes" {
 		t.Fatalf("project readiness without graph node = %#v, want partial", got)
 	} else {
 		plan := mapFromAny(got.DemoDataRehearsalPlan)
@@ -641,7 +642,7 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 		assertDemoDataRehearsalPlanSafe(t, plan)
 	}
 
-	withGraphNode := firstVersionReadinessReportWithGraph([]map[string]any{
+	withGraphOnlyNode := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "project"},
 	}, nil, nil, map[string]any{
 		"nodes": []any{
@@ -649,7 +650,19 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 			map[string]any{"id": "repository:10"},
 		},
 	})
-	if got := readinessByKey(t, withGraphNode, "project"); got.Status != "ready" || got.Evidence != "1 project assets / 1 project graph nodes" {
+	if got := readinessByKey(t, withGraphOnlyNode, "project"); got.Status != "partial" || got.Evidence != "1 project assets / 1 project graph nodes / 0 project asset nodes" {
+		t.Fatalf("project readiness with graph-only node = %#v, want partial without canonical project node", got)
+	}
+
+	withGraphNode := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "project", "source_id": "1"},
+	}, nil, nil, map[string]any{
+		"nodes": []any{
+			map[string]any{"id": "project:1"},
+			map[string]any{"id": "repository:10"},
+		},
+	})
+	if got := readinessByKey(t, withGraphNode, "project"); got.Status != "ready" || got.Evidence != "1 project assets / 1 project graph nodes / 1 project asset nodes" {
 		t.Fatalf("project readiness with graph node = %#v, want ready", got)
 	} else {
 		plan := mapFromAny(got.DemoDataRehearsalPlan)
@@ -659,6 +672,7 @@ func TestFirstVersionReadinessReportRequiresProjectGraphNode(t *testing.T) {
 			plan["asset_graph_written"] != false ||
 			counts["project_assets"] != 1 ||
 			counts["project_graph_nodes"] != 1 ||
+			counts["project_asset_nodes"] != 1 ||
 			len(stringSliceFromAny(plan["blocked_reasons"])) != 0 {
 			t.Fatalf("project demo rehearsal plan with graph node = %#v", plan)
 		}

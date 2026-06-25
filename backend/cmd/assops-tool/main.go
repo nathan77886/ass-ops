@@ -1397,6 +1397,7 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	graphEdges := len(apiItemsByKey(graph, "edges"))
 	graphEvidence := graphNodes + graphEdges
 	projectGraphNodes := countGraphNodesByPrefix(graph, "project:")
+	projectAssetGraphNodes := countGraphNodesByKnownIDs(graph, assetIDsByType(assets, "project"))
 	repositoryGraphLinks := countRepositoryGraphLinks(graph, assetIDsByType(assets, "repository"), assetIDsByType(assets, "git_remote"))
 	repoSyncGraphLinks := countRepoSyncGraphLinks(graph, assetIDsByType(assets, "repo_sync"), assetIDsByType(assets, "git_remote"))
 	syncOperationIDs := mergeBoolMaps(operationIDsByType(operations, "repo.sync"), operationIDsByType(operations, "repo.sync_remote"))
@@ -1435,11 +1436,12 @@ func firstVersionReadinessReportWithGraph(assets, operations []map[string]any, a
 	contextGraphLinks := countContextGraphLinks(assets, graph)
 	argoEvidence := assetCounts["argo_connection"] + assetCounts["argo_app"] + assetCounts["deployment_target"] + operationCounts["argo.apps.sync"] + argoGraphLinks.ConnectionApps + argoGraphLinks.AppTargets + argoGraphLinks.CompleteAppAssets
 
-	projectRow := readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0 && projectGraphNodes > 0, fmt.Sprintf("%d project assets / %d project graph nodes", assetCounts["project"], projectGraphNodes), assetCounts["project"] > 0 || projectGraphNodes > 0)
+	projectRow := readinessItem("project", "Create/import project asset", "Create a project or run the demo seed.", assetCounts["project"] > 0 && projectAssetGraphNodes > 0, fmt.Sprintf("%d project assets / %d project graph nodes / %d project asset nodes", assetCounts["project"], projectGraphNodes, projectAssetGraphNodes), assetCounts["project"] > 0 || projectGraphNodes > 0 || projectAssetGraphNodes > 0)
 	projectRow.DemoDataRehearsalPlan = projectDemoDataRehearsalPlan(projectRow.Status, map[string]int{
 		"project_assets":      assetCounts["project"],
 		"project_graph_nodes": projectGraphNodes,
-	}, []string{"project_asset", "project_graph_node"})
+		"project_asset_nodes": projectAssetGraphNodes,
+	}, []string{"project_asset", "project_asset_node"})
 	repositoriesRow := readinessItem("repositories", "Attach source and mirror repositories", "Add repository metadata and at least two Git remotes.", assetCounts["repository"] > 0 && assetCounts["git_remote"] >= 2 && repositoryGraphLinks.CompleteRepoAssets > 0, fmt.Sprintf("%d repos / %d remotes / %d complete repos / %d repo asset paths / %d project links / %d remote links", assetCounts["repository"], assetCounts["git_remote"], repositoryGraphLinks.CompleteRepos, repositoryGraphLinks.CompleteRepoAssets, repositoryGraphLinks.ProjectRepository, repositoryGraphLinks.RepositoryRemotes), assetCounts["repository"] > 0 || assetCounts["git_remote"] > 0 || repositoryGraphLinks.ProjectRepository > 0 || repositoryGraphLinks.RepositoryRemotes > 0 || repositoryGraphLinks.CompleteRepoAssets > 0)
 	repositoriesRow.DemoDataRehearsalPlan = projectDemoDataRehearsalPlan(repositoriesRow.Status, map[string]int{
 		"repository_assets":         assetCounts["repository"],
@@ -1723,6 +1725,17 @@ func countGraphNodesByPrefix(graph map[string]any, prefix string) int {
 	return count
 }
 
+func countGraphNodesByKnownIDs(graph map[string]any, knownIDs map[string]bool) int {
+	count := 0
+	for _, node := range apiItemsByKey(graph, "nodes") {
+		id := fmt.Sprint(node["id"])
+		if knownIDs[id] {
+			count++
+		}
+	}
+	return count
+}
+
 func projectDemoDataRehearsalPlan(status string, evidence map[string]int, requiredEvidence []string) map[string]any {
 	planState := "planned"
 	if status == "ready" {
@@ -1829,6 +1842,7 @@ func demoDataEvidenceChecks(evidence map[string]int) map[string]bool {
 	return map[string]bool{
 		"project_asset":                        evidence["project_assets"] > 0,
 		"project_graph_node":                   evidence["project_graph_nodes"] > 0,
+		"project_asset_node":                   evidence["project_asset_nodes"] > 0,
 		"repository_asset":                     evidence["repository_assets"] > 0,
 		"two_git_remote_assets":                evidence["git_remote_assets"] >= 2,
 		"project_to_repository_graph_link":     evidence["project_repository_links"] > 0,
@@ -1868,7 +1882,7 @@ func demoDataEnvironmentEvidencePlan(status string, evidence map[string]int, req
 		"contains_credentials":        false,
 		"required_evidence":           requiredEvidence,
 		"evidence_counts":             evidence,
-		"required_environment_fields": []string{"project_asset", "project_graph_node", "repository_asset", "two_git_remote_assets", "project_repository_graph_link", "repository_to_two_remotes_graph_path"},
+		"required_environment_fields": []string{"project_asset", "project_graph_node", "project_asset_node", "repository_asset", "two_git_remote_assets", "project_repository_graph_link", "repository_to_two_remotes_graph_path"},
 		"suppressed_fields":           []string{"remote_url", "git_credentials", "provider_token", "repository_secret", "webhook_secret"},
 		"blocked_reasons":             blockedReasons,
 		"message":                     "Demo environment evidence is observed only; this plan does not create demo project, repository, or remote rows.",

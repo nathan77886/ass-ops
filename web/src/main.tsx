@@ -760,6 +760,10 @@ function countGraphNodesByPrefix(graph: AnyRow = {}, prefix: string) {
   return graphItems(graph, 'nodes').filter((node: AnyRow) => String(node.id ?? '').startsWith(prefix)).length;
 }
 
+function countGraphNodesByKnownIDs(graph: AnyRow = {}, knownIDs = new Set<string>()) {
+  return graphItems(graph, 'nodes').filter((node: AnyRow) => knownIDs.has(String(node.id ?? ''))).length;
+}
+
 function countRepositoryGraphLinks(graph: AnyRow = {}, repositoryAssetIDs = new Set<string>(), remoteAssetIDs = new Set<string>()) {
   const byRepository: Record<string, { project?: boolean; remotes: Record<string, boolean> }> = {};
   const repositoryEntry = (assetID: string) => {
@@ -1137,6 +1141,7 @@ function demoDataEvidenceChecks(evidenceCounts: AnyRow = {}) {
   return {
     project_asset: Number(evidenceCounts.project_assets || 0) > 0,
     project_graph_node: Number(evidenceCounts.project_graph_nodes || 0) > 0,
+    project_asset_node: Number(evidenceCounts.project_asset_nodes || 0) > 0,
     repository_asset: Number(evidenceCounts.repository_assets || 0) > 0,
     two_git_remote_assets: Number(evidenceCounts.git_remote_assets || 0) >= 2,
     project_to_repository_graph_link: Number(evidenceCounts.project_repository_links || 0) > 0,
@@ -1165,7 +1170,7 @@ function demoDataEnvironmentEvidencePlan(status: string, evidenceCounts: AnyRow,
     contains_credentials: false,
     required_evidence: requiredEvidence,
     evidence_counts: evidenceCounts,
-    required_environment_fields: ['project_asset', 'project_graph_node', 'repository_asset', 'two_git_remote_assets', 'project_repository_graph_link', 'repository_to_two_remotes_graph_path'],
+    required_environment_fields: ['project_asset', 'project_graph_node', 'project_asset_node', 'repository_asset', 'two_git_remote_assets', 'project_repository_graph_link', 'repository_to_two_remotes_graph_path'],
     suppressed_fields: ['remote_url', 'git_credentials', 'provider_token', 'repository_secret', 'webhook_secret'],
     blocked_reasons: status === 'ready' ? ['demo_seed_execution_disabled', 'live_environment_not_recorded'] : ['demo_seed_execution_disabled', 'live_environment_not_recorded', 'required_graph_evidence_missing'],
     message: 'Demo environment evidence is observed only; this plan does not create demo project, repository, or remote rows.'
@@ -1303,7 +1308,8 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   const graphEdges = graphItems(graph, 'edges').length;
   const graphEvidence = graphNodes + graphEdges;
   const projectGraphNodes = countGraphNodesByPrefix(graph, 'project:');
-  const projectState = readinessState((assetCounts.project || 0) > 0 && projectGraphNodes > 0, `${assetCounts.project || 0} project assets / ${projectGraphNodes} project graph nodes`, (assetCounts.project || 0) > 0 || projectGraphNodes > 0);
+  const projectAssetGraphNodes = countGraphNodesByKnownIDs(graph, assetIDsByType(assets, 'project'));
+  const projectState = readinessState((assetCounts.project || 0) > 0 && projectAssetGraphNodes > 0, `${assetCounts.project || 0} project assets / ${projectGraphNodes} project graph nodes / ${projectAssetGraphNodes} project asset nodes`, (assetCounts.project || 0) > 0 || projectGraphNodes > 0 || projectAssetGraphNodes > 0);
   const repositoryState = readinessState((assetCounts.repository || 0) > 0 && (assetCounts.git_remote || 0) >= 2 && repositoryGraphLinks.completeRepoAssets > 0, `${assetCounts.repository || 0} repos / ${assetCounts.git_remote || 0} remotes / ${repositoryGraphLinks.completeRepos} complete repos / ${repositoryGraphLinks.completeRepoAssets} repo asset paths / ${repositoryGraphLinks.projectRepository} project links / ${repositoryGraphLinks.repositoryRemotes} remote links`, (assetCounts.repository || 0) > 0 || (assetCounts.git_remote || 0) > 0 || repositoryGraphLinks.projectRepository > 0 || repositoryGraphLinks.repositoryRemotes > 0 || repositoryGraphLinks.completeRepoAssets > 0);
   return [
     {
@@ -1311,7 +1317,7 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
       label: 'Create/import project asset',
       next: 'Create a project or run the demo seed.',
       ...projectState,
-      demo_data_rehearsal_plan: demoDataRehearsalPlan(projectState.status, { project_assets: assetCounts.project || 0, project_graph_nodes: projectGraphNodes }, ['project_asset', 'project_graph_node'])
+      demo_data_rehearsal_plan: demoDataRehearsalPlan(projectState.status, { project_assets: assetCounts.project || 0, project_graph_nodes: projectGraphNodes, project_asset_nodes: projectAssetGraphNodes }, ['project_asset', 'project_asset_node'])
     },
     {
       key: 'repositories',
