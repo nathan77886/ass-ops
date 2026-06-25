@@ -226,6 +226,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/deployment-targets/{id}/execution-gate", s.deploymentTargetExecutionGate)
 		r.Get("/api/projects/{id}/deployment-records", s.listDeploymentRecords)
 		r.Get("/api/projects/{id}/rollback-points", s.listRollbackPoints)
+		r.Post("/api/rollback-points/{id}/execution-gate", s.rollbackPointExecutionGate)
 		r.Post("/api/projects/{id}/argo/pod-log-query-preview", s.previewArgoPodLogQuery)
 		r.Post("/api/projects/{id}/argo/pod-logs", s.requestArgoPodLogRetrieval)
 		r.Post("/api/projects/{id}/argo/pod-log-audit-snapshot", s.recordArgoPodLogAuditSnapshot)
@@ -22196,6 +22197,21 @@ func rollbackGuardrailSummary(rollbackPoints []map[string]any) map[string]any {
 	}
 }
 
+func rollbackPointReadiness(row map[string]any) (string, string) {
+	status := strings.TrimSpace(fmt.Sprint(row["status"]))
+	revision := cleanOptionalText(fmt.Sprint(row["revision"]))
+	switch {
+	case status == "expired":
+		return "blocked", "rollback point is expired"
+	case revision == "":
+		return "incomplete", "rollback point has no captured revision"
+	case status == "available":
+		return "previewable", "rollback point has revision metadata; execution remains disabled in this first version"
+	default:
+		return "blocked", "rollback point is not available"
+	}
+}
+
 // rollbackExecutionPlan mirrors rollbackPointReadinessSQL's redacted JSON contract for unit tests and fallback callers.
 func rollbackExecutionPlan(readiness, mode string) map[string]any {
 	prerequisiteState := "metadata_blocked"
@@ -23930,6 +23946,29 @@ func loadDeploymentTargetForExecutionGate(ctx context.Context, db sqlx.ExtContex
 		GROUP BY dt.id, ac.name`, deploymentTargetID)
 }
 
+func loadRollbackPointForExecutionGate(ctx context.Context, db sqlx.ExtContext, rollbackPointID string) (map[string]any, error) {
+	return queryOne(ctx, db, `
+		SELECT rp.id,
+			rp.project_id,
+			rp.deployment_record_id,
+			rp.deployment_target_id,
+			rp.name,
+			rp.environment,
+			rp.revision,
+			rp.source,
+			rp.status,
+			rp.captured_at,
+			rp.created_at,
+			dt.name AS deployment_target_name,
+			dt.namespace AS deployment_namespace,
+			dt.cluster_name AS deployment_cluster_name,
+			dr.status AS deployment_status
+		FROM rollback_points rp
+		LEFT JOIN deployment_targets dt ON dt.id=rp.deployment_target_id
+		LEFT JOIN deployment_records dr ON dr.id=rp.deployment_record_id
+		WHERE rp.id=$1`, rollbackPointID)
+}
+
 func deploymentTargetExecutionGatePayload(target map[string]any) map[string]any {
 	readiness := deploymentExecutionReadiness(target)
 	executionPlan := mapFromAny(readiness["execution_plan"])
@@ -23984,6 +24023,65 @@ func deploymentTargetExecutionGatePayload(target map[string]any) map[string]any 
 	}
 }
 
+func rollbackPointExecutionGatePayload(rollbackPoint map[string]any) map[string]any {
+	readiness, readinessReason := rollbackPointReadiness(rollbackPoint)
+	executionPlan := rollbackExecutionPlan(readiness, "read_only_preview")
+	return map[string]any{
+		"mode":                           "rollback_point_execution_gate",
+		"execution_gate_state":           "rollback_execution_gate_blocked",
+		"execution_gate_ready":           false,
+		"rollback_point_id":              cleanOptionalID(fmt.Sprint(rollbackPoint["id"])),
+		"project_id":                     cleanOptionalID(fmt.Sprint(rollbackPoint["project_id"])),
+		"deployment_target_id":           cleanOptionalID(fmt.Sprint(rollbackPoint["deployment_target_id"])),
+		"deployment_record_id":           cleanOptionalID(fmt.Sprint(rollbackPoint["deployment_record_id"])),
+		"rollback_point_name":            cleanOptionalText(fmt.Sprint(rollbackPoint["name"])),
+		"environment":                    cleanOptionalText(fmt.Sprint(rollbackPoint["environment"])),
+		"deployment_target_name":         cleanOptionalText(fmt.Sprint(rollbackPoint["deployment_target_name"])),
+		"deployment_namespace_observed":  cleanOptionalText(fmt.Sprint(rollbackPoint["deployment_namespace"])) != "",
+		"deployment_cluster_observed":    cleanOptionalText(fmt.Sprint(rollbackPoint["deployment_cluster_name"])) != "",
+		"readiness_state":                readiness,
+		"readiness_reason":               readinessReason,
+		"rollback_execution_plan":        executionPlan,
+		"target_metadata_ready":          cleanOptionalText(fmt.Sprint(rollbackPoint["deployment_target_id"])) != "",
+		"revision_metadata_ready":        cleanOptionalText(fmt.Sprint(rollbackPoint["revision"])) != "",
+		"requires_approval":              true,
+		"requires_environment_review":    true,
+		"requires_kubeconfig_binding":    true,
+		"requires_revision_verification": true,
+		"requires_manifest_diff":         true,
+		"requires_dry_run_preflight":     true,
+		"requires_operator_confirmation": true,
+		"rollback_request_materialized":  false,
+		"revision_verified":              false,
+		"manifest_diff_rendered":         false,
+		"dry_run_performed":              false,
+		"kubernetes_client_constructed":  false,
+		"helm_rollback_invoked":          false,
+		"kubectl_rollout_invoked":        false,
+		"argocd_rollback_invoked":        false,
+		"rollback_started":               false,
+		"external_call_made":             false,
+		"kubernetes_api_call_made":       false,
+		"helm_command_invoked":           false,
+		"rollback_mutation":              "disabled",
+		"kubeconfig_included":            false,
+		"secret_included":                false,
+		"manifest_body_included":         false,
+		"helm_values_included":           false,
+		"cluster_credential_included":    false,
+		"revision_value_included":        false,
+		"contains_token":                 false,
+		"contains_kubeconfig":            false,
+		"contains_secret":                false,
+		"contains_manifest_body":         false,
+		"rollback_boundary_redacted":     true,
+		"disabled_backends":              stringSliceFromAny(executionPlan["disabled_backends"]),
+		"suppressed_fields":              stringSliceFromAny(executionPlan["suppressed_fields"]),
+		"missing_evidence":               stringSliceFromAny(executionPlan["blocked_reasons"]),
+		"message":                        "Rollback execution gate is blocked; Helm rollback, kubectl rollout undo, Argo rollback, kubeconfig binding, revision verification, manifest diff, dry-run, and rollback mutation remain disabled.",
+	}
+}
+
 func (s *Server) listRollbackPoints(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "rollback_point", ProjectID: projectID}, "read") {
@@ -23991,6 +24089,28 @@ func (s *Server) listRollbackPoints(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := queryMaps(r.Context(), s.store.DB, rollbackPointReadinessSQL(500), projectID)
 	writeQueryResult(w, items, err)
+}
+
+func (s *Server) rollbackPointExecutionGate(w http.ResponseWriter, r *http.Request) {
+	rollbackPointID := cleanOptionalID(chi.URLParam(r, "id"))
+	if rollbackPointID == "" {
+		writeError(w, http.StatusBadRequest, "rollback point id is required")
+		return
+	}
+	rollbackPoint, err := loadRollbackPointForExecutionGate(r.Context(), s.store.DB, rollbackPointID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "rollback point not found")
+			return
+		}
+		writeQueryOne(w, nil, err)
+		return
+	}
+	projectID := cleanOptionalID(fmt.Sprint(rollbackPoint["project_id"]))
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "rollback_point", ID: rollbackPointID, ProjectID: projectID}, "read") {
+		return
+	}
+	writeJSON(w, http.StatusOK, rollbackPointExecutionGatePayload(rollbackPoint))
 }
 
 func (s *Server) previewArgoPodLogQuery(w http.ResponseWriter, r *http.Request) {

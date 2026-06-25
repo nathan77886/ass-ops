@@ -377,6 +377,187 @@ func TestRollbackExecutionPlanMatchesSQLPreviewContract(t *testing.T) {
 	}
 }
 
+func TestRollbackPointExecutionGateHandlerReturnsNoCallGate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectRollbackPointExecutionGateQuery(mock, rollbackPointExecutionGateRow{
+		ID:                   "rollback-1",
+		ProjectID:            "project-1",
+		DeploymentRecordID:   "record-1",
+		DeploymentTargetID:   "target-1",
+		Name:                 "prod rollback",
+		Environment:          "prod",
+		Revision:             "revision-sha-secret",
+		Status:               "available",
+		DeploymentTargetName: "prod",
+		DeploymentNamespace:  "billing",
+		DeploymentCluster:    "prod-cluster",
+		DeploymentStatus:     "healthy",
+	})
+
+	rr := httptest.NewRecorder()
+	server.rollbackPointExecutionGate(rr, newRollbackPointExecutionGateRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	plan := mapFromAny(got["rollback_execution_plan"])
+	if got["mode"] != "rollback_point_execution_gate" ||
+		got["execution_gate_state"] != "rollback_execution_gate_blocked" ||
+		got["execution_gate_ready"] != false ||
+		got["rollback_point_id"] != "rollback-1" ||
+		got["readiness_state"] != "previewable" ||
+		got["target_metadata_ready"] != true ||
+		got["revision_metadata_ready"] != true ||
+		got["rollback_request_materialized"] != false ||
+		got["revision_verified"] != false ||
+		got["manifest_diff_rendered"] != false ||
+		got["dry_run_performed"] != false ||
+		got["kubernetes_client_constructed"] != false ||
+		got["helm_rollback_invoked"] != false ||
+		got["kubectl_rollout_invoked"] != false ||
+		got["argocd_rollback_invoked"] != false ||
+		got["rollback_started"] != false ||
+		got["external_call_made"] != false ||
+		got["kubernetes_api_call_made"] != false ||
+		got["helm_command_invoked"] != false ||
+		got["rollback_mutation"] != "disabled" ||
+		got["revision_value_included"] != false ||
+		got["contains_token"] != false ||
+		got["contains_kubeconfig"] != false ||
+		got["contains_secret"] != false ||
+		plan["mode"] != "redacted_rollback_execution_plan" ||
+		plan["plan_state"] != "blocked" ||
+		plan["prerequisite_state"] != "metadata_available" {
+		t.Fatalf("unexpected rollback execution gate response: %#v", got)
+	}
+	encoded, _ := json.Marshal(got)
+	for _, leak := range []string{"apiVersion:", "kind: Secret", "Bearer ", "kubeconfig-data", "helm-values-secret", "revision-sha-secret", "billing", "prod-cluster"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("rollback execution gate leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRollbackPointExecutionGateHandlerBlocksMissingMetadata(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectRollbackPointExecutionGateQuery(mock, rollbackPointExecutionGateRow{
+		ID:                 "rollback-1",
+		ProjectID:          "project-1",
+		DeploymentRecordID: nil,
+		DeploymentTargetID: nil,
+		Name:               "prod rollback",
+		Environment:        "prod",
+		Revision:           "",
+		Status:             "available",
+	})
+
+	rr := httptest.NewRecorder()
+	server.rollbackPointExecutionGate(rr, newRollbackPointExecutionGateRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	plan := mapFromAny(got["rollback_execution_plan"])
+	if got["readiness_state"] != "incomplete" ||
+		!strings.Contains(fmt.Sprint(got["readiness_reason"]), "no captured revision") ||
+		got["target_metadata_ready"] != false ||
+		got["revision_metadata_ready"] != false ||
+		got["deployment_namespace_observed"] != false ||
+		got["deployment_cluster_observed"] != false ||
+		plan["prerequisite_state"] != "metadata_blocked" ||
+		!containsString(stringSliceFromAny(got["missing_evidence"]), "rollback_execution_backend_disabled") {
+		t.Fatalf("missing metadata should block rollback execution gate: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRollbackPointExecutionGateHandlerReturnsNotFound(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectQuery(rollbackPointExecutionGateQueryPattern()).
+		WithArgs("rollback-1").
+		WillReturnError(sql.ErrNoRows)
+
+	rr := httptest.NewRecorder()
+	server.rollbackPointExecutionGate(rr, newRollbackPointExecutionGateRequest())
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRollbackPointExecutionGateHandlerRejectsProjectNonMember(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectRollbackPointExecutionGateQuery(mock, rollbackPointExecutionGateRow{
+		ID:                   "rollback-1",
+		ProjectID:            "project-1",
+		DeploymentRecordID:   "record-1",
+		DeploymentTargetID:   "target-1",
+		Name:                 "prod rollback",
+		Environment:          "prod",
+		Revision:             "revision-sha-secret",
+		Status:               "available",
+		DeploymentTargetName: "prod",
+		DeploymentNamespace:  "billing",
+		DeploymentCluster:    "prod-cluster",
+		DeploymentStatus:     "healthy",
+	})
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members\s+WHERE project_id=\$1 AND user_id=\$2\s+\)`).
+		WithArgs("project-1", "viewer-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	req := newRollbackPointExecutionGateRequestForUser(&User{ID: "viewer-1", Role: "viewer"})
+	rr := httptest.NewRecorder()
+	server.rollbackPointExecutionGate(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "rollback_point_execution_gate") ||
+		strings.Contains(rr.Body.String(), "execution_gate_ready") ||
+		strings.Contains(rr.Body.String(), "revision-sha-secret") {
+		t.Fatalf("unauthorized response should not expose rollback gate payload: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRollbackGuardrailSummary(t *testing.T) {
 	empty := rollbackGuardrailSummary(nil)
 	if empty["execution_enabled"] != false || empty["execution_mode"] != "read_only_preview" || empty["total"] != 0 {
@@ -38080,6 +38261,74 @@ func newDeploymentTargetExecutionGateRequest() *http.Request {
 func newDeploymentTargetExecutionGateRequestForUser(user *User) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/deployment-targets/target-1/execution-gate", strings.NewReader(`{}`))
 	req = withRouteParam(req, "id", "target-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, user))
+}
+
+type rollbackPointExecutionGateRow struct {
+	ID                   any
+	ProjectID            any
+	DeploymentRecordID   any
+	DeploymentTargetID   any
+	Name                 any
+	Environment          any
+	Revision             any
+	Status               any
+	DeploymentTargetName any
+	DeploymentNamespace  any
+	DeploymentCluster    any
+	DeploymentStatus     any
+}
+
+func expectRollbackPointExecutionGateQuery(mock sqlmock.Sqlmock, row rollbackPointExecutionGateRow) {
+	now := time.Now()
+	mock.ExpectQuery(rollbackPointExecutionGateQueryPattern()).
+		WithArgs(row.ID).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"project_id",
+			"deployment_record_id",
+			"deployment_target_id",
+			"name",
+			"environment",
+			"revision",
+			"source",
+			"status",
+			"captured_at",
+			"created_at",
+			"deployment_target_name",
+			"deployment_namespace",
+			"deployment_cluster_name",
+			"deployment_status",
+		}).AddRow(
+			row.ID,
+			row.ProjectID,
+			row.DeploymentRecordID,
+			row.DeploymentTargetID,
+			row.Name,
+			row.Environment,
+			row.Revision,
+			"argocd",
+			row.Status,
+			now,
+			now,
+			row.DeploymentTargetName,
+			row.DeploymentNamespace,
+			row.DeploymentCluster,
+			row.DeploymentStatus,
+		))
+}
+
+func rollbackPointExecutionGateQueryPattern() string {
+	return `(?s)SELECT rp\.id,\s+rp\.project_id,\s+rp\.deployment_record_id,\s+rp\.deployment_target_id,\s+rp\.name,\s+rp\.environment,\s+rp\.revision,\s+rp\.source,\s+rp\.status,\s+rp\.captured_at,\s+rp\.created_at,\s+dt\.name AS deployment_target_name,\s+dt\.namespace AS deployment_namespace,\s+dt\.cluster_name AS deployment_cluster_name,\s+dr\.status AS deployment_status\s+FROM rollback_points rp`
+}
+
+func newRollbackPointExecutionGateRequest() *http.Request {
+	return newRollbackPointExecutionGateRequestForUser(&User{ID: "admin-1", Role: "admin"})
+}
+
+func newRollbackPointExecutionGateRequestForUser(user *User) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/rollback-points/rollback-1/execution-gate", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "rollback-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, user))
 }
 

@@ -7078,6 +7078,30 @@ function rollbackExecutionPlanView(row: AnyRow) {
   );
 }
 
+function rollbackExecutionGateView(gate: AnyRow) {
+  const plan = gate.rollback_execution_plan || {};
+  const disabledBackends = Array.isArray(gate.disabled_backends) ? gate.disabled_backends : [];
+  const suppressedFields = Array.isArray(gate.suppressed_fields) ? gate.suppressed_fields : [];
+  return (
+    <Space direction="vertical" size={2}>
+      <Space size={4} wrap>
+        <Tag color={gate.execution_gate_ready === true ? 'green' : 'red'}>{gate.execution_gate_state || 'gate_blocked'}</Tag>
+        <Tag color={gate.readiness_state === 'previewable' ? 'blue' : 'gold'}>readiness {gate.readiness_state || 'blocked'}</Tag>
+        <Tag>{gate.revision_metadata_ready ? 'revision metadata' : 'revision missing'}</Tag>
+        <Tag>{gate.target_metadata_ready ? 'target metadata' : 'target missing'}</Tag>
+        <Tag>{gate.kubernetes_api_call_made ? 'k8s called' : 'no k8s call'}</Tag>
+        <Tag>{gate.helm_command_invoked ? 'helm invoked' : 'helm disabled'}</Tag>
+        <Tag>{gate.rollback_started ? 'rollback started' : 'no rollback'}</Tag>
+        <Tag>{gate.rollback_mutation || 'disabled'}</Tag>
+        <Tag>{disabledBackends.length || plan.disabled_backends?.length || 0} disabled backends</Tag>
+        <Tag>{suppressedFields.length || plan.suppressed_fields?.length || 0} suppressed</Tag>
+        <Tag>{gate.secret_included || gate.kubeconfig_included || gate.revision_value_included ? 'sensitive material present' : 'no secrets/revision'}</Tag>
+      </Space>
+      {gate.message ? <Typography.Text type="secondary">{shortText(String(gate.message), 96)}</Typography.Text> : null}
+    </Space>
+  );
+}
+
 function deploymentStatusUnhealthy(status: any) {
   const value = String(status || '').toLowerCase();
   return ['failed', 'error', 'degraded', 'outofsync', 'missing', 'unknown'].includes(value);
@@ -7098,6 +7122,8 @@ function ConfigPage() {
   const [podLogSnapshotResult, setPodLogSnapshotResult] = useState<AnyRow>();
   const [deploymentExecutionGateLoadingID, setDeploymentExecutionGateLoadingID] = useState('');
   const [deploymentExecutionGateResults, setDeploymentExecutionGateResults] = useState<Record<string, AnyRow>>({});
+  const [rollbackExecutionGateLoadingID, setRollbackExecutionGateLoadingID] = useState('');
+  const [rollbackExecutionGateResults, setRollbackExecutionGateResults] = useState<Record<string, AnyRow>>({});
   const [sshOpen, setSSHOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [sshSnapshotLoading, setSSHSnapshotLoading] = useState(false);
@@ -7157,6 +7183,8 @@ function ConfigPage() {
   useEffect(() => {
     setDeploymentExecutionGateLoadingID('');
     setDeploymentExecutionGateResults({});
+    setRollbackExecutionGateLoadingID('');
+    setRollbackExecutionGateResults({});
   }, [project?.id]);
   const deploymentPosture = buildDeploymentPosture(
     deploymentTargets.data?.items || [],
@@ -7249,6 +7277,19 @@ function ConfigPage() {
       message.error(error.message || 'Could not check deployment execution gate');
     } finally {
       setDeploymentExecutionGateLoadingID('');
+    }
+  }
+  async function checkRollbackExecutionGate(rollbackPointID: string) {
+    if (!rollbackPointID || rollbackExecutionGateLoadingID) return;
+    setRollbackExecutionGateLoadingID(rollbackPointID);
+    try {
+      const result = await api(`/api/rollback-points/${rollbackPointID}/execution-gate`, { method: 'POST', body: '{}' });
+      setRollbackExecutionGateResults((current) => ({ ...current, [rollbackPointID]: result }));
+      message.warning(result.message || 'Rollback execution gate is blocked');
+    } catch (error: any) {
+      message.error(error.message || 'Could not check rollback execution gate');
+    } finally {
+      setRollbackExecutionGateLoadingID('');
     }
   }
   async function previewPodLogs(values: AnyRow) {
@@ -7634,7 +7675,8 @@ function ConfigPage() {
             { title: 'Revision', dataIndex: 'revision' },
             { title: 'Readiness', render: (_, row) => <Tag color={rollbackReadinessColor(row.rollback_readiness)}>{row.rollback_readiness || 'unknown'}</Tag> },
             { title: 'Reason', dataIndex: 'rollback_readiness_reason', render: (value) => value || '-' },
-            { title: 'Execution', render: (_, row) => rollbackExecutionPlanView(row) },
+            { title: 'Execution', render: (_, row) => <Space direction="vertical" size={4}>{rollbackExecutionPlanView(row)}{rollbackExecutionGateResults[row.id] ? rollbackExecutionGateView(rollbackExecutionGateResults[row.id]) : null}</Space> },
+            { title: 'Action', render: (_, row) => <Button size="small" onClick={() => checkRollbackExecutionGate(String(row.id || ''))} loading={rollbackExecutionGateLoadingID === row.id} disabled={!row.id || Boolean(rollbackExecutionGateLoadingID)}>Check gate</Button> },
             { title: 'Status', render: (_, row) => <Tag color={argoStatusColor(row.status)}>{row.status}</Tag> },
             { title: 'Captured', dataIndex: 'captured_at' }
           ]} />
