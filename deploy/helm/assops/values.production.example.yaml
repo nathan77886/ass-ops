@@ -2,6 +2,9 @@ replicaCount: 1
 
 gatewayURL: https://assops.example.com
 
+# Replace the assops-retain placeholder with an environment-reviewed
+# StorageClass before enabling deploy=true.
+
 secret:
   create: false
   name: assops-production-secret
@@ -45,15 +48,19 @@ persistence:
   context:
     enabled: true
     size: 5Gi
+    storageClassName: assops-retain
   bareRepos:
     enabled: true
     size: 10Gi
+    storageClassName: assops-retain
   ssh:
     enabled: true
     size: 1Gi
+    storageClassName: assops-retain
   backups:
     enabled: true
     size: 20Gi
+    storageClassName: assops-retain
 
 web:
   service:

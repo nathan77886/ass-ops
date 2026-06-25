@@ -331,7 +331,7 @@ assops-tool release helm-readiness-plan \
   .assops/release-notes/helm-readiness-plan.md
 ```
 
-The plan validates the local overlay for external Secret usage, external PostgreSQL, HTTPS/TLS ingress, ServiceAccount token isolation, NetworkPolicy, PodDisruptionBudget, persistent volumes, resource requests/limits, and non-root/drop-capability runtime posture. It does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs, and the listed `kubectl` checks should only be run after the target cluster, namespace, and kubeconfig are confirmed out of band.
+The plan validates the local overlay for external Secret usage, external PostgreSQL, HTTPS/TLS ingress, ServiceAccount token isolation, NetworkPolicy, PodDisruptionBudget, explicit storage classes for retained PVCs, resource requests/limits, and non-root/drop-capability runtime posture. It does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs, and the listed `kubectl` checks should only be run after the target cluster, namespace, and kubeconfig are confirmed out of band.
 
 The production values example enables stricter pod/container security settings for Go workloads and migration jobs. Review these settings with the actual images and cluster policy before rollout, especially if you override images.
 

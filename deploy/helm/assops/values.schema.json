@@ -88,6 +88,7 @@
         "enabled": { "type": "boolean" },
         "image": { "type": "string", "minLength": 1 },
         "storageSize": { "type": "string", "minLength": 1 },
+        "storageClassName": { "type": "string" },
         "password": { "type": "string", "minLength": 1 }
       }
     },
@@ -210,7 +211,8 @@
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
-        "size": { "type": "string", "minLength": 1 }
+        "size": { "type": "string", "minLength": 1 },
+        "storageClassName": { "type": "string" }
       }
     }
   }

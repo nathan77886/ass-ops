@@ -7,6 +7,9 @@ metadata:
     {{- include "assops.labels" . | nindent 4 }}
 spec:
   accessModes: ["ReadWriteOnce"]
+  {{- if .Values.persistence.context.storageClassName }}
+  storageClassName: {{ .Values.persistence.context.storageClassName | quote }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.persistence.context.size }}
@@ -21,6 +24,9 @@ metadata:
     {{- include "assops.labels" . | nindent 4 }}
 spec:
   accessModes: ["ReadWriteOnce"]
+  {{- if .Values.persistence.bareRepos.storageClassName }}
+  storageClassName: {{ .Values.persistence.bareRepos.storageClassName | quote }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.persistence.bareRepos.size }}
@@ -35,6 +41,9 @@ metadata:
     {{- include "assops.labels" . | nindent 4 }}
 spec:
   accessModes: ["ReadWriteOnce"]
+  {{- if .Values.persistence.ssh.storageClassName }}
+  storageClassName: {{ .Values.persistence.ssh.storageClassName | quote }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.persistence.ssh.size }}
@@ -49,6 +58,9 @@ metadata:
     {{- include "assops.labels" . | nindent 4 }}
 spec:
   accessModes: ["ReadWriteOnce"]
+  {{- if .Values.persistence.backups.storageClassName }}
+  storageClassName: {{ .Values.persistence.backups.storageClassName | quote }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.persistence.backups.size }}

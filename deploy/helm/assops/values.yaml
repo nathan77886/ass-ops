@@ -39,20 +39,29 @@ persistence:
   context:
     enabled: true
     size: 1Gi
+    # Production overlays should set an environment-reviewed StorageClass.
+    storageClassName: ""
   bareRepos:
     enabled: true
     size: 5Gi
+    # Production overlays should set an environment-reviewed StorageClass.
+    storageClassName: ""
   ssh:
     enabled: true
     size: 1Gi
+    # Production overlays should set an environment-reviewed StorageClass.
+    storageClassName: ""
   backups:
     enabled: true
     size: 5Gi
+    # Production overlays should set an environment-reviewed StorageClass.
+    storageClassName: ""
 
 postgres:
   enabled: true
   image: postgres:16-alpine
   storageSize: 10Gi
+  storageClassName: ""
   password: change-me-postgres
 
 web:

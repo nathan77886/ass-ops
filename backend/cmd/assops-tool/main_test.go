@@ -2208,7 +2208,9 @@ func TestReleaseHelmReadinessPlanForProductionExample(t *testing.T) {
 		"`ASSOPS_JWT_SECRET`",
 		"`ASSOPS_ARGO_READ_TOKEN`",
 		"`context`: `5Gi`",
+		"storageClass `assops-retain`",
 		"`backups`: `20Gi`",
+		"`postgres`: external managed PostgreSQL; no chart-managed PostgreSQL PVC is rendered.",
 		"does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs",
 		"does not render manifests, bind kubeconfigs, read external Secret values, or write deployment records",
 		"helm lint deploy/helm/assops",
@@ -2299,6 +2301,18 @@ func TestReleaseHelmReadinessPlanRejectsSpecificUnsafeFields(t *testing.T) {
 			want:    "persistence.context.enabled=true",
 		},
 		{
+			name:    "storage class must be explicit",
+			oldText: "    storageClassName: assops-retain",
+			newText: "    storageClassName: \"\"",
+			want:    "persistence.context.storageClassName",
+		},
+		{
+			name:    "storage class key must exist",
+			oldText: "    storageClassName: assops-retain\n  bareRepos:",
+			newText: "  bareRepos:",
+			want:    "persistence.context.storageClassName",
+		},
+		{
 			name:    "resource requests required",
 			oldText: "    cpu: 100m",
 			newText: "    cpu: \"\"",
@@ -2372,6 +2386,45 @@ func TestReadSimpleHelmValues(t *testing.T) {
 	}
 	if _, err := readSimpleHelmValues(tabPath); err == nil || !strings.Contains(err.Error(), "uses tabs") {
 		t.Fatalf("readSimpleHelmValues tab error = %v", err)
+	}
+}
+
+func TestHelmStorageClassContract(t *testing.T) {
+	files := map[string][]string{
+		"../../../deploy/helm/assops/values.yaml": {
+			"storageClassName: \"\"",
+		},
+		"../../../deploy/helm/assops/values.production.example.yaml": {
+			"storageClassName: assops-retain",
+		},
+		"../../../deploy/helm/assops/values.schema.json": {
+			"\"storageClassName\": { \"type\": \"string\" }",
+		},
+		"../../../deploy/helm/assops/templates/pvc.yaml": {
+			".Values.persistence.context.storageClassName",
+			"storageClassName: {{ .Values.persistence.context.storageClassName | quote }}",
+			".Values.persistence.bareRepos.storageClassName",
+			".Values.persistence.ssh.storageClassName",
+			".Values.persistence.backups.storageClassName",
+		},
+		"../../../deploy/helm/assops/templates/postgres.yaml": {
+			".Values.postgres.storageClassName",
+			"storageClassName: {{ .Values.postgres.storageClassName | quote }}",
+		},
+	}
+	for path, wants := range files {
+		t.Run(path, func(t *testing.T) {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			source := string(content)
+			for _, want := range wants {
+				if !strings.Contains(source, want) {
+					t.Fatalf("%s missing %q", path, want)
+				}
+			}
+		})
 	}
 }
 

@@ -72,6 +72,8 @@ assops-tool release helm-readiness-plan \
   .assops/release-notes/helm-readiness-plan.md
 ```
 
+The production example sets every ASSOPS PVC to an explicit placeholder storage class (`assops-retain`). Replace it with an environment-reviewed class before rollout; do not rely on the cluster default storage class for retained context, bare repositories, SSH material, or backups.
+
 The GitHub `Promote Production` workflow accepts an `environment_values` input. Point it at the reviewed production overlay; the workflow then adds the generated release image overlay on top.
 
 For GitHub-based promotion, review `deploy/k8s/promotion-rbac.yaml` as a namespace-scoped starting point for the kubeconfig stored in `KUBE_CONFIG_B64`. Avoid using cluster-admin credentials for the promotion workflow.

@@ -602,6 +602,11 @@ func releaseHelmReadinessPlan(valuesPath string) (string, error) {
 			return "", fmt.Errorf("Helm readiness requires %s", key)
 		}
 	}
+	for _, key := range []string{"persistence.context.storageClassName", "persistence.bareRepos.storageClassName", "persistence.ssh.storageClassName", "persistence.backups.storageClassName"} {
+		if strings.TrimSpace(values[key]) == "" {
+			return "", fmt.Errorf("Helm readiness requires %s to make storage class selection explicit", key)
+		}
+	}
 	for _, key := range []string{"resources.requests.cpu", "resources.requests.memory", "resources.limits.cpu", "resources.limits.memory"} {
 		if strings.TrimSpace(values[key]) == "" {
 			return "", fmt.Errorf("Helm readiness requires %s", key)
@@ -643,15 +648,16 @@ func releaseHelmReadinessPlan(valuesPath string) (string, error) {
 	fmt.Fprintf(&b, "- HTTPS gateway and TLS ingress are configured for `%s` with ingress class `%s` and TLS Secret `%s`.\n", values["ingress.host"], values["ingress.className"], values["ingress.tlsSecretName"])
 	fmt.Fprintf(&b, "- Application ServiceAccount token automount is disabled.\n")
 	fmt.Fprintf(&b, "- NetworkPolicy and PodDisruptionBudget are enabled for first-version rollout review.\n")
-	fmt.Fprintf(&b, "- Persistent volumes, resource requests/limits, and non-root/drop-capability runtime posture are present.\n\n")
+	fmt.Fprintf(&b, "- Persistent volumes include explicit reviewed storage classes, resource requests/limits, and non-root/drop-capability runtime posture.\n\n")
 	fmt.Fprintf(&b, "## Required External Secret Keys\n\n")
 	for _, key := range requiredExternalSecretKeys() {
 		fmt.Fprintf(&b, "- `%s`\n", key)
 	}
 	fmt.Fprintf(&b, "\n## Storage Review\n\n")
 	for _, key := range []string{"context", "bareRepos", "ssh", "backups"} {
-		fmt.Fprintf(&b, "- `%s`: `%s`\n", key, values["persistence."+key+".size"])
+		fmt.Fprintf(&b, "- `%s`: `%s`, storageClass `%s`\n", key, values["persistence."+key+".size"], values["persistence."+key+".storageClassName"])
 	}
+	fmt.Fprintf(&b, "- `postgres`: external managed PostgreSQL; no chart-managed PostgreSQL PVC is rendered.\n")
 	fmt.Fprintf(&b, "\n## No-Call Boundary\n\n")
 	fmt.Fprintf(&b, "- This plan reads only the local values file; it does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs.\n")
 	fmt.Fprintf(&b, "- It does not render manifests, bind kubeconfigs, read external Secret values, or write deployment records.\n\n")
