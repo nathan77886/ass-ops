@@ -710,7 +710,7 @@ function countContextGenerationEvidence(assets: AnyRow[] = []) {
   return assets.filter((row) =>
     String(row.asset_type || '') === 'agent_tool_call' &&
     String(row.metadata?.tool_name || '') === 'context.generate' &&
-    ['queued', 'completed'].includes(String(row.status || '').toLowerCase())
+    String(row.status || '').trim().toLowerCase() === 'completed'
   ).length;
 }
 
@@ -733,7 +733,7 @@ function countContextGraphLinks(assets: AnyRow[] = [], graph: AnyRow = {}) {
       .filter((row) =>
         String(row.asset_type ?? '') === 'agent_tool_call' &&
         String(row.metadata?.tool_name ?? '') === 'context.generate' &&
-        ['queued', 'completed'].includes(String(row.status ?? '').toLowerCase())
+        String(row.status ?? '').trim().toLowerCase() === 'completed'
       )
       .map(apiAssetGraphID)
       .filter((assetID) => assetID.startsWith('agent_tool_call:'))

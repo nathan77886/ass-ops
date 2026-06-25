@@ -1659,7 +1659,7 @@ func countContextGenerationEvidence(assets []map[string]any) int {
 		status := strings.ToLower(strings.TrimSpace(fmt.Sprint(row["status"])))
 		if fmt.Sprint(row["asset_type"]) == "agent_tool_call" &&
 			fmt.Sprint(metadata["tool_name"]) == "context.generate" &&
-			(status == "queued" || status == "completed") {
+			status == "completed" {
 			count++
 		}
 	}
@@ -1705,7 +1705,7 @@ func countContextGraphLinks(assets []map[string]any, graph map[string]any) conte
 		status := strings.ToLower(strings.TrimSpace(fmt.Sprint(row["status"])))
 		if fmt.Sprint(row["asset_type"]) == "agent_tool_call" &&
 			fmt.Sprint(metadata["tool_name"]) == "context.generate" &&
-			(status == "queued" || status == "completed") {
+			status == "completed" {
 			if assetID := apiAssetGraphID(row); strings.HasPrefix(assetID, "agent_tool_call:") {
 				contextToolCalls[assetID] = true
 			}

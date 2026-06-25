@@ -1836,6 +1836,21 @@ func TestFirstVersionReadinessReportRequiresContextGraphEvidence(t *testing.T) {
 		t.Fatalf("context readiness without task graph links = %#v, want partial", got)
 	}
 
+	queuedContextToolCall := firstVersionReadinessReportWithGraph([]map[string]any{
+		{"asset_type": "ai_runtime", "source_id": "30"},
+		{"asset_type": "agent_task", "source_id": "10"},
+		{"asset_type": "agent_tool_call", "id": "agent_tool_call:20", "status": "queued", "metadata": map[string]any{"tool_name": "context.generate"}},
+	}, nil, nil, map[string]any{
+		"nodes": []any{map[string]any{"id": "project:1"}},
+		"edges": []any{
+			map[string]any{"from_asset_id": "agent_task:10", "to_asset_id": "ai_runtime:30", "relation_type": "uses_runtime"},
+			map[string]any{"from_asset_id": "agent_task:10", "to_asset_id": "agent_tool_call:20", "relation_type": "records_tool_call"},
+		},
+	})
+	if got := readinessByKey(t, queuedContextToolCall, "context"); got.Status != "partial" || got.Evidence != "2 context assets / 0 context generations / 0 complete context tasks / 0 context asset tasks / 1 runtime links / 0 context tool links / 1 graph nodes / 2 graph edges" {
+		t.Fatalf("context readiness with queued context.generate = %#v, want partial without generated context evidence", got)
+	}
+
 	crossTaskAggregation := firstVersionReadinessReportWithGraph([]map[string]any{
 		{"asset_type": "ai_runtime"},
 		{"asset_type": "agent_task"},
@@ -1890,8 +1905,8 @@ func TestCountContextGenerationEvidence(t *testing.T) {
 		{"asset_type": "agent_tool_call", "status": "failed", "metadata": map[string]any{"tool_name": "context.generate"}},
 		{"asset_type": "agent_tool_call", "status": "completed", "metadata": map[string]any{"tool_name": "plan.review"}},
 	}
-	if got := countContextGenerationEvidence(assets); got != 2 {
-		t.Fatalf("countContextGenerationEvidence = %d, want 2", got)
+	if got := countContextGenerationEvidence(assets); got != 1 {
+		t.Fatalf("countContextGenerationEvidence = %d, want 1", got)
 	}
 }
 
@@ -1913,8 +1928,8 @@ func TestCountContextGraphLinks(t *testing.T) {
 		},
 	}
 	got := countContextGraphLinks(assets, graph)
-	if got.TaskRuntimes != 1 || got.TaskContextToolCalls != 2 || got.CompleteContextTasks != 1 || got.CompleteContextTaskAssets != 1 {
-		t.Fatalf("countContextGraphLinks = %#v, want one runtime, two context tool links, one complete context task, and one context asset task", got)
+	if got.TaskRuntimes != 1 || got.TaskContextToolCalls != 1 || got.CompleteContextTasks != 1 || got.CompleteContextTaskAssets != 1 {
+		t.Fatalf("countContextGraphLinks = %#v, want one runtime, one completed context tool link, one complete context task, and one context asset task", got)
 	}
 
 	graphOnlyComplete := map[string]any{
@@ -1926,8 +1941,8 @@ func TestCountContextGraphLinks(t *testing.T) {
 		},
 	}
 	got = countContextGraphLinks(assets, graphOnlyComplete)
-	if got.CompleteContextTasks != 2 || got.CompleteContextTaskAssets != 1 {
-		t.Fatalf("countContextGraphLinks with graph-only task = %#v, want two graph-complete tasks and one canonical context task", got)
+	if got.CompleteContextTasks != 1 || got.CompleteContextTaskAssets != 1 {
+		t.Fatalf("countContextGraphLinks with graph-only queued task = %#v, want only the completed context task", got)
 	}
 
 	got = countContextGraphLinks(assets, map[string]any{"edges": []any{}})
