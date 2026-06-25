@@ -15487,13 +15487,14 @@ func providerReviewAttemptClaimPlanFromAttempt(attempt map[string]any) map[strin
 	responseDiagnostics := mapFromAny(attempt["response_diagnostics"])
 	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+	claimPlan := providerReviewAttemptClaimPlanForOperation(operation, requestSummary, responseDiagnostics, operationName, endpointKey)
+	return claimPlan
+}
+
+func providerReviewAttemptClaimPlanForOperation(operation, requestSummary, responseDiagnostics map[string]any, operationName, endpointKey string) map[string]any {
 	requestSummaryReady := providerReviewAttemptRequestSummaryReadyForOperation(requestSummary, operationName, endpointKey)
 	responseDiagnosticsReady := providerReviewAttemptResponseDiagnosticsReadyForEndpoint(responseDiagnostics, endpointKey)
-	claimPlan := providerReviewAttemptExecutionClaimPlan(
-		operation,
-		boolOnlyFromAny(requestSummary["requires_idempotency_ledger"]),
-		responseDiagnosticsReady,
-	)
+	claimPlan := providerReviewAttemptExecutionClaimPlan(operation, boolOnlyFromAny(requestSummary["requires_idempotency_ledger"]), responseDiagnosticsReady)
 	if !requestSummaryReady {
 		claimPlan["claim_metadata_ready"] = false
 	}
@@ -17965,10 +17966,8 @@ func providerReviewAttemptExecutionCandidate(operations []map[string]any, nextOp
 		requestSummary := mapFromAny(operation["request_summary"])
 		responseDiagnostics := mapFromAny(operation["response_diagnostics"])
 		endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
-		idempotencyReady := boolOnlyFromAny(requestSummary["requires_idempotency_ledger"])
-		responseReady := mapFromAny(responseDiagnostics)["mode"] == "redacted_attempt_response_diagnostics"
 		adapterContract := providerReviewAttemptCandidateAdapterContract(operation, requestSummary, responseDiagnostics)
-		claimPlan := providerReviewAttemptExecutionClaimPlan(operation, idempotencyReady, responseReady)
+		claimPlan := providerReviewAttemptClaimPlanForOperation(operation, requestSummary, responseDiagnostics, nextOperation, endpointKey)
 		candidate["next_operation"] = nextOperation
 		candidate["endpoint_key"] = endpointKey
 		candidate["operation_order"] = intFromAny(operation["operation_order"], 0)
@@ -17976,7 +17975,7 @@ func providerReviewAttemptExecutionCandidate(operations []map[string]any, nextOp
 		candidate["adapter_contract"] = adapterContract
 		candidate["claim_plan"] = claimPlan
 		candidate["dispatch_plan"] = providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, responseDiagnostics, adapterContract, claimPlan)
-		candidate["gates"] = providerReviewAttemptExecutionCandidateGates(true, idempotencyReady, responseReady)
+		candidate["gates"] = providerReviewAttemptExecutionCandidateGates(true, boolOnlyFromAny(claimPlan["idempotency_metadata_ready"]), boolOnlyFromAny(claimPlan["response_diagnostics_ready"]))
 		return candidate
 	}
 	candidate["blocked_reasons"] = []string{"provider_review_attempt_not_found"}

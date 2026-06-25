@@ -19578,6 +19578,121 @@ func TestProviderReviewAttemptOrchestrationSummaryHandlesEdgeStates(t *testing.T
 			})
 		}
 	})
+	t.Run("execution candidate blocks request summary mismatch", func(t *testing.T) {
+		summary := providerReviewAttemptOrchestrationSummary([]map[string]any{{
+			"name":              "create_branch_ref",
+			"endpoint_key":      "github.create_branch_ref",
+			"status":            "planned",
+			"dependency_status": "independent",
+			"operation_order":   10,
+			"request_summary": map[string]any{
+				"mode":                        "redacted_attempt_request_summary",
+				"operation_name":              "commit_starter_files",
+				"endpoint_key":                "github.commit_files",
+				"payload_builder":             "build_redacted_file_batch_request",
+				"response_handler":            "handle_commit_files_response",
+				"requires_idempotency_ledger": true,
+			},
+			"response_diagnostics": map[string]any{
+				"mode":         "redacted_attempt_response_diagnostics",
+				"endpoint_key": "github.create_branch_ref",
+			},
+		}})
+		candidate := mapFromAny(mapFromAny(summary["execution_candidate"]))
+		claimPlan := mapFromAny(candidate["claim_plan"])
+		if claimPlan["claim_metadata_ready"] != false ||
+			claimPlan["request_summary_matches_operation"] != false ||
+			containsString(stringSliceFromAny(claimPlan["blocked_reasons"]), "provider_review_idempotency_metadata_missing") ||
+			!containsString(stringSliceFromAny(claimPlan["blocked_reasons"]), "provider_review_request_summary_mismatch") {
+			t.Fatalf("execution candidate should block mismatched request summary without idempotency noise: %#v", claimPlan)
+		}
+		dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+		if dispatchPlan["dispatch_metadata_ready"] != false ||
+			dispatchPlan["attempt_claim_metadata_ready"] != false {
+			t.Fatalf("execution candidate dispatch should inherit claim metadata block: %#v", dispatchPlan)
+		}
+	})
+	t.Run("execution candidate blocks response diagnostics mismatch", func(t *testing.T) {
+		summary := providerReviewAttemptOrchestrationSummary([]map[string]any{{
+			"name":              "create_branch_ref",
+			"endpoint_key":      "github.create_branch_ref",
+			"status":            "planned",
+			"dependency_status": "independent",
+			"operation_order":   10,
+			"request_summary": map[string]any{
+				"mode":                        "redacted_attempt_request_summary",
+				"operation_name":              "create_branch_ref",
+				"endpoint_key":                "github.create_branch_ref",
+				"payload_builder":             "build_redacted_branch_ref_request",
+				"response_handler":            "handle_branch_ref_response",
+				"requires_idempotency_ledger": true,
+			},
+			"response_diagnostics": map[string]any{
+				"mode":         "redacted_attempt_response_diagnostics",
+				"endpoint_key": "github.commit_files",
+			},
+		}})
+		candidate := mapFromAny(mapFromAny(summary["execution_candidate"]))
+		claimPlan := mapFromAny(candidate["claim_plan"])
+		if claimPlan["claim_metadata_ready"] != false ||
+			claimPlan["response_diagnostics_match_endpoint"] != false ||
+			claimPlan["response_diagnostics_ready"] != false ||
+			!containsString(stringSliceFromAny(claimPlan["blocked_reasons"]), "provider_review_response_diagnostics_endpoint_mismatch") {
+			t.Fatalf("execution candidate should block mismatched response diagnostics: %#v", claimPlan)
+		}
+		dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+		if dispatchPlan["dispatch_metadata_ready"] != false ||
+			dispatchPlan["attempt_claim_metadata_ready"] != false {
+			t.Fatalf("execution candidate dispatch should inherit response diagnostics block: %#v", dispatchPlan)
+		}
+	})
+	t.Run("execution candidate accepts matching claim metadata", func(t *testing.T) {
+		summary := providerReviewAttemptOrchestrationSummary([]map[string]any{{
+			"name":              "create_branch_ref",
+			"endpoint_key":      "github.create_branch_ref",
+			"status":            "planned",
+			"dependency_status": "independent",
+			"operation_order":   10,
+			"request_summary": map[string]any{
+				"mode":                        "redacted_attempt_request_summary",
+				"operation_name":              "create_branch_ref",
+				"endpoint_key":                "github.create_branch_ref",
+				"payload_builder":             "build_redacted_branch_ref_request",
+				"response_handler":            "handle_branch_ref_response",
+				"requires_idempotency_ledger": true,
+			},
+			"response_diagnostics": map[string]any{
+				"mode":         "redacted_attempt_response_diagnostics",
+				"endpoint_key": "github.create_branch_ref",
+			},
+		}})
+		candidate := mapFromAny(mapFromAny(summary["execution_candidate"]))
+		claimPlan := mapFromAny(candidate["claim_plan"])
+		if claimPlan["claim_metadata_ready"] != true ||
+			claimPlan["request_summary_matches_operation"] != true ||
+			claimPlan["response_diagnostics_match_endpoint"] != true {
+			t.Fatalf("execution candidate should accept matching claim metadata: %#v", claimPlan)
+		}
+		dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+		if dispatchPlan["dispatch_metadata_ready"] != true ||
+			dispatchPlan["attempt_claim_metadata_ready"] != true {
+			t.Fatalf("execution candidate dispatch should accept matching claim metadata: %#v", dispatchPlan)
+		}
+		gates := mapSliceFromAny(candidate["gates"])
+		if len(gates) != 5 ||
+			gates[0]["gate"] != "attempt_operation_ready" ||
+			gates[0]["status"] != "ready" ||
+			gates[1]["gate"] != "idempotency_metadata" ||
+			gates[1]["status"] != "ready" ||
+			gates[2]["gate"] != "response_diagnostics_metadata" ||
+			gates[2]["status"] != "ready" ||
+			gates[3]["category"] != "execution_blocker" ||
+			gates[3]["status"] != "blocked" ||
+			gates[4]["category"] != "execution_blocker" ||
+			gates[4]["status"] != "blocked" {
+			t.Fatalf("execution candidate gates should keep metadata ready and provider execution blocked: %#v", gates)
+		}
+	})
 	t.Run("redacts unknown adapter contract operation name", func(t *testing.T) {
 		contract := providerReviewAttemptCandidateAdapterContract(
 			map[string]any{
