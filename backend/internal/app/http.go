@@ -18058,12 +18058,14 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 	runtimePlan := providerReviewAttemptAdapterRuntimePlan(providerType, operationName, endpointKey)
 	transactionPlan := providerReviewAttemptAdapterTransactionPlan(operation, claimPlan, responsePlan)
 	branchPolicyPlan := providerReviewAttemptBranchPolicyPlan(operation, requestPlan)
+	requestEnvelopePlan := providerReviewAttemptAdapterRequestEnvelopePlan(providerType, operationName, endpointKey, requestPlan, branchPolicyPlan, credentialPlan, transportPlan)
 	requestValidationPreflight := map[string]any{}
 	if operationName != "" && endpointKey != "" && providerType != "" {
 		requestReady := providerReviewAttemptRequestPlanReadyForOperation(requestPlan, operationName, endpointKey)
 		branchPolicyReady := providerReviewAttemptBranchPolicyPlanReadyForOperation(branchPolicyPlan, operationName, endpointKey)
 		credentialReady := providerReviewAttemptCredentialPlanReadyForOperation(credentialPlan, operationName, endpointKey)
 		transportReady := providerReviewAttemptTransportPlanReadyForOperation(transportPlan, operationName, endpointKey)
+		requestEnvelopeContractReady := providerReviewAttemptPlanMatchesOperation(requestEnvelopePlan, "redacted_attempt_adapter_request_envelope_plan", operationName, endpointKey) && boolOnlyFromAny(requestEnvelopePlan["envelope_contract_ready"])
 		responseReady := providerReviewAttemptResponseRecordingReadyForOperation(responsePlan, operationName, endpointKey)
 		transactionReady := providerReviewAttemptTransactionPlanReadyForOperation(transactionPlan, operationName, endpointKey)
 		requestValidationPreflight = map[string]any{
@@ -18082,6 +18084,8 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 			"branch_policy_metadata_ready":        branchPolicyReady,
 			"credential_binding_ready":            credentialReady,
 			"transport_metadata_ready":            transportReady,
+			"request_envelope_contract_ready":     requestEnvelopeContractReady,
+			"request_envelope_metadata_ready":     false,
 			"response_recording_ready":            responseReady,
 			"transaction_metadata_ready":          transactionReady,
 			"protected_branch_policy_check":       false,
@@ -18140,6 +18144,7 @@ func providerReviewAttemptAdapterDispatchPlan(operation, requestSummary, respons
 		"credential_binding_plan":      credentialPlan,
 		"adapter_runtime_plan":         runtimePlan,
 		"branch_policy_plan":           branchPolicyPlan,
+		"request_envelope_plan":        requestEnvelopePlan,
 		"transaction_plan":             transactionPlan,
 		"request_validation_preflight": requestValidationPreflight,
 		"invocation_plan":              providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, runtimePlan, branchPolicyPlan, transportPlan, responsePlan, transactionPlan),

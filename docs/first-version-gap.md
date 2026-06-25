@@ -175,6 +175,7 @@ Execution-candidate previews now derive their claim plan through the same reques
 Downstream provider review subplans now also require matching mode, operation, and endpoint identity before branch policy, provider-send, retry/backoff, response result recording, transaction, provider-call boundary, or execution-lock metadata can be treated as ready; invocation, activation, execution-lock, transaction, provider-call boundary, and request-validation preflight paths also require the execution claim plan itself to match the same operation and endpoint before accepting claim or idempotency metadata readiness.
 Transaction, provider-call boundary, and result-recording plans now also require the response plan to carry the expected completed/planned/failed attempt-status transitions and dependency-unlock metadata for the same operation before treating response metadata as ready.
 Invocation and activation summaries now also require each nested request, credential, runtime, transport, provider-send, response, transaction, execution-lock, branch-policy, or activation subplan to match the same operation and endpoint before mirroring its ready flag.
+Dispatch now also carries an attempt-level redacted request envelope plan that combines request materialization, branch policy, credential binding, and transport metadata into one blocked no-call contract while suppressing provider URLs, authorization headers, tokens, request bodies, repository refs, branch names, file content, and idempotency keys.
 
 Recommended next slice:
 
