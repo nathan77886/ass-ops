@@ -23066,6 +23066,77 @@ func TestRecordProviderReviewAttemptAdapterBlueprintSnapshotDryRunSkipsWrite(t *
 	}
 }
 
+func TestRecordProviderReviewAttemptAdapterBlueprintSnapshotNotCurrentCandidateDoesNotWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("completed", "dependency_satisfied")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptAdapterBlueprintSnapshot(context.Background(), store, ProviderReviewAttemptAdapterBlueprintSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptAdapterBlueprintSnapshot not current: %v", err)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_ready"] != false ||
+		got["provider_review_attempt_adapter_blueprint_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_attempt_not_current_candidate") {
+		t.Fatalf("unexpected not-current provider review adapter blueprint response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptAdapterBlueprintSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_adapter_blueprint_contract_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_adapter_blueprint_contract_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptAdapterBlueprintSnapshot(context.Background(), store, ProviderReviewAttemptAdapterBlueprintSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptAdapterBlueprintSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_adapter_blueprint_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown provider review adapter blueprint response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestProviderReviewAttemptAdapterBlueprintSnapshotPayloadRequiresInvocationPlan(t *testing.T) {
 	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
 	ledger := providerReviewActivationSnapshotLedger(attempt)
