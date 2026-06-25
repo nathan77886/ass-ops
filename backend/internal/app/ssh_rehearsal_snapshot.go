@@ -399,6 +399,7 @@ func sshMachineRehearsalSnapshotPayload(preview map[string]any, assetObserved bo
 		"exec_runs":                                 intFromAny(evidence["exec_runs"], 0),
 		"unknown_runs":                              intFromAny(evidence["unknown_runs"], 0),
 		"completed_runs":                            intFromAny(evidence["completed_runs"], 0),
+		"completed_without_exit_code_runs":          intFromAny(evidence["completed_without_exit_code_runs"], 0),
 		"failed_runs":                               intFromAny(evidence["failed_runs"], 0),
 		"active_runs":                               intFromAny(evidence["active_runs"], 0),
 		"canceled_runs":                             intFromAny(evidence["canceled_runs"], 0),
@@ -519,6 +520,9 @@ func sshMachineRehearsalSnapshotReadiness(preview map[string]any, snapshot map[s
 	}
 	if !boolOnlyFromAny(snapshot["sanitized_result_recorded"]) {
 		missing = append(missing, "sanitized_ssh_result_not_recorded")
+	}
+	if intFromAny(snapshot["completed_without_exit_code_runs"], 0) > 0 {
+		missing = append(missing, "ssh_completed_result_exit_code_missing")
 	}
 	if !boolOnlyFromAny(snapshot["live_rehearsal_controls_ready"]) {
 		missing = append(missing, "live_rehearsal_controls_not_ready")

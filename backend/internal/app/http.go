@@ -23885,6 +23885,7 @@ func sshRehearsalResultRecordingPlan(evidence map[string]any) map[string]any {
 	recordingReady := totalRuns > 0
 	recordingReason := "sanitized_ssh_result_recorded"
 	blockedReasons := []string{}
+	completedWithoutExitCode := intFromAny(evidence["completed_without_exit_code_runs"], 0)
 	message := "SSH rehearsal has recorded sanitized command-run metadata only; command output, raw errors, and auth material remain suppressed."
 	if !recordingReady {
 		recordingState = "blocked"
@@ -23892,6 +23893,9 @@ func sshRehearsalResultRecordingPlan(evidence map[string]any) map[string]any {
 		blockedReasons = []string{"ssh_rehearsal_execution_not_performed", "sanitized_ssh_result_not_recorded", "canonical_asset_sync_not_performed"}
 		message = "SSH rehearsal results are not recorded by this preview; future execution must persist sanitized metadata without command output or auth material."
 	} else {
+		if completedWithoutExitCode > 0 {
+			blockedReasons = append(blockedReasons, "ssh_completed_result_exit_code_missing")
+		}
 		switch recordingState {
 		case "waiting_for_workers":
 			blockedReasons = append(blockedReasons, "ssh_rehearsal_worker_result_pending")
@@ -23908,66 +23912,68 @@ func sshRehearsalResultRecordingPlan(evidence map[string]any) map[string]any {
 		}
 	}
 	return map[string]any{
-		"mode":                          "ssh_rehearsal_result_recording_plan",
-		"recording_state":               recordingState,
-		"recording_ready":               recordingReady,
-		"recording_ready_reason":        recordingReason,
-		"recording_enabled":             recordingReady,
-		"result_written":                recordingReady,
-		"operation_log_written":         false,
-		"canonical_asset_sync_queued":   false,
-		"status_snapshot_written":       false,
-		"auth_binding_recorded":         recordingReady,
-		"verify_result_recorded":        verifyRuns > 0,
-		"exec_result_recorded":          execRuns > 0,
-		"stdout_included":               false,
-		"stderr_included":               false,
-		"raw_error_included":            false,
-		"private_key_included":          false,
-		"known_hosts_included":          false,
-		"authorization_header_included": false,
-		"sanitized_metadata_only":       true,
-		"has_failures":                  boolOnlyFromAny(evidence["has_failures"]),
-		"has_cancellations":             boolOnlyFromAny(evidence["has_cancellations"]),
-		"active_runs":                   intFromAny(evidence["active_runs"], 0),
-		"terminal_runs":                 intFromAny(evidence["terminal_runs"], 0),
-		"required_result_fields":        []string{"operation_run_id", "ssh_machine_id", "operation_type", "status", "exit_code", "started_at", "finished_at", "auth_binding_status", "verify_result_status", "exec_result_status", "sanitization_status"},
-		"suppressed_fields":             []string{"private_key", "passphrase", "known_hosts_body", "command", "stdout", "stderr", "raw_error", "runtime_secret"},
-		"blocked_reasons":               blockedReasons,
-		"message":                       message,
+		"mode":                             "ssh_rehearsal_result_recording_plan",
+		"recording_state":                  recordingState,
+		"recording_ready":                  recordingReady,
+		"recording_ready_reason":           recordingReason,
+		"recording_enabled":                recordingReady,
+		"result_written":                   recordingReady,
+		"operation_log_written":            false,
+		"canonical_asset_sync_queued":      false,
+		"status_snapshot_written":          false,
+		"auth_binding_recorded":            recordingReady,
+		"verify_result_recorded":           verifyRuns > 0,
+		"exec_result_recorded":             execRuns > 0,
+		"stdout_included":                  false,
+		"stderr_included":                  false,
+		"raw_error_included":               false,
+		"private_key_included":             false,
+		"known_hosts_included":             false,
+		"authorization_header_included":    false,
+		"sanitized_metadata_only":          true,
+		"has_failures":                     boolOnlyFromAny(evidence["has_failures"]),
+		"has_cancellations":                boolOnlyFromAny(evidence["has_cancellations"]),
+		"active_runs":                      intFromAny(evidence["active_runs"], 0),
+		"terminal_runs":                    intFromAny(evidence["terminal_runs"], 0),
+		"completed_without_exit_code_runs": completedWithoutExitCode,
+		"required_result_fields":           []string{"operation_run_id", "ssh_machine_id", "operation_type", "status", "exit_code", "started_at", "finished_at", "auth_binding_status", "verify_result_status", "exec_result_status", "sanitization_status"},
+		"suppressed_fields":                []string{"private_key", "passphrase", "known_hosts_body", "command", "stdout", "stderr", "raw_error", "runtime_secret"},
+		"blocked_reasons":                  blockedReasons,
+		"message":                          message,
 	}
 }
 
 func summarizeSSHRehearsalEvidence(runs []map[string]any) map[string]any {
 	evidence := map[string]any{
-		"total_runs":              len(runs),
-		"verify_runs":             0,
-		"exec_runs":               0,
-		"unknown_runs":            0,
-		"completed_runs":          0,
-		"failed_runs":             0,
-		"running_runs":            0,
-		"queued_runs":             0,
-		"canceled_runs":           0,
-		"terminal_runs":           0,
-		"active_runs":             0,
-		"completed_verify":        false,
-		"completed_exec":          false,
-		"has_live_evidence":       len(runs) > 0,
-		"has_failures":            false,
-		"has_cancellations":       false,
-		"evidence_state":          "not_recorded",
-		"sanitized_metadata_only": true,
-		"stdout_included":         false,
-		"stderr_included":         false,
-		"raw_error_included":      false,
-		"private_key_included":    false,
-		"known_hosts_included":    false,
-		"secret_included":         false,
-		"suppressed_fields":       []string{"command", "stdout", "stderr", "raw_error", "private_key", "passphrase", "known_hosts_body", "runtime_secret"},
-		"latest_verify":           nil,
-		"latest_exec":             nil,
-		"latest_unknown":          nil,
+		"total_runs":                       len(runs),
+		"verify_runs":                      0,
+		"exec_runs":                        0,
+		"unknown_runs":                     0,
+		"completed_runs":                   0,
+		"completed_without_exit_code_runs": 0,
+		"failed_runs":                      0,
+		"running_runs":                     0,
+		"queued_runs":                      0,
+		"canceled_runs":                    0,
+		"terminal_runs":                    0,
+		"active_runs":                      0,
+		"completed_verify":                 false,
+		"completed_exec":                   false,
+		"has_live_evidence":                len(runs) > 0,
+		"has_failures":                     false,
+		"has_cancellations":                false,
+		"evidence_state":                   "not_recorded",
+		"sanitized_metadata_only":          true,
+		"stdout_included":                  false,
+		"stderr_included":                  false,
+		"raw_error_included":               false,
+		"private_key_included":             false,
+		"known_hosts_included":             false,
+		"secret_included":                  false,
+		"suppressed_fields":                []string{"command", "stdout", "stderr", "raw_error", "private_key", "passphrase", "known_hosts_body", "runtime_secret"},
+		"latest_verify":                    nil,
+		"latest_exec":                      nil,
+		"latest_unknown":                   nil,
 	}
 	for _, run := range runs {
 		operationType := cleanPreviewString(run["operation_type"])
@@ -23975,18 +23981,23 @@ func summarizeSSHRehearsalEvidence(runs []map[string]any) map[string]any {
 			operationType = "unknown"
 		}
 		status := cleanPreviewString(run["status"])
+		exitCodeRecorded := cleanPreviewString(run["exit_code"]) != ""
 		item := map[string]any{
-			"id":             run["id"],
-			"status":         status,
-			"exit_code":      run["exit_code"],
-			"created_at":     run["created_at"],
-			"finished_at":    run["finished_at"],
-			"operation_type": operationType,
+			"id":                 run["id"],
+			"status":             status,
+			"exit_code":          run["exit_code"],
+			"exit_code_recorded": exitCodeRecorded,
+			"created_at":         run["created_at"],
+			"finished_at":        run["finished_at"],
+			"operation_type":     operationType,
 		}
 		switch status {
 		case "completed":
 			evidence["completed_runs"] = intFromAny(evidence["completed_runs"], 0) + 1
 			evidence["terminal_runs"] = intFromAny(evidence["terminal_runs"], 0) + 1
+			if !exitCodeRecorded {
+				evidence["completed_without_exit_code_runs"] = intFromAny(evidence["completed_without_exit_code_runs"], 0) + 1
+			}
 		case "failed":
 			evidence["failed_runs"] = intFromAny(evidence["failed_runs"], 0) + 1
 			evidence["terminal_runs"] = intFromAny(evidence["terminal_runs"], 0) + 1
@@ -24008,7 +24019,7 @@ func summarizeSSHRehearsalEvidence(runs []map[string]any) map[string]any {
 			if evidence["latest_verify"] == nil {
 				evidence["latest_verify"] = item
 			}
-			if status == "completed" {
+			if status == "completed" && exitCodeRecorded {
 				evidence["completed_verify"] = true
 			}
 		case "ssh.exec":
@@ -24016,7 +24027,7 @@ func summarizeSSHRehearsalEvidence(runs []map[string]any) map[string]any {
 			if evidence["latest_exec"] == nil {
 				evidence["latest_exec"] = item
 			}
-			if status == "completed" {
+			if status == "completed" && exitCodeRecorded {
 				evidence["completed_exec"] = true
 			}
 		default:

@@ -8264,8 +8264,8 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 				"metadata":   map[string]any{},
 			},
 			runs: []map[string]any{
-				{"id": "run-2", "status": "completed", "operation_type": "ssh.exec"},
-				{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
+				{"id": "run-2", "status": "completed", "exit_code": 0, "operation_type": "ssh.exec"},
+				{"id": "run-1", "status": "completed", "exit_code": 0, "operation_type": "ssh.verify"},
 			},
 			wantState:          "ready",
 			wantVerifyStatus:   "completed",
@@ -8293,6 +8293,29 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			wantVerifyStatus:   "planned",
 			wantExecStatus:     "blocked",
 			wantUnknownRuns:    1,
+			wantRequiredChecks: 2,
+			wantEvidenceState:  "partial_recorded",
+			wantControlState:   "planned",
+		},
+		{
+			name: "completed runs without exit code do not complete rehearsal",
+			machine: map[string]any{
+				"id":         "machine-1",
+				"project_id": "project-1",
+				"name":       "prod-api",
+				"host":       "10.0.0.12",
+				"port":       22,
+				"username":   "deploy",
+				"auth_type":  "key",
+				"metadata":   map[string]any{},
+			},
+			runs: []map[string]any{
+				{"id": "run-2", "status": "completed", "operation_type": "ssh.exec"},
+				{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
+			},
+			wantState:          "partial",
+			wantVerifyStatus:   "planned",
+			wantExecStatus:     "blocked",
 			wantRequiredChecks: 2,
 			wantEvidenceState:  "partial_recorded",
 			wantControlState:   "planned",
@@ -8345,6 +8368,17 @@ func TestSSHMachineRehearsalPreviewStates(t *testing.T) {
 			if tt.name == "unknown operation does not count as exec" && evidence["completed_exec"] != false {
 				t.Fatalf("unknown operation should not complete exec: %#v", evidence)
 			}
+			if tt.name == "completed runs without exit code do not complete rehearsal" {
+				if evidence["completed_verify"] != false ||
+					evidence["completed_exec"] != false ||
+					intFromAny(evidence["completed_without_exit_code_runs"], 0) != 2 {
+					t.Fatalf("completed runs without exit code should not complete rehearsal: %#v", evidence)
+				}
+				resultPlan := mapFromAny(preview["result_recording_plan"])
+				if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), "ssh_completed_result_exit_code_missing") {
+					t.Fatalf("missing exit-code blocker in result plan: %#v", resultPlan)
+				}
+			}
 		})
 	}
 }
@@ -8369,23 +8403,31 @@ func TestSSHMachineRehearsalEvidenceStatesAreSanitized(t *testing.T) {
 			name: "active run waits for workers",
 			runs: []map[string]any{
 				{"id": "run-2", "status": "running", "operation_type": "ssh.exec", "stdout": "hidden"},
-				{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
+				{"id": "run-1", "status": "completed", "exit_code": 0, "operation_type": "ssh.verify"},
 			},
 			wantState: "waiting_for_workers",
 		},
 		{
 			name: "recorded verify and exec marks sanitized result recorded",
 			runs: []map[string]any{
+				{"id": "run-2", "status": "completed", "exit_code": 0, "operation_type": "ssh.exec", "stdout": "hidden"},
+				{"id": "run-1", "status": "completed", "exit_code": 0, "operation_type": "ssh.verify"},
+			},
+			wantState: "recorded",
+		},
+		{
+			name: "completed verify and exec without exit code stay partial",
+			runs: []map[string]any{
 				{"id": "run-2", "status": "completed", "operation_type": "ssh.exec", "stdout": "hidden"},
 				{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
 			},
-			wantState: "recorded",
+			wantState: "partial_recorded",
 		},
 		{
 			name: "failed terminal run is recorded as failed",
 			runs: []map[string]any{
 				{"id": "run-2", "status": "failed", "operation_type": "ssh.exec", "stderr": "hidden"},
-				{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
+				{"id": "run-1", "status": "completed", "exit_code": 0, "operation_type": "ssh.verify"},
 			},
 			wantState: "failed",
 		},
@@ -8394,7 +8436,7 @@ func TestSSHMachineRehearsalEvidenceStatesAreSanitized(t *testing.T) {
 			runs: []map[string]any{
 				{"id": "run-3", "status": "running", "operation_type": "ssh.exec", "stdout": "hidden"},
 				{"id": "run-2", "status": "failed", "operation_type": "ssh.exec", "stderr": "hidden"},
-				{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
+				{"id": "run-1", "status": "completed", "exit_code": 0, "operation_type": "ssh.verify"},
 			},
 			wantState: "failed",
 		},
@@ -8867,6 +8909,42 @@ func TestSSHMachineRehearsalSnapshotPayloadSanitizesAttestation(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("ssh rehearsal snapshot leaked %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestSSHMachineRehearsalSnapshotBlocksCompletedRunsWithoutExitCode(t *testing.T) {
+	preview := buildSSHMachineRehearsalPreview(
+		map[string]any{
+			"id":         "machine-1",
+			"project_id": "project-1",
+			"name":       "prod-api",
+			"host":       "10.0.0.12",
+			"port":       22,
+			"username":   "deploy",
+			"auth_type":  "key",
+			"metadata": map[string]any{
+				"live_rehearsal_runbook":        "runbook-1",
+				"authorized_fixture_id":         "fixture-1",
+				"operator_approved":             true,
+				"live_rehearsal_environment":    "prod",
+				"operator_environment_proof_id": "env-proof-1",
+			},
+		},
+		[]map[string]any{
+			{"id": "run-2", "status": "completed", "operation_type": "ssh.exec"},
+			{"id": "run-1", "status": "completed", "operation_type": "ssh.verify"},
+		},
+	)
+	snapshot := sshMachineRehearsalSnapshotPayload(preview, true)
+	ready, state, missing := sshMachineRehearsalSnapshotReadiness(preview, snapshot)
+	if ready ||
+		state != "partial_recorded" ||
+		snapshot["sanitized_result_recorded"] != false ||
+		intFromAny(snapshot["completed_without_exit_code_runs"], 0) != 2 ||
+		!containsString(missing, "ssh_completed_result_exit_code_missing") ||
+		!containsString(missing, "completed_ssh_verify_missing") ||
+		!containsString(missing, "completed_ssh_exec_missing") {
+		t.Fatalf("completed runs without exit code should block snapshot: ready=%v state=%s missing=%#v snapshot=%#v", ready, state, missing, snapshot)
 	}
 }
 
