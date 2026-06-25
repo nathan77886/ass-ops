@@ -15485,9 +15485,63 @@ func providerReviewAttemptClaimPlanFromAttempt(attempt map[string]any) map[strin
 	}
 	requestSummary := mapFromAny(attempt["request_summary"])
 	responseDiagnostics := mapFromAny(attempt["response_diagnostics"])
-	idempotencyReady := boolOnlyFromAny(requestSummary["requires_idempotency_ledger"])
-	responseReady := responseDiagnostics["mode"] == "redacted_attempt_response_diagnostics"
-	return providerReviewAttemptExecutionClaimPlan(operation, idempotencyReady, responseReady)
+	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
+	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
+	requestSummaryReady := providerReviewAttemptRequestSummaryReadyForOperation(requestSummary, operationName, endpointKey)
+	responseDiagnosticsReady := providerReviewAttemptResponseDiagnosticsReadyForEndpoint(responseDiagnostics, endpointKey)
+	claimPlan := providerReviewAttemptExecutionClaimPlan(
+		operation,
+		boolOnlyFromAny(requestSummary["requires_idempotency_ledger"]),
+		responseDiagnosticsReady,
+	)
+	if !requestSummaryReady {
+		claimPlan["claim_metadata_ready"] = false
+	}
+	claimPlan["request_summary_matches_operation"] = requestSummaryReady
+	claimPlan["response_diagnostics_match_endpoint"] = responseDiagnosticsReady
+	if !requestSummaryReady {
+		blockedReasons := stringSliceFromAny(claimPlan["blocked_reasons"])
+		if !providerReviewStringSliceContains(blockedReasons, "provider_review_request_summary_mismatch") {
+			blockedReasons = append([]string{"provider_review_request_summary_mismatch"}, blockedReasons...)
+		}
+		claimPlan["blocked_reasons"] = blockedReasons
+	}
+	if !responseDiagnosticsReady {
+		blockedReasons := stringSliceFromAny(claimPlan["blocked_reasons"])
+		if !providerReviewStringSliceContains(blockedReasons, "provider_review_response_diagnostics_endpoint_mismatch") {
+			blockedReasons = append([]string{"provider_review_response_diagnostics_endpoint_mismatch"}, blockedReasons...)
+		}
+		claimPlan["blocked_reasons"] = blockedReasons
+	}
+	return claimPlan
+}
+
+func providerReviewAttemptRequestSummaryReadyForOperation(summary map[string]any, operationName, endpointKey string) bool {
+	operationName = safeProviderReviewAttemptOperationName(operationName)
+	endpointKey = safeProviderReviewEndpointKey(endpointKey)
+	return operationName != "" &&
+		endpointKey != "" &&
+		stringFromMap(summary, "mode") == "redacted_attempt_request_summary" &&
+		safeProviderReviewAttemptOperationName(stringFromMap(summary, "operation_name")) == operationName &&
+		safeProviderReviewEndpointKey(stringFromMap(summary, "endpoint_key")) == endpointKey &&
+		providerReviewAttemptPayloadBuilderMatchesOperation(operationName, stringFromMap(summary, "payload_builder")) &&
+		providerReviewAttemptResponseHandlerMatchesOperation(operationName, stringFromMap(summary, "response_handler"))
+}
+
+func providerReviewAttemptResponseDiagnosticsReadyForEndpoint(diagnostics map[string]any, endpointKey string) bool {
+	endpointKey = safeProviderReviewEndpointKey(endpointKey)
+	return endpointKey != "" &&
+		stringFromMap(diagnostics, "mode") == "redacted_attempt_response_diagnostics" &&
+		safeProviderReviewEndpointKey(stringFromMap(diagnostics, "endpoint_key")) == endpointKey
+}
+
+func providerReviewStringSliceContains(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizedProviderReviewExecutionGuardrail(value map[string]any) map[string]any {

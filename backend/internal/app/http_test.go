@@ -19849,6 +19849,103 @@ func TestClaimProviderReviewAttemptHandlerBlocksOperationEndpointMismatch(t *tes
 	}
 }
 
+func TestClaimProviderReviewAttemptHandlerBlocksRequestSummaryMismatch(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectBegin()
+	expectProviderReviewAttemptClaimSelectWithApproval(mock, providerReviewAttemptClaimSelectOptions{
+		Status:           "planned",
+		Dependency:       "independent",
+		Operation:        "create_branch_ref",
+		Endpoint:         "github.create_branch_ref",
+		RequestOperation: "commit_starter_files",
+		RequestEndpoint:  "github.commit_files",
+		ApprovalAction:   templateProviderReviewExecuteApprovalAction,
+		ApprovalStatus:   "approved",
+	})
+
+	rr := httptest.NewRecorder()
+	server.claimProviderReviewAttempt(rr, newProviderReviewAttemptClaimRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["claimed"] != false ||
+		got["claim_state"] != "provider_review_attempt_claim_metadata_not_ready" ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" {
+		t.Fatalf("unexpected request-summary-mismatch claim response: %#v", got)
+	}
+	claimPlan := mapFromAny(got["claim_plan"])
+	blockedReasons := stringSliceFromAny(claimPlan["blocked_reasons"])
+	if claimPlan["claim_metadata_ready"] != false ||
+		claimPlan["request_summary_matches_operation"] != false ||
+		claimPlan["operation_endpoint_ready"] != true ||
+		!containsString(blockedReasons, "provider_review_request_summary_mismatch") ||
+		containsString(blockedReasons, "provider_review_idempotency_metadata_missing") {
+		t.Fatalf("request-summary-mismatch claim should be metadata-blocked: %#v", claimPlan)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestClaimProviderReviewAttemptHandlerBlocksResponseDiagnosticsMismatch(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectProviderReviewAttemptUpdatePolicy(mock)
+	mock.ExpectBegin()
+	expectProviderReviewAttemptClaimSelectWithApproval(mock, providerReviewAttemptClaimSelectOptions{
+		Status:           "planned",
+		Dependency:       "independent",
+		Operation:        "create_branch_ref",
+		Endpoint:         "github.create_branch_ref",
+		ResponseEndpoint: "github.commit_files",
+		ApprovalAction:   templateProviderReviewExecuteApprovalAction,
+		ApprovalStatus:   "approved",
+	})
+
+	rr := httptest.NewRecorder()
+	server.claimProviderReviewAttempt(rr, newProviderReviewAttemptClaimRequest())
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["claimed"] != false ||
+		got["claim_state"] != "provider_review_attempt_claim_metadata_not_ready" ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" {
+		t.Fatalf("unexpected response-diagnostics-mismatch claim response: %#v", got)
+	}
+	claimPlan := mapFromAny(got["claim_plan"])
+	if claimPlan["claim_metadata_ready"] != false ||
+		claimPlan["response_diagnostics_match_endpoint"] != false ||
+		claimPlan["operation_endpoint_ready"] != true ||
+		!containsString(stringSliceFromAny(claimPlan["blocked_reasons"]), "provider_review_response_diagnostics_endpoint_mismatch") {
+		t.Fatalf("response-diagnostics-mismatch claim should be metadata-blocked: %#v", claimPlan)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestClaimProviderReviewAttemptHandlerBlocksUnapprovedApproval(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -27253,13 +27350,16 @@ func addProviderReviewAttemptRow(rows *sqlmock.Rows, row providerReviewAttemptMo
 }
 
 type providerReviewAttemptClaimSelectOptions struct {
-	Status         string
-	Dependency     string
-	Operation      string
-	Endpoint       string
-	ApprovalAction string
-	ApprovalStatus string
-	ClaimedAt      any
+	Status           string
+	Dependency       string
+	Operation        string
+	Endpoint         string
+	RequestOperation string
+	RequestEndpoint  string
+	ResponseEndpoint string
+	ApprovalAction   string
+	ApprovalStatus   string
+	ClaimedAt        any
 }
 
 func expectProviderReviewAttemptClaimSelect(mock sqlmock.Sqlmock, status, dependency string) {
@@ -27283,6 +27383,15 @@ func expectProviderReviewAttemptClaimSelectWithApproval(mock sqlmock.Sqlmock, op
 	}
 	if opts.Endpoint == "" {
 		opts.Endpoint = "github.create_branch_ref"
+	}
+	if opts.RequestOperation == "" {
+		opts.RequestOperation = opts.Operation
+	}
+	if opts.RequestEndpoint == "" {
+		opts.RequestEndpoint = opts.Endpoint
+	}
+	if opts.ResponseEndpoint == "" {
+		opts.ResponseEndpoint = opts.Endpoint
 	}
 	rows := sqlmock.NewRows([]string{
 		"id",
@@ -27325,8 +27434,8 @@ func expectProviderReviewAttemptClaimSelectWithApproval(mock sqlmock.Sqlmock, op
 		10,
 		"",
 		opts.Dependency,
-		providerReviewAttemptRequestSummaryJSON(opts.Operation, opts.Endpoint),
-		providerReviewAttemptResponseDiagnosticsJSON(opts.Endpoint),
+		providerReviewAttemptRequestSummaryJSON(opts.RequestOperation, opts.RequestEndpoint),
+		providerReviewAttemptResponseDiagnosticsJSON(opts.ResponseEndpoint),
 		false,
 		"disabled",
 		false,
