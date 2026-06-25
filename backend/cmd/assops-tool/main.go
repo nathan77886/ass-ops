@@ -128,6 +128,17 @@ func run() error {
 			fmt.Print(plan)
 			return nil
 		}
+		if (len(args) == 4 || len(args) == 5) && args[1] == "demo-import-plan" {
+			plan, err := releaseDemoImportPlan(args[2], args[3])
+			if err != nil {
+				return err
+			}
+			if len(args) == 5 {
+				return writeTextFile(args[4], plan)
+			}
+			fmt.Print(plan)
+			return nil
+		}
 		if (len(args) == 5 || len(args) == 6) && args[1] == "branch-protection-plan" {
 			plan, err := releaseBranchProtectionPlan(args[2], args[3], args[4])
 			if err != nil {
@@ -144,7 +155,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -930,6 +941,72 @@ func releaseCallbackRehearsalPlan(publicOrigin string) (string, error) {
 	return b.String(), nil
 }
 
+func releaseDemoImportPlan(projectSlug, publicOrigin string) (string, error) {
+	projectSlug = strings.ToLower(strings.TrimSpace(projectSlug))
+	if !isSafeProjectSlug(projectSlug) {
+		return "", fmt.Errorf("project slug must contain letters or numbers and may include internal dot, underscore, or hyphen")
+	}
+	origin, err := normalizePublicCallbackOrigin(publicOrigin)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# ASSOPS Live Demo Import Plan\n\n")
+	fmt.Fprintf(&b, "Project slug: `%s`\n\n", projectSlug)
+	fmt.Fprintf(&b, "Public origin: `%s`\n\n", origin)
+	fmt.Fprintf(&b, "## Local Validation\n\n")
+	fmt.Fprintf(&b, "- Project slug is a safe local identifier for matching the ASSOPS project row.\n")
+	fmt.Fprintf(&b, "- Public origin is a clean HTTPS origin suitable for provider callback registration.\n")
+	fmt.Fprintf(&b, "- This plan does not call providers, run Git, create repositories, write ASSOPS rows, or read credentials.\n\n")
+	fmt.Fprintf(&b, "## Live Import Sequence\n\n")
+	for index, step := range []string{
+		"Create or select the real Gitea source repository and GitHub mirror repository in the provider UIs.",
+		"Create or import the ASSOPS project and attach exactly one source repository plus one mirror repository as project-owned assets.",
+		"Add Gitea and GitHub remotes in ASSOPS with provider kind, owner/name metadata, and redacted/canonical remote identifiers only.",
+		"Define the RepoSyncAsset from the Gitea remote to the GitHub remote, then run a manual low-risk sync through ASSOPS.",
+		"Configure provider callbacks using the public origin and record one sanitized callback rehearsal snapshot after observed events exist.",
+		"Run `assops-tool db sync-assets` after import/migration changes, then run `assops-tool db record-demo-readiness-snapshot --project-slug " + projectSlug + " --dry-run`.",
+		"Record the non-dry-run readiness snapshot only after the graph-backed project/repository/remote evidence is complete.",
+	} {
+		fmt.Fprintf(&b, "%d. %s\n", index+1, step)
+	}
+	fmt.Fprintf(&b, "\n## Required Evidence\n\n")
+	for _, item := range []string{
+		"project asset and project graph node",
+		"one project-owned repository asset",
+		"at least two project-owned Git remote assets",
+		"Gitea source remote and GitHub mirror remote provider labels",
+		"RepoSyncAsset relation from repository to source and target remotes",
+		"manual sync operation linked to the RepoSyncAsset",
+		"provider callback event linked to RepoSyncAsset or sync operation",
+		"sanitized first-version readiness snapshot",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## Suppressed Material\n\n")
+	for _, item := range []string{
+		"remote clone URLs",
+		"provider tokens or webhook secrets",
+		"provider request/response bodies",
+		"raw headers or payloads",
+		"Git stdout/stderr",
+		"commit SHAs, branch names, tag names, and workflow URLs",
+		"operator notes containing provider details",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## No-Call Boundary\n\n")
+	fmt.Fprintf(&b, "- This plan is local documentation only; it does not create/import rows, call Gitea/GitHub, run Git, replay webhooks, or record snapshots.\n")
+	fmt.Fprintf(&b, "- Provider repository creation, remote credential binding, webhook configuration, and live sync execution remain operator-owned staging tasks.\n\n")
+	fmt.Fprintf(&b, "## Verification Commands\n\n```bash\n")
+	fmt.Fprintf(&b, "assops-tool project readiness\n")
+	fmt.Fprintf(&b, "assops-tool db record-demo-readiness-snapshot --project-slug %q --dry-run\n", projectSlug)
+	fmt.Fprintf(&b, "assops-tool db record-demo-readiness-snapshot --project-slug %q\n", projectSlug)
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "Run the non-dry-run snapshot only after the dry-run proof shows complete graph-backed project, repository, and remote evidence.\n")
+	return b.String(), nil
+}
+
 func readBranchProtectionRuleset(path string) (map[string]any, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -1355,6 +1432,21 @@ func isOwnerRepo(value string) bool {
 		return false
 	}
 	return isContainerPathSegment(strings.ToLower(parts[0])) && isContainerPathSegment(strings.ToLower(parts[1]))
+}
+
+func isSafeProjectSlug(value string) bool {
+	if !isContainerPathSegment(value) {
+		return false
+	}
+	if strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') {
+			return true
+		}
+	}
+	return false
 }
 
 func toolMapFromAny(value any) map[string]any {

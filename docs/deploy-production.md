@@ -333,6 +333,17 @@ assops-tool release helm-readiness-plan \
 
 The plan validates the local overlay for external Secret usage, external PostgreSQL, HTTPS/TLS ingress, ServiceAccount token isolation, NetworkPolicy, PodDisruptionBudget, explicit storage classes for retained PVCs, resource requests/limits, and non-root/drop-capability runtime posture. It does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs, and the listed `kubectl` checks should only be run after the target cluster, namespace, and kubeconfig are confirmed out of band.
 
+Before importing a real demo project with provider remotes, generate the live demo import plan:
+
+```bash
+assops-tool release demo-import-plan \
+  assops-demo \
+  https://assops.example.com \
+  .assops/release-notes/demo-import-plan.md
+```
+
+The plan lists the provider-owned Gitea/GitHub repository setup, ASSOPS project/repository/remote/RepoSyncAsset evidence, callback rehearsal evidence, and readiness snapshot order without calling providers, running Git, creating rows, recording snapshots, or storing remote URLs, tokens, provider responses, Git output, SHAs, branch names, or operator notes.
+
 The production values example enables stricter pod/container security settings for Go workloads and migration jobs. Review these settings with the actual images and cluster policy before rollout, especially if you override images.
 
 It also enables chart-managed NetworkPolicies. Confirm that your CNI enforces NetworkPolicy and that the configured web ingress CIDRs match the ingress controller or load balancer path used by the cluster.

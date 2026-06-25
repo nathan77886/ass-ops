@@ -2505,6 +2505,72 @@ func TestReleaseCallbackRehearsalPlanRejectsUnsafeOrigins(t *testing.T) {
 	}
 }
 
+func TestReleaseDemoImportPlan(t *testing.T) {
+	plan, err := releaseDemoImportPlan("ASSOPS-Demo", "https://assops-staging.example.com")
+	if err != nil {
+		t.Fatalf("releaseDemoImportPlan: %v", err)
+	}
+	for _, want := range []string{
+		"# ASSOPS Live Demo Import Plan",
+		"Project slug: `assops-demo`",
+		"Public origin: `https://assops-staging.example.com`",
+		"does not call providers, run Git, create repositories, write ASSOPS rows, or read credentials",
+		"Create or select the real Gitea source repository and GitHub mirror repository",
+		"Define the RepoSyncAsset from the Gitea remote to the GitHub remote",
+		"record-demo-readiness-snapshot --project-slug assops-demo --dry-run",
+		"project asset and project graph node",
+		"at least two project-owned Git remote assets",
+		"provider callback event linked to RepoSyncAsset or sync operation",
+		"remote clone URLs",
+		"provider tokens or webhook secrets",
+		"Git stdout/stderr",
+		"does not create/import rows, call Gitea/GitHub, run Git, replay webhooks, or record snapshots",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("demo import plan missing %q in:\n%s", want, plan)
+		}
+	}
+	for _, forbidden := range []string{
+		"Authorization:",
+		"token=",
+		"password=",
+		"PRIVATE KEY",
+		"provider response:",
+		"https://user:",
+	} {
+		if strings.Contains(plan, forbidden) {
+			t.Fatalf("demo import plan should not contain %q:\n%s", forbidden, plan)
+		}
+	}
+}
+
+func TestReleaseDemoImportPlanRejectsUnsafeInput(t *testing.T) {
+	cases := []struct {
+		name   string
+		slug   string
+		origin string
+		want   string
+	}{
+		{name: "empty slug", slug: "", origin: "https://assops.example.com", want: "project slug"},
+		{name: "slash slug", slug: "owner/repo", origin: "https://assops.example.com", want: "project slug"},
+		{name: "space slug", slug: "assops demo", origin: "https://assops.example.com", want: "project slug"},
+		{name: "dot slug", slug: ".", origin: "https://assops.example.com", want: "project slug"},
+		{name: "parent dot slug", slug: "..", origin: "https://assops.example.com", want: "project slug"},
+		{name: "trailing dot slug", slug: "assops.", origin: "https://assops.example.com", want: "project slug"},
+		{name: "unsafe origin", slug: "assops-demo", origin: "http://assops.example.com", want: "must use https"},
+		{name: "origin path", slug: "assops-demo", origin: "https://assops.example.com/import", want: "must not include a path"},
+		{name: "origin userinfo", slug: "assops-demo", origin: "https://user:pass@assops.example.com", want: "must not include userinfo"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := releaseDemoImportPlan(tc.slug, tc.origin)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("releaseDemoImportPlan error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestReleaseBackupSchedulePlanForArtifactSource(t *testing.T) {
 	plan, err := releaseBackupSchedulePlan("nathan77886/ass-ops", "production", "ubuntu-latest", "17 3 * * 1", "artifact:retained-assops-backup", "14")
 	if err != nil {
