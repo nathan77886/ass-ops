@@ -25045,7 +25045,9 @@ func TestAgentToolArmingSnapshotPayloadSanitizesEvidence(t *testing.T) {
 		snapshot["tool_allowlist_ready"] != true ||
 		snapshot["audit_evidence_observed"] != true ||
 		snapshot["terminal_audit_observed"] != true ||
+		snapshot["successful_audit_recorded"] != true ||
 		snapshot["sanitized_result_recorded"] != true ||
+		snapshot["successful_sanitized_result_recorded"] != true ||
 		snapshot["result_callback_observed"] != true ||
 		snapshot["arming_ready_for_operator_review"] != true ||
 		snapshot["tool_review_ready_for_operator"] != true ||
@@ -25066,6 +25068,112 @@ func TestAgentToolArmingSnapshotPayloadSanitizesEvidence(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("agent tool arming snapshot leaked %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestAgentToolArmingSnapshotBlocksFailedTerminalAudit(t *testing.T) {
+	task := map[string]any{
+		"id":         "task-1",
+		"project_id": "project-1",
+		"status":     "completed",
+	}
+	evidence := agentToolCallAuditEvidence([]map[string]any{
+		{"id": "call-1", "operation_run_id": "op-1", "tool_name": "runtime.check", "status": "failed"},
+		{"id": "call-2", "operation_run_id": "op-1", "tool_name": "patch.prepare", "status": "completed"},
+	})
+	if evidence["evidence_state"] != "failed" || evidence["sanitized_result_recorded"] != true {
+		t.Fatalf("failed terminal audit should still be recorded as terminal evidence: %#v", evidence)
+	}
+	dispatch := agentWorkerDispatchPlan(map[string]any{
+		"name":         "Demo Runtime",
+		"runtime_type": "codex-cli",
+		"codex_binary": "codex",
+		"status":       "verified",
+	}, evidence)
+	snapshot := agentToolArmingSnapshotPayload(task, dispatch, true)
+	ready, state, missing := agentToolArmingSnapshotReadiness(snapshot)
+	if ready ||
+		state != "failed" ||
+		snapshot["terminal_audit_observed"] != true ||
+		snapshot["successful_audit_recorded"] != false ||
+		snapshot["sanitized_result_recorded"] != true ||
+		snapshot["successful_sanitized_result_recorded"] != false ||
+		snapshot["arming_ready_for_operator_review"] != false ||
+		snapshot["tool_review_ready_for_operator"] != false {
+		t.Fatalf("failed terminal audit should not arm future tool invocation: ready=%v state=%s missing=%#v snapshot=%#v", ready, state, missing, snapshot)
+	}
+	for _, want := range []string{"successful_tool_call_audit", "sanitized_result_recording", "tool_execution_arming_not_ready", "tool_invocation_review_not_ready"} {
+		if !containsString(missing, want) {
+			t.Fatalf("failed terminal audit missing %s in %#v", want, missing)
+		}
+	}
+}
+
+func TestAgentToolArmingSnapshotBlocksNonSuccessfulTerminalAudits(t *testing.T) {
+	tests := []struct {
+		name      string
+		rows      []map[string]any
+		wantState string
+	}{
+		{
+			name: "canceled",
+			rows: []map[string]any{
+				{"id": "call-1", "operation_run_id": "op-1", "tool_name": "runtime.check", "status": "canceled"},
+			},
+			wantState: "canceled",
+		},
+		{
+			name: "mixed failed",
+			rows: []map[string]any{
+				{"id": "call-1", "operation_run_id": "op-1", "tool_name": "runtime.check", "status": "failed"},
+				{"id": "call-2", "operation_run_id": "op-1", "tool_name": "patch.prepare", "status": "canceled"},
+			},
+			wantState: "mixed_failed",
+		},
+		{
+			name: "unknown",
+			rows: []map[string]any{
+				{"id": "call-1", "operation_run_id": "op-1", "tool_name": "runtime.check", "status": "mystery"},
+			},
+			wantState: "unknown",
+		},
+		{
+			name: "absent",
+			rows: []map[string]any{
+				{"id": "call-1", "operation_run_id": "op-1", "tool_name": "runtime.check", "status": ""},
+			},
+			wantState: "absent",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evidence := agentToolCallAuditEvidence(tt.rows)
+			dispatch := agentWorkerDispatchPlan(map[string]any{
+				"name":         "Demo Runtime",
+				"runtime_type": "codex-cli",
+				"codex_binary": "codex",
+				"status":       "verified",
+			}, evidence)
+			snapshot := agentToolArmingSnapshotPayload(map[string]any{
+				"id":         "task-1",
+				"project_id": "project-1",
+			}, dispatch, true)
+			ready, state, missing := agentToolArmingSnapshotReadiness(snapshot)
+			if ready ||
+				state != tt.wantState ||
+				snapshot["terminal_audit_observed"] != true ||
+				snapshot["sanitized_result_recorded"] != true ||
+				snapshot["successful_audit_recorded"] != false ||
+				snapshot["successful_sanitized_result_recorded"] != false ||
+				snapshot["arming_ready_for_operator_review"] != false ||
+				snapshot["tool_review_ready_for_operator"] != false {
+				t.Fatalf("non-successful terminal audit should not arm: ready=%v state=%s missing=%#v snapshot=%#v", ready, state, missing, snapshot)
+			}
+			if !containsString(missing, "successful_tool_call_audit") ||
+				!containsString(missing, "sanitized_result_recording") {
+				t.Fatalf("non-successful terminal audit missing blockers: %#v", missing)
+			}
+		})
 	}
 }
 
@@ -25299,6 +25407,52 @@ func TestRecordAgentToolArmingSnapshotHandlerBlockedWithoutRuntime(t *testing.T)
 	if !containsString(stringSliceFromAny(got["missing_evidence"]), "runtime_metadata") ||
 		!containsString(stringSliceFromAny(got["missing_evidence"]), "tool_execution_arming_not_ready") {
 		t.Fatalf("runtime-blocked response missing evidence: %#v", got["missing_evidence"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAgentToolArmingSnapshotHandlerBlocksFailedTerminalAudit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectAgentToolAuditSnapshotTask(mock)
+	expectAgentToolAuditSnapshotCalls(mock, []agentToolAuditSnapshotCall{
+		{id: "call-1", status: "failed", toolName: "runtime.check"},
+	})
+	expectAgentToolArmingSnapshotRuntime(mock, true)
+	expectAgentToolAuditSnapshotAsset(mock, true)
+
+	req := newAgentToolArmingSnapshotRequest(`{}`)
+	rr := httptest.NewRecorder()
+	server.recordAgentToolArmingSnapshot(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["recording_state"] != "failed" ||
+		got["recording_ready"] != false ||
+		got["sanitized_result_recorded"] != true ||
+		got["successful_sanitized_result_recorded"] != false ||
+		got["arming_ready_for_operator_review"] != false ||
+		got["tool_review_ready_for_operator"] != false ||
+		got["agent_tool_arming_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("failed terminal audit should not write arming snapshot: %#v", got)
+	}
+	missing := stringSliceFromAny(got["missing_evidence"])
+	for _, want := range []string{"successful_tool_call_audit", "sanitized_result_recording"} {
+		if !containsString(missing, want) {
+			t.Fatalf("failed terminal audit response missing %s in %#v", want, missing)
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -27189,6 +27343,7 @@ func TestAgentWorkerDispatchPlanReconcilesToolCallAuditEvidence(t *testing.T) {
 		reviewPlan["audit_evidence_observed"] != true ||
 		reviewPlan["terminal_audit_observed"] != true ||
 		reviewPlan["sanitized_result_recorded"] != true ||
+		reviewPlan["successful_sanitized_result_recorded"] != true ||
 		reviewPlan["result_callback_wired"] != true ||
 		reviewPlan["result_callback_observed"] != true ||
 		reviewPlan["arming_ready_for_operator_review"] != true ||
@@ -27407,7 +27562,7 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 			t.Fatalf("tool arming required control missing %q: %#v", control, armingPlan["required_controls"])
 		}
 	}
-	for _, field := range []string{"runtime_metadata", "tool_allowlist", "tool_call_audit_evidence", "terminal_tool_call_audit", "result_callback"} {
+	for _, field := range []string{"runtime_metadata", "tool_allowlist", "tool_call_audit_evidence", "terminal_tool_call_audit", "successful_tool_call_audit", "result_callback"} {
 		if !containsString(stringSliceFromAny(armingPlan["required_evidence"]), field) {
 			t.Fatalf("tool arming required evidence missing %q: %#v", field, armingPlan["required_evidence"])
 		}
@@ -27474,22 +27629,25 @@ func assertAgentWorkerDispatchSubplansSafe(t *testing.T, got map[string]any) {
 	callbackPlan := mapFromAny(got["result_callback_plan"])
 	evidence := mapFromAny(got["tool_call_audit_evidence"])
 	hasAuditEvidence := boolOnlyFromAny(evidence["has_tool_call_audit"])
-	if hasAuditEvidence && boolOnlyFromAny(evidence["sanitized_result_recorded"]) && got["prerequisite_state"] == "metadata_available" {
+	successfulAuditRecorded := cleanPreviewString(evidence["evidence_state"]) == "recorded" && boolOnlyFromAny(evidence["sanitized_result_recorded"])
+	if hasAuditEvidence && successfulAuditRecorded && got["prerequisite_state"] == "metadata_available" {
 		if armingPlan["arming_state"] != "ready_for_operator_review" ||
 			armingPlan["arming_ready"] != true ||
 			armingPlan["audit_evidence_observed"] != true ||
 			armingPlan["terminal_audit_observed"] != true ||
+			armingPlan["successful_audit_recorded"] != true ||
 			armingPlan["result_callback_wired"] != true {
 			t.Fatalf("terminal audit evidence should make tool arming ready only for operator review: %#v", armingPlan)
 		}
 	} else if armingPlan["arming_ready"] == true {
 		t.Fatalf("tool arming cannot be ready without metadata and terminal audit evidence: %#v", armingPlan)
 	}
-	if hasAuditEvidence && boolOnlyFromAny(evidence["sanitized_result_recorded"]) && got["prerequisite_state"] == "metadata_available" {
+	if hasAuditEvidence && successfulAuditRecorded && got["prerequisite_state"] == "metadata_available" {
 		if reviewPlan["review_state"] != "ready_for_operator_review" ||
 			reviewPlan["review_ready"] != true ||
 			reviewPlan["audit_evidence_observed"] != true ||
 			reviewPlan["terminal_audit_observed"] != true ||
+			reviewPlan["successful_audit_recorded"] != true ||
 			reviewPlan["result_callback_wired"] != true ||
 			len(stringSliceFromAny(reviewPlan["missing_evidence"])) != 0 {
 			t.Fatalf("terminal audit evidence should make tool invocation review ready only for operator review: %#v", reviewPlan)
