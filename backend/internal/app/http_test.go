@@ -23673,6 +23673,303 @@ func TestProviderReviewAttemptAdapterBlueprintSnapshotPayloadRejectsMismatchedCa
 	}
 }
 
+func TestRecordProviderReviewAttemptInvocationSnapshotWritesContractReadyCandidate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_invocation_contract_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_invocation_contract_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptInvocationSnapshot(context.Background(), store, ProviderReviewAttemptInvocationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptInvocationSnapshot: %v", err)
+	}
+	if got["recording_state"] != "invocation_contract_ready" ||
+		got["recording_ready"] != true ||
+		got["provider_review_attempt_invocation_snapshot_written"] != true ||
+		got["asset_status_snapshot_written"] != true ||
+		got["attempt_claim_recorded"] != false ||
+		got["execution_lock_acquired"] != false ||
+		got["request_materialized"] != false ||
+		got["provider_request_sent"] != false ||
+		got["provider_api_call_made"] != false ||
+		got["provider_api_mutation"] != "disabled" {
+		t.Fatalf("unexpected provider review invocation snapshot response: %#v", got)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if snapshot["candidate_matches_attempt"] != true ||
+		snapshot["status_snapshot_write_eligible"] != true ||
+		snapshot["invocation_plan_observed"] != true ||
+		snapshot["invocation_contract_ready"] != true ||
+		snapshot["invocation_ready"] != false ||
+		snapshot["invocation_ready_reason"] != "provider_api_invocation_not_armed" ||
+		snapshot["execution_lock_plan_observed"] != true ||
+		snapshot["adapter_activation_plan_observed"] != true ||
+		snapshot["provider_send_plan_observed"] != true ||
+		snapshot["transaction_plan_observed"] != true ||
+		snapshot["attempt_claim_recorded"] != false ||
+		snapshot["idempotency_claim_recorded"] != false ||
+		snapshot["execution_lock_acquired"] != false ||
+		snapshot["adapter_activation_approved"] != false ||
+		snapshot["credential_bound"] != false ||
+		snapshot["adapter_runtime_bound"] != false ||
+		snapshot["branch_policy_verified"] != false ||
+		snapshot["request_materialized"] != false ||
+		snapshot["provider_request_sent"] != false ||
+		snapshot["response_recorded"] != false ||
+		snapshot["transaction_recorded"] != false ||
+		snapshot["contains_token"] != false ||
+		snapshot["contains_provider_url"] != false ||
+		snapshot["contains_repository_ref"] != false ||
+		snapshot["contains_branch_name"] != false ||
+		snapshot["contains_file_content"] != false {
+		t.Fatalf("unexpected provider review invocation snapshot payload: %#v", snapshot)
+	}
+	if len(stringSliceFromAny(snapshot["required_subplans"])) == 0 ||
+		len(stringSliceFromAny(snapshot["invocation_sequence"])) == 0 {
+		t.Fatalf("invocation snapshot should include sanitized sequence metadata: %#v", snapshot)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("invocation snapshot leaked %q: %s", leak, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptInvocationSnapshotAssetMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, false)
+
+	got, err := RecordProviderReviewAttemptInvocationSnapshot(context.Background(), store, ProviderReviewAttemptInvocationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptInvocationSnapshot asset missing: %v", err)
+	}
+	snapshot := mapFromAny(got["snapshot"])
+	if got["recording_state"] != "asset_missing" ||
+		got["recording_ready"] != false ||
+		got["provider_review_attempt_invocation_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false {
+		t.Fatalf("unexpected asset missing provider review invocation response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptInvocationSnapshotDryRunSkipsWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+
+	got, err := RecordProviderReviewAttemptInvocationSnapshot(context.Background(), store, ProviderReviewAttemptInvocationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptInvocationSnapshot dry run: %v", err)
+	}
+	if got["recording_ready"] != true ||
+		got["recording_enabled"] != false ||
+		got["dry_run"] != true ||
+		got["provider_review_attempt_invocation_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected dry-run provider review invocation response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordProviderReviewAttemptInvocationSnapshotRowsAffectedUnknownDoesNotClaimWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	expectProviderReviewAttemptSnapshotAsset(mock, true)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_invocation_contract_ready").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO asset_status_snapshots\(asset_id, status, health, summary, raw\)`).
+		WithArgs("asset-attempt-1", "provider_review_attempt_invocation_contract_ready", "low", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewErrorResult(fmt.Errorf("rows affected unavailable")))
+	mock.ExpectCommit()
+
+	got, err := RecordProviderReviewAttemptInvocationSnapshot(context.Background(), store, ProviderReviewAttemptInvocationSnapshotOptions{
+		AttemptID: "attempt-1",
+		Attempt:   attempt,
+		Ledger:    ledger,
+	})
+	if err != nil {
+		t.Fatalf("RecordProviderReviewAttemptInvocationSnapshot rows affected unknown: %v", err)
+	}
+	if got["rows_affected_unknown"] != true ||
+		got["snapshots_written"] != -1 ||
+		got["snapshots_skipped_as_duplicate"] != -1 ||
+		got["provider_review_attempt_invocation_snapshot_written"] != false ||
+		got["asset_status_snapshot_written"] != false {
+		t.Fatalf("unexpected rows affected unknown provider review invocation response: %#v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProviderReviewAttemptInvocationSnapshotPayloadRequiresInvocationPlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	delete(dispatchPlan, "invocation_plan")
+
+	snapshot := providerReviewAttemptInvocationSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptInvocationSnapshotReadiness(snapshot)
+	if ready ||
+		state != "invocation_blocked" ||
+		snapshot["invocation_plan_observed"] != false ||
+		snapshot["invocation_contract_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_invocation_plan_missing") {
+		t.Fatalf("invocation snapshot without invocation plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("invocation snapshot without invocation plan leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestProviderReviewAttemptInvocationSnapshotPayloadRejectsMismatchedPlan(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	invocationPlan := mapFromAny(dispatchPlan["invocation_plan"])
+	invocationPlan["operation_name"] = "commit_starter_files"
+	invocationPlan["endpoint_key"] = "github.commit_files"
+
+	snapshot := providerReviewAttemptInvocationSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptInvocationSnapshotReadiness(snapshot)
+	if ready ||
+		state != "invocation_blocked" ||
+		snapshot["invocation_plan_observed"] != true ||
+		snapshot["invocation_contract_ready"] != false ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_invocation_contract_not_ready") {
+		t.Fatalf("invocation snapshot with mismatched plan = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("invocation snapshot with mismatched plan leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestProviderReviewAttemptInvocationSnapshotPayloadRejectsProviderRequestSent(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	invocationPlan := mapFromAny(dispatchPlan["invocation_plan"])
+	invocationPlan["provider_request_sent"] = true
+
+	snapshot := providerReviewAttemptInvocationSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptInvocationSnapshotReadiness(snapshot)
+	if ready ||
+		state != "invocation_contract_ready" ||
+		snapshot["invocation_contract_ready"] != true ||
+		snapshot["provider_request_sent"] != true ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		!containsString(missing, "provider_review_invocation_not_no_call") {
+		t.Fatalf("invocation snapshot with provider request sent = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("invocation snapshot with provider request sent leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestProviderReviewAttemptInvocationSnapshotPayloadRejectsContainsToken(t *testing.T) {
+	attempt := providerReviewActivationSnapshotAttempt("planned", "independent")
+	ledger := providerReviewActivationSnapshotLedger(attempt)
+	orchestration := mapFromAny(ledger["orchestration"])
+	candidate := mapFromAny(orchestration["execution_candidate"])
+	dispatchPlan := mapFromAny(candidate["dispatch_plan"])
+	invocationPlan := mapFromAny(dispatchPlan["invocation_plan"])
+	invocationPlan["contains_token"] = true
+	invocationPlan["invocation_ready_reason"] = "secret-token"
+
+	snapshot := providerReviewAttemptInvocationSnapshotPayload(attempt, ledger, true)
+	ready, state, missing := providerReviewAttemptInvocationSnapshotReadiness(snapshot)
+	if ready ||
+		state != "invocation_contract_ready" ||
+		snapshot["invocation_contract_ready"] != true ||
+		snapshot["contains_token"] != true ||
+		snapshot["invocation_ready_reason"] != "" ||
+		snapshot["status_snapshot_write_eligible"] != false ||
+		snapshot["status_snapshot_written"] != false ||
+		!containsString(missing, "provider_review_invocation_not_no_call") {
+		t.Fatalf("invocation snapshot with token marker = snapshot %#v, ready %v, state %s, missing %#v", snapshot, ready, state, missing)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization", "request body", "response body", "idempotency_key_material"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("invocation snapshot with token marker leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
 func TestRecordProviderReviewAttemptBranchPolicySnapshotWritesMetadataReadyCandidate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -24663,6 +24960,25 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersWriteWhenRe
 			},
 		},
 		{
+			name: "invocation",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptInvocationSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptInvocationSnapshotRequest,
+			status:    "provider_review_attempt_invocation_contract_ready",
+			state:     "invocation_contract_ready",
+			health:    "low",
+			writeFlag: "provider_review_attempt_invocation_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["attempt_claim_recorded"] != false ||
+					got["execution_lock_acquired"] != false ||
+					got["provider_request_sent"] != false {
+					t.Fatalf("unexpected invocation snapshot response: %#v", got)
+				}
+			},
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -24931,6 +25247,41 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersBlockUnappr
 			},
 		},
 		{
+			name: "invocation",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptInvocationSnapshot(w, r)
+			},
+			request:   newProviderReviewAttemptInvocationSnapshotRequest,
+			writeFlag: "provider_review_attempt_invocation_snapshot_written",
+			extra: func(t *testing.T, got map[string]any) {
+				t.Helper()
+				if got["attempt_claim_recorded"] != false ||
+					got["idempotency_claim_recorded"] != false ||
+					got["execution_lock_acquired"] != false ||
+					got["adapter_activation_approved"] != false ||
+					got["credential_bound"] != false ||
+					got["adapter_runtime_bound"] != false ||
+					got["branch_policy_verified"] != false ||
+					got["request_materialized"] != false ||
+					got["provider_request_sent"] != false ||
+					got["response_recorded"] != false ||
+					got["transaction_recorded"] != false ||
+					got["dependency_update_recorded"] != false ||
+					got["mutation_armed"] != false ||
+					got["contains_token"] != false ||
+					got["contains_provider_url"] != false ||
+					got["contains_repository_ref"] != false ||
+					got["contains_branch_name"] != false ||
+					got["contains_file_content"] != false ||
+					got["status_snapshot_write_eligible"] != false ||
+					got["provider_review_attempt_asset_observed"] != false ||
+					got["operation_log_written"] != false ||
+					got["snapshot"] != nil {
+					t.Fatalf("invocation unapproved response should stay uncalled: %#v", got)
+				}
+			},
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -25071,6 +25422,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRejectWrong
 			request: newProviderReviewAttemptAdapterBlueprintSnapshotRequest,
 		},
 		{
+			name: "invocation",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptInvocationSnapshot(w, r)
+			},
+			request: newProviderReviewAttemptInvocationSnapshotRequest,
+		},
+		{
 			name: "execution-lock",
 			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
 				server.recordProviderReviewAttemptExecutionLockSnapshot(w, r)
@@ -25178,6 +25536,13 @@ func TestRecordProviderReviewAttemptActivationAndSendSnapshotHandlersRequireUpda
 				server.recordProviderReviewAttemptAdapterBlueprintSnapshot(w, r)
 			},
 			path: "/api/provider-review-attempts/attempt-1/adapter-blueprint-snapshot",
+		},
+		{
+			name: "invocation",
+			handler: func(server *Server, w http.ResponseWriter, r *http.Request) {
+				server.recordProviderReviewAttemptInvocationSnapshot(w, r)
+			},
+			path: "/api/provider-review-attempts/attempt-1/invocation-snapshot",
 		},
 		{
 			name: "execution-lock",
@@ -30706,6 +31071,12 @@ func newProviderReviewAttemptAdapterRehearsalSnapshotRequest(body string) *http.
 
 func newProviderReviewAttemptAdapterBlueprintSnapshotRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/adapter-blueprint-snapshot", strings.NewReader(body))
+	req = withRouteParam(req, "id", "attempt-1")
+	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+}
+
+func newProviderReviewAttemptInvocationSnapshotRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/provider-review-attempts/attempt-1/invocation-snapshot", strings.NewReader(body))
 	req = withRouteParam(req, "id", "attempt-1")
 	return req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
 }
