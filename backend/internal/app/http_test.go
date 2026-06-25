@@ -681,6 +681,8 @@ func TestArgoPodLogQueryPreviewReconcilesAuditEvidence(t *testing.T) {
 	if resultPlan["recording_state"] != "recorded" ||
 		resultPlan["result_written"] != true ||
 		resultPlan["operation_log_written"] != true ||
+		resultPlan["canonical_asset_sync_queued"] != true ||
+		resultPlan["status_snapshot_written"] != true ||
 		resultPlan["audit_operation_observed"] != true ||
 		resultPlan["sanitized_result_observed"] != true ||
 		resultPlan["kubeconfig_binding_recorded"] != false ||
@@ -707,6 +709,124 @@ func TestArgoPodLogQueryPreviewReconcilesAuditEvidence(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("pod log evidence leaked %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestArgoPodLogQueryPreviewDoesNotRecordResultWhileAuditWorkerRuns(t *testing.T) {
+	preview := argoPodLogQueryPreview("api-7d9f", "web", 500, 30, map[string]any{
+		"id":           "target-1",
+		"name":         "prod",
+		"environment":  "prod",
+		"cluster_name": "prod-cluster",
+		"namespace":    "billing",
+		"status":       "Healthy",
+	}, []map[string]any{
+		{"id": "op-pod-logs-1", "status": "completed", "operation_log_count": int64(2), "input": map[string]any{"log_body": "actual log line"}},
+		{"id": "op-pod-logs-2", "status": "running", "operation_log_count": int64(1), "input": map[string]any{"kubeconfig": "secret kubeconfig"}},
+	})
+	evidence := mapFromAny(preview["audit_evidence"])
+	if evidence["evidence_state"] != "waiting_for_worker" ||
+		evidence["sanitized_result_recorded"] != false ||
+		intFromAny(evidence["completed_count"], 0) != 1 ||
+		intFromAny(evidence["running_count"], 0) != 1 ||
+		intFromAny(evidence["active_count"], 0) != 1 ||
+		intFromAny(evidence["operation_log_count"], 0) != 3 {
+		t.Fatalf("mixed active pod log audit evidence should wait for terminal result: %#v", evidence)
+	}
+	executionPlan := mapFromAny(mapFromAny(preview["retrieval_plan"])["execution_plan"])
+	resultPlan := mapFromAny(executionPlan["result_recording_plan"])
+	if resultPlan["recording_state"] != "waiting_for_worker" ||
+		resultPlan["result_written"] != false ||
+		resultPlan["operation_log_written"] != false ||
+		resultPlan["canonical_asset_sync_queued"] != false ||
+		resultPlan["status_snapshot_written"] != false ||
+		resultPlan["sanitized_result_observed"] != false {
+		t.Fatalf("pod log result plan should not write while an audit worker is active: %#v", resultPlan)
+	}
+	liveStreamPlan := mapFromAny(executionPlan["live_log_stream_plan"])
+	if liveStreamPlan["stream_ready_for_review"] != false ||
+		liveStreamPlan["sanitized_result_observed"] != false ||
+		liveStreamPlan["result_recording_observed"] != false {
+		t.Fatalf("active pod log audit should not make live stream review ready: %#v", liveStreamPlan)
+	}
+	kubeconfigReadiness := mapFromAny(executionPlan["kubeconfig_readiness_plan"])
+	if kubeconfigReadiness["readiness_state"] != "waiting_for_worker" ||
+		kubeconfigReadiness["readiness_ready"] != false ||
+		kubeconfigReadiness["sanitized_audit_result_observed"] != false {
+		t.Fatalf("active pod log audit should not make kubeconfig binding review ready: %#v", kubeconfigReadiness)
+	}
+	encoded, _ := json.Marshal(preview)
+	for _, forbidden := range []string{"secret kubeconfig", "actual log line"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("mixed active pod log evidence leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestArgoPodLogQueryPreviewDoesNotRecordResultForUnsuccessfulTerminalAudit(t *testing.T) {
+	tests := []struct {
+		name      string
+		rows      []map[string]any
+		wantState string
+	}{
+		{
+			name:      "failed only",
+			rows:      []map[string]any{{"id": "op-pod-logs-failed", "status": "failed", "operation_log_count": int64(2), "input": map[string]any{"log_body": "actual log line"}}},
+			wantState: "failed",
+		},
+		{
+			name:      "canceled only",
+			rows:      []map[string]any{{"id": "op-pod-logs-canceled", "status": "canceled", "operation_log_count": int64(2), "input": map[string]any{"kubeconfig": "secret kubeconfig"}}},
+			wantState: "canceled",
+		},
+		{
+			name: "failed takes priority over completed",
+			rows: []map[string]any{
+				{"id": "op-pod-logs-completed", "status": "completed", "operation_log_count": int64(2), "input": map[string]any{"log_body": "actual log line"}},
+				{"id": "op-pod-logs-failed", "status": "failed", "operation_log_count": int64(1), "input": map[string]any{"kubeconfig": "secret kubeconfig"}},
+			},
+			wantState: "failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			preview := argoPodLogQueryPreview("api-7d9f", "web", 500, 30, map[string]any{
+				"id":           "target-1",
+				"name":         "prod",
+				"environment":  "prod",
+				"cluster_name": "prod-cluster",
+				"namespace":    "billing",
+				"status":       "Healthy",
+			}, tt.rows)
+			evidence := mapFromAny(preview["audit_evidence"])
+			if evidence["evidence_state"] != tt.wantState ||
+				evidence["sanitized_result_recorded"] != false ||
+				intFromAny(evidence["active_count"], 0) != 0 {
+				t.Fatalf("unsuccessful terminal pod log audit should not record sanitized result: %#v", evidence)
+			}
+			executionPlan := mapFromAny(mapFromAny(preview["retrieval_plan"])["execution_plan"])
+			resultPlan := mapFromAny(executionPlan["result_recording_plan"])
+			if resultPlan["recording_state"] != tt.wantState ||
+				resultPlan["result_written"] != false ||
+				resultPlan["operation_log_written"] != false ||
+				resultPlan["canonical_asset_sync_queued"] != false ||
+				resultPlan["status_snapshot_written"] != false ||
+				resultPlan["sanitized_result_observed"] != false {
+				t.Fatalf("unsuccessful terminal pod log result plan should not write: %#v", resultPlan)
+			}
+			liveStreamPlan := mapFromAny(executionPlan["live_log_stream_plan"])
+			if liveStreamPlan["stream_ready_for_review"] != false ||
+				liveStreamPlan["sanitized_result_observed"] != false ||
+				liveStreamPlan["result_recording_observed"] != false {
+				t.Fatalf("unsuccessful terminal pod log audit should not make live stream review ready: %#v", liveStreamPlan)
+			}
+			encoded, _ := json.Marshal(preview)
+			for _, forbidden := range []string{"secret kubeconfig", "actual log line"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("unsuccessful terminal pod log evidence leaked %q: %s", forbidden, encoded)
+				}
+			}
+		})
 	}
 }
 
@@ -1181,8 +1301,8 @@ func TestArgoPodLogAuditEvidenceStatusCombinations(t *testing.T) {
 	}{
 		{name: "completed with audit log records sanitized result", statuses: []string{"completed"}, logCounts: []int{1}, wantState: "recorded", wantSanitized: true},
 		{name: "completed without audit log is not sanitized result", statuses: []string{"completed"}, wantState: "recorded", wantSanitized: false},
-		{name: "running waits", statuses: []string{"running", "completed"}, logCounts: []int{1, 1}, wantState: "waiting_for_worker", wantSanitized: true},
-		{name: "failed terminal", statuses: []string{"failed", "completed"}, logCounts: []int{1, 1}, wantState: "failed", wantSanitized: true},
+		{name: "running waits", statuses: []string{"running", "completed"}, logCounts: []int{1, 1}, wantState: "waiting_for_worker", wantSanitized: false},
+		{name: "failed terminal", statuses: []string{"failed", "completed"}, logCounts: []int{1, 1}, wantState: "failed", wantSanitized: false},
 		{name: "canceled terminal", statuses: []string{"canceled"}, wantState: "canceled"},
 		{name: "unknown terminal", statuses: []string{"mystery"}, wantState: "unknown"},
 		{name: "empty not requested", wantState: "not_requested"},
@@ -1734,6 +1854,9 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 	if hasAuditEvidence && executionPlan["prerequisite_state"] == "metadata_available" {
 		if resultPlan["audit_operation_observed"] != true ||
 			resultPlan["result_written"] != hasSanitizedResult ||
+			resultPlan["operation_log_written"] != hasSanitizedResult ||
+			resultPlan["canonical_asset_sync_queued"] != hasSanitizedResult ||
+			resultPlan["status_snapshot_written"] != hasSanitizedResult ||
 			resultPlan["sanitized_result_observed"] != hasSanitizedResult ||
 			resultPlan["recording_state"] != evidence["evidence_state"] {
 			t.Fatalf("pod log result recording plan should reflect sanitized evidence only: result=%#v evidence=%#v", resultPlan, evidence)
@@ -1749,7 +1872,7 @@ func assertPodLogExecutionPlanSafe(t *testing.T, executionPlan map[string]any) {
 		t.Fatalf("pod log result recording plan should not report writes without evidence: %#v", resultPlan)
 	}
 	if executionPlan["prerequisite_state"] == "metadata_available" {
-		if !hasAuditEvidence && (resultPlan["recording_state"] != "planned" || resultPlan["recording_ready"] != true || resultPlan["recording_enabled"] != true || resultPlan["status_snapshot_written"] != true || resultPlan["canonical_asset_sync_queued"] != true) {
+		if !hasAuditEvidence && (resultPlan["recording_state"] != "planned" || resultPlan["recording_ready"] != true || resultPlan["recording_enabled"] != true || resultPlan["status_snapshot_written"] != false || resultPlan["canonical_asset_sync_queued"] != false) {
 			t.Fatalf("metadata-ready pod log result recording plan should be planned for sanitized audit metadata: %#v", resultPlan)
 		}
 	} else if resultPlan["recording_state"] != "blocked" || resultPlan["recording_ready"] != false || resultPlan["recording_enabled"] != false {

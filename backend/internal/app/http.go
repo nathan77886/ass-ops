@@ -22722,7 +22722,6 @@ func argoPodLogAuditEvidenceSummary(rows []map[string]any) map[string]any {
 	}
 	operationCount := len(rows)
 	activeCount := queued + running
-	sanitizedRecorded := completed > 0 && logCount > 0
 	evidenceState := "not_requested"
 	if operationCount > 0 {
 		evidenceState = "waiting_for_worker"
@@ -22738,6 +22737,7 @@ func argoPodLogAuditEvidenceSummary(rows []map[string]any) map[string]any {
 			}
 		}
 	}
+	sanitizedRecorded := evidenceState == "recorded" && logCount > 0
 	return map[string]any{
 		"mode":                       "pod_log_audit_evidence_summary",
 		"operation_count":            operationCount,
@@ -22801,9 +22801,9 @@ func argoPodLogResultRecordingPlan(auditReady bool, evidence, query, target map[
 		"recording_ready_reason":        readyReason,
 		"recording_enabled":             auditReady,
 		"result_written":                resultObserved,
-		"operation_log_written":         auditReady && intFromAny(evidence["operation_log_count"], 0) > 0,
-		"canonical_asset_sync_queued":   auditReady,
-		"status_snapshot_written":       auditReady,
+		"operation_log_written":         resultObserved,
+		"canonical_asset_sync_queued":   resultObserved,
+		"status_snapshot_written":       resultObserved,
 		"audit_operation_observed":      boolOnlyFromAny(evidence["has_audit_operations"]),
 		"sanitized_result_observed":     resultObserved,
 		"kubeconfig_binding_recorded":   false,
