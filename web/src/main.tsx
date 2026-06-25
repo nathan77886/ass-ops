@@ -2258,6 +2258,8 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
           </Tag>
           <Tag>{armingSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
           <Tag>{armingSnapshotResult.operation_approval_asset_observed ? 'approval asset observed' : 'approval asset missing'}</Tag>
+          <Tag>{armingSnapshotResult.snapshot?.attempt_live_execution_readiness_complete ? 'attempt readiness complete' : 'attempt readiness missing'}</Tag>
+          <Tag>{Number(armingSnapshotResult.snapshot?.attempt_live_execution_readiness_count || 0)}/{Number(armingSnapshotResult.snapshot?.attempt_count || 0)} attempt readiness</Tag>
           <Tag>{armingSnapshotResult.mutation_armed ? 'mutation armed' : 'mutation off'}</Tag>
           <Tag>{armingSnapshotResult.provider_api_call_made ? 'api called' : 'no api call'}</Tag>
         </Space>

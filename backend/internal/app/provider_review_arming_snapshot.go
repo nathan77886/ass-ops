@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 type ProviderReviewMutationArmingSnapshotOptions struct {
-	OperationApprovalID string
-	DryRun              bool
-	Approval            map[string]any
-	AttemptLedger       map[string]any
+	OperationApprovalID           string
+	DryRun                        bool
+	Approval                      map[string]any
+	AttemptLedger                 map[string]any
+	AttemptLiveExecutionReadiness map[string]bool
 }
 
 func RecordProviderReviewMutationArmingSnapshot(ctx context.Context, store *Store, opts ProviderReviewMutationArmingSnapshotOptions) (map[string]any, error) {
@@ -38,8 +41,15 @@ func RecordProviderReviewMutationArmingSnapshot(ctx context.Context, store *Stor
 			return nil, err
 		}
 	}
+	liveReadiness := opts.AttemptLiveExecutionReadiness
+	if liveReadiness == nil && providerReviewAttemptLedgerAttemptCount(ledger) > 0 {
+		liveReadiness, err = providerReviewAttemptLiveExecutionReadinessForArmingSnapshot(ctx, store, ledger)
+		if err != nil {
+			return nil, err
+		}
+	}
 	assetID, assetErr := operationApprovalAssetID(ctx, store, approvalID)
-	snapshot := providerReviewMutationArmingSnapshotPayload(approval, ledger, assetErr == nil)
+	snapshot := providerReviewMutationArmingSnapshotPayload(approval, ledger, assetErr == nil, liveReadiness)
 	ready, state, missing := providerReviewMutationArmingSnapshotReadiness(snapshot)
 	result := map[string]any{
 		"mode":                              "provider_review_mutation_arming_snapshot_recording",
@@ -191,6 +201,32 @@ func providerReviewAttemptLedgerForApprovalSnapshot(ctx context.Context, store *
 	return providerReviewAttemptLedgerSummary(attempts), nil
 }
 
+func providerReviewAttemptLiveExecutionReadinessForArmingSnapshot(ctx context.Context, store *Store, ledger map[string]any) (map[string]bool, error) {
+	attemptIDs := providerReviewAttemptLedgerAttemptIDs(ledger)
+	if len(attemptIDs) == 0 {
+		return map[string]bool{}, nil
+	}
+	rows, err := queryMaps(ctx, store.DB, `
+		SELECT DISTINCT a.source_id::text AS attempt_id
+		FROM assets a
+		JOIN asset_status_snapshots snapshot ON snapshot.asset_id=a.id
+		WHERE a.asset_type='provider_review_attempt'
+			AND a.source_table='provider_review_attempts'
+			AND a.source_id::text = ANY($1)
+			AND snapshot.status='provider_review_attempt_live_execution_review_ready'`, pq.Array(attemptIDs))
+	if err != nil {
+		return nil, err
+	}
+	observed := map[string]bool{}
+	for _, row := range rows {
+		id := cleanOptionalID(fmt.Sprint(row["attempt_id"]))
+		if id != "" {
+			observed[id] = true
+		}
+	}
+	return observed, nil
+}
+
 func operationApprovalAssetID(ctx context.Context, store *Store, approvalID string) (string, error) {
 	row, err := queryOne(ctx, store.DB, `
 		SELECT id::text AS id
@@ -212,7 +248,7 @@ func operationApprovalAssetID(ctx context.Context, store *Store, approvalID stri
 	return assetID, nil
 }
 
-func providerReviewMutationArmingSnapshotPayload(approval, ledger map[string]any, assetObserved bool) map[string]any {
+func providerReviewMutationArmingSnapshotPayload(approval, ledger map[string]any, assetObserved bool, liveReadiness map[string]bool) map[string]any {
 	audit := operationApprovalPayloadAudit(approval)
 	reconciliation := mapFromAny(audit["provider_review_reconciliation"])
 	if len(reconciliation) == 0 {
@@ -222,8 +258,10 @@ func providerReviewMutationArmingSnapshotPayload(approval, ledger map[string]any
 	rehearsal := mapFromAny(reconciliation["adapter_rehearsal"])
 	blueprint := mapFromAny(reconciliation["execution_blueprint"])
 	executionRequest := mapFromAny(audit["execution_request"])
-	attemptCount := intFromAny(ledger["attempt_count"], 0)
-	statusSnapshotWriteEligible := assetObserved && attemptCount > 0
+	attemptCount := providerReviewAttemptLedgerAttemptCount(ledger)
+	liveReadinessEvidence, liveReadinessObserved := providerReviewAttemptLiveExecutionReadinessEvidence(ledger, liveReadiness)
+	liveReadinessComplete := attemptCount > 0 && liveReadinessObserved == attemptCount
+	statusSnapshotWriteEligible := assetObserved && attemptCount > 0 && liveReadinessComplete
 	return map[string]any{
 		"mode":                                      "provider_review_mutation_arming_snapshot",
 		"operation_approval_id":                     cleanOptionalID(fmt.Sprint(approval["id"])),
@@ -252,6 +290,10 @@ func providerReviewMutationArmingSnapshotPayload(approval, ledger map[string]any
 		"live_adapter_implemented":                  false,
 		"attempt_ledger_observed":                   attemptCount > 0,
 		"attempt_count":                             attemptCount,
+		"attempt_live_execution_readiness_required": true,
+		"attempt_live_execution_readiness_complete": liveReadinessComplete,
+		"attempt_live_execution_readiness_count":    liveReadinessObserved,
+		"attempt_live_execution_readiness_evidence": liveReadinessEvidence,
 		"next_attempt_operation":                    cleanOptionalText(stringFromMap(mapFromAny(ledger["orchestration"]), "next_operation")),
 		"attempt_dependency_chain_status":           cleanOptionalText(stringFromMap(mapFromAny(ledger["orchestration"]), "dependency_chain_status")),
 		"blocked_reasons":                           safeProviderReviewBlockedReasons(stringSliceFromAny(armingPlan["blocked_reasons"])),
@@ -303,6 +345,9 @@ func providerReviewMutationArmingSnapshotReadiness(snapshot map[string]any) (boo
 	if !boolOnlyFromAny(snapshot["attempt_ledger_observed"]) {
 		missing = append(missing, "provider_review_attempt_ledger")
 	}
+	if !boolOnlyFromAny(snapshot["attempt_live_execution_readiness_complete"]) {
+		missing = append(missing, "provider_review_attempt_live_execution_readiness")
+	}
 	if boolOnlyFromAny(snapshot["provider_api_call_made"]) ||
 		boolOnlyFromAny(snapshot["external_call_made"]) ||
 		stringFromMap(snapshot, "provider_api_mutation") != "disabled" ||
@@ -313,6 +358,69 @@ func providerReviewMutationArmingSnapshotReadiness(snapshot map[string]any) (boo
 		return false, state, missing
 	}
 	return true, "ready_for_operator_review", nil
+}
+
+func providerReviewAttemptLedgerAttemptCount(ledger map[string]any) int {
+	if count := intFromAny(ledger["attempt_count"], 0); count > 0 {
+		return count
+	}
+	// If callers omit attempt_count, fall back to operations; mismatched count vs operations blocks readiness.
+	return len(providerReviewAttemptLedgerOperationsFromAny(ledger["operations"]))
+}
+
+func providerReviewAttemptLedgerAttemptIDs(ledger map[string]any) []string {
+	operations := providerReviewAttemptLedgerOperationsFromAny(ledger["operations"])
+	ids := make([]string, 0, len(operations))
+	seen := map[string]bool{}
+	for _, operation := range operations {
+		id := cleanOptionalID(fmt.Sprint(operation["id"]))
+		if id == "" || seen[id] {
+			continue
+		}
+		ids = append(ids, id)
+		seen[id] = true
+	}
+	return ids
+}
+
+func providerReviewAttemptLiveExecutionReadinessEvidence(ledger map[string]any, observed map[string]bool) ([]map[string]any, int) {
+	if observed == nil {
+		observed = map[string]bool{}
+	}
+	operations := providerReviewAttemptLedgerOperationsFromAny(ledger["operations"])
+	evidence := make([]map[string]any, 0, len(operations))
+	observedCount := 0
+	for _, operation := range operations {
+		id := cleanOptionalID(fmt.Sprint(operation["id"]))
+		ready := id != "" && observed[id]
+		if ready {
+			observedCount++
+		}
+		evidence = append(evidence, map[string]any{
+			"operation_name": cleanOptionalText(stringFromMap(operation, "name")),
+			"endpoint_key":   cleanOptionalText(stringFromMap(operation, "endpoint_key")),
+			"status":         cleanOptionalText(stringFromMap(operation, "status")),
+			"observed":       ready,
+		})
+	}
+	return evidence, observedCount
+}
+
+func providerReviewAttemptLedgerOperationsFromAny(value any) []map[string]any {
+	switch typed := value.(type) {
+	case []map[string]any:
+		return typed
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			if row := mapFromAny(item); len(row) > 0 {
+				out = append(out, row)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func providerReviewMutationArmingSnapshotStatusHealth(state string) (string, string) {

@@ -14573,7 +14573,11 @@ func (s *Server) recordProviderReviewMutationArmingSnapshot(w http.ResponseWrite
 		AttemptLedger:       ledger,
 	})
 	if err != nil {
-		s.log.Warn("provider review mutation arming snapshot failed", "operation_approval_id", approvalID, "error", err)
+		log := s.log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("provider review mutation arming snapshot failed", "operation_approval_id", approvalID, "error", err)
 		writeError(w, http.StatusInternalServerError, "record provider review mutation arming snapshot failed")
 		return
 	}
