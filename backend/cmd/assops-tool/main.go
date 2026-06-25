@@ -172,6 +172,17 @@ func run() error {
 			fmt.Print(plan)
 			return nil
 		}
+		if (len(args) == 4 || len(args) == 5) && args[1] == "config-rehearsal-plan" {
+			plan, err := releaseConfigRehearsalPlan(args[2], args[3])
+			if err != nil {
+				return err
+			}
+			if len(args) == 5 {
+				return writeTextFile(args[4], plan)
+			}
+			fmt.Print(plan)
+			return nil
+		}
 		if (len(args) == 5 || len(args) == 6) && args[1] == "branch-protection-plan" {
 			plan, err := releaseBranchProtectionPlan(args[2], args[3], args[4])
 			if err != nil {
@@ -188,7 +199,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release ssh-rehearsal-plan PROJECT_SLUG ENVIRONMENT [OUTPUT_FILE]|release tag-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release ssh-rehearsal-plan PROJECT_SLUG ENVIRONMENT [OUTPUT_FILE]|release tag-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release config-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -1253,6 +1264,76 @@ func releaseTagRehearsalPlan(projectSlug, remoteKey string) (string, error) {
 	fmt.Fprintf(&b, "# In ASSOPS UI: Repo Sync -> selected tag run -> Record tag and Actions snapshots\n")
 	fmt.Fprintf(&b, "```\n\n")
 	fmt.Fprintf(&b, "Run the real tag rehearsal only after the target remote, approval policy, credential scope, tag protection posture, and Actions refresh expectations are confirmed out of band.\n")
+	return b.String(), nil
+}
+
+func releaseConfigRehearsalPlan(projectSlug, remoteKey string) (string, error) {
+	projectSlug = strings.ToLower(strings.TrimSpace(projectSlug))
+	if !isSafeProjectSlug(projectSlug) {
+		return "", fmt.Errorf("project slug must contain letters or numbers and may include only internal dot, underscore, or hyphen")
+	}
+	remoteKey = strings.ToLower(strings.TrimSpace(remoteKey))
+	if !isSafeProjectSlug(remoteKey) {
+		return "", fmt.Errorf("remote key must contain letters or numbers and may include only internal dot, underscore, or hyphen")
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# ASSOPS Config Repository Rehearsal Plan\n\n")
+	fmt.Fprintf(&b, "Project slug: `%s`\n\n", projectSlug)
+	fmt.Fprintf(&b, "Remote key: `%s`\n\n", remoteKey)
+	fmt.Fprintf(&b, "## Local Validation\n\n")
+	fmt.Fprintf(&b, "- Project slug and remote key are safe local identifiers for matching ASSOPS config repository evidence.\n")
+	fmt.Fprintf(&b, "- This plan intentionally does not accept branch names, commit SHAs, refs, remote URLs, file contents, provider URLs, token names, Git output, provider responses, or operator notes as inputs.\n")
+	fmt.Fprintf(&b, "- This plan does not run Git, create files, commit, push, call providers, update ProjectVersion rows, enqueue workers, write operation logs, sync assets, pin config commits, or record snapshots.\n\n")
+	fmt.Fprintf(&b, "## Live Rehearsal Sequence\n\n")
+	for index, step := range []string{
+		"Confirm the logical repository is project-owned, has `repo_role=config`, and uses the selected config remote.",
+		"Review the read-only scaffold preview for `envs/dev`, `envs/test`, `envs/prod`, values examples, secrets examples, and README paths without copying file contents into release notes.",
+		"Run local workspace review and secret scanning before requesting the approval-gated `config.git_commit` audit workflow.",
+		"Request the `config.git_commit` operation only after approval, credential scope review, and protected-branch/review policy review are complete.",
+		"Wait for terminal sanitized config Git commit operation/log evidence before treating the audit workflow as recorded.",
+		"Run the read-only config refs refresh (`git.refs.refresh`) after provider review and wait for terminal sanitized ref-refresh evidence.",
+		"Record the config ref-refresh snapshot from terminal sanitized evidence only.",
+		"Record the config promotion snapshot only after audit evidence and provider-reviewed live workflow evidence are promotion-review-ready.",
+		"Run `assops-tool db pin-config-commit --project-version-id <project-version-id> --repository-id <config-repository-id> --remote-id <config-remote-id> --dry-run` before any non-dry-run ProjectVersion pin.",
+	} {
+		fmt.Fprintf(&b, "%d. %s\n", index+1, step)
+	}
+	fmt.Fprintf(&b, "\n## Required Evidence\n\n")
+	for _, item := range []string{
+		"project-owned ProjectGitRepository asset with repo_role=config",
+		"project-owned config Git remote asset for the selected remote key",
+		"config scaffold preview review status",
+		"approval request for config.git_commit",
+		"terminal sanitized config.git_commit operation/log evidence",
+		"terminal sanitized git.refs.refresh evidence",
+		"config ref-refresh snapshot status",
+		"config promotion snapshot status",
+		"dry-run pin-config-commit result",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## Suppressed Material\n\n")
+	for _, item := range []string{
+		"branch names, commit SHAs, refs, and remote URLs",
+		"file contents, config values, secrets examples, and generated manifest bodies",
+		"provider URLs, provider request IDs, PR or MR URLs, workflow URLs, and run IDs",
+		"provider tokens, authorization headers, credentials, and token env names",
+		"Git stdout/stderr, command output, commit messages, and diff bodies",
+		"provider request/response bodies, workflow logs, raw error details, and operator notes",
+	} {
+		fmt.Fprintf(&b, "- `%s`\n", item)
+	}
+	fmt.Fprintf(&b, "\n## No-Call Boundary\n\n")
+	fmt.Fprintf(&b, "- This plan is local documentation only; it does not run Git, create files, commit, push refs, call providers, update ProjectVersion rows, enqueue workers, write operation logs, sync assets, pin config commits, or record snapshots.\n")
+	fmt.Fprintf(&b, "- File creation, commit/push execution, provider review, refs refresh, promotion snapshot, and ProjectVersion pinning remain operator-owned staging tasks.\n\n")
+	fmt.Fprintf(&b, "## Verification Commands\n\n```bash\n")
+	fmt.Fprintf(&b, "assops-tool project readiness\n")
+	fmt.Fprintf(&b, "assops-tool db pin-config-commit --project-version-id <project-version-id> --repository-id <config-repository-id> --remote-id <config-remote-id> --dry-run\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: Project -> config repository -> Refresh config refs\n")
+	fmt.Fprintf(&b, "# In ASSOPS UI: Project -> config repository -> Record refs snapshot / Record promotion snapshot\n")
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "Run the real config Git workflow only after scaffold review, secret scanning, approval policy, credential scope, branch protection, provider review, and ProjectVersion pin ownership are confirmed out of band.\n")
 	return b.String(), nil
 }
 

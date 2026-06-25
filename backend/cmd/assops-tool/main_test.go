@@ -2531,6 +2531,8 @@ func TestReleaseDemoImportPlan(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
+		// Config plans must never include concrete ref, file, provider, or command-output examples.
+		// Descriptive suppressed-material labels such as "token names" remain allowed above.
 		"Authorization:",
 		"token=",
 		"password=",
@@ -2796,6 +2798,77 @@ func TestReleaseTagRehearsalPlanRejectsUnsafeInput(t *testing.T) {
 			_, err := releaseTagRehearsalPlan(tc.slug, tc.remoteKey)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("releaseTagRehearsalPlan error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReleaseConfigRehearsalPlan(t *testing.T) {
+	plan, err := releaseConfigRehearsalPlan("ASSOPS-Demo", "GitHub-Config")
+	if err != nil {
+		t.Fatalf("releaseConfigRehearsalPlan: %v", err)
+	}
+	for _, want := range []string{
+		"# ASSOPS Config Repository Rehearsal Plan",
+		"Project slug: `assops-demo`",
+		"Remote key: `github-config`",
+		"does not accept branch names, commit SHAs, refs, remote URLs, file contents, provider URLs, token names, Git output, provider responses, or operator notes as inputs",
+		"does not run Git, create files, commit, push, call providers, update ProjectVersion rows, enqueue workers, write operation logs, sync assets, pin config commits, or record snapshots",
+		"`repo_role=config`",
+		"approval-gated `config.git_commit` audit workflow",
+		"read-only config refs refresh (`git.refs.refresh`)",
+		"config ref-refresh snapshot status",
+		"config promotion snapshot status",
+		"dry-run pin-config-commit result",
+		"branch names, commit SHAs, refs, and remote URLs",
+		"Git stdout/stderr",
+		"does not run Git, create files, commit, push refs, call providers, update ProjectVersion rows, enqueue workers, write operation logs, sync assets, pin config commits, or record snapshots",
+		"assops-tool db pin-config-commit --project-version-id <project-version-id> --repository-id <config-repository-id> --remote-id <config-remote-id> --dry-run",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("config rehearsal plan missing %q in:\n%s", want, plan)
+		}
+	}
+	for _, forbidden := range []string{
+		"Authorization:",
+		"token=",
+		"password=",
+		"PRIVATE KEY",
+		"refs/heads/",
+		"abcdef0123456789abcdef0123456789abcdef01",
+		"https://github.com/",
+		"values.yaml:",
+		"application.yaml:",
+		"provider response:",
+		"git push",
+	} {
+		if strings.Contains(plan, forbidden) {
+			t.Fatalf("config rehearsal plan should not contain %q:\n%s", forbidden, plan)
+		}
+	}
+}
+
+func TestReleaseConfigRehearsalPlanRejectsUnsafeInput(t *testing.T) {
+	cases := []struct {
+		name      string
+		slug      string
+		remoteKey string
+		want      string
+	}{
+		{name: "empty slug", slug: "", remoteKey: "github-config", want: "project slug"},
+		{name: "slash slug", slug: "owner/repo", remoteKey: "github-config", want: "project slug"},
+		{name: "leading dot slug", slug: ".assops", remoteKey: "github-config", want: "project slug"},
+		{name: "trailing dot slug", slug: "assops.", remoteKey: "github-config", want: "project slug"},
+		{name: "empty remote key", slug: "assops-demo", remoteKey: "", want: "remote key"},
+		{name: "remote key slash", slug: "assops-demo", remoteKey: "github/config", want: "remote key"},
+		{name: "remote key leading dot", slug: "assops-demo", remoteKey: ".github", want: "remote key"},
+		{name: "remote key trailing dot", slug: "assops-demo", remoteKey: "github.", want: "remote key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := releaseConfigRehearsalPlan(tc.slug, tc.remoteKey)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("releaseConfigRehearsalPlan error = %v, want containing %q", err, tc.want)
 			}
 		})
 	}
