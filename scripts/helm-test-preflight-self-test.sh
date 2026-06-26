@@ -39,6 +39,7 @@ fi
 if [[ "$1" == "-n" && "$3" == "get" && "$4" == "secret" ]]; then
   python3 - <<'PY'
 import json
+import base64
 
 keys = [
     "DATABASE_URL",
@@ -51,9 +52,19 @@ keys = [
     "ASSOPS_ARGO_READ_TOKEN",
     "test-assops-reader.yaml",
 ]
-print(json.dumps({"data": {key: "cHJlc2VudA==" for key in keys}}))
+data = {key: "cHJlc2VudA==" for key in keys}
+data["test-assops-reader.yaml"] = base64.b64encode(b"apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\nusers: []\n").decode()
+print(json.dumps({"data": data}))
 PY
   exit 0
+fi
+if [[ "$1" == "--kubeconfig" && "$5" == "auth" && "$6" == "can-i" ]]; then
+  case "$7 $8" in
+    "get pods"|"get pods/log"|"patch deployments")
+      printf 'yes\n'
+      exit 0
+      ;;
+  esac
 fi
 echo "unexpected kubectl args: $*" >&2
 exit 1
@@ -79,3 +90,44 @@ fi
 grep -q 'kubectl get namespace assops-test' "$log"
 grep -q 'kubectl -n assops-test get secret assops-test-secret' "$log"
 grep -q 'kubectl -n assops-test get secret assops-kubeconfigs' "$log"
+grep -q 'kubectl --kubeconfig .* -n assops-test auth can-i get pods' "$log"
+grep -q 'kubectl --kubeconfig .* -n assops-test auth can-i get pods/log' "$log"
+grep -q 'kubectl --kubeconfig .* -n assops-test auth can-i patch deployments' "$log"
+
+skip_rbac_log="$tmpdir/skip-rbac.log"
+PATH="$tmpdir:$PATH" \
+ASSOPS_PREFLIGHT_STUB_LOG="$skip_rbac_log" \
+ASSOPS_HELM_PREFLIGHT_NAMESPACE=assops-test \
+ASSOPS_HELM_PREFLIGHT_RELEASE=test \
+ASSOPS_HELM_PREFLIGHT_VALUES=deploy/helm/assops/values.test.example.yaml \
+ASSOPS_HELM_PREFLIGHT_APP_SECRET=assops-test-secret \
+ASSOPS_HELM_PREFLIGHT_KUBECONFIG_SECRET=assops-kubeconfigs \
+ASSOPS_HELM_PREFLIGHT_KUBECONFIG_KEY=test-assops-reader.yaml \
+ASSOPS_HELM_PREFLIGHT_CHECK_KUBECONFIG_RBAC=false \
+bash scripts/helm-test-preflight.sh
+
+if grep -q 'auth can-i' "$skip_rbac_log"; then
+  echo "helm-test-preflight ignored ASSOPS_HELM_PREFLIGHT_CHECK_KUBECONFIG_RBAC=false" >&2
+  cat "$skip_rbac_log" >&2
+  exit 1
+fi
+
+skip_restart_log="$tmpdir/skip-restart.log"
+PATH="$tmpdir:$PATH" \
+ASSOPS_PREFLIGHT_STUB_LOG="$skip_restart_log" \
+ASSOPS_HELM_PREFLIGHT_NAMESPACE=assops-test \
+ASSOPS_HELM_PREFLIGHT_RELEASE=test \
+ASSOPS_HELM_PREFLIGHT_VALUES=deploy/helm/assops/values.test.example.yaml \
+ASSOPS_HELM_PREFLIGHT_APP_SECRET=assops-test-secret \
+ASSOPS_HELM_PREFLIGHT_KUBECONFIG_SECRET=assops-kubeconfigs \
+ASSOPS_HELM_PREFLIGHT_KUBECONFIG_KEY=test-assops-reader.yaml \
+ASSOPS_HELM_PREFLIGHT_CHECK_RESTART_RBAC=false \
+bash scripts/helm-test-preflight.sh
+
+grep -q 'kubectl --kubeconfig .* -n assops-test auth can-i get pods' "$skip_restart_log"
+grep -q 'kubectl --kubeconfig .* -n assops-test auth can-i get pods/log' "$skip_restart_log"
+if grep -q 'auth can-i patch deployments' "$skip_restart_log"; then
+  echo "helm-test-preflight ignored ASSOPS_HELM_PREFLIGHT_CHECK_RESTART_RBAC=false" >&2
+  cat "$skip_restart_log" >&2
+  exit 1
+fi

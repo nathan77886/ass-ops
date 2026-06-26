@@ -94,7 +94,7 @@ ASSOPS_HELM_PREFLIGHT_KUBECONFIG_KEY=test-assops-reader.yaml \
 make helm-test-preflight
 ```
 
-The preflight lints and renders the chart with `values.test.example.yaml`, checks that the namespace exists, verifies the external application Secret has every required key, and verifies the kubeconfig Secret contains the key that the UI should store as `kubeconfig_secret_ref`. It only uses `helm lint`, `helm template`, and `kubectl get`; it does not install, upgrade, delete, patch, restart, port-forward, or read Secret values into output.
+The preflight lints and renders the chart with `values.test.example.yaml`, checks that the namespace exists, verifies the external application Secret has every required key, verifies the kubeconfig Secret contains the key that the UI should store as `kubeconfig_secret_ref`, and runs read-only `kubectl auth can-i` checks with that kubeconfig for `get pods`, `get pods/log`, and `patch deployments`. It only uses `helm lint`, `helm template`, `kubectl get`, and `kubectl auth can-i`; it does not install, upgrade, delete, patch, restart, port-forward, or output Secret values. For RBAC validation it decodes the kubeconfig Secret key into a private temporary file, removes it on normal exit or interrupt/terminate signals, and may require manual cleanup only if the process is killed with `SIGKILL` or by the host OOM killer. Set `ASSOPS_HELM_PREFLIGHT_CHECK_KUBECONFIG_RBAC=false` to skip the kubeconfig RBAC probe, or `ASSOPS_HELM_PREFLIGHT_CHECK_RESTART_RBAC=false` when a test namespace intentionally supports log audits but not rollout restarts.
 
 After the external application Secret, database, kubeconfig Secret, image pull access, and private values overlay are ready, install or upgrade the test release:
 

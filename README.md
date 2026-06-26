@@ -134,7 +134,7 @@ make helm-test-smoke
 ```
 
 `make first-deployable-check` is the local pre-test-deploy gate. It requires `go`, `pnpm`, `helm`, `curl`, and `python3`, installs web dependencies from the lockfile, then runs backend tests, the web i18n/build gate, the gateway API smoke self-test, the checked-in Helm test readiness plan, Helm lint, and Helm rendering with `values.test.example.yaml`.
-`make helm-test-preflight` is the read-only pre-install gate for a test cluster. It lints and renders the chart, checks the namespace, verifies the external application Secret keys, and verifies the kubeconfig Secret key without installing or mutating Kubernetes resources.
+`make helm-test-preflight` is the read-only pre-install gate for a test cluster. It lints and renders the chart, checks the namespace, verifies the external application Secret keys, verifies the kubeconfig Secret key, and runs non-mutating `kubectl auth can-i` checks for pod metadata, pod logs, and deployment restart RBAC without installing or mutating Kubernetes resources.
 `make helm-test-smoke` is the read-only post-test-deploy gate for a Helm release. It waits for gateway, worker, node-worker, and web rollouts, checks worker health endpoints, port-forwards the web/worker health Services, and runs the gateway API smoke without writing ASSOPS rows.
 
 ## Runtime Integrations
