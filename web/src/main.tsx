@@ -377,6 +377,90 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.queued': 'queued',
     'value.canceled': 'canceled',
     'value.blocked': 'blocked',
+    'value.planned': 'planned',
+    'value.previewable': 'previewable',
+    'value.metadata_available': 'metadata available',
+    'value.gate_blocked': 'gate blocked',
+    'value.metadata_blocked': 'metadata blocked',
+    'value.read_only_preview': 'read-only preview',
+    'value.ready_for_approval': 'ready for approval',
+    'value.recorded': 'recorded',
+    'value.waiting_for_worker': 'waiting for worker',
+    'value.not_requested': 'not requested',
+    'value.snapshot_ready': 'snapshot ready',
+    'value.asset_missing': 'asset missing',
+    'value.dry_run': 'dry run',
+    'value.deployment_disabled': 'deployment disabled',
+    'value.rollback_disabled': 'rollback disabled',
+    'value.execution': 'execution',
+    'value.readiness': 'readiness',
+    'value.plan': 'plan',
+    'value.prereq': 'prereq',
+    'value.metadata': 'metadata',
+    'value.controls': 'controls',
+    'value.disabled_backends': 'disabled backends',
+    'value.suppressed': 'suppressed',
+    'value.k8s_called': 'k8s called',
+    'value.no_k8s_call': 'no k8s call',
+    'value.helm_invoked': 'helm invoked',
+    'value.helm_disabled': 'helm disabled',
+    'value.metadata_ready': 'metadata ready',
+    'value.revision_metadata': 'revision metadata',
+    'value.revision_missing': 'revision missing',
+    'value.target_metadata': 'target metadata',
+    'value.target_missing': 'target missing',
+    'value.rollout_started': 'rollout started',
+    'value.no_rollout': 'no rollout',
+    'value.rollback_started': 'rollback started',
+    'value.no_rollback': 'no rollback',
+    'value.sensitive_material_present': 'sensitive material present',
+    'value.no_secrets_kubeconfig': 'no secrets/kubeconfig',
+    'value.no_secrets_revision': 'no secrets/revision',
+    'value.operation_request_ready': 'operation request ready',
+    'value.operation_request_blocked': 'operation request blocked',
+    'value.log_body_included': 'log body included',
+    'value.no_log_body': 'no log body',
+    'value.retrieval': 'retrieval',
+    'value.audit': 'audit',
+    'value.audit_ops': 'audit ops',
+    'value.audit_logs': 'audit logs',
+    'value.execute': 'execute',
+    'value.approval': 'approval',
+    'value.audit_worker_ready': 'audit worker ready',
+    'value.no_audit_worker': 'no audit worker',
+    'value.audit_observed': 'audit observed',
+    'value.no_audit_observed': 'no audit observed',
+    'value.kubeconfig': 'kubeconfig',
+    'value.kube_readiness': 'kube readiness',
+    'value.namespace_kubeconfig_bound': 'namespace kubeconfig bound',
+    'value.no_namespace_kubeconfig': 'no namespace kubeconfig',
+    'value.log_metadata_reviewed': 'log metadata reviewed',
+    'value.log_metadata_pending': 'log metadata pending',
+    'value.scope': 'scope',
+    'value.capture': 'capture',
+    'value.live_stream': 'live stream',
+    'value.stream_review_ready': 'stream review ready',
+    'value.stream_review_blocked': 'stream review blocked',
+    'value.stream_opened': 'stream opened',
+    'value.no_live_stream': 'no live stream',
+    'value.secrets_included': 'secrets included',
+    'value.no_secrets': 'no secrets',
+    'value.result_written': 'result written',
+    'value.no_result_write': 'no result write',
+    'value.recording': 'recording',
+    'value.sanitized_result_observed': 'sanitized result observed',
+    'value.kubeconfig_recorded': 'kubeconfig recorded',
+    'value.no_kubeconfig_record': 'no kubeconfig record',
+    'value.scope_recorded': 'scope recorded',
+    'value.no_scope_record': 'no scope record',
+    'value.capture_recorded': 'capture recorded',
+    'value.no_capture_record': 'no capture record',
+    'value.approval_requested': 'approval requested',
+    'value.operation_queued': 'operation queued',
+    'value.worker_job_created': 'worker job created',
+    'value.snapshot': 'snapshot',
+    'value.asset_status_written': 'asset status written',
+    'value.no_asset_status_write': 'no asset status write',
     'value.unknown': 'unknown',
     'value.key': 'SSH key',
     'value.password': 'password',
@@ -729,6 +813,90 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.queued': '排队中',
     'value.canceled': '已取消',
     'value.blocked': '受阻',
+    'value.planned': '已计划',
+    'value.previewable': '可预览',
+    'value.metadata_available': '元数据可用',
+    'value.gate_blocked': '门禁受阻',
+    'value.metadata_blocked': '元数据受阻',
+    'value.read_only_preview': '只读预览',
+    'value.ready_for_approval': '等待审批',
+    'value.recorded': '已记录',
+    'value.waiting_for_worker': '等待 Worker',
+    'value.not_requested': '未请求',
+    'value.snapshot_ready': '快照就绪',
+    'value.asset_missing': '资产缺失',
+    'value.dry_run': 'Dry run',
+    'value.deployment_disabled': '部署禁用',
+    'value.rollback_disabled': '回滚禁用',
+    'value.execution': '执行',
+    'value.readiness': '就绪度',
+    'value.plan': '计划',
+    'value.prereq': '前置',
+    'value.metadata': '元数据',
+    'value.controls': '控制项',
+    'value.disabled_backends': '禁用后端',
+    'value.suppressed': '脱敏字段',
+    'value.k8s_called': '已调用 k8s',
+    'value.no_k8s_call': '未调用 k8s',
+    'value.helm_invoked': '已调用 Helm',
+    'value.helm_disabled': 'Helm 禁用',
+    'value.metadata_ready': '元数据就绪',
+    'value.revision_metadata': '版本元数据',
+    'value.revision_missing': '版本缺失',
+    'value.target_metadata': '目标元数据',
+    'value.target_missing': '目标缺失',
+    'value.rollout_started': '已开始发布',
+    'value.no_rollout': '未发布',
+    'value.rollback_started': '已开始回滚',
+    'value.no_rollback': '未回滚',
+    'value.sensitive_material_present': '包含敏感材料',
+    'value.no_secrets_kubeconfig': '无密钥/kubeconfig',
+    'value.no_secrets_revision': '无密钥/版本值',
+    'value.operation_request_ready': '操作请求就绪',
+    'value.operation_request_blocked': '操作请求受阻',
+    'value.log_body_included': '包含日志正文',
+    'value.no_log_body': '无日志正文',
+    'value.retrieval': '拉取',
+    'value.audit': '审计',
+    'value.audit_ops': '审计操作',
+    'value.audit_logs': '审计日志',
+    'value.execute': '执行',
+    'value.approval': '审批',
+    'value.audit_worker_ready': '审计 Worker 就绪',
+    'value.no_audit_worker': '无审计 Worker',
+    'value.audit_observed': '审计已观测',
+    'value.no_audit_observed': '未观测审计',
+    'value.kubeconfig': 'kubeconfig',
+    'value.kube_readiness': 'Kube 就绪度',
+    'value.namespace_kubeconfig_bound': '已绑定命名空间 kubeconfig',
+    'value.no_namespace_kubeconfig': '无命名空间 kubeconfig',
+    'value.log_metadata_reviewed': '日志元数据已审查',
+    'value.log_metadata_pending': '日志元数据待审查',
+    'value.scope': '范围',
+    'value.capture': '采集',
+    'value.live_stream': '实时流',
+    'value.stream_review_ready': '流审查就绪',
+    'value.stream_review_blocked': '流审查受阻',
+    'value.stream_opened': '流已打开',
+    'value.no_live_stream': '无实时流',
+    'value.secrets_included': '包含密钥',
+    'value.no_secrets': '无密钥',
+    'value.result_written': '结果已写入',
+    'value.no_result_write': '结果未写入',
+    'value.recording': '记录',
+    'value.sanitized_result_observed': '已观测脱敏结果',
+    'value.kubeconfig_recorded': 'kubeconfig 已记录',
+    'value.no_kubeconfig_record': '无 kubeconfig 记录',
+    'value.scope_recorded': '范围已记录',
+    'value.no_scope_record': '范围未记录',
+    'value.capture_recorded': '采集已记录',
+    'value.no_capture_record': '采集未记录',
+    'value.approval_requested': '已请求审批',
+    'value.operation_queued': '操作已入队',
+    'value.worker_job_created': 'Worker 任务已创建',
+    'value.snapshot': '快照',
+    'value.asset_status_written': '资产状态已写入',
+    'value.no_asset_status_write': '资产状态未写入',
     'value.unknown': '未知',
     'value.key': 'SSH Key',
     'value.password': '密码',
@@ -7778,7 +7946,7 @@ function buildDeploymentExecutionGuardrail(targets: AnyRow[]) {
   };
 }
 
-function deploymentExecutionReadinessView(row: AnyRow) {
+function deploymentExecutionReadinessView(row: AnyRow, t: (key: string) => string) {
   const readiness = row.deployment_execution_readiness || {};
   const executionPlan = readiness.execution_plan || {};
   const requiredControls = Array.isArray(executionPlan.required_controls) ? executionPlan.required_controls : [];
@@ -7789,21 +7957,21 @@ function deploymentExecutionReadinessView(row: AnyRow) {
   return (
     <Space direction="vertical" size={2}>
       <Space size={4} wrap>
-        <Tag color={status === 'planned' ? 'blue' : status === 'blocked' ? 'red' : 'default'}>{status}</Tag>
-        <Tag>{readiness.mode || 'dry_run'}</Tag>
-        <Tag>execution: {readiness.execution_enabled === true ? 'enabled' : 'disabled'}</Tag>
+        <Tag color={status === 'planned' ? 'blue' : status === 'blocked' ? 'red' : 'default'}>{translatedValue(status, t)}</Tag>
+        <Tag>{translatedValue(readiness.mode || 'dry_run', t)}</Tag>
+        <Tag>{readiness.execution_enabled === true ? t('value.execution_enabled') : t('value.execution_disabled')}</Tag>
       </Space>
       {executionPlan.mode ? (
         <Space size={4} wrap>
-          <Tag>{String(executionPlan.mode).replaceAll('_', ' ')}</Tag>
-          <Tag color={executionPlan.plan_state === 'blocked' ? 'red' : 'blue'}>plan {String(executionPlan.plan_state || 'blocked')}</Tag>
-          <Tag color={executionPlan.prerequisite_state === 'planned' ? 'blue' : 'gold'}>prereq {String(executionPlan.prerequisite_state || 'blocked')}</Tag>
-          <Tag>controls {requiredControls.length}</Tag>
-          <Tag>disabled backends {disabledBackends.length}</Tag>
-          <Tag>suppressed {suppressedFields.length}</Tag>
-          <Tag>{executionPlan.kubernetes_api_call_made === true ? 'k8s called' : 'no k8s call'}</Tag>
-          <Tag>{executionPlan.helm_command_invoked === true ? 'helm invoked' : 'helm disabled'}</Tag>
-          <Tag>{String(executionPlan.deployment_mutation || 'disabled')}</Tag>
+          <Tag>{translatedValue(executionPlan.mode, t)}</Tag>
+          <Tag color={executionPlan.plan_state === 'blocked' ? 'red' : 'blue'}>{t('value.plan')} {translatedValue(executionPlan.plan_state || 'blocked', t)}</Tag>
+          <Tag color={executionPlan.prerequisite_state === 'planned' ? 'blue' : 'gold'}>{t('value.prereq')} {translatedValue(executionPlan.prerequisite_state || 'blocked', t)}</Tag>
+          <Tag>{t('value.controls')} {requiredControls.length}</Tag>
+          <Tag>{t('value.disabled_backends')} {disabledBackends.length}</Tag>
+          <Tag>{t('value.suppressed')} {suppressedFields.length}</Tag>
+          <Tag>{executionPlan.kubernetes_api_call_made === true ? t('value.k8s_called') : t('value.no_k8s_call')}</Tag>
+          <Tag>{executionPlan.helm_command_invoked === true ? t('value.helm_invoked') : t('value.helm_disabled')}</Tag>
+          <Tag>{translatedValue(executionPlan.deployment_mutation || 'disabled', t)}</Tag>
         </Space>
       ) : null}
       {reasons.length ? <Typography.Text type="secondary">{shortText(String(reasons[0]), 72)}</Typography.Text> : <Typography.Text type="secondary">{shortText(String(readiness.message || ''), 72)}</Typography.Text>}
@@ -7811,74 +7979,74 @@ function deploymentExecutionReadinessView(row: AnyRow) {
   );
 }
 
-function deploymentExecutionGateView(gate: AnyRow) {
+function deploymentExecutionGateView(gate: AnyRow, t: (key: string) => string) {
   const plan = gate.execution_plan || {};
   const disabledBackends = Array.isArray(gate.disabled_backends) ? gate.disabled_backends : [];
   const suppressedFields = Array.isArray(gate.suppressed_fields) ? gate.suppressed_fields : [];
   return (
     <Space direction="vertical" size={2}>
       <Space size={4} wrap>
-        <Tag color={gate.execution_gate_ready === true ? 'green' : 'red'}>{gate.execution_gate_state || 'gate_blocked'}</Tag>
-        <Tag color={gate.readiness_state === 'planned' ? 'blue' : 'gold'}>readiness {gate.readiness_state || 'blocked'}</Tag>
-        <Tag>{gate.target_metadata_ready ? 'metadata ready' : 'metadata blocked'}</Tag>
-        <Tag>{gate.kubernetes_api_call_made ? 'k8s called' : 'no k8s call'}</Tag>
-        <Tag>{gate.helm_command_invoked ? 'helm invoked' : 'helm disabled'}</Tag>
-        <Tag>{gate.rollout_started ? 'rollout started' : 'no rollout'}</Tag>
-        <Tag>{gate.deployment_mutation || 'disabled'}</Tag>
-        <Tag>{disabledBackends.length || plan.disabled_backends?.length || 0} disabled backends</Tag>
-        <Tag>{suppressedFields.length || plan.suppressed_fields?.length || 0} suppressed</Tag>
-        <Tag>{gate.secret_included || gate.kubeconfig_included ? 'sensitive material present' : 'no secrets/kubeconfig'}</Tag>
+        <Tag color={gate.execution_gate_ready === true ? 'green' : 'red'}>{translatedValue(gate.execution_gate_state || 'gate_blocked', t)}</Tag>
+        <Tag color={gate.readiness_state === 'planned' ? 'blue' : 'gold'}>{t('value.readiness')} {translatedValue(gate.readiness_state || 'blocked', t)}</Tag>
+        <Tag>{gate.target_metadata_ready ? t('value.metadata_ready') : t('value.metadata_blocked')}</Tag>
+        <Tag>{gate.kubernetes_api_call_made ? t('value.k8s_called') : t('value.no_k8s_call')}</Tag>
+        <Tag>{gate.helm_command_invoked ? t('value.helm_invoked') : t('value.helm_disabled')}</Tag>
+        <Tag>{gate.rollout_started ? t('value.rollout_started') : t('value.no_rollout')}</Tag>
+        <Tag>{translatedValue(gate.deployment_mutation || 'disabled', t)}</Tag>
+        <Tag>{disabledBackends.length || plan.disabled_backends?.length || 0} {t('value.disabled_backends')}</Tag>
+        <Tag>{suppressedFields.length || plan.suppressed_fields?.length || 0} {t('value.suppressed')}</Tag>
+        <Tag>{gate.secret_included || gate.kubeconfig_included ? t('value.sensitive_material_present') : t('value.no_secrets_kubeconfig')}</Tag>
       </Space>
       {gate.message ? <Typography.Text type="secondary">{shortText(String(gate.message), 96)}</Typography.Text> : null}
     </Space>
   );
 }
 
-function rollbackExecutionPlanView(row: AnyRow) {
+function rollbackExecutionPlanView(row: AnyRow, t: (key: string) => string) {
   const plan = row.rollback_execution_plan || {};
   const requiredControls = Array.isArray(plan.required_controls) ? plan.required_controls : [];
   const disabledBackends = Array.isArray(plan.disabled_backends) ? plan.disabled_backends : [];
   const suppressedFields = Array.isArray(plan.suppressed_fields) ? plan.suppressed_fields : [];
   if (!plan.mode) {
-    return <Tag>{row.rollback_execution_mode || 'read_only_preview'}</Tag>;
+    return <Tag>{translatedValue(row.rollback_execution_mode || 'read_only_preview', t)}</Tag>;
   }
   return (
     <Space direction="vertical" size={2}>
       <Space size={4} wrap>
-        <Tag>{String(plan.mode).replaceAll('_', ' ')}</Tag>
-        <Tag color={plan.plan_state === 'blocked' ? 'red' : 'blue'}>plan {String(plan.plan_state || 'blocked')}</Tag>
-        <Tag color={plan.prerequisite_state === 'metadata_available' ? 'blue' : 'gold'}>metadata {String(plan.prerequisite_state || 'metadata_blocked')}</Tag>
-        <Tag>controls {requiredControls.length}</Tag>
-        <Tag>disabled backends {disabledBackends.length}</Tag>
-        <Tag>suppressed {suppressedFields.length}</Tag>
+        <Tag>{translatedValue(plan.mode, t)}</Tag>
+        <Tag color={plan.plan_state === 'blocked' ? 'red' : 'blue'}>{t('value.plan')} {translatedValue(plan.plan_state || 'blocked', t)}</Tag>
+        <Tag color={plan.prerequisite_state === 'metadata_available' ? 'blue' : 'gold'}>{t('value.metadata')} {translatedValue(plan.prerequisite_state || 'metadata_blocked', t)}</Tag>
+        <Tag>{t('value.controls')} {requiredControls.length}</Tag>
+        <Tag>{t('value.disabled_backends')} {disabledBackends.length}</Tag>
+        <Tag>{t('value.suppressed')} {suppressedFields.length}</Tag>
       </Space>
       <Space size={4} wrap>
-        <Tag>{plan.kubernetes_api_call_made === true ? 'k8s called' : 'no k8s call'}</Tag>
-        <Tag>{plan.helm_command_invoked === true ? 'helm invoked' : 'helm disabled'}</Tag>
-        <Tag>{plan.rollback_mutation || 'disabled'}</Tag>
+        <Tag>{plan.kubernetes_api_call_made === true ? t('value.k8s_called') : t('value.no_k8s_call')}</Tag>
+        <Tag>{plan.helm_command_invoked === true ? t('value.helm_invoked') : t('value.helm_disabled')}</Tag>
+        <Tag>{translatedValue(plan.rollback_mutation || 'disabled', t)}</Tag>
       </Space>
     </Space>
   );
 }
 
-function rollbackExecutionGateView(gate: AnyRow) {
+function rollbackExecutionGateView(gate: AnyRow, t: (key: string) => string) {
   const plan = gate.rollback_execution_plan || {};
   const disabledBackends = Array.isArray(gate.disabled_backends) ? gate.disabled_backends : [];
   const suppressedFields = Array.isArray(gate.suppressed_fields) ? gate.suppressed_fields : [];
   return (
     <Space direction="vertical" size={2}>
       <Space size={4} wrap>
-        <Tag color={gate.execution_gate_ready === true ? 'green' : 'red'}>{gate.execution_gate_state || 'gate_blocked'}</Tag>
-        <Tag color={gate.readiness_state === 'previewable' ? 'blue' : 'gold'}>readiness {gate.readiness_state || 'blocked'}</Tag>
-        <Tag>{gate.revision_metadata_ready ? 'revision metadata' : 'revision missing'}</Tag>
-        <Tag>{gate.target_metadata_ready ? 'target metadata' : 'target missing'}</Tag>
-        <Tag>{gate.kubernetes_api_call_made ? 'k8s called' : 'no k8s call'}</Tag>
-        <Tag>{gate.helm_command_invoked ? 'helm invoked' : 'helm disabled'}</Tag>
-        <Tag>{gate.rollback_started ? 'rollback started' : 'no rollback'}</Tag>
-        <Tag>{gate.rollback_mutation || 'disabled'}</Tag>
-        <Tag>{disabledBackends.length || plan.disabled_backends?.length || 0} disabled backends</Tag>
-        <Tag>{suppressedFields.length || plan.suppressed_fields?.length || 0} suppressed</Tag>
-        <Tag>{gate.secret_included || gate.kubeconfig_included || gate.revision_value_included ? 'sensitive material present' : 'no secrets/revision'}</Tag>
+        <Tag color={gate.execution_gate_ready === true ? 'green' : 'red'}>{translatedValue(gate.execution_gate_state || 'gate_blocked', t)}</Tag>
+        <Tag color={gate.readiness_state === 'previewable' ? 'blue' : 'gold'}>{t('value.readiness')} {translatedValue(gate.readiness_state || 'blocked', t)}</Tag>
+        <Tag>{gate.revision_metadata_ready ? t('value.revision_metadata') : t('value.revision_missing')}</Tag>
+        <Tag>{gate.target_metadata_ready ? t('value.target_metadata') : t('value.target_missing')}</Tag>
+        <Tag>{gate.kubernetes_api_call_made ? t('value.k8s_called') : t('value.no_k8s_call')}</Tag>
+        <Tag>{gate.helm_command_invoked ? t('value.helm_invoked') : t('value.helm_disabled')}</Tag>
+        <Tag>{gate.rollback_started ? t('value.rollback_started') : t('value.no_rollback')}</Tag>
+        <Tag>{translatedValue(gate.rollback_mutation || 'disabled', t)}</Tag>
+        <Tag>{disabledBackends.length || plan.disabled_backends?.length || 0} {t('value.disabled_backends')}</Tag>
+        <Tag>{suppressedFields.length || plan.suppressed_fields?.length || 0} {t('value.suppressed')}</Tag>
+        <Tag>{gate.secret_included || gate.kubeconfig_included || gate.revision_value_included ? t('value.sensitive_material_present') : t('value.no_secrets_revision')}</Tag>
       </Space>
       {gate.message ? <Typography.Text type="secondary">{shortText(String(gate.message), 96)}</Typography.Text> : null}
     </Space>
@@ -8420,49 +8588,49 @@ function ConfigPage() {
               {podLogPreview && (
                 <Space direction="vertical" size={8} className="full">
                   <Space wrap>
-                    <Tag color="gold">{podLogPreview.query_state || 'blocked'}</Tag>
-                    <Tag>{podLogPreview.execution_enabled ? 'execution enabled' : 'execution disabled'}</Tag>
-                    <Tag>{podLogPreview.operation_request_enabled ? 'operation request ready' : 'operation request blocked'}</Tag>
-                    <Tag>{podLogPreview.kubernetes_api_call ? 'k8s called' : 'no k8s call'}</Tag>
-                    <Tag>{podLogPreview.log_body_included ? 'log body included' : 'no log body'}</Tag>
-                    {podLogPreview.retrieval_plan ? <Tag color={podLogPreview.retrieval_plan.plan_state === 'ready_for_approval' ? 'gold' : 'red'}>retrieval {podLogPreview.retrieval_plan.plan_state || 'blocked'}</Tag> : null}
-                    {podLogPreview.retrieval_plan ? <Tag>{podLogPreview.retrieval_plan.step_count || 0} retrieval steps</Tag> : null}
-                    {podLogPreview.audit_evidence ? <Tag color={podLogPreview.audit_evidence.evidence_state === 'recorded' ? 'green' : podLogPreview.audit_evidence.evidence_state === 'failed' ? 'red' : podLogPreview.audit_evidence.evidence_state === 'waiting_for_worker' ? 'blue' : 'default'}>audit {podLogPreview.audit_evidence.evidence_state || 'not_requested'}</Tag> : null}
-                    {podLogPreview.audit_evidence ? <Tag>{podLogPreview.audit_evidence.operation_count || 0} audit ops</Tag> : null}
-                    {podLogPreview.audit_evidence?.operation_log_count ? <Tag>{podLogPreview.audit_evidence.operation_log_count} audit logs</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.execution_state === 'ready_for_approval' ? 'gold' : 'red'}>execute {podLogPreview.retrieval_plan.execution_plan.execution_state || 'blocked'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.approval_request_plan ? <Tag color="gold">approval {podLogPreview.retrieval_plan.execution_plan.approval_request_plan.request_state || 'blocked'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.audit_worker_job_enabled ? 'audit worker ready' : 'no audit worker'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.audit_operation_observed ? 'audit observed' : 'no audit observed'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_binding_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.kubeconfig_binding_plan.binding_state === 'planned' ? 'gold' : 'red'}>kubeconfig {podLogPreview.retrieval_plan.execution_plan.kubeconfig_binding_plan.binding_state || 'blocked'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.readiness_ready ? 'gold' : 'red'}>kube readiness {podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.readiness_state || 'blocked'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.namespace_scoped_kubeconfig_bound ? 'namespace kubeconfig bound' : 'no namespace kubeconfig'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.log_access_metadata_ready ? 'log metadata reviewed' : 'log metadata pending'}</Tag> : null}
+                    <Tag color="gold">{translatedValue(podLogPreview.query_state || 'blocked', t)}</Tag>
+                    <Tag>{podLogPreview.execution_enabled ? t('value.execution_enabled') : t('value.execution_disabled')}</Tag>
+                    <Tag>{podLogPreview.operation_request_enabled ? t('value.operation_request_ready') : t('value.operation_request_blocked')}</Tag>
+                    <Tag>{podLogPreview.kubernetes_api_call ? t('value.k8s_called') : t('value.no_k8s_call')}</Tag>
+                    <Tag>{podLogPreview.log_body_included ? t('value.log_body_included') : t('value.no_log_body')}</Tag>
+                    {podLogPreview.retrieval_plan ? <Tag color={podLogPreview.retrieval_plan.plan_state === 'ready_for_approval' ? 'gold' : 'red'}>{t('value.retrieval')} {translatedValue(podLogPreview.retrieval_plan.plan_state || 'blocked', t)}</Tag> : null}
+                    {podLogPreview.retrieval_plan ? <Tag>{podLogPreview.retrieval_plan.step_count || 0} {t('value.retrieval')}</Tag> : null}
+                    {podLogPreview.audit_evidence ? <Tag color={podLogPreview.audit_evidence.evidence_state === 'recorded' ? 'green' : podLogPreview.audit_evidence.evidence_state === 'failed' ? 'red' : podLogPreview.audit_evidence.evidence_state === 'waiting_for_worker' ? 'blue' : 'default'}>{t('value.audit')} {translatedValue(podLogPreview.audit_evidence.evidence_state || 'not_requested', t)}</Tag> : null}
+                    {podLogPreview.audit_evidence ? <Tag>{podLogPreview.audit_evidence.operation_count || 0} {t('value.audit_ops')}</Tag> : null}
+                    {podLogPreview.audit_evidence?.operation_log_count ? <Tag>{podLogPreview.audit_evidence.operation_log_count} {t('value.audit_logs')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.execution_state === 'ready_for_approval' ? 'gold' : 'red'}>{t('value.execute')} {translatedValue(podLogPreview.retrieval_plan.execution_plan.execution_state || 'blocked', t)}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.approval_request_plan ? <Tag color="gold">{t('value.approval')} {translatedValue(podLogPreview.retrieval_plan.execution_plan.approval_request_plan.request_state || 'blocked', t)}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.audit_worker_job_enabled ? t('value.audit_worker_ready') : t('value.no_audit_worker')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.audit_operation_observed ? t('value.audit_observed') : t('value.no_audit_observed')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_binding_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.kubeconfig_binding_plan.binding_state === 'planned' ? 'gold' : 'red'}>{t('value.kubeconfig')} {translatedValue(podLogPreview.retrieval_plan.execution_plan.kubeconfig_binding_plan.binding_state || 'blocked', t)}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.readiness_ready ? 'gold' : 'red'}>{t('value.kube_readiness')} {translatedValue(podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.readiness_state || 'blocked', t)}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.namespace_scoped_kubeconfig_bound ? t('value.namespace_kubeconfig_bound') : t('value.no_namespace_kubeconfig')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.log_access_metadata_ready ? t('value.log_metadata_reviewed') : t('value.log_metadata_pending')}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.live_backend_plan ? <Tooltip title={podLogPreview.retrieval_plan.execution_plan.live_backend_plan.ready ? t('k8s.backendHintReady') : t('k8s.backendHintBlocked')}><Tag color={podLogPreview.retrieval_plan.execution_plan.live_backend_plan.ready ? 'green' : podLogPreview.retrieval_plan.execution_plan.live_backend_plan.enabled ? 'gold' : 'default'}>{podLogPreview.retrieval_plan.execution_plan.live_backend_plan.ready ? t('k8s.backendReady') : podLogPreview.retrieval_plan.execution_plan.live_backend_plan.enabled ? t('k8s.backendBlocked') : t('k8s.backendOff')}</Tag></Tooltip> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.pod_scope_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state === 'planned' ? 'gold' : 'red'}>scope {podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state || 'blocked'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.log_capture_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state === 'planned' ? 'gold' : 'red'}>capture {podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state || 'blocked'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.live_log_stream_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.stream_ready_for_review ? 'green' : podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.metadata_ready ? 'gold' : 'red'}>live stream {podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.stream_state || 'blocked'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.live_log_stream_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.stream_ready_for_review ? 'stream review ready' : 'stream review blocked'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.live_log_stream_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.live_log_stream_opened ? 'stream opened' : 'no live stream'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.live_log_stream_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.log_body_included ? 'log body included' : 'no log body'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.secret_included ? 'secrets included' : 'no secrets'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_written ? 'result written' : 'no result write'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.recording_state || 'blocked'} recording</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.sanitized_result_observed ? 'sanitized result observed' : 'no sanitized result'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.kubeconfig_binding_recorded ? 'kubeconfig recorded' : 'no kubeconfig record'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.pod_scope_recorded ? 'scope recorded' : 'no scope record'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.log_capture_recorded ? 'capture recorded' : 'no capture record'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.disabled_backends?.length || 0} disabled backends</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.pod_scope_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state === 'planned' ? 'gold' : 'red'}>{t('value.scope')} {translatedValue(podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state || 'blocked', t)}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.log_capture_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state === 'planned' ? 'gold' : 'red'}>{t('value.capture')} {translatedValue(podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state || 'blocked', t)}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.live_log_stream_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.stream_ready_for_review ? 'green' : podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.metadata_ready ? 'gold' : 'red'}>{t('value.live_stream')} {translatedValue(podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.stream_state || 'blocked', t)}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.live_log_stream_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.stream_ready_for_review ? t('value.stream_review_ready') : t('value.stream_review_blocked')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.live_log_stream_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.live_log_stream_opened ? t('value.stream_opened') : t('value.no_live_stream')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.live_log_stream_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.log_body_included ? t('value.log_body_included') : t('value.no_log_body')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.secret_included ? t('value.secrets_included') : t('value.no_secrets')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_written ? t('value.result_written') : t('value.no_result_write')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{translatedValue(podLogPreview.retrieval_plan.execution_plan.result_recording_plan.recording_state || 'blocked', t)} {t('value.recording')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.sanitized_result_observed ? t('value.sanitized_result_observed') : t('value.no_sanitized_result')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.kubeconfig_binding_recorded ? t('value.kubeconfig_recorded') : t('value.no_kubeconfig_record')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.pod_scope_recorded ? t('value.scope_recorded') : t('value.no_scope_record')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.result_recording_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.result_recording_plan.log_capture_recorded ? t('value.capture_recorded') : t('value.no_capture_record')}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.disabled_backends?.length || 0} {t('value.disabled_backends')}</Tag> : null}
                   </Space>
                   <Space>
                     <Button type="primary" onClick={requestPodLogAudit} loading={podLogRunLoading} disabled={!podLogPreview.operation_request_enabled || !podLogPreview.retrieval_plan?.execution_plan?.audit_worker_job_enabled}>{t('pod.requestAudit')}</Button>
                     <Button onClick={recordPodLogAuditSnapshot} loading={podLogSnapshotLoading} disabled={podLogPreview.audit_evidence?.evidence_state !== 'recorded'}>{t('pod.recordSnapshot')}</Button>
-                    {podLogRunResult ? <Tag color={podLogRunResult.approval ? 'gold' : 'blue'}>{podLogRunResult.approval ? 'approval requested' : 'operation queued'}</Tag> : null}
-                    {podLogRunResult?.worker_job_created ? <Tag>worker job created</Tag> : null}
-                    {podLogRunResult ? <Tag>{podLogRunResult.log_body_included ? 'log body included' : 'no log body'}</Tag> : null}
-                    {podLogSnapshotResult ? <Tag color={podLogSnapshotResult.pod_log_audit_snapshot_written ? 'green' : podLogSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>snapshot {podLogSnapshotResult.recording_state || 'unknown'}</Tag> : null}
-                    {podLogSnapshotResult ? <Tag>{podLogSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'no asset status write'}</Tag> : null}
-                    {podLogSnapshotResult ? <Tag>{podLogSnapshotResult.log_body_included ? 'log body included' : 'no log body'}</Tag> : null}
+                    {podLogRunResult ? <Tag color={podLogRunResult.approval ? 'gold' : 'blue'}>{podLogRunResult.approval ? t('value.approval_requested') : t('value.operation_queued')}</Tag> : null}
+                    {podLogRunResult?.worker_job_created ? <Tag>{t('value.worker_job_created')}</Tag> : null}
+                    {podLogRunResult ? <Tag>{podLogRunResult.log_body_included ? t('value.log_body_included') : t('value.no_log_body')}</Tag> : null}
+                    {podLogSnapshotResult ? <Tag color={podLogSnapshotResult.pod_log_audit_snapshot_written ? 'green' : podLogSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>{t('value.snapshot')} {translatedValue(podLogSnapshotResult.recording_state || 'unknown', t)}</Tag> : null}
+                    {podLogSnapshotResult ? <Tag>{podLogSnapshotResult.asset_status_snapshot_written ? t('value.asset_status_written') : t('value.no_asset_status_write')}</Tag> : null}
+                    {podLogSnapshotResult ? <Tag>{podLogSnapshotResult.log_body_included ? t('value.log_body_included') : t('value.no_log_body')}</Tag> : null}
                   </Space>
                   {podLogRunResult ? <JSONBlock value={podLogRunResult} /> : null}
                   {podLogSnapshotResult ? <JSONBlock value={podLogSnapshotResult} /> : null}
@@ -8495,7 +8663,7 @@ function ConfigPage() {
             { title: t('common.cluster'), dataIndex: 'cluster_name' },
             { title: t('config.kubeEnv'), render: (_, row) => row.kubernetes_environment_id ? <Tag color={row.kubeconfig_secret_ref_present ? 'green' : 'gold'}>{row.kubernetes_environment_name || t('common.bound')}</Tag> : <Tag>{t('common.unbound')}</Tag> },
             { title: t('config.apps'), dataIndex: 'argo_app_count' },
-            { title: t('common.execution'), render: (_, row) => <Space direction="vertical" size={4}>{deploymentExecutionReadinessView(row)}{deploymentExecutionGateResults[row.id] ? deploymentExecutionGateView(deploymentExecutionGateResults[row.id]) : null}</Space> },
+            { title: t('common.execution'), render: (_, row) => <Space direction="vertical" size={4}>{deploymentExecutionReadinessView(row, t)}{deploymentExecutionGateResults[row.id] ? deploymentExecutionGateView(deploymentExecutionGateResults[row.id], t) : null}</Space> },
             { title: t('common.action'), render: (_, row) => <Button size="small" onClick={() => checkDeploymentExecutionGate(String(row.id || ''))} loading={deploymentExecutionGateLoadingID === row.id} disabled={!row.id || Boolean(deploymentExecutionGateLoadingID)}>{t('config.checkGate')}</Button> },
             { title: t('common.status'), render: (_, row) => <Tag color={argoStatusColor(row.status)}>{translatedValue(row.status, t)}</Tag> }
           ]} />
@@ -8514,7 +8682,7 @@ function ConfigPage() {
             { title: t('common.revision'), dataIndex: 'revision' },
             { title: t('common.readiness'), render: (_, row) => <Tag color={rollbackReadinessColor(row.rollback_readiness)}>{translatedValue(row.rollback_readiness || 'unknown', t)}</Tag> },
             { title: t('common.reason'), dataIndex: 'rollback_readiness_reason', render: (value) => value || '-' },
-            { title: t('common.execution'), render: (_, row) => <Space direction="vertical" size={4}>{rollbackExecutionPlanView(row)}{rollbackExecutionGateResults[row.id] ? rollbackExecutionGateView(rollbackExecutionGateResults[row.id]) : null}</Space> },
+            { title: t('common.execution'), render: (_, row) => <Space direction="vertical" size={4}>{rollbackExecutionPlanView(row, t)}{rollbackExecutionGateResults[row.id] ? rollbackExecutionGateView(rollbackExecutionGateResults[row.id], t) : null}</Space> },
             { title: t('common.action'), render: (_, row) => <Button size="small" onClick={() => checkRollbackExecutionGate(String(row.id || ''))} loading={rollbackExecutionGateLoadingID === row.id} disabled={!row.id || Boolean(rollbackExecutionGateLoadingID)}>{t('config.checkGate')}</Button> },
             { title: t('common.status'), render: (_, row) => <Tag color={argoStatusColor(row.status)}>{translatedValue(row.status, t)}</Tag> },
             { title: t('common.captured'), dataIndex: 'captured_at' }
