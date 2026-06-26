@@ -340,6 +340,19 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.operationType': 'Type',
     'config.exit': 'Exit',
     'config.finished': 'Finished',
+    'deploy.noTargets': 'No deployment targets yet',
+    'deploy.targetsNeedAttention': 'deployment targets need attention',
+    'deploy.latestObserved': 'Latest observed deployment',
+    'deploy.targetsHealthy': 'Deployment targets look healthy',
+    'deploy.rollbackExecutable': 'rollback points marked executable',
+    'deploy.rollbackDisabled': 'Rollback execution is disabled in this first version',
+    'deploy.rollbackExecutableDescription': 'Executable rollback points are visible, but operators should confirm approval and environment rules before queueing any rollback action.',
+    'deploy.rollbackPreviewablePrefix': 'rollback points have revision metadata available for review; execution mode is',
+    'deploy.rollbackPreviewableSuffix': 'and no rollback action will be queued from ASSOPS yet.',
+    'deploy.rollbackNonePreviewable': 'Rollback points are tracked for audit and context, but none are currently previewable.',
+    'deploy.executionDryRunOnly': 'Deployment execution is dry-run only',
+    'deploy.prereqPlanned': 'targets have dry-run execution prerequisites planned; Helm/k8s execution remains disabled.',
+    'deploy.metadataReviewNeeded': 'targets need metadata or health review before execution can be planned.',
     'value.execution_enabled': 'execution enabled',
     'value.execution_disabled': 'execution disabled',
     'value.ssh_started': 'ssh started',
@@ -776,6 +789,19 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.operationType': '类型',
     'config.exit': '退出码',
     'config.finished': '完成时间',
+    'deploy.noTargets': '暂无部署目标',
+    'deploy.targetsNeedAttention': '个部署目标需要关注',
+    'deploy.latestObserved': '最近观测到的部署',
+    'deploy.targetsHealthy': '部署目标状态正常',
+    'deploy.rollbackExecutable': '个回滚点标记为可执行',
+    'deploy.rollbackDisabled': '首个版本中回滚执行保持禁用',
+    'deploy.rollbackExecutableDescription': '存在可执行回滚点，但排队任何回滚动作前仍需确认审批和环境规则。',
+    'deploy.rollbackPreviewablePrefix': '个回滚点已有可审查的版本元数据；执行模式为',
+    'deploy.rollbackPreviewableSuffix': 'ASSOPS 暂不会排队回滚动作。',
+    'deploy.rollbackNonePreviewable': '回滚点会用于审计和上下文，但当前没有可预览的回滚点。',
+    'deploy.executionDryRunOnly': '部署执行仅为 dry-run',
+    'deploy.prereqPlanned': '个目标已具备 dry-run 执行前置计划；Helm/k8s 执行仍保持禁用。',
+    'deploy.metadataReviewNeeded': '个目标需要补充元数据或健康审查后才能计划执行。',
     'value.execution_enabled': '执行已启用',
     'value.execution_disabled': '执行未启用',
     'value.ssh_started': 'SSH 已启动',
@@ -7891,7 +7917,7 @@ function rollbackReadinessColor(status: any) {
   }
 }
 
-function buildDeploymentPosture(targets: AnyRow[], records: AnyRow[], rollbackPoints: AnyRow[]) {
+function buildDeploymentPosture(targets: AnyRow[], records: AnyRow[], rollbackPoints: AnyRow[], t: (key: string) => string) {
   const unhealthyTargets = targets.filter((row) => deploymentStatusUnhealthy(row.status)).length;
   const environments = new Set([
     ...targets.map((row) => String(row.environment || '').trim()).filter(Boolean),
@@ -7900,12 +7926,12 @@ function buildDeploymentPosture(targets: AnyRow[], records: AnyRow[], rollbackPo
   const availableRollbacks = rollbackPoints.filter((row) => String(row.rollback_readiness || '').toLowerCase() === 'previewable').length;
   const latestRecord = records[0];
   const summary = targets.length === 0
-    ? 'No deployment targets yet'
+    ? t('deploy.noTargets')
     : unhealthyTargets > 0
-      ? `${unhealthyTargets} deployment target${unhealthyTargets === 1 ? '' : 's'} need attention`
+      ? `${unhealthyTargets} ${t('deploy.targetsNeedAttention')}`
       : latestRecord
-        ? `Latest observed deployment: ${latestRecord.name || latestRecord.deployment_target_name || 'unknown'}`
-        : 'Deployment targets look healthy';
+        ? `${t('deploy.latestObserved')}: ${latestRecord.name || latestRecord.deployment_target_name || t('common.unknown')}`
+        : t('deploy.targetsHealthy');
   return {
     targets: targets.length,
     unhealthy: unhealthyTargets,
@@ -7915,7 +7941,7 @@ function buildDeploymentPosture(targets: AnyRow[], records: AnyRow[], rollbackPo
   };
 }
 
-function buildRollbackGuardrail(rollbackPoints: AnyRow[]) {
+function buildRollbackGuardrail(rollbackPoints: AnyRow[], t: (key: string) => string) {
   if (!rollbackPoints.length) return null;
   const previewable = rollbackPoints.filter((row) => String(row.rollback_readiness || '').toLowerCase() === 'previewable').length;
   const executable = rollbackPoints.filter((row) => row.rollback_executable === true).length;
@@ -7923,26 +7949,26 @@ function buildRollbackGuardrail(rollbackPoints: AnyRow[]) {
   return {
     type: executable > 0 ? 'warning' as const : 'info' as const,
     message: executable > 0
-      ? `${executable} rollback point${executable === 1 ? '' : 's'} marked executable`
-      : 'Rollback execution is disabled in this first version',
+      ? `${executable} ${t('deploy.rollbackExecutable')}`
+      : t('deploy.rollbackDisabled'),
     description: executable > 0
-      ? `Executable rollback points are visible in ${mode}, but operators should confirm approval and environment rules before queueing any rollback action.`
+      ? `${t('deploy.rollbackExecutableDescription')} ${t('value.execution')}: ${translatedValue(mode, t)}.`
       : previewable > 0
-        ? `${previewable} rollback point${previewable === 1 ? '' : 's'} have revision metadata available for review; execution mode is ${mode}, and no rollback action will be queued from ASSOPS yet.`
-        : 'Rollback points are tracked for audit and context, but none are currently previewable.'
+        ? `${previewable} ${t('deploy.rollbackPreviewablePrefix')} ${translatedValue(mode, t)}; ${t('deploy.rollbackPreviewableSuffix')}`
+        : t('deploy.rollbackNonePreviewable')
   };
 }
 
-function buildDeploymentExecutionGuardrail(targets: AnyRow[]) {
+function buildDeploymentExecutionGuardrail(targets: AnyRow[], t: (key: string) => string) {
   if (!targets.length) return null;
   const planned = targets.filter((row) => row.deployment_execution_readiness?.status === 'planned').length;
   const blocked = targets.filter((row) => row.deployment_execution_readiness?.status === 'blocked').length;
   return {
     type: planned > 0 && blocked === 0 ? 'info' as const : 'warning' as const,
-    message: 'Deployment execution is dry-run only',
+    message: t('deploy.executionDryRunOnly'),
     description: planned > 0
-      ? `${planned} target${planned === 1 ? '' : 's'} have dry-run execution prerequisites planned; Helm/k8s execution remains disabled.`
-      : `${blocked} target${blocked === 1 ? '' : 's'} need metadata or health review before execution can be planned.`
+      ? `${planned} ${t('deploy.prereqPlanned')}`
+      : `${blocked} ${t('deploy.metadataReviewNeeded')}`
   };
 }
 
@@ -8144,10 +8170,11 @@ function ConfigPage() {
   const deploymentPosture = buildDeploymentPosture(
     deploymentTargets.data?.items || [],
     deploymentRecords.data?.items || [],
-    rollbackPoints.data?.items || []
+    rollbackPoints.data?.items || [],
+    t
   );
-  const rollbackGuardrail = buildRollbackGuardrail(rollbackPoints.data?.items || []);
-  const deploymentExecutionGuardrail = buildDeploymentExecutionGuardrail(deploymentTargets.data?.items || []);
+  const rollbackGuardrail = buildRollbackGuardrail(rollbackPoints.data?.items || [], t);
+  const deploymentExecutionGuardrail = buildDeploymentExecutionGuardrail(deploymentTargets.data?.items || [], t);
   useEffect(() => {
     if (!argoSyncOpID) return;
     let alive = true;
@@ -8562,7 +8589,7 @@ function ConfigPage() {
             <Card><Typography.Text type="secondary">{t('config.environments')}</Typography.Text><Typography.Title level={3}>{deploymentPosture.environments}</Typography.Title></Card>
             <Card><Typography.Text type="secondary">{t('config.rollbackPoints')}</Typography.Text><Typography.Title level={3}>{deploymentPosture.rollbackPoints}</Typography.Title></Card>
           </div>
-          {deploymentPosture.summary !== 'No deployment targets yet' && <Alert showIcon type={deploymentPosture.unhealthy > 0 ? 'warning' : 'success'} message={deploymentPosture.summary} />}
+          {deploymentPosture.targets > 0 && <Alert showIcon type={deploymentPosture.unhealthy > 0 ? 'warning' : 'success'} message={deploymentPosture.summary} />}
           {deploymentExecutionGuardrail && <Alert showIcon type={deploymentExecutionGuardrail.type} message={deploymentExecutionGuardrail.message} description={deploymentExecutionGuardrail.description} />}
           {rollbackGuardrail && <Alert showIcon type={rollbackGuardrail.type} message={rollbackGuardrail.message} description={rollbackGuardrail.description} />}
           <Card title={t('form.podLogQuery')}>
