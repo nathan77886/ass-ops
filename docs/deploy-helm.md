@@ -79,7 +79,7 @@ helm template assops deploy/helm/assops \
   -f /path/to/private-test-values.yaml
 ```
 
-With the test example, gateway and worker mount `assops-kubeconfigs` read-only at `/etc/assops/kubeconfigs`, `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, `ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED=false`, `ASSOPS_KUBERNETES_RESTARTS_ENABLED=false`, and pod-log audit results remain sanitized metadata only by default. Enable redacted pod-log previews or rollout restarts only in a private test overlay after reviewing namespace RBAC.
+With the test example, gateway and worker mount `assops-kubeconfigs` read-only at `/etc/assops/kubeconfigs`, `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, `ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED=false`, and `ASSOPS_KUBERNETES_RESTARTS_ENABLED=true`. Pod-log audit results remain sanitized metadata only by default. Rollout restarts are still approval-gated and require the Kubernetes environment row to be `ready` with reviewed token-subject and restart RBAC metadata before the worker can run the server dry-run and `kubectl rollout restart`. Keep restarts disabled in any shared environment until that namespace-scoped RBAC review is complete.
 
 Set `env.version`, `env.commit`, and `env.buildTime` in the private overlay when deploying a tagged test build. The gateway, control worker, and node worker expose these values from `/healthz`, and the chart web service proxies `/healthz` to the gateway so the running build can be checked without opening worker ports.
 
@@ -185,6 +185,7 @@ Kubernetes pod-log audit settings are non-secret chart values under `env`:
 env:
   kubernetesLogsEnabled: "true"
   kubernetesLogPreviewEnabled: "false"
+  kubernetesRestartsEnabled: "false"
   kubeconfigSecretDir: /etc/assops/kubeconfigs
   kubectlPath: kubectl
 ```

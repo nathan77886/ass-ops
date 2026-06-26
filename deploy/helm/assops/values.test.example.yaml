@@ -19,7 +19,7 @@ env:
   configGitLocalBareWritesEnabled: "false"
   kubernetesLogsEnabled: "true"
   kubernetesLogPreviewEnabled: "false"
-  kubernetesRestartsEnabled: "false"
+  kubernetesRestartsEnabled: "true"
   kubeconfigSecretDir: /etc/assops/kubeconfigs
   kubectlPath: kubectl
 

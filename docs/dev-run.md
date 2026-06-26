@@ -11,7 +11,7 @@ cd web && pnpm install && pnpm dev
 ```
 
 Gateway listens on `:8080`. Vite listens on `:5173` and proxies `/api` to the gateway.
-Docker Compose initializes every numbered file in `backend/migrations` for a fresh PostgreSQL volume, currently `001_init.sql` through `007_multi_approver_approvals.sql`.
+Docker Compose initializes every numbered file in `backend/migrations` for a fresh PostgreSQL volume, currently `001_init.sql` through `023_kubernetes_pod_restart_access.sql`.
 
 If local port `5432` is already in use:
 
@@ -73,6 +73,11 @@ ASSOPS_ADMIN_EMAIL='admin@assops.local'
 ASSOPS_ADMIN_PASSWORD='admin1234'
 ASSOPS_GITHUB_ACTIONS_READ_TOKEN=''
 ASSOPS_ARGO_READ_TOKEN=''
+ASSOPS_KUBERNETES_LOGS_ENABLED='false'
+ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED='false'
+ASSOPS_KUBERNETES_RESTARTS_ENABLED='false'
+ASSOPS_KUBECONFIG_SECRET_DIR='/etc/assops/kubeconfigs'
+ASSOPS_KUBECTL_PATH='kubectl'
 ASSOPS_SSH_KEY_DIR='/etc/assops/ssh/keys'
 ASSOPS_SSH_KNOWN_HOSTS_DIR='/etc/assops/ssh/known_hosts'
 ```

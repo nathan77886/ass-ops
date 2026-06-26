@@ -244,7 +244,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "repo.tag.lookup", "ssh.exec", "ssh.verify", "argo.apps.sync", "argo.pod_logs", "github.actions.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute", "config.git_commit", "project_version.validation_rerun":
+	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "repo.tag.lookup", "ssh.exec", "ssh.verify", "argo.apps.sync", "argo.pod_logs", "argo.pod_restart", "github.actions.sync", "github.labels.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute", "config.git_commit", "project_version.validation_rerun":
 		return true
 	default:
 		return false
