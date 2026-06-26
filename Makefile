@@ -126,6 +126,7 @@ helm-smoke:
 		--set persistence.context.enabled=false \
 		--set persistence.bareRepos.enabled=false \
 		--set persistence.ssh.enabled=false \
+		--set persistence.kubeconfigs.enabled=false \
 		--set persistence.backups.enabled=false \
 		--set postgres.storageSize=1Gi \
 		--set secret.jwtSecret=ci-jwt-secret \
