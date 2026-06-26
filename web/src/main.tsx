@@ -112,6 +112,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.edit': 'Edit',
     'common.enable': 'Enable',
     'common.disable': 'Disable',
+    'common.requestFailed': 'Request failed',
     'title.sshMachines': 'SSH Machines',
     'title.argoConnections': 'Argo Connections',
     'title.argoSsh': 'Argo / SSH',
@@ -340,6 +341,32 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.operationType': 'Type',
     'config.exit': 'Exit',
     'config.finished': 'Finished',
+    'config.selectArgoConnection': 'Select an Argo connection first',
+    'config.selectSSHMachine': 'Select an SSH machine first',
+    'config.argoAppsSynced': 'Argo apps synced',
+    'config.argoAppSyncFailed': 'Argo app sync failed',
+    'config.argoSyncStillRunning': 'Argo app sync is still running. Refresh later to check progress.',
+    'config.kubernetesEnvSaved': 'Kubernetes environment saved',
+    'config.argoSyncQueued': 'Argo app sync queued',
+    'config.deploymentGateBlocked': 'Deployment execution gate is blocked',
+    'config.deploymentGateFailed': 'Could not check deployment execution gate',
+    'config.rollbackGateBlocked': 'Rollback execution gate is blocked',
+    'config.rollbackGateFailed': 'Could not check rollback execution gate',
+    'config.podLogPreviewReady': 'Pod log query preview ready',
+    'config.podLogApprovalRequested': 'Pod log approval requested',
+    'config.podLogAuditQueued': 'Pod log audit queued',
+    'config.podLogSnapshotNotReady': 'Pod log audit snapshot is not ready yet',
+    'config.podLogSnapshotRecorded': 'Pod log audit snapshot recorded',
+    'config.podLogSnapshotCurrent': 'Pod log audit snapshot already current',
+    'config.approvalRequested': 'Approval requested',
+    'config.sshCommandQueued': 'SSH command queued',
+    'config.sshVerifyQueued': 'SSH verify queued',
+    'config.sshSnapshotNotReady': 'SSH rehearsal snapshot is not ready yet',
+    'config.sshSnapshotRecorded': 'SSH rehearsal snapshot recorded',
+    'config.sshSnapshotCurrent': 'SSH rehearsal snapshot already current',
+    'config.sshProofNotReady': 'SSH target environment proof is not ready yet',
+    'config.sshProofRecorded': 'SSH target environment proof recorded',
+    'config.sshProofCurrent': 'SSH target environment proof already current',
     'deploy.noTargets': 'No deployment targets yet',
     'deploy.targetsNeedAttention': 'deployment targets need attention',
     'deploy.latestObserved': 'Latest observed deployment',
@@ -482,6 +509,36 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.archived': 'archived',
     'value.default': 'default',
     'value.ok': 'ok',
+    'value.auth': 'auth',
+    'value.verify': 'verify',
+    'value.exec': 'exec',
+    'value.runbook_recorded': 'runbook recorded',
+    'value.no_runbook': 'no runbook',
+    'value.fixture_recorded': 'fixture recorded',
+    'value.no_fixture': 'no fixture',
+    'value.env_proof': 'env proof',
+    'value.env_proof_ready': 'env proof ready',
+    'value.env_proof_pending': 'env proof pending',
+    'value.target_attestation': 'target attestation',
+    'value.env_probed': 'env probed',
+    'value.no_env_probe': 'no env probe',
+    'value.raw_output_recorded': 'raw output recorded',
+    'value.no_raw_output': 'no raw output',
+    'value.proof': 'proof',
+    'value.not_recorded': 'not recorded',
+    'value.evidence': 'evidence',
+    'value.verify_runs': 'verify runs',
+    'value.exec_runs': 'exec runs',
+    'value.unknown_runs': 'unknown runs',
+    'value.active_runs': 'active runs',
+    'value.failed_runs': 'failed runs',
+    'value.canceled_runs': 'canceled runs',
+    'value.pending': 'pending',
+    'value.asset_status_unchanged': 'asset status unchanged',
+    'value.proof_registered': 'proof registered',
+    'value.proof_not_written': 'proof not written',
+    'value.host_asset_observed': 'host asset observed',
+    'value.host_asset_missing': 'host asset missing',
     'menu.dashboard': 'Dashboard',
     'menu.assets': 'Assets',
     'menu.projects': 'Projects',
@@ -561,6 +618,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.edit': '编辑',
     'common.enable': '启用',
     'common.disable': '禁用',
+    'common.requestFailed': '请求失败',
     'title.sshMachines': 'SSH 主机',
     'title.argoConnections': 'Argo 连接',
     'title.argoSsh': 'Argo / SSH',
@@ -789,6 +847,32 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.operationType': '类型',
     'config.exit': '退出码',
     'config.finished': '完成时间',
+    'config.selectArgoConnection': '请先选择 Argo 连接',
+    'config.selectSSHMachine': '请先选择 SSH 主机',
+    'config.argoAppsSynced': 'Argo 应用已同步',
+    'config.argoAppSyncFailed': 'Argo 应用同步失败',
+    'config.argoSyncStillRunning': 'Argo 应用同步仍在运行，请稍后刷新查看进度。',
+    'config.kubernetesEnvSaved': 'Kubernetes 环境已保存',
+    'config.argoSyncQueued': 'Argo 应用同步已入队',
+    'config.deploymentGateBlocked': '部署执行门禁受阻',
+    'config.deploymentGateFailed': '无法检查部署执行门禁',
+    'config.rollbackGateBlocked': '回滚执行门禁受阻',
+    'config.rollbackGateFailed': '无法检查回滚执行门禁',
+    'config.podLogPreviewReady': 'Pod 日志查询预览已就绪',
+    'config.podLogApprovalRequested': 'Pod 日志审批已请求',
+    'config.podLogAuditQueued': 'Pod 日志审计已入队',
+    'config.podLogSnapshotNotReady': 'Pod 日志审计快照尚未就绪',
+    'config.podLogSnapshotRecorded': 'Pod 日志审计快照已记录',
+    'config.podLogSnapshotCurrent': 'Pod 日志审计快照已是最新',
+    'config.approvalRequested': '已请求审批',
+    'config.sshCommandQueued': 'SSH 命令已入队',
+    'config.sshVerifyQueued': 'SSH 验证已入队',
+    'config.sshSnapshotNotReady': 'SSH 演练快照尚未就绪',
+    'config.sshSnapshotRecorded': 'SSH 演练快照已记录',
+    'config.sshSnapshotCurrent': 'SSH 演练快照已是最新',
+    'config.sshProofNotReady': 'SSH 目标环境证明尚未就绪',
+    'config.sshProofRecorded': 'SSH 目标环境证明已记录',
+    'config.sshProofCurrent': 'SSH 目标环境证明已是最新',
     'deploy.noTargets': '暂无部署目标',
     'deploy.targetsNeedAttention': '个部署目标需要关注',
     'deploy.latestObserved': '最近观测到的部署',
@@ -931,6 +1015,36 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.archived': '已归档',
     'value.default': '默认',
     'value.ok': '正常',
+    'value.auth': '认证',
+    'value.verify': '验证',
+    'value.exec': '执行',
+    'value.runbook_recorded': '运行手册已记录',
+    'value.no_runbook': '无运行手册',
+    'value.fixture_recorded': '测试夹具已记录',
+    'value.no_fixture': '无测试夹具',
+    'value.env_proof': '环境证明',
+    'value.env_proof_ready': '环境证明就绪',
+    'value.env_proof_pending': '环境证明待补充',
+    'value.target_attestation': '目标环境签核',
+    'value.env_probed': '环境已探测',
+    'value.no_env_probe': '无环境探测',
+    'value.raw_output_recorded': '原始输出已记录',
+    'value.no_raw_output': '无原始输出',
+    'value.proof': '证明',
+    'value.not_recorded': '未记录',
+    'value.evidence': '证据',
+    'value.verify_runs': '验证记录',
+    'value.exec_runs': '执行记录',
+    'value.unknown_runs': '未知记录',
+    'value.active_runs': '活跃记录',
+    'value.failed_runs': '失败记录',
+    'value.canceled_runs': '取消记录',
+    'value.pending': '待处理',
+    'value.asset_status_unchanged': '资产状态未变化',
+    'value.proof_registered': '证明已登记',
+    'value.proof_not_written': '证明未写入',
+    'value.host_asset_observed': '主机资产已观测',
+    'value.host_asset_missing': '主机资产缺失',
     'menu.dashboard': '仪表盘',
     'menu.assets': '资产',
     'menu.projects': '项目',
@@ -8186,7 +8300,7 @@ function ConfigPage() {
         if (!alive) return;
         if (op.status === 'completed') {
           if (!alive) return;
-          message.success('Argo apps synced');
+          message.success(t('config.argoAppsSynced'));
           setArgoSyncOpID(undefined);
           argoConnections.reload();
           argoApps.reload();
@@ -8195,12 +8309,12 @@ function ConfigPage() {
           rollbackPoints.reload();
         } else if (op.status === 'failed' || op.status === 'canceled') {
           if (!alive) return;
-          message.error(op.error || 'Argo app sync failed');
+          message.error(op.error || t('config.argoAppSyncFailed'));
           setArgoSyncOpID(undefined);
           argoConnections.reload();
         } else if (attempts >= 150) {
           if (!alive) return;
-          message.warning('Argo app sync is still running. Refresh later to check progress.');
+          message.warning(t('config.argoSyncStillRunning'));
           setArgoSyncOpID(undefined);
           argoConnections.reload();
         }
@@ -8251,7 +8365,7 @@ function ConfigPage() {
         metadata: {}
       })
     });
-    message.success('Kubernetes environment saved');
+    message.success(t('config.kubernetesEnvSaved'));
     setKubernetesEnvironmentOpen(false);
     kubernetesEnvironmentForm.resetFields();
     kubernetesEnvironments.reload();
@@ -8274,13 +8388,13 @@ function ConfigPage() {
   }
   async function syncArgoApps() {
     if (!argoPick.selectedID) {
-      message.error('Select an Argo connection first');
+      message.error(t('config.selectArgoConnection'));
       return;
     }
     try {
       const op = await api(`/api/argo/connections/${argoPick.selectedID}/apps/sync`, { method: 'POST', body: '{}' });
       setArgoSyncOpID(op.id);
-      message.success('Argo app sync queued');
+      message.success(t('config.argoSyncQueued'));
       argoConnections.reload();
     } catch (error: any) {
       message.error(error.message);
@@ -8292,9 +8406,9 @@ function ConfigPage() {
     try {
       const result = await api(`/api/deployment-targets/${targetID}/execution-gate`, { method: 'POST', body: '{}' });
       setDeploymentExecutionGateResults((current) => ({ ...current, [targetID]: result }));
-      message.warning(result.message || 'Deployment execution gate is blocked');
+      message.warning(result.message || t('config.deploymentGateBlocked'));
     } catch (error: any) {
-      message.error(error.message || 'Could not check deployment execution gate');
+      message.error(error.message || t('config.deploymentGateFailed'));
     } finally {
       setDeploymentExecutionGateLoadingID('');
     }
@@ -8305,9 +8419,9 @@ function ConfigPage() {
     try {
       const result = await api(`/api/rollback-points/${rollbackPointID}/execution-gate`, { method: 'POST', body: '{}' });
       setRollbackExecutionGateResults((current) => ({ ...current, [rollbackPointID]: result }));
-      message.warning(result.message || 'Rollback execution gate is blocked');
+      message.warning(result.message || t('config.rollbackGateBlocked'));
     } catch (error: any) {
-      message.error(error.message || 'Could not check rollback execution gate');
+      message.error(error.message || t('config.rollbackGateFailed'));
     } finally {
       setRollbackExecutionGateLoadingID('');
     }
@@ -8329,9 +8443,9 @@ function ConfigPage() {
       setPodLogPreview(result);
       setPodLogRunResult(undefined);
       setPodLogSnapshotResult(undefined);
-      message.success('Pod log query preview ready');
+      message.success(t('config.podLogPreviewReady'));
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setPodLogLoading(false);
     }
@@ -8353,10 +8467,10 @@ function ConfigPage() {
         })
       });
       setPodLogRunResult(result);
-      message.success(result.approval ? 'Pod log approval requested' : 'Pod log audit queued');
+      message.success(result.approval ? t('config.podLogApprovalRequested') : t('config.podLogAuditQueued'));
     } catch (error: any) {
       setPodLogRunResult(undefined);
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setPodLogRunLoading(false);
     }
@@ -8390,20 +8504,20 @@ function ConfigPage() {
       });
       setPodLogPreview(refreshed);
       if (result.recording_ready === false) {
-        message.warning(result.message || 'Pod log audit snapshot is not ready yet');
+        message.warning(result.message || t('config.podLogSnapshotNotReady'));
       } else {
-        message.success(result.pod_log_audit_snapshot_written ? 'Pod log audit snapshot recorded' : 'Pod log audit snapshot already current');
+        message.success(result.pod_log_audit_snapshot_written ? t('config.podLogSnapshotRecorded') : t('config.podLogSnapshotCurrent'));
       }
     } catch (error: any) {
       setPodLogSnapshotResult(undefined);
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setPodLogSnapshotLoading(false);
     }
   }
   async function runSSHCommand(values: AnyRow) {
     if (!sshPick.selectedID) {
-      message.error('Select an SSH machine first');
+      message.error(t('config.selectSSHMachine'));
       return;
     }
     try {
@@ -8411,7 +8525,7 @@ function ConfigPage() {
         method: 'POST',
         body: JSON.stringify({ command: values.command, timeout_seconds: Number(values.timeout_seconds || 60) })
       });
-      message.success(result.approval ? 'Approval requested' : 'SSH command queued');
+      message.success(result.approval ? t('config.approvalRequested') : t('config.sshCommandQueued'));
       sshRuns.reload();
       sshRehearsal.reload();
     } catch (error: any) {
@@ -8420,12 +8534,12 @@ function ConfigPage() {
   }
   async function verifySSHMachine() {
     if (!sshPick.selectedID) {
-      message.error('Select an SSH machine first');
+      message.error(t('config.selectSSHMachine'));
       return;
     }
     try {
       await api(`/api/ssh-machines/${sshPick.selectedID}/verify`, { method: 'POST', body: '{}' });
-      message.success('SSH verify queued');
+      message.success(t('config.sshVerifyQueued'));
       sshRuns.reload();
       sshRehearsal.reload();
     } catch (error: any) {
@@ -8434,7 +8548,7 @@ function ConfigPage() {
   }
   async function recordSSHRehearsalSnapshot() {
     if (!sshPick.selectedID) {
-      message.error('Select an SSH machine first');
+      message.error(t('config.selectSSHMachine'));
       return;
     }
     setSSHSnapshotLoading(true);
@@ -8446,20 +8560,20 @@ function ConfigPage() {
       setSSHSnapshotResult(result);
       sshRehearsal.reload();
       if (result.recording_ready === false) {
-        message.warning(result.message || 'SSH rehearsal snapshot is not ready yet');
+        message.warning(result.message || t('config.sshSnapshotNotReady'));
       } else {
-        message.success(result.ssh_rehearsal_snapshot_written ? 'SSH rehearsal snapshot recorded' : 'SSH rehearsal snapshot already current');
+        message.success(result.ssh_rehearsal_snapshot_written ? t('config.sshSnapshotRecorded') : t('config.sshSnapshotCurrent'));
       }
     } catch (error: any) {
       setSSHSnapshotResult(undefined);
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setSSHSnapshotLoading(false);
     }
   }
   async function recordSSHTargetEnvironmentProof() {
     if (!sshPick.selectedID) {
-      message.error('Select an SSH machine first');
+      message.error(t('config.selectSSHMachine'));
       return;
     }
     setSSHProofLoading(true);
@@ -8471,13 +8585,13 @@ function ConfigPage() {
       setSSHProofResult(result);
       sshRehearsal.reload();
       if (result.recording_ready === false) {
-        message.warning(result.message || 'SSH target environment proof is not ready yet');
+        message.warning(result.message || t('config.sshProofNotReady'));
       } else {
-        message.success(result.proof_registered ? 'SSH target environment proof recorded' : 'SSH target environment proof already current');
+        message.success(result.proof_registered ? t('config.sshProofRecorded') : t('config.sshProofCurrent'));
       }
     } catch (error: any) {
       setSSHProofResult(undefined);
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setSSHProofLoading(false);
     }
@@ -8507,52 +8621,52 @@ function ConfigPage() {
                   <Tag>{t(sshRehearsalView.ssh_process_started ? 'value.ssh_started' : 'value.no_ssh_process')}</Tag>
                   <Tag color={sshRehearsalView.live_evidence_recorded ? 'green' : 'default'}>{t(sshRehearsalView.live_evidence_recorded ? 'value.live_evidence_recorded' : 'value.no_live_evidence')}</Tag>
                   <Tag color={sshRehearsalView.sanitized_result_recorded ? 'green' : 'default'}>{t(sshRehearsalView.sanitized_result_recorded ? 'value.sanitized_result_recorded' : 'value.no_sanitized_result')}</Tag>
-                  {sshRehearsalView.approval_request_plan ? <Tag color="gold">approval {sshRehearsalView.approval_request_plan.request_state || 'blocked'}</Tag> : null}
-                  {sshRehearsalView.auth_binding_plan ? <Tag color={sshRehearsalView.auth_binding_plan.binding_state === 'planned' ? 'gold' : sshRehearsalView.auth_binding_plan.binding_state === 'observed' ? 'green' : 'red'}>auth {sshRehearsalView.auth_binding_plan.binding_state || 'blocked'}</Tag> : null}
-                  {sshRehearsalView.verify_execution_plan ? <Tag color={sshRehearsalView.verify_execution_plan.verify_state === 'observed' ? 'green' : sshRehearsalView.verify_execution_plan.verify_state === 'planned' ? 'gold' : 'red'}>verify {sshRehearsalView.verify_execution_plan.verify_state || 'blocked'}</Tag> : null}
-                  {sshRehearsalView.exec_execution_plan ? <Tag color={sshRehearsalView.exec_execution_plan.exec_state === 'observed' ? 'green' : sshRehearsalView.exec_execution_plan.exec_state === 'planned' ? 'gold' : 'red'}>exec {sshRehearsalView.exec_execution_plan.exec_state || 'blocked'}</Tag> : null}
+                  {sshRehearsalView.approval_request_plan ? <Tag color="gold">{t('value.approval')} {translatedValue(sshRehearsalView.approval_request_plan.request_state || 'blocked', t)}</Tag> : null}
+                  {sshRehearsalView.auth_binding_plan ? <Tag color={sshRehearsalView.auth_binding_plan.binding_state === 'planned' ? 'gold' : sshRehearsalView.auth_binding_plan.binding_state === 'observed' ? 'green' : 'red'}>{t('value.auth')} {translatedValue(sshRehearsalView.auth_binding_plan.binding_state || 'blocked', t)}</Tag> : null}
+                  {sshRehearsalView.verify_execution_plan ? <Tag color={sshRehearsalView.verify_execution_plan.verify_state === 'observed' ? 'green' : sshRehearsalView.verify_execution_plan.verify_state === 'planned' ? 'gold' : 'red'}>{t('value.verify')} {translatedValue(sshRehearsalView.verify_execution_plan.verify_state || 'blocked', t)}</Tag> : null}
+                  {sshRehearsalView.exec_execution_plan ? <Tag color={sshRehearsalView.exec_execution_plan.exec_state === 'observed' ? 'green' : sshRehearsalView.exec_execution_plan.exec_state === 'planned' ? 'gold' : 'red'}>{t('value.exec')} {translatedValue(sshRehearsalView.exec_execution_plan.exec_state || 'blocked', t)}</Tag> : null}
                   <Tag>{t(sshRehearsalView.private_key_included ? 'value.key_included' : 'value.no_key_material')}</Tag>
                   <Tag>{t(sshRehearsalView.stdout_included || sshRehearsalView.stderr_included ? 'value.output_included' : 'value.no_command_output')}</Tag>
-                  {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.recording_state || 'blocked'} recording</Tag> : null}
+                  {sshRehearsalView.result_recording_plan ? <Tag>{translatedValue(sshRehearsalView.result_recording_plan.recording_state || 'blocked', t)} {t('value.recording')}</Tag> : null}
                   {sshRehearsalView.result_recording_plan ? <Tag>{t(sshRehearsalView.result_recording_plan.auth_binding_recorded ? 'value.auth_recorded' : 'value.no_auth_record')}</Tag> : null}
                   {sshRehearsalView.result_recording_plan ? <Tag>{t(sshRehearsalView.result_recording_plan.verify_result_recorded ? 'value.verify_recorded' : 'value.no_verify_record')}</Tag> : null}
                   {sshRehearsalView.result_recording_plan ? <Tag>{t(sshRehearsalView.result_recording_plan.exec_result_recorded ? 'value.exec_recorded' : 'value.no_exec_record')}</Tag> : null}
-                  {sshRehearsalView.live_rehearsal_control_evidence ? <Tag color={sshRehearsalView.live_rehearsal_control_evidence.control_state === 'ready' ? 'green' : sshRehearsalView.live_rehearsal_control_evidence.control_state === 'blocked' ? 'red' : 'gold'}>controls {sshRehearsalView.live_rehearsal_control_evidence.control_state || 'blocked'}</Tag> : null}
-                  {sshRehearsalView.live_rehearsal_control_evidence ? <Tag>{sshRehearsalView.live_rehearsal_control_evidence.runbook_reference_recorded ? 'runbook recorded' : 'no runbook'}</Tag> : null}
-                  {sshRehearsalView.live_rehearsal_control_evidence ? <Tag>{sshRehearsalView.live_rehearsal_control_evidence.fixture_reference_recorded ? 'fixture recorded' : 'no fixture'}</Tag> : null}
+                  {sshRehearsalView.live_rehearsal_control_evidence ? <Tag color={sshRehearsalView.live_rehearsal_control_evidence.control_state === 'ready' ? 'green' : sshRehearsalView.live_rehearsal_control_evidence.control_state === 'blocked' ? 'red' : 'gold'}>{t('value.controls')} {translatedValue(sshRehearsalView.live_rehearsal_control_evidence.control_state || 'blocked', t)}</Tag> : null}
+                  {sshRehearsalView.live_rehearsal_control_evidence ? <Tag>{t(sshRehearsalView.live_rehearsal_control_evidence.runbook_reference_recorded ? 'value.runbook_recorded' : 'value.no_runbook')}</Tag> : null}
+                  {sshRehearsalView.live_rehearsal_control_evidence ? <Tag>{t(sshRehearsalView.live_rehearsal_control_evidence.fixture_reference_recorded ? 'value.fixture_recorded' : 'value.no_fixture')}</Tag> : null}
                   {sshRehearsalView.operator_approved_proof_recorded ? <Tag color="green">{t('value.operator_proof_recorded')}</Tag> : <Tag>{t('value.no_operator_proof')}</Tag>}
-                  {sshRehearsalView.environment_proof_plan ? <Tag color={sshRehearsalView.environment_proof_plan.environment_proof_state === 'ready' ? 'green' : sshRehearsalView.environment_proof_plan.environment_proof_state === 'blocked' ? 'red' : 'gold'}>env proof {sshRehearsalView.environment_proof_plan.environment_proof_state || 'blocked'}</Tag> : null}
-                  {sshRehearsalView.environment_proof_plan ? <Tag>{sshRehearsalView.environment_proof_plan.environment_proof_ready ? 'env proof ready' : 'env proof pending'}</Tag> : null}
-                  {sshRehearsalView.target_environment_attestation_plan ? <Tag color={sshRehearsalView.target_environment_attestation_plan.attestation_state === 'ready_for_operator_review' ? 'green' : sshRehearsalView.target_environment_attestation_plan.attestation_state === 'blocked' ? 'red' : 'gold'}>target attestation {sshRehearsalView.target_environment_attestation_plan.attestation_state || 'blocked'}</Tag> : null}
-                  {sshRehearsalView.target_environment_attestation_plan ? <Tag>{sshRehearsalView.target_environment_attestation_plan.environment_probe_performed ? 'env probed' : 'no env probe'}</Tag> : null}
-                  {sshRehearsalView.target_environment_attestation_plan ? <Tag>{sshRehearsalView.target_environment_attestation_plan.raw_output_recorded ? 'raw output recorded' : 'no raw output'}</Tag> : null}
+                  {sshRehearsalView.environment_proof_plan ? <Tag color={sshRehearsalView.environment_proof_plan.environment_proof_state === 'ready' ? 'green' : sshRehearsalView.environment_proof_plan.environment_proof_state === 'blocked' ? 'red' : 'gold'}>{t('value.env_proof')} {translatedValue(sshRehearsalView.environment_proof_plan.environment_proof_state || 'blocked', t)}</Tag> : null}
+                  {sshRehearsalView.environment_proof_plan ? <Tag>{t(sshRehearsalView.environment_proof_plan.environment_proof_ready ? 'value.env_proof_ready' : 'value.env_proof_pending')}</Tag> : null}
+                  {sshRehearsalView.target_environment_attestation_plan ? <Tag color={sshRehearsalView.target_environment_attestation_plan.attestation_state === 'ready_for_operator_review' ? 'green' : sshRehearsalView.target_environment_attestation_plan.attestation_state === 'blocked' ? 'red' : 'gold'}>{t('value.target_attestation')} {translatedValue(sshRehearsalView.target_environment_attestation_plan.attestation_state || 'blocked', t)}</Tag> : null}
+                  {sshRehearsalView.target_environment_attestation_plan ? <Tag>{t(sshRehearsalView.target_environment_attestation_plan.environment_probe_performed ? 'value.env_probed' : 'value.no_env_probe')}</Tag> : null}
+                  {sshRehearsalView.target_environment_attestation_plan ? <Tag>{t(sshRehearsalView.target_environment_attestation_plan.raw_output_recorded ? 'value.raw_output_recorded' : 'value.no_raw_output')}</Tag> : null}
                   {sshRehearsalView.target_environment_attestation_ready ? <Tag color="green">{t('value.target_proof_review_ready')}</Tag> : <Tag>{t('value.target_proof_pending')}</Tag>}
                   {sshRehearsalView.target_environment_proof_registered ? <Tag color="green">{t('value.target_proof_registered')}</Tag> : <Tag>{t('value.target_proof_unregistered')}</Tag>}
-                  {sshRehearsalView.target_environment_proof_registration ? <Tag color={sshRehearsalView.target_environment_proof_registration.proof_state === 'recorded' ? 'green' : sshRehearsalView.target_environment_proof_registration.proof_state === 'lookup_failed' ? 'red' : 'gold'}>proof {sshRehearsalView.target_environment_proof_registration.proof_state || 'not_recorded'}</Tag> : null}
-                  {sshRehearsalView.recent_evidence?.evidence_state ? <Tag color={sshRehearsalView.recent_evidence.evidence_state === 'recorded' ? 'green' : sshRehearsalView.recent_evidence.evidence_state === 'failed' ? 'red' : 'gold'}>evidence {sshRehearsalView.recent_evidence.evidence_state}</Tag> : null}
-                  <Tag>{sshRehearsalView.recent_evidence?.verify_runs || 0} verify runs</Tag>
-                  <Tag>{sshRehearsalView.recent_evidence?.exec_runs || 0} exec runs</Tag>
-                  <Tag>{sshRehearsalView.recent_evidence?.unknown_runs || 0} unknown runs</Tag>
-                  <Tag>{sshRehearsalView.recent_evidence?.active_runs || 0} active runs</Tag>
-                  <Tag>{sshRehearsalView.recent_evidence?.failed_runs || 0} failed runs</Tag>
-                  <Tag>{sshRehearsalView.recent_evidence?.canceled_runs || 0} canceled runs</Tag>
+                  {sshRehearsalView.target_environment_proof_registration ? <Tag color={sshRehearsalView.target_environment_proof_registration.proof_state === 'recorded' ? 'green' : sshRehearsalView.target_environment_proof_registration.proof_state === 'lookup_failed' ? 'red' : 'gold'}>{t('value.proof')} {translatedValue(sshRehearsalView.target_environment_proof_registration.proof_state || 'not_recorded', t)}</Tag> : null}
+                  {sshRehearsalView.recent_evidence?.evidence_state ? <Tag color={sshRehearsalView.recent_evidence.evidence_state === 'recorded' ? 'green' : sshRehearsalView.recent_evidence.evidence_state === 'failed' ? 'red' : 'gold'}>{t('value.evidence')} {translatedValue(sshRehearsalView.recent_evidence.evidence_state, t)}</Tag> : null}
+                  <Tag>{sshRehearsalView.recent_evidence?.verify_runs || 0} {t('value.verify_runs')}</Tag>
+                  <Tag>{sshRehearsalView.recent_evidence?.exec_runs || 0} {t('value.exec_runs')}</Tag>
+                  <Tag>{sshRehearsalView.recent_evidence?.unknown_runs || 0} {t('value.unknown_runs')}</Tag>
+                  <Tag>{sshRehearsalView.recent_evidence?.active_runs || 0} {t('value.active_runs')}</Tag>
+                  <Tag>{sshRehearsalView.recent_evidence?.failed_runs || 0} {t('value.failed_runs')}</Tag>
+                  <Tag>{sshRehearsalView.recent_evidence?.canceled_runs || 0} {t('value.canceled_runs')}</Tag>
                 </Space>
                 {sshProofResult && (
                   <Space wrap>
-                    <Tag color={sshProofResult.recording_state === 'recorded' ? 'green' : sshProofResult.recording_state === 'asset_missing' ? 'red' : 'gold'}>proof {sshProofResult.recording_state || 'pending'}</Tag>
-                    <Tag>{sshProofResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
-                    <Tag>{sshProofResult.proof_registered ? 'proof registered' : 'proof not written'}</Tag>
-                    <Tag>{sshProofResult.stdout_included || sshProofResult.stderr_included ? 'output included' : 'no command output'}</Tag>
-                    <Tag>{sshProofResult.private_key_included ? 'key included' : 'no key material'}</Tag>
+                    <Tag color={sshProofResult.recording_state === 'recorded' ? 'green' : sshProofResult.recording_state === 'asset_missing' ? 'red' : 'gold'}>{t('value.proof')} {translatedValue(sshProofResult.recording_state || 'pending', t)}</Tag>
+                    <Tag>{t(sshProofResult.asset_status_snapshot_written ? 'value.asset_status_written' : 'value.asset_status_unchanged')}</Tag>
+                    <Tag>{t(sshProofResult.proof_registered ? 'value.proof_registered' : 'value.proof_not_written')}</Tag>
+                    <Tag>{t(sshProofResult.stdout_included || sshProofResult.stderr_included ? 'value.output_included' : 'value.no_command_output')}</Tag>
+                    <Tag>{t(sshProofResult.private_key_included ? 'value.key_included' : 'value.no_key_material')}</Tag>
                   </Space>
                 )}
                 {sshSnapshotResult && (
                   <Space wrap>
-                    <Tag color={sshSnapshotResult.recording_state === 'recorded' ? 'green' : sshSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'gold'}>snapshot {sshSnapshotResult.recording_state || 'pending'}</Tag>
-                    <Tag>{sshSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag>
-                    <Tag>{sshSnapshotResult.ssh_machine_asset_observed ? 'host asset observed' : 'host asset missing'}</Tag>
-                    <Tag>{sshSnapshotResult.stdout_included || sshSnapshotResult.stderr_included ? 'output included' : 'no command output'}</Tag>
-                    <Tag>{sshSnapshotResult.private_key_included ? 'key included' : 'no key material'}</Tag>
+                    <Tag color={sshSnapshotResult.recording_state === 'recorded' ? 'green' : sshSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'gold'}>{t('value.snapshot')} {translatedValue(sshSnapshotResult.recording_state || 'pending', t)}</Tag>
+                    <Tag>{t(sshSnapshotResult.asset_status_snapshot_written ? 'value.asset_status_written' : 'value.asset_status_unchanged')}</Tag>
+                    <Tag>{t(sshSnapshotResult.ssh_machine_asset_observed ? 'value.host_asset_observed' : 'value.host_asset_missing')}</Tag>
+                    <Tag>{t(sshSnapshotResult.stdout_included || sshSnapshotResult.stderr_included ? 'value.output_included' : 'value.no_command_output')}</Tag>
+                    <Tag>{t(sshSnapshotResult.private_key_included ? 'value.key_included' : 'value.no_key_material')}</Tag>
                   </Space>
                 )}
                 <JSONBlock value={sshRehearsalView} />
@@ -8920,7 +9034,7 @@ function CreateModal({ title, open, setOpen, fields, onSubmit, initialValues }: 
       setOpen(false);
       form.resetFields();
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setSubmitting(false);
     }
