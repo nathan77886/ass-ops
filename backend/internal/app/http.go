@@ -8942,9 +8942,33 @@ func (s *Server) listGitHubActions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT * FROM github_action_runs
-		WHERE git_remote_id=$1
-		ORDER BY created_at DESC
+		SELECT
+			gar.*,
+			COALESCE(artifact_summary.artifact_count, 0) AS artifact_count,
+			COALESCE(artifact_summary.artifacts, '[]'::jsonb) AS artifacts
+		FROM github_action_runs gar
+		LEFT JOIN LATERAL (
+			SELECT
+				COUNT(*)::int AS artifact_count,
+				jsonb_agg(
+					jsonb_build_object(
+						'id', gaa.id,
+						'external_artifact_id', gaa.external_artifact_id,
+						'name', gaa.name,
+						'size_in_bytes', gaa.size_in_bytes,
+						'expired', gaa.expired,
+						'created_at', gaa.created_at,
+						'updated_at', gaa.updated_at,
+						'expires_at', gaa.expires_at,
+						'synced_at', gaa.synced_at
+					)
+					ORDER BY gaa.created_at DESC NULLS LAST, gaa.name
+				) AS artifacts
+			FROM github_action_artifacts gaa
+			WHERE gaa.github_action_run_id=gar.id
+		) artifact_summary ON true
+		WHERE gar.git_remote_id=$1
+		ORDER BY gar.created_at DESC
 		LIMIT 50`, chi.URLParam(r, "id"))
 	writeQueryResult(w, items, err)
 }

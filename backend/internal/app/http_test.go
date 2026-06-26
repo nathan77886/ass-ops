@@ -38788,6 +38788,35 @@ func TestProviderReviewApprovalRuleMigrationAndFreshInit(t *testing.T) {
 	}
 }
 
+func TestGitHubActionArtifactsMigrationAndFreshInit(t *testing.T) {
+	migration, err := os.ReadFile("../../migrations/020_github_action_artifacts.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	for _, token := range []string{
+		"CREATE TABLE IF NOT EXISTS github_action_artifacts",
+		"git_remote_id UUID NOT NULL REFERENCES git_remotes(id) ON DELETE CASCADE",
+		"github_action_run_id UUID NOT NULL REFERENCES github_action_runs(id) ON DELETE CASCADE",
+		"external_artifact_id TEXT NOT NULL DEFAULT ''",
+		"idx_github_action_artifacts_remote",
+		"idx_github_action_artifacts_run",
+		"idx_github_action_artifacts_run_external",
+	} {
+		if !strings.Contains(string(migration), token) {
+			t.Fatalf("github action artifacts migration missing %q", token)
+		}
+	}
+	for _, path := range []string{"../../../deploy/docker-compose.yml", "../../../deploy/compose.prod.yml"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(content), "020_github_action_artifacts.sql") {
+			t.Fatalf("%s missing 020_github_action_artifacts.sql init mount", path)
+		}
+	}
+}
+
 func TestProviderReviewAttemptsMigrationAndFreshInit(t *testing.T) {
 	migration, err := os.ReadFile("../../migrations/014_provider_review_attempts.sql")
 	if err != nil {

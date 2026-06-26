@@ -5340,6 +5340,15 @@ function GitRemotes() {
             { title: 'Branch', dataIndex: 'branch' },
             { title: 'Status', render: (_, row) => <Tag color={githubActionStatusColor(row)}>{row.conclusion || row.status}</Tag> },
             { title: 'SHA', dataIndex: 'commit_sha' },
+            { title: 'Artifacts', render: (_, row) => {
+              const artifacts = Array.isArray(row.artifacts) ? row.artifacts : [];
+              if (!artifacts.length) return <Typography.Text type="secondary">-</Typography.Text>;
+              return <Space size={4} wrap>{artifacts.slice(0, 3).map((artifact: AnyRow) => (
+                <Tag key={artifact.id || artifact.external_artifact_id} color={artifact.expired ? 'default' : 'blue'}>
+                  {shortText(artifact.name || artifact.external_artifact_id, 24)}
+                </Tag>
+              ))}{artifacts.length > 3 ? <Tag>+{artifacts.length - 3}</Tag> : null}</Space>;
+            } },
             { title: 'Synced', dataIndex: 'synced_at' }
           ]} />
         </Space> }

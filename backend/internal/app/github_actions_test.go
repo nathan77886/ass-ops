@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -61,28 +62,41 @@ func TestValidateGitHubTokenScopes(t *testing.T) {
 
 func TestFetchWorkflowRuns(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Path; got != "/repos/acme/api/actions/runs" {
-			t.Fatalf("path = %q", got)
-		}
-		if got := r.URL.Query().Get("branch"); got != "main" {
-			t.Fatalf("branch = %q", got)
-		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Fatalf("authorization = %q", got)
 		}
-		_, _ = w.Write([]byte(`{
-			"workflow_runs": [{
-				"id": 123,
-				"name": "CI",
-				"run_number": 7,
-				"head_branch": "main",
-				"head_sha": "0123456789abcdef0123456789abcdef01234567",
-				"status": "completed",
-				"conclusion": "success",
-				"html_url": "https://github.com/acme/api/actions/runs/123",
-				"event": "push"
-			}]
-		}`))
+		switch got := r.URL.Path; got {
+		case "/repos/acme/api/actions/runs":
+			if got := r.URL.Query().Get("branch"); got != "main" {
+				t.Fatalf("branch = %q", got)
+			}
+			_, _ = w.Write([]byte(`{
+				"workflow_runs": [{
+					"id": 123,
+					"name": "CI",
+					"run_number": 7,
+					"head_branch": "main",
+					"head_sha": "0123456789abcdef0123456789abcdef01234567",
+					"status": "completed",
+					"conclusion": "success",
+					"html_url": "https://github.com/acme/api/actions/runs/123",
+					"event": "push"
+				}]
+			}`))
+		case "/repos/acme/api/actions/runs/123/artifacts":
+			_, _ = w.Write([]byte(`{
+				"total_count": 1,
+				"artifacts": [{
+					"id": 456,
+					"node_id": "artifact-node",
+					"name": "linux-build",
+					"size_in_bytes": 2048,
+					"expired": false
+				}]
+			}`))
+		default:
+			t.Fatalf("path = %q", got)
+		}
 	}))
 	defer server.Close()
 
@@ -96,5 +110,78 @@ func TestFetchWorkflowRuns(t *testing.T) {
 	}
 	if runs[0].WorkflowName != "CI" || runs[0].Conclusion != "success" || runs[0].RunID != "123" {
 		t.Fatalf("unexpected run: %+v", runs[0])
+	}
+	if len(runs[0].Artifacts) != 1 || runs[0].Artifacts[0].Name != "linux-build" || runs[0].Artifacts[0].SizeInBytes != 2048 {
+		t.Fatalf("unexpected artifacts: %+v", runs[0].Artifacts)
+	}
+}
+
+func TestFetchWorkflowRunArtifactsPaginates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != "/repos/acme/api/actions/runs/123/artifacts" {
+			t.Fatalf("path = %q", got)
+		}
+		switch r.URL.Query().Get("page") {
+		case "1":
+			_, _ = fmt.Fprint(w, `{"total_count":2,"artifacts":[{"id":456,"name":"linux-build","size_in_bytes":2048}]}`)
+		case "2":
+			_, _ = fmt.Fprint(w, `{"total_count":2,"artifacts":[{"id":789,"name":"darwin-build","size_in_bytes":4096}]}`)
+		default:
+			t.Fatalf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	}))
+	defer server.Close()
+
+	syncer := &GitHubActionsSyncer{HTTPClient: server.Client(), APIBase: server.URL}
+	artifacts, err := syncer.fetchWorkflowRunArtifacts(context.Background(), "acme", "api", "123", "")
+	if err != nil {
+		t.Fatalf("fetchWorkflowRunArtifacts returned error: %v", err)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("len(artifacts) = %d, want 2: %+v", len(artifacts), artifacts)
+	}
+	if artifacts[0].Name != "linux-build" || artifacts[1].Name != "darwin-build" {
+		t.Fatalf("unexpected artifacts: %+v", artifacts)
+	}
+}
+
+func TestFetchWorkflowRunsKeepsRunWhenArtifactsFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch got := r.URL.Path; got {
+		case "/repos/acme/api/actions/runs":
+			_, _ = fmt.Fprint(w, `{
+				"workflow_runs": [{
+					"id": 123,
+					"name": "CI",
+					"run_number": 7,
+					"head_branch": "main",
+					"head_sha": "0123456789abcdef0123456789abcdef01234567",
+					"status": "completed",
+					"conclusion": "success",
+					"html_url": "https://github.com/acme/api/actions/runs/123",
+					"event": "push"
+				}]
+			}`)
+		case "/repos/acme/api/actions/runs/123/artifacts":
+			http.Error(w, "temporarily unavailable", http.StatusInternalServerError)
+		default:
+			t.Fatalf("path = %q", got)
+		}
+	}))
+	defer server.Close()
+
+	syncer := &GitHubActionsSyncer{HTTPClient: server.Client(), APIBase: server.URL}
+	runs, err := syncer.fetchWorkflowRuns(context.Background(), "acme", "api", "main", 10, "")
+	if err != nil {
+		t.Fatalf("fetchWorkflowRuns returned error: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("len(runs) = %d, want 1", len(runs))
+	}
+	if len(runs[0].Artifacts) != 0 {
+		t.Fatalf("artifacts = %+v, want empty", runs[0].Artifacts)
+	}
+	if runs[0].Metadata["artifact_sync_status"] != "unavailable" {
+		t.Fatalf("metadata = %+v, want unavailable artifact sync status", runs[0].Metadata)
 	}
 }

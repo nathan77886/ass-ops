@@ -39,6 +39,18 @@ type GitHubActionRunInput struct {
 	StartedAt     *time.Time
 	UpdatedAt     *time.Time
 	Metadata      map[string]any
+	Artifacts     []GitHubActionArtifactInput
+}
+
+type GitHubActionArtifactInput struct {
+	ExternalArtifactID string
+	Name               string
+	SizeInBytes        int64
+	Expired            bool
+	CreatedAt          *time.Time
+	UpdatedAt          *time.Time
+	ExpiresAt          *time.Time
+	Metadata           map[string]any
 }
 
 func NewGitHubActionsSyncer() *GitHubActionsSyncer {
@@ -147,6 +159,18 @@ func (s *GitHubActionsSyncer) fetchWorkflowRuns(ctx context.Context, owner, repo
 			name = run.DisplayTitle
 		}
 		runID := strconv.FormatInt(run.ID, 10)
+		artifacts, err := s.fetchWorkflowRunArtifacts(ctx, owner, repo, runID, token)
+		if err != nil {
+			artifacts = []GitHubActionArtifactInput{}
+		}
+		metadata := map[string]any{
+			"event":                run.Event,
+			"run_number":           run.RunNumber,
+			"artifact_sync_status": "synced",
+		}
+		if err != nil {
+			metadata["artifact_sync_status"] = "unavailable"
+		}
 		runs = append(runs, GitHubActionRunInput{
 			ExternalRunID: runID,
 			WorkflowName:  name,
@@ -158,13 +182,99 @@ func (s *GitHubActionsSyncer) fetchWorkflowRuns(ctx context.Context, owner, repo
 			HTMLURL:       run.HTMLURL,
 			StartedAt:     run.RunStartedAt,
 			UpdatedAt:     run.UpdatedAt,
-			Metadata: map[string]any{
-				"event":      run.Event,
-				"run_number": run.RunNumber,
-			},
+			Metadata:      metadata,
+			Artifacts:     artifacts,
 		})
 	}
 	return runs, nil
+}
+
+func (s *GitHubActionsSyncer) fetchWorkflowRunArtifacts(ctx context.Context, owner, repo, runID, token string) ([]GitHubActionArtifactInput, error) {
+	const perPage = 100
+	const maxArtifacts = 500
+	apiBase := strings.TrimRight(s.APIBase, "/")
+	if apiBase == "" {
+		apiBase = "https://api.github.com"
+	}
+	client := s.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	artifacts := []GitHubActionArtifactInput{}
+	for page := 1; len(artifacts) < maxArtifacts; page++ {
+		endpoint, err := url.Parse(apiBase + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/actions/runs/" + url.PathEscape(runID) + "/artifacts")
+		if err != nil {
+			return nil, err
+		}
+		query := endpoint.Query()
+		query.Set("per_page", strconv.Itoa(perPage))
+		query.Set("page", strconv.Itoa(page))
+		endpoint.RawQuery = query.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		req.Header.Set("User-Agent", "assops-mvp")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		res, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("querying GitHub Actions artifacts: %w", err)
+		}
+		if res.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
+			_ = res.Body.Close()
+			return nil, fmt.Errorf("GitHub Actions artifacts API returned %s: %s", res.Status, strings.TrimSpace(string(body)))
+		}
+		if err := validateGitHubTokenScopes(res.Header.Get("X-OAuth-Scopes")); err != nil {
+			_ = res.Body.Close()
+			return nil, err
+		}
+		var payload struct {
+			TotalCount int `json:"total_count"`
+			Artifacts  []struct {
+				ID          int64      `json:"id"`
+				NodeID      string     `json:"node_id"`
+				Name        string     `json:"name"`
+				SizeInBytes int64      `json:"size_in_bytes"`
+				URL         string     `json:"url"`
+				Expired     bool       `json:"expired"`
+				CreatedAt   *time.Time `json:"created_at"`
+				UpdatedAt   *time.Time `json:"updated_at"`
+				ExpiresAt   *time.Time `json:"expires_at"`
+			} `json:"artifacts"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+			_ = res.Body.Close()
+			return nil, fmt.Errorf("decoding GitHub Actions artifacts response: %w", err)
+		}
+		_ = res.Body.Close()
+		for _, artifact := range payload.Artifacts {
+			if len(artifacts) >= maxArtifacts {
+				break
+			}
+			artifacts = append(artifacts, GitHubActionArtifactInput{
+				ExternalArtifactID: strconv.FormatInt(artifact.ID, 10),
+				Name:               artifact.Name,
+				SizeInBytes:        artifact.SizeInBytes,
+				Expired:            artifact.Expired,
+				CreatedAt:          artifact.CreatedAt,
+				UpdatedAt:          artifact.UpdatedAt,
+				ExpiresAt:          artifact.ExpiresAt,
+				Metadata: map[string]any{
+					"node_id": artifact.NodeID,
+					"url":     artifact.URL,
+				},
+			})
+		}
+		if len(payload.Artifacts) == 0 || len(artifacts) >= payload.TotalCount {
+			break
+		}
+	}
+	return artifacts, nil
 }
 
 func gitHubRepositoryFromRemote(remote map[string]any) (string, string, error) {

@@ -2569,6 +2569,7 @@ func (w *ControlWorker) recordGitHubActionsAdapterRun(ctx context.Context, tx *s
 	result["remote_id"] = syncResult.RemoteID
 	result["repository"] = syncResult.Owner + "/" + syncResult.Repo
 	result["count"] = len(syncResult.Runs)
+	artifactCount := 0
 	if _, err := tx.ExecContext(ctx, "DELETE FROM github_action_runs WHERE git_remote_id=$1", syncResult.RemoteID); err != nil {
 		return err
 	}
@@ -2577,7 +2578,7 @@ func (w *ControlWorker) recordGitHubActionsAdapterRun(ctx context.Context, tx *s
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
+		row, err := queryOne(ctx, tx, `
 		INSERT INTO github_action_runs(
 			operation_run_id, git_remote_id, external_run_id, workflow_name, run_id,
 			branch, commit_sha, status, conclusion, html_url, metadata, started_at, updated_at, synced_at
@@ -2585,7 +2586,8 @@ func (w *ControlWorker) recordGitHubActionsAdapterRun(ctx context.Context, tx *s
 		VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10, $11::jsonb, $12, $13, now()
-		)`,
+		)
+		RETURNING id`,
 			opID,
 			syncResult.RemoteID,
 			run.ExternalRunID,
@@ -2599,10 +2601,44 @@ func (w *ControlWorker) recordGitHubActionsAdapterRun(ctx context.Context, tx *s
 			metadata,
 			run.StartedAt,
 			run.UpdatedAt,
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
+		actionRunID := strings.TrimSpace(fmt.Sprint(row["id"]))
+		for _, artifact := range run.Artifacts {
+			artifactMetadata, err := jsonParam(artifact.Metadata)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `
+			INSERT INTO github_action_artifacts(
+				git_remote_id, github_action_run_id, external_artifact_id, name,
+				size_in_bytes, expired, metadata,
+				created_at, updated_at, expires_at, synced_at
+			)
+			VALUES (
+				$1, $2, $3, $4,
+				$5, $6, $7::jsonb,
+				$8, $9, $10, now()
+			)`,
+				syncResult.RemoteID,
+				actionRunID,
+				artifact.ExternalArtifactID,
+				artifact.Name,
+				artifact.SizeInBytes,
+				artifact.Expired,
+				artifactMetadata,
+				artifact.CreatedAt,
+				artifact.UpdatedAt,
+				artifact.ExpiresAt,
+			); err != nil {
+				return err
+			}
+			artifactCount++
+		}
 	}
+	result["artifact_count"] = artifactCount
 	return nil
 }
 
