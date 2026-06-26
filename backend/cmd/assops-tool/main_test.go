@@ -2180,10 +2180,12 @@ func TestReleasePromotionPlanIncludesVerificationAndRollout(t *testing.T) {
 		"operator approval",
 		"deploy=true",
 		"smoke_url",
+		"smoke_via_port_forward=true",
 		"helm template assops deploy/helm/assops",
 		"helm upgrade --install assops deploy/helm/assops",
 		"--wait-for-jobs",
 		"scripts/api-smoke.sh",
+		"kubectl -n assops port-forward svc/assops-web",
 	} {
 		if !strings.Contains(plan, want) {
 			t.Fatalf("promotion plan missing %q in:\n%s", want, plan)

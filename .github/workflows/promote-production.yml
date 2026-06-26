@@ -26,6 +26,11 @@ on:
         required: false
         default: ""
         type: string
+      smoke_via_port_forward:
+        description: Run post-deploy API smoke through kubectl port-forward when smoke_url is empty
+        required: true
+        default: false
+        type: boolean
       environment_values:
         description: Optional environment values file committed in the repository
         required: true
@@ -204,3 +209,34 @@ jobs:
           test -n "$ASSOPS_ADMIN_EMAIL" || (echo "ASSOPS_ADMIN_EMAIL environment secret is required for smoke_url" && exit 1)
           test -n "$ASSOPS_ADMIN_PASSWORD" || (echo "ASSOPS_ADMIN_PASSWORD environment secret is required for smoke_url" && exit 1)
           bash scripts/api-smoke.sh
+
+      - name: Run API smoke via port-forward
+        if: ${{ inputs.smoke_url == '' && inputs.smoke_via_port_forward }}
+        env:
+          HELM_RELEASE: ${{ inputs.helm_release }}
+          NAMESPACE: ${{ inputs.namespace }}
+          ASSOPS_ADMIN_EMAIL: ${{ secrets.ASSOPS_ADMIN_EMAIL }}
+          ASSOPS_ADMIN_PASSWORD: ${{ secrets.ASSOPS_ADMIN_PASSWORD }}
+        run: |
+          test -n "$ASSOPS_ADMIN_EMAIL" || (echo "ASSOPS_ADMIN_EMAIL environment secret is required for smoke_via_port_forward" && exit 1)
+          test -n "$ASSOPS_ADMIN_PASSWORD" || (echo "ASSOPS_ADMIN_PASSWORD environment secret is required for smoke_via_port_forward" && exit 1)
+          fullname="$HELM_RELEASE"
+          case "$HELM_RELEASE" in
+            *assops*) ;;
+            *) fullname="${HELM_RELEASE}-assops" ;;
+          esac
+          kubectl -n "$NAMESPACE" port-forward "svc/${fullname}-web" 18080:80 >/tmp/assops-web-port-forward.log 2>&1 &
+          pf_pid=$!
+          cleanup() {
+            kill "$pf_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz >/dev/null; then
+              ASSOPS_GATEWAY_URL=http://127.0.0.1:18080 bash scripts/api-smoke.sh
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/assops-web-port-forward.log
+          exit 1
