@@ -58,6 +58,8 @@ const requiredFirstDeployableKeys = [
   'field.kubeconfig_secret_ref',
   'field.token_subject_review_status',
   'field.rbac_read_logs_status',
+  'field.rbac_restart_pods_status',
+  'field.deployment_name',
   'help.argo_auth_type',
   'help.ssh_auth_type',
   'help.server_url',
@@ -66,6 +68,8 @@ const requiredFirstDeployableKeys = [
   'help.kubeconfig_secret_ref',
   'help.token_subject_review_status',
   'help.rbac_read_logs_status',
+  'help.rbac_restart_pods_status',
+  'help.deployment_name',
   'help.pod_name',
   'help.tail_lines',
   'help.since_seconds',
@@ -84,6 +88,7 @@ const requiredFieldMetaSnippets = [
   "ssh_auth_type: { input: 'select', options: ['key', 'password']",
   "token_subject_review_status: { input: 'select', options: ['not_reviewed', 'reviewed', 'failed', 'waived']",
   "rbac_read_logs_status: { input: 'select', options: ['not_reviewed', 'reviewed', 'failed', 'waived']",
+  "rbac_restart_pods_status: { input: 'select', options: ['not_reviewed', 'reviewed', 'failed', 'waived']",
   "status: { input: 'select', options: ['metadata_only', 'ready', 'disabled']"
 ];
 
@@ -97,6 +102,8 @@ const requiredHelpBindings = [
   "helpKey: 'help.kubeconfig_secret_ref'",
   "helpKey: 'help.token_subject_review_status'",
   "helpKey: 'help.rbac_read_logs_status'",
+  "helpKey: 'help.rbac_restart_pods_status'",
+  "helpKey: 'help.deployment_name'",
   "helpKey: 'help.pod_name'",
   "helpKey: 'help.tail_lines'",
   "helpKey: 'help.since_seconds'"

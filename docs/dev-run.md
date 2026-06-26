@@ -95,4 +95,5 @@ If a local WIP database was created before migration files were split, gateway s
 - Webhook connection rows expose a copyable public URL built from `ASSOPS_GATEWAY_URL`; use provider `gitea` for push-to-sync callbacks and `github` for GitHub `workflow_run` callbacks.
 - Argo app sync reads a per-connection `config.token`. `ASSOPS_ARGO_READ_TOKEN` is only used when an admin/owner creates a connection with `use_env_token=true`.
 - Argo URLs must be public HTTP(S) endpoints. Localhost, private IPs, link-local IPs, and unresolvable hosts are rejected.
+- Kubernetes pod-log metadata uses `ASSOPS_KUBERNETES_LOGS_ENABLED`; Kubernetes Deployment rollout restart uses the separate `ASSOPS_KUBERNETES_RESTARTS_ENABLED` write-operation gate and requires `rbac_restart_pods_status=reviewed`.
 - SSH machines should reference key and known_hosts paths under `ASSOPS_SSH_KEY_DIR` and `ASSOPS_SSH_KNOWN_HOSTS_DIR`.

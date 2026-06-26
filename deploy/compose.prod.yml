@@ -13,6 +13,7 @@ x-assops-env: &assops-env
   ASSOPS_GITHUB_ACTIONS_READ_TOKEN: ${ASSOPS_GITHUB_ACTIONS_READ_TOKEN:-}
   ASSOPS_ARGO_READ_TOKEN: ${ASSOPS_ARGO_READ_TOKEN:-}
   ASSOPS_KUBERNETES_LOGS_ENABLED: ${ASSOPS_KUBERNETES_LOGS_ENABLED:-false}
+  ASSOPS_KUBERNETES_RESTARTS_ENABLED: ${ASSOPS_KUBERNETES_RESTARTS_ENABLED:-false}
   ASSOPS_KUBECONFIG_SECRET_DIR: /etc/assops/kubeconfigs
   ASSOPS_KUBECTL_PATH: ${ASSOPS_KUBECTL_PATH:-kubectl}
   ASSOPS_SSH_KEY_DIR: /etc/assops/ssh/keys
@@ -53,6 +54,7 @@ services:
       - ../backend/migrations/020_github_action_artifacts.sql:/docker-entrypoint-initdb.d/020_github_action_artifacts.sql:ro
       - ../backend/migrations/021_kubernetes_environments.sql:/docker-entrypoint-initdb.d/021_kubernetes_environments.sql:ro
       - ../backend/migrations/022_github_repository_labels.sql:/docker-entrypoint-initdb.d/022_github_repository_labels.sql:ro
+      - ../backend/migrations/023_kubernetes_pod_restart_access.sql:/docker-entrypoint-initdb.d/023_kubernetes_pod_restart_access.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U assops -d assops"]
       interval: 5s

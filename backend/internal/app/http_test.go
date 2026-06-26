@@ -1443,7 +1443,7 @@ func TestRecordArgoPodLogAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
 }
 
 func expectArgoPodLogTargetQuery(mock sqlmock.Sqlmock, namespace string) {
-	mock.ExpectQuery(`(?s)SELECT dt\.id, dt\.project_id, dt\.name, dt\.environment, dt\.cluster_name, dt\.namespace, dt\.status,\s+ke\.id AS kubernetes_environment_id,\s+ke\.name AS kubernetes_environment_name,\s+\(ke\.kubeconfig_secret_ref <> ''\) AS kubeconfig_secret_ref_present,\s+ke\.kubeconfig_secret_ref,\s+\(ke\.service_account <> ''\) AS service_account_present,\s+ke\.token_subject_review_status,\s+ke\.rbac_read_logs_status,\s+ke\.status AS kubernetes_environment_status\s+FROM deployment_targets dt\s+LEFT JOIN kubernetes_environments ke`).
+	mock.ExpectQuery(`(?s)SELECT dt\.id, dt\.project_id, dt\.name, dt\.environment, dt\.cluster_name, dt\.namespace, dt\.status,\s+ke\.id AS kubernetes_environment_id,\s+ke\.name AS kubernetes_environment_name,\s+\(ke\.kubeconfig_secret_ref <> ''\) AS kubeconfig_secret_ref_present,\s+ke\.kubeconfig_secret_ref,\s+\(ke\.service_account <> ''\) AS service_account_present,\s+ke\.token_subject_review_status,\s+ke\.rbac_read_logs_status,\s+ke\.rbac_restart_pods_status,\s+ke\.status AS kubernetes_environment_status\s+FROM deployment_targets dt\s+LEFT JOIN kubernetes_environments ke`).
 		WithArgs("target-1", "project-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id",
@@ -1460,6 +1460,7 @@ func expectArgoPodLogTargetQuery(mock sqlmock.Sqlmock, namespace string) {
 			"service_account_present",
 			"token_subject_review_status",
 			"rbac_read_logs_status",
+			"rbac_restart_pods_status",
 			"kubernetes_environment_status",
 		}).AddRow(
 			"target-1",
@@ -1477,11 +1478,12 @@ func expectArgoPodLogTargetQuery(mock sqlmock.Sqlmock, namespace string) {
 			nil,
 			nil,
 			nil,
+			nil,
 		))
 }
 
 func expectDeploymentTargetKubernetesAccessQuery(mock sqlmock.Sqlmock, namespace, kubeconfigRef string) {
-	mock.ExpectQuery(`(?s)SELECT dt\.id, dt\.project_id, dt\.name, dt\.environment, dt\.cluster_name, dt\.namespace, dt\.status,\s+ke\.id AS kubernetes_environment_id,\s+ke\.name AS kubernetes_environment_name,\s+\(ke\.kubeconfig_secret_ref <> ''\) AS kubeconfig_secret_ref_present,\s+ke\.kubeconfig_secret_ref,\s+\(ke\.service_account <> ''\) AS service_account_present,\s+ke\.token_subject_review_status,\s+ke\.rbac_read_logs_status,\s+ke\.status AS kubernetes_environment_status\s+FROM deployment_targets dt\s+LEFT JOIN kubernetes_environments ke`).
+	mock.ExpectQuery(`(?s)SELECT dt\.id, dt\.project_id, dt\.name, dt\.environment, dt\.cluster_name, dt\.namespace, dt\.status,\s+ke\.id AS kubernetes_environment_id,\s+ke\.name AS kubernetes_environment_name,\s+\(ke\.kubeconfig_secret_ref <> ''\) AS kubeconfig_secret_ref_present,\s+ke\.kubeconfig_secret_ref,\s+\(ke\.service_account <> ''\) AS service_account_present,\s+ke\.token_subject_review_status,\s+ke\.rbac_read_logs_status,\s+ke\.rbac_restart_pods_status,\s+ke\.status AS kubernetes_environment_status\s+FROM deployment_targets dt\s+LEFT JOIN kubernetes_environments ke`).
 		WithArgs("target-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id",
@@ -1498,6 +1500,7 @@ func expectDeploymentTargetKubernetesAccessQuery(mock sqlmock.Sqlmock, namespace
 			"service_account_present",
 			"token_subject_review_status",
 			"rbac_read_logs_status",
+			"rbac_restart_pods_status",
 			"kubernetes_environment_status",
 		}).AddRow(
 			"target-1",
@@ -1512,6 +1515,7 @@ func expectDeploymentTargetKubernetesAccessQuery(mock sqlmock.Sqlmock, namespace
 			kubeconfigRef != "",
 			kubeconfigRef,
 			true,
+			"reviewed",
 			"reviewed",
 			"reviewed",
 			"ready",
@@ -1989,6 +1993,97 @@ func TestRequestArgoPodLogRetrievalCreatesApprovalForDeveloper(t *testing.T) {
 	}
 }
 
+func expectArgoPodRestartTargetQuery(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(`(?s)SELECT dt\.id, dt\.project_id, dt\.name, dt\.environment, dt\.cluster_name, dt\.namespace, dt\.status,\s+ke\.id AS kubernetes_environment_id,\s+ke\.name AS kubernetes_environment_name,\s+\(ke\.kubeconfig_secret_ref <> ''\) AS kubeconfig_secret_ref_present,\s+ke\.kubeconfig_secret_ref,\s+\(ke\.service_account <> ''\) AS service_account_present,\s+ke\.token_subject_review_status,\s+ke\.rbac_read_logs_status,\s+ke\.rbac_restart_pods_status,\s+ke\.status AS kubernetes_environment_status\s+FROM deployment_targets dt\s+LEFT JOIN kubernetes_environments ke`).
+		WithArgs("target-1", "project-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"project_id",
+			"name",
+			"environment",
+			"cluster_name",
+			"namespace",
+			"status",
+			"kubernetes_environment_id",
+			"kubernetes_environment_name",
+			"kubeconfig_secret_ref_present",
+			"kubeconfig_secret_ref",
+			"service_account_present",
+			"token_subject_review_status",
+			"rbac_read_logs_status",
+			"rbac_restart_pods_status",
+			"kubernetes_environment_status",
+		}).AddRow(
+			"target-1",
+			"project-1",
+			"prod",
+			"prod",
+			"prod-cluster",
+			"billing",
+			"Healthy",
+			"kube-env-1",
+			"billing",
+			true,
+			"billing-restarter",
+			true,
+			"reviewed",
+			"reviewed",
+			"reviewed",
+			"ready",
+		))
+}
+
+func TestRequestArgoPodRestartCreatesApprovalForAdmin(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}, cfg: Config{KubernetesRestartsEnabled: true}}
+	expectArgoPodRestartTargetQuery(mock)
+	mock.ExpectQuery(`(?s)SELECT id, required_approver_roles, required_approval_count, expires_after_minutes, notification_channels, escalation_after_minutes, escalation_channels\s+FROM operation_approval_rules`).
+		WithArgs("deployment_target", "argo.pod_restart").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "required_approver_roles", "required_approval_count", "expires_after_minutes", "notification_channels", "escalation_after_minutes", "escalation_channels"}))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)INSERT INTO operation_approvals\(`).
+		WithArgs("project-1", "", "deployment_target", "target-1", "argo.pod_restart", "restart deployment api", sqlmock.AnyArg(), sqlmock.AnyArg(), 1, sqlmock.AnyArg(), 0, sqlmock.AnyArg(), 1440, "admin-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "resource_type", "resource_id", "action", "title", "status", "requested_by"}).
+			AddRow("approval-1", "project-1", "deployment_target", "target-1", "argo.pod_restart", "restart deployment api", "pending", "admin-1"))
+	expectCanonicalAssetSync(mock)
+	mock.ExpectCommit()
+
+	body := strings.NewReader(`{"deployment_target_id":"target-1","deployment_name":"api"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/argo/pod-restarts", body)
+	req = withRouteParam(req, "id", "project-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.requestArgoPodRestart(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["operation_type"] != "argo.pod_restart" ||
+		payload["worker_job_created"] != false ||
+		payload["raw_response_included"] != false ||
+		mapFromAny(payload["approval"])["id"] != "approval-1" {
+		t.Fatalf("pod restart approval response = %#v", payload)
+	}
+	encoded := rr.Body.String()
+	for _, forbidden := range []string{"billing-restarter", "apiVersion:", "Bearer secret", "raw Kubernetes"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("pod restart approval leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func expectCanonicalAssetSync(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).
 		WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
@@ -2062,6 +2157,53 @@ func TestExecuteApprovedOperationEnqueuesArgoPodLogAudit(t *testing.T) {
 	}
 	if operationRunID != "op-pod-logs" || mapFromAny(result["operation"])["operation_type"] != "argo.pod_logs" {
 		t.Fatalf("approved pod log operation result = %#v, opID=%s", result, operationRunID)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestExecuteApprovedOperationEnqueuesArgoPodRestart(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	input := map[string]any{
+		"project_id":           "project-1",
+		"deployment_target_id": "target-1",
+		"cluster_name":         "prod-cluster",
+		"namespace":            "billing",
+		"deployment_name":      "api",
+	}
+	approval := map[string]any{
+		"id":              "approval-1",
+		"requested_by":    "dev-1",
+		"request_payload": map[string]any{"kind": "argo_pod_restart", "input": input},
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)INSERT INTO operation_runs\(project_id, git_remote_id, operation_type, title, input\)`).
+		WithArgs("project-1", "", "argo.pod_restart", "restart deployment api", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "git_remote_id", "operation_type", "title", "input", "status"}).
+			AddRow("op-pod-restart", "project-1", "", "argo.pod_restart", "restart deployment api", []byte(`{}`), "queued"))
+	mock.ExpectExec(`(?s)INSERT INTO worker_jobs\(operation_run_id, tool_name, payload, required_capabilities, preferred_node_kind\)`).
+		WithArgs("op-pod-restart", "argo.pod_restart", sqlmock.AnyArg(), sqlmock.AnyArg(), "control-worker").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+	tx, err := server.store.DB.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	result, operationRunID, err := server.executeApprovedOperation(context.Background(), tx, approval)
+	if err != nil {
+		t.Fatalf("executeApprovedOperation: %v", err)
+	}
+	if operationRunID != "op-pod-restart" || mapFromAny(result["operation"])["operation_type"] != "argo.pod_restart" {
+		t.Fatalf("approved pod restart operation result = %#v, opID=%s", result, operationRunID)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit tx: %v", err)
@@ -39124,6 +39266,30 @@ func TestKubernetesEnvironmentsMigrationAndFreshInit(t *testing.T) {
 		}
 		if !strings.Contains(string(content), "021_kubernetes_environments.sql") {
 			t.Fatalf("%s missing 021_kubernetes_environments.sql init mount", path)
+		}
+	}
+}
+
+func TestKubernetesPodRestartAccessMigrationAndFreshInit(t *testing.T) {
+	migration, err := os.ReadFile("../../migrations/023_kubernetes_pod_restart_access.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	for _, token := range []string{
+		"ALTER TABLE kubernetes_environments",
+		"ADD COLUMN IF NOT EXISTS rbac_restart_pods_status TEXT NOT NULL DEFAULT 'not_reviewed'",
+	} {
+		if !strings.Contains(string(migration), token) {
+			t.Fatalf("kubernetes pod restart migration missing %q", token)
+		}
+	}
+	for _, path := range []string{"../../../deploy/docker-compose.yml", "../../../deploy/compose.prod.yml"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(content), "023_kubernetes_pod_restart_access.sql") {
+			t.Fatalf("%s missing 023_kubernetes_pod_restart_access.sql init mount", path)
 		}
 	}
 }

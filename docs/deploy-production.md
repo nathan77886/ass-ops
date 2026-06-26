@@ -56,6 +56,7 @@ ASSOPS_APPROVAL_WEBHOOK_TOKEN=''
 ASSOPS_GITHUB_ACTIONS_READ_TOKEN=''
 ASSOPS_ARGO_READ_TOKEN=''
 ASSOPS_KUBERNETES_LOGS_ENABLED='false'
+ASSOPS_KUBERNETES_RESTARTS_ENABLED='false'
 ASSOPS_KUBECTL_PATH='kubectl'
 ASSOPS_WORKER_INTERVAL_SECONDS='3'
 ASSOPS_WORKER_HEALTH_ADDR=':8081'
@@ -428,6 +429,7 @@ Operational contract for kubeconfig files:
 - The Argo/Kubernetes UI can use the same reviewed binding to run `kubectl get pods -o json` and show only sanitized pod metadata for selection: pod name, phase, container names, ready container count, restart count, and creation time.
 - `kubectl logs` is invoked without a shell and with a 30 second timeout. Failures are recorded as failed operations without automatic retry.
 - Operation results store only sanitized metadata such as backend state, pod identity, line count, truncation flag, and timestamps. They do not store stdout, stderr, raw Kubernetes responses, kubeconfig content, tokens, authorization headers, or log bodies.
+- Deployment rollout restart is a separate opt-in write path. Set `ASSOPS_KUBERNETES_RESTARTS_ENABLED=true` only after the namespace kubeconfig is reviewed for Deployment patch/restart access and the Kubernetes environment row has `rbac_restart_pods_status=reviewed`; the worker performs `kubectl auth can-i patch deployment/<name>` and `kubectl rollout restart --dry-run=server` before the real rollout restart, and stores only sanitized metadata.
 
 ## First Deployable Test Checklist
 

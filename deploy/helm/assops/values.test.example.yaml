@@ -17,6 +17,7 @@ env:
   workerIntervalSeconds: "3"
   localBareBaseDirs: /var/lib/assops/bare-repos
   kubernetesLogsEnabled: "true"
+  kubernetesRestartsEnabled: "false"
   kubeconfigSecretDir: /etc/assops/kubeconfigs
   kubectlPath: kubectl
 

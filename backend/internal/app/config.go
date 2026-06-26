@@ -19,6 +19,7 @@ type Config struct {
 	ProviderReviewExecutionEnabled bool
 	ProviderReviewMutationArmed    bool
 	KubernetesPodLogsEnabled       bool
+	KubernetesRestartsEnabled      bool
 	KubeconfigSecretDir            string
 	KubectlPath                    string
 	AdminEmail                     string
@@ -42,6 +43,7 @@ func LoadConfig() Config {
 		ProviderReviewExecutionEnabled: envBool("ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION", false),
 		ProviderReviewMutationArmed:    envBool("ASSOPS_ARM_PROVIDER_REVIEW_MUTATION", false),
 		KubernetesPodLogsEnabled:       envBool("ASSOPS_KUBERNETES_LOGS_ENABLED", false),
+		KubernetesRestartsEnabled:      envBool("ASSOPS_KUBERNETES_RESTARTS_ENABLED", false),
 		KubeconfigSecretDir:            env("ASSOPS_KUBECONFIG_SECRET_DIR", "/etc/assops/kubeconfigs"),
 		KubectlPath:                    env("ASSOPS_KUBECTL_PATH", "kubectl"),
 		AdminEmail:                     env("ASSOPS_ADMIN_EMAIL", "admin@assops.local"),

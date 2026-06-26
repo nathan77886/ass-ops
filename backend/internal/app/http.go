@@ -234,6 +234,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/rollback-points/{id}/execution-gate", s.rollbackPointExecutionGate)
 		r.Post("/api/projects/{id}/argo/pod-log-query-preview", s.previewArgoPodLogQuery)
 		r.Post("/api/projects/{id}/argo/pod-logs", s.requestArgoPodLogRetrieval)
+		r.Post("/api/projects/{id}/argo/pod-restarts", s.requestArgoPodRestart)
 		r.Post("/api/projects/{id}/argo/pod-log-audit-snapshot", s.recordArgoPodLogAuditSnapshot)
 		r.Post("/api/projects/{id}/webhook-connections", s.createWebhookConnection)
 		r.Get("/api/projects/{id}/webhook-connections", s.listWebhookConnections)
@@ -19111,6 +19112,12 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			return nil, "", err
 		}
 		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
+	case "argo_pod_restart":
+		op, err := s.enqueueArgoPodRestartOperationTx(ctx, tx, mapFromAny(payload["input"]))
+		if err != nil {
+			return nil, "", err
+		}
+		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "config_git_commit":
 		repoID := cleanOptionalID(stringFromMap(payload, "repo_id"))
 		projectID := cleanOptionalID(stringFromMap(payload, "project_id"))
@@ -23966,6 +23973,7 @@ func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Requ
 		ServiceAccount           string         `json:"service_account"`
 		TokenSubjectReviewStatus string         `json:"token_subject_review_status"`
 		RBACReadLogsStatus       string         `json:"rbac_read_logs_status"`
+		RBACRestartPodsStatus    string         `json:"rbac_restart_pods_status"`
 		Status                   string         `json:"status"`
 		Metadata                 map[string]any `json:"metadata"`
 	}
@@ -23980,6 +23988,7 @@ func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Requ
 	req.ServiceAccount = cleanOptionalText(req.ServiceAccount)
 	req.TokenSubjectReviewStatus = cleanKubernetesReviewStatus(req.TokenSubjectReviewStatus)
 	req.RBACReadLogsStatus = cleanKubernetesReviewStatus(req.RBACReadLogsStatus)
+	req.RBACRestartPodsStatus = cleanKubernetesReviewStatus(req.RBACRestartPodsStatus)
 	req.Status = cleanKubernetesEnvironmentStatus(req.Status)
 	if req.Name == "" || req.Environment == "" || req.ClusterName == "" || req.Namespace == "" {
 		writeError(w, http.StatusBadRequest, "name, environment, cluster_name, and namespace are required")
@@ -24002,9 +24011,9 @@ func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Requ
 		INSERT INTO kubernetes_environments(
 			project_id, name, environment, cluster_name, namespace,
 			kubeconfig_secret_ref, service_account, token_subject_review_status,
-			rbac_read_logs_status, status, metadata, updated_at
+			rbac_read_logs_status, rbac_restart_pods_status, status, metadata, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, now())
 		ON CONFLICT (project_id, environment, cluster_name, namespace)
 		DO UPDATE SET
 			name=EXCLUDED.name,
@@ -24012,6 +24021,7 @@ func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Requ
 			service_account=EXCLUDED.service_account,
 			token_subject_review_status=EXCLUDED.token_subject_review_status,
 			rbac_read_logs_status=EXCLUDED.rbac_read_logs_status,
+			rbac_restart_pods_status=EXCLUDED.rbac_restart_pods_status,
 			status=EXCLUDED.status,
 			metadata=EXCLUDED.metadata,
 			updated_at=now()
@@ -24025,6 +24035,7 @@ func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Requ
 		req.ServiceAccount,
 		req.TokenSubjectReviewStatus,
 		req.RBACReadLogsStatus,
+		req.RBACRestartPodsStatus,
 		req.Status,
 		metadata,
 	)
@@ -24039,11 +24050,13 @@ func (s *Server) listKubernetesEnvironments(w http.ResponseWriter, r *http.Reque
 	items, err := queryMaps(r.Context(), s.store.DB, `
 		SELECT id, project_id, name, environment, cluster_name, namespace,
 			kubeconfig_secret_ref, service_account, token_subject_review_status,
-			rbac_read_logs_status, status, metadata, created_at, updated_at,
+			rbac_read_logs_status, rbac_restart_pods_status, status, metadata, created_at, updated_at,
 			(kubeconfig_secret_ref <> '') AS kubeconfig_secret_ref_present,
 			(token_subject_review_status='reviewed') AS token_subject_review_ready,
 			(rbac_read_logs_status='reviewed') AS rbac_read_logs_ready,
-			(kubeconfig_secret_ref <> '' AND token_subject_review_status='reviewed' AND rbac_read_logs_status='reviewed') AS log_access_metadata_ready
+			(rbac_restart_pods_status='reviewed') AS rbac_restart_pods_ready,
+			(kubeconfig_secret_ref <> '' AND token_subject_review_status='reviewed' AND rbac_read_logs_status='reviewed') AS log_access_metadata_ready,
+			(kubeconfig_secret_ref <> '' AND token_subject_review_status='reviewed' AND rbac_restart_pods_status='reviewed') AS pod_restart_metadata_ready
 		FROM kubernetes_environments
 		WHERE project_id=$1
 		ORDER BY environment, namespace, created_at DESC`, projectID)
@@ -24065,6 +24078,7 @@ func (s *Server) listDeploymentTargets(w http.ResponseWriter, r *http.Request) {
 			(ke.service_account <> '') AS service_account_present,
 			ke.token_subject_review_status,
 			ke.rbac_read_logs_status,
+			ke.rbac_restart_pods_status,
 			ke.status AS kubernetes_environment_status
 		FROM deployment_targets dt
 		LEFT JOIN argo_connections ac ON ac.id=dt.argo_connection_id
@@ -24199,6 +24213,7 @@ func loadDeploymentTargetForKubernetesAccess(ctx context.Context, db sqlx.ExtCon
 			(ke.service_account <> '') AS service_account_present,
 			ke.token_subject_review_status,
 			ke.rbac_read_logs_status,
+			ke.rbac_restart_pods_status,
 			ke.status AS kubernetes_environment_status
 		FROM deployment_targets dt
 		LEFT JOIN kubernetes_environments ke
@@ -24244,6 +24259,7 @@ func sanitizedDeploymentTargetForPodMetadata(target map[string]any) map[string]a
 		"service_account_present":       boolOnlyFromAny(target["service_account_present"]),
 		"token_subject_review_status":   cleanPreviewString(target["token_subject_review_status"]),
 		"rbac_read_logs_status":         cleanPreviewString(target["rbac_read_logs_status"]),
+		"rbac_restart_pods_status":      cleanPreviewString(target["rbac_restart_pods_status"]),
 		"kubernetes_environment_status": cleanPreviewString(target["kubernetes_environment_status"]),
 	}
 }
@@ -24450,6 +24466,26 @@ type argoPodLogRequest struct {
 	SinceSeconds       int    `json:"since_seconds"`
 }
 
+type argoPodRestartRequest struct {
+	DeploymentTargetID string `json:"deployment_target_id"`
+	DeploymentName     string `json:"deployment_name"`
+}
+
+func cleanArgoPodRestartRequest(req argoPodRestartRequest) (argoPodRestartRequest, error) {
+	req.DeploymentTargetID = strings.TrimSpace(req.DeploymentTargetID)
+	req.DeploymentName = strings.TrimSpace(req.DeploymentName)
+	if req.DeploymentTargetID == "" {
+		return req, fmt.Errorf("deployment_target_id is required")
+	}
+	if req.DeploymentName == "" {
+		return req, fmt.Errorf("deployment_name is required")
+	}
+	if !kubernetesPodPattern.MatchString(req.DeploymentName) || len(req.DeploymentName) > 253 {
+		return req, fmt.Errorf("invalid Kubernetes deployment name")
+	}
+	return req, nil
+}
+
 func cleanArgoPodLogRequest(req argoPodLogRequest) (argoPodLogRequest, error) {
 	req.DeploymentTargetID = strings.TrimSpace(req.DeploymentTargetID)
 	req.PodName = strings.TrimSpace(req.PodName)
@@ -24485,6 +24521,7 @@ func loadArgoPodLogTarget(ctx context.Context, db sqlx.ExtContext, projectID, de
 			(ke.service_account <> '') AS service_account_present,
 			ke.token_subject_review_status,
 			ke.rbac_read_logs_status,
+			ke.rbac_restart_pods_status,
 			ke.status AS kubernetes_environment_status
 		FROM deployment_targets dt
 		LEFT JOIN kubernetes_environments ke
@@ -24574,6 +24611,75 @@ func (s *Server) requestArgoPodLogRetrieval(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func (s *Server) requestArgoPodRestart(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	var req argoPodRestartRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	cleaned, err := cleanArgoPodRestartRequest(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	target, err := loadArgoPodLogTarget(r.Context(), s.store.DB, projectID, cleaned.DeploymentTargetID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if cleanOptionalText(fmt.Sprint(target["namespace"])) == "" || cleanOptionalText(fmt.Sprint(target["cluster_name"])) == "" {
+		writeError(w, http.StatusBadRequest, "deployment target Kubernetes metadata is incomplete")
+		return
+	}
+	if cleanPreviewString(target["kubernetes_environment_status"]) != "ready" ||
+		cleanPreviewString(target["token_subject_review_status"]) != "reviewed" ||
+		cleanPreviewString(target["rbac_restart_pods_status"]) != "reviewed" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":                    "Kubernetes restart access is not reviewed for this target",
+			"restart_backend_enabled":  s.cfg.KubernetesRestartsEnabled,
+			"kubernetes_environment":   sanitizedDeploymentTargetForPodMetadata(target),
+			"required_review_statuses": []string{"kubernetes_environment_status=ready", "token_subject_review_status=reviewed", "rbac_restart_pods_status=reviewed"},
+		})
+		return
+	}
+	input := argoPodRestartOperationInput(projectID, target, cleaned.DeploymentName)
+	payload := map[string]any{
+		"kind":                 "argo_pod_restart",
+		"project_id":           projectID,
+		"deployment_target_id": cleaned.DeploymentTargetID,
+		"input":                input,
+		"result_scope":         "sanitized_rollout_restart_metadata",
+	}
+	resource := PolicyResource{Type: "deployment_target", ID: cleaned.DeploymentTargetID, ProjectID: projectID}
+	if !s.requireProjectMembershipForPolicy(w, r, resource) {
+		return
+	}
+	decision := NewPolicyChecker().Check(currentUser(r), resource, "argo.pod_restart")
+	if decision.Effect == PolicyDeny {
+		writeJSON(w, http.StatusForbidden, decision)
+		return
+	}
+	approval, err := s.createOperationApproval(r.Context(), resource, "argo.pod_restart", "restart deployment "+cleaned.DeploymentName, payload, currentUser(r).ID)
+	if err != nil {
+		if isUniqueViolation(err, "idx_operation_approvals_pending_once") {
+			writeError(w, http.StatusConflict, "approval request is already pending")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not create pod restart approval request")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"approval":                approval,
+		"decision":                decision,
+		"operation_type":          "argo.pod_restart",
+		"worker_job_created":      false,
+		"restart_backend_enabled": s.cfg.KubernetesRestartsEnabled,
+		"log_body_included":       false,
+		"raw_response_included":   false,
+		"message":                 "Pod restart approval requested; worker job will be created only after approval.",
+	})
+}
+
 func (s *Server) recordArgoPodLogAuditSnapshot(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	var req struct {
@@ -24641,6 +24747,36 @@ func argoPodLogOperationInput(projectID string, target, query, executionPlan map
 		"live_log_backend":       liveLogBackend,
 		"execution_plan":         executionPlan,
 	}
+}
+
+func argoPodRestartOperationInput(projectID string, target map[string]any, deploymentName string) map[string]any {
+	return map[string]any{
+		"project_id":             projectID,
+		"deployment_target_id":   cleanOptionalID(fmt.Sprint(target["id"])),
+		"deployment_target_name": cleanOptionalText(fmt.Sprint(target["name"])),
+		"environment":            cleanOptionalText(fmt.Sprint(target["environment"])),
+		"cluster_name":           cleanOptionalText(fmt.Sprint(target["cluster_name"])),
+		"namespace":              cleanOptionalText(fmt.Sprint(target["namespace"])),
+		"deployment_name":        cleanOptionalText(deploymentName),
+		"result_scope":           "sanitized_rollout_restart_metadata",
+		"execution_mode":         "approval_gated_rollout_restart",
+		"restart_backend":        "kubectl_rollout_restart",
+	}
+}
+
+func (s *Server) enqueueArgoPodRestartOperationTx(ctx context.Context, tx *sqlx.Tx, input map[string]any) (map[string]any, error) {
+	projectID := cleanOptionalID(fmt.Sprint(input["project_id"]))
+	targetID := cleanOptionalID(fmt.Sprint(input["deployment_target_id"]))
+	deploymentName := cleanOptionalText(fmt.Sprint(input["deployment_name"]))
+	if projectID == "" || targetID == "" || deploymentName == "" {
+		return nil, fmt.Errorf("invalid pod restart operation input")
+	}
+	title := "restart deployment " + deploymentName
+	op, err := enqueueOperationTx(ctx, tx, projectID, "", "argo.pod_restart", title, input, []string{"argo", "kubernetes"}, "control-worker")
+	if err != nil {
+		return nil, fmt.Errorf("could not enqueue pod restart operation")
+	}
+	return op, nil
 }
 
 func (s *Server) enqueueArgoPodLogOperationTx(ctx context.Context, tx *sqlx.Tx, input map[string]any) (map[string]any, error) {
@@ -24724,6 +24860,7 @@ func argoPodLogQueryPreviewWithConfig(cfg Config, podName, containerName string,
 		"service_account_present":        boolOnlyFromAny(target["service_account_present"]),
 		"token_subject_review_status":    cleanOptionalText(fmt.Sprint(target["token_subject_review_status"])),
 		"rbac_read_logs_status":          cleanOptionalText(fmt.Sprint(target["rbac_read_logs_status"])),
+		"rbac_restart_pods_status":       cleanOptionalText(fmt.Sprint(target["rbac_restart_pods_status"])),
 		"kubernetes_environment_status":  cleanOptionalText(fmt.Sprint(target["kubernetes_environment_status"])),
 		"log_access_metadata_ready":      kubernetesLogAccessMetadataReady(target),
 		"kubeconfig_secret_ref_included": false,

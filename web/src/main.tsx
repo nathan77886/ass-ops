@@ -186,7 +186,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.service_account': 'Service account',
     'field.token_subject_review_status': 'Token subject review',
     'field.rbac_read_logs_status': 'RBAC read logs',
+    'field.rbac_restart_pods_status': 'RBAC restart pods',
     'field.pod_name': 'Pod name',
+    'field.deployment_name': 'Deployment name',
     'field.container_name': 'Container',
     'field.tail_lines': 'Tail lines',
     'field.since_seconds': 'Since seconds',
@@ -229,9 +231,11 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.service_account': 'Reviewed Kubernetes service account identity expected in the kubeconfig.',
     'help.token_subject_review_status': 'Manual operator sign-off that the kubeconfig token subject was reviewed before live pod-log audits; this is not an automatic TokenReview.',
     'help.rbac_read_logs_status': 'Manual operator sign-off that the service account RBAC was reviewed for pod/log read access; this is not an automatic permission probe.',
+    'help.rbac_restart_pods_status': 'Manual operator sign-off that the service account RBAC was reviewed for rollout restart access. The worker also runs kubectl auth can-i before restarting.',
     'help.status': 'Use ready only after the kubeconfig reference, token subject, and RBAC review are complete.',
     'help.deployment_target_id': 'Argo-derived deployment target whose pod log metadata should be audited.',
     'help.pod_name': 'Exact pod name to audit. ASSOPS does not discover pods from this preview.',
+    'help.deployment_name': 'Kubernetes Deployment to restart with kubectl rollout restart after approval and RBAC checks.',
     'help.container_name': 'Optional container name. Leave empty to use the Kubernetes default container.',
     'help.tail_lines': 'Maximum log lines kubectl may read for metadata counting; capped by the gateway.',
     'help.since_seconds': 'Optional time window in seconds; capped at 86400.',
@@ -283,7 +287,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'pod.preview': 'Preview',
     'pod.refreshPods': 'Refresh pods',
     'pod.requestAudit': 'Request audit',
+    'pod.requestRestart': 'Request rollout restart',
     'pod.recordSnapshot': 'Record audit snapshot',
+    'pod.restartRequested': 'Pod restart approval requested',
     'pod.listReady': 'Pod metadata loaded',
     'pod.listBlocked': 'Pod metadata listing is blocked',
     'pod.listFailed': 'Pod metadata listing failed',
@@ -745,7 +751,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.service_account': '服务账号',
     'field.token_subject_review_status': 'Token 主体审查',
     'field.rbac_read_logs_status': '日志 RBAC 审查',
+    'field.rbac_restart_pods_status': '重启 RBAC 审查',
     'field.pod_name': 'Pod 名称',
+    'field.deployment_name': 'Deployment 名称',
     'field.container_name': '容器',
     'field.tail_lines': '日志行数',
     'field.since_seconds': '最近秒数',
@@ -788,9 +796,11 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.service_account': '该 kubeconfig 预期使用的 Kubernetes 服务账号身份。',
     'help.token_subject_review_status': '人工签核项，表示操作者已审查 kubeconfig token 主体；这不是自动 TokenReview。',
     'help.rbac_read_logs_status': '人工签核项，表示操作者已审查服务账号具备该命名空间 pod/log 读取权限；这不是自动权限探测。',
+    'help.rbac_restart_pods_status': '人工签核项，表示操作者已审查服务账号具备 rollout restart 权限；Worker 执行前还会运行 kubectl auth can-i。',
     'help.status': '仅在 kubeconfig 引用、token 主体、RBAC 审查都完成后选择 ready。',
     'help.deployment_target_id': '由 Argo 同步出的部署目标，用于审计该目标下 Pod 日志元数据。',
     'help.pod_name': '要审计的精确 Pod 名称。该预览不会自动发现 Pod。',
+    'help.deployment_name': '审批和 RBAC 检查通过后，通过 kubectl rollout restart 重启的 Kubernetes Deployment。',
     'help.container_name': '可选容器名。留空表示使用 Kubernetes 默认容器。',
     'help.tail_lines': 'kubectl 可读取用于元数据计数的最大日志行数，网关会强制上限。',
     'help.since_seconds': '可选时间窗口，单位秒，最大 86400。',
@@ -842,7 +852,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'pod.preview': '预览',
     'pod.refreshPods': '刷新 Pod',
     'pod.requestAudit': '请求审计',
+    'pod.requestRestart': '请求滚动重启',
     'pod.recordSnapshot': '记录审计快照',
+    'pod.restartRequested': 'Pod 重启审批已提交',
     'pod.listReady': 'Pod 元数据已加载',
     'pod.listBlocked': 'Pod 元数据列表受阻',
     'pod.listFailed': 'Pod 元数据列表失败',
@@ -8379,9 +8391,13 @@ function ConfigPage() {
   const [podListResult, setPodListResult] = useState<AnyRow>();
   const [podLogRunLoading, setPodLogRunLoading] = useState(false);
   const [podLogRunResult, setPodLogRunResult] = useState<AnyRow>();
+  const [podRestartLoading, setPodRestartLoading] = useState(false);
+  const [podRestartResult, setPodRestartResult] = useState<AnyRow>();
   const [podLogSnapshotLoading, setPodLogSnapshotLoading] = useState(false);
   const [podLogSnapshotResult, setPodLogSnapshotResult] = useState<AnyRow>();
   const selectedPodName = Form.useWatch('pod_name', podLogForm);
+  const selectedDeploymentName = Form.useWatch('deployment_name', podLogForm);
+  const selectedDeploymentTargetID = Form.useWatch('deployment_target_id', podLogForm);
   const [kubernetesEnvironmentOpen, setKubernetesEnvironmentOpen] = useState(false);
   const [kubernetesEnvironmentForm] = Form.useForm();
   const [deploymentExecutionGateLoadingID, setDeploymentExecutionGateLoadingID] = useState('');
@@ -8539,6 +8555,7 @@ function ConfigPage() {
         service_account: values.service_account,
         token_subject_review_status: values.token_subject_review_status || 'not_reviewed',
         rbac_read_logs_status: values.rbac_read_logs_status || 'not_reviewed',
+        rbac_restart_pods_status: values.rbac_restart_pods_status || 'not_reviewed',
         status: values.status || 'metadata_only',
         metadata: {}
       })
@@ -8683,6 +8700,32 @@ function ConfigPage() {
       message.error(error.message || t('common.requestFailed'));
     } finally {
       setPodLogRunLoading(false);
+    }
+  }
+  async function requestPodRestart() {
+    if (!project) return;
+    const deploymentTargetID = podLogForm.getFieldValue('deployment_target_id');
+    const deploymentName = podLogForm.getFieldValue('deployment_name');
+    if (!deploymentTargetID || !deploymentName) {
+      message.error(t('common.required'));
+      return;
+    }
+    setPodRestartLoading(true);
+    try {
+      const result = await api(`/api/projects/${project.id}/argo/pod-restarts`, {
+        method: 'POST',
+        body: JSON.stringify({
+          deployment_target_id: deploymentTargetID,
+          deployment_name: deploymentName
+        })
+      });
+      setPodRestartResult(result);
+      message.success(t('pod.restartRequested'));
+    } catch (error: any) {
+      setPodRestartResult(undefined);
+      message.error(error.message || t('common.requestFailed'));
+    } finally {
+      setPodRestartLoading(false);
     }
   }
   async function recordPodLogAuditSnapshot() {
@@ -8929,7 +8972,8 @@ function ConfigPage() {
                     setPodLogPreview(undefined);
                     setPodLogRunResult(undefined);
                     setPodLogSnapshotResult(undefined);
-                    podLogForm.setFieldsValue({ pod_name: undefined, container_name: undefined });
+                    setPodRestartResult(undefined);
+                    podLogForm.setFieldsValue({ pod_name: undefined, container_name: undefined, deployment_name: undefined });
                   }
                 }}
               >
@@ -8956,6 +9000,9 @@ function ConfigPage() {
                     options={containerOptions}
                     filterOption={(inputValue, option) => String(option?.value || '').toLowerCase().includes(inputValue.toLowerCase())}
                   />
+                </Form.Item>
+                <Form.Item name="deployment_name" label={<Space size={4}>{fieldLabel('deployment_name', t)}<Tooltip title={t('help.deployment_name')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip></Space>}>
+                  <Input placeholder={t('field.deployment_name')} style={{ width: 190 }} />
                 </Form.Item>
                 <Form.Item name="tail_lines">
                   <Input type="number" min={1} max={1000} placeholder={t('field.tail_lines')} style={{ width: 110 }} suffix={<Tooltip title={t('help.tail_lines')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
@@ -9015,8 +9062,10 @@ function ConfigPage() {
                   </Space>
                   <Space>
                     <Button type="primary" onClick={requestPodLogAudit} loading={podLogRunLoading} disabled={!podLogPreview.operation_request_enabled || !podLogPreview.retrieval_plan?.execution_plan?.audit_worker_job_enabled}>{t('pod.requestAudit')}</Button>
+                    <Button danger onClick={requestPodRestart} loading={podRestartLoading} disabled={!project || !selectedDeploymentTargetID || !selectedDeploymentName}>{t('pod.requestRestart')}</Button>
                     <Button onClick={recordPodLogAuditSnapshot} loading={podLogSnapshotLoading} disabled={podLogPreview.audit_evidence?.evidence_state !== 'recorded'}>{t('pod.recordSnapshot')}</Button>
                     {podLogRunResult ? <Tag color={podLogRunResult.approval ? 'gold' : 'blue'}>{podLogRunResult.approval ? t('value.approval_requested') : t('value.operation_queued')}</Tag> : null}
+                    {podRestartResult ? <Tag color={podRestartResult.approval ? 'gold' : 'blue'}>{podRestartResult.approval ? t('value.approval_requested') : t('value.operation_queued')}</Tag> : null}
                     {podLogRunResult?.worker_job_created ? <Tag>{t('value.worker_job_created')}</Tag> : null}
                     {podLogRunResult ? <Tag>{podLogRunResult.log_body_included ? t('value.log_body_included') : t('value.no_log_body')}</Tag> : null}
                     {podLogSnapshotResult ? <Tag color={podLogSnapshotResult.pod_log_audit_snapshot_written ? 'green' : podLogSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>{t('value.snapshot')} {translatedValue(podLogSnapshotResult.recording_state || 'unknown', t)}</Tag> : null}
@@ -9098,9 +9147,9 @@ function ConfigPage() {
         onSubmit={createArgoConnection}
       />
       <Modal title={t('form.addKubernetesEnvironment')} open={kubernetesEnvironmentOpen} onCancel={() => setKubernetesEnvironmentOpen(false)} onOk={() => kubernetesEnvironmentForm.submit()} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
-        <Form form={kubernetesEnvironmentForm} layout="vertical" onFinish={createKubernetesEnvironment} initialValues={{ token_subject_review_status: 'not_reviewed', rbac_read_logs_status: 'not_reviewed', status: 'metadata_only' }}>
+        <Form form={kubernetesEnvironmentForm} layout="vertical" onFinish={createKubernetesEnvironment} initialValues={{ token_subject_review_status: 'not_reviewed', rbac_read_logs_status: 'not_reviewed', rbac_restart_pods_status: 'not_reviewed', status: 'metadata_only' }}>
           <Typography.Paragraph type="secondary">{t('k8s.modalDescription')}</Typography.Paragraph>
-          {['name', 'environment', 'cluster_name', 'namespace', 'kubeconfig_secret_ref', 'service_account', 'token_subject_review_status', 'rbac_read_logs_status', 'status'].map((field) => (
+          {['name', 'environment', 'cluster_name', 'namespace', 'kubeconfig_secret_ref', 'service_account', 'token_subject_review_status', 'rbac_read_logs_status', 'rbac_restart_pods_status', 'status'].map((field) => (
             <Form.Item key={field} name={field} label={fieldLabel(field, t)} rules={fieldRules(field, t)} valuePropName={fieldValuePropName(field)}>
               {fieldInput(field, t)}
             </Form.Item>
@@ -9214,8 +9263,10 @@ const fieldMeta: Record<string, FieldMeta> = {
   service_account: { helpKey: 'help.service_account', placeholder: 'system:serviceaccount:ns:assops-reader' },
   token_subject_review_status: { input: 'select', options: ['not_reviewed', 'reviewed', 'failed', 'waived'], helpKey: 'help.token_subject_review_status' },
   rbac_read_logs_status: { input: 'select', options: ['not_reviewed', 'reviewed', 'failed', 'waived'], helpKey: 'help.rbac_read_logs_status' },
+  rbac_restart_pods_status: { input: 'select', options: ['not_reviewed', 'reviewed', 'failed', 'waived'], helpKey: 'help.rbac_restart_pods_status' },
   status: { input: 'select', options: ['metadata_only', 'ready', 'disabled'], helpKey: 'help.status' },
   pod_name: { required: true, helpKey: 'help.pod_name' },
+  deployment_name: { required: true, helpKey: 'help.deployment_name' },
   container_name: { helpKey: 'help.container_name' },
   tail_lines: { input: 'number', helpKey: 'help.tail_lines', placeholder: '200' },
   since_seconds: { input: 'number', helpKey: 'help.since_seconds', placeholder: '0' },

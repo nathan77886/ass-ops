@@ -634,6 +634,26 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 			return fmt.Errorf("syncing canonical assets for running Argo pod log audit: %w", err)
 		}
 		return nil
+	case "argo.pod_restart":
+		backend := "disabled"
+		if w.cfg.KubernetesRestartsEnabled {
+			backend = "kubectl_rollout_restart"
+		}
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
+			VALUES ($1, $2, 'info', 'pod restart worker started', jsonb_build_object(
+				'restart_backend', $3,
+				'kubeconfig_bound', false,
+				'raw_response_included', false,
+				'stdout_included', false,
+				'stderr_included', false
+			))`, opID, job["id"], backend); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+			return fmt.Errorf("syncing canonical assets for running Argo pod restart: %w", err)
+		}
+		return nil
 	case "config.git_commit":
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
@@ -749,6 +769,8 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 		return result, err
 	case "argo.pod_logs":
 		return w.executeArgoPodLogAudit(ctx, opID, result)
+	case "argo.pod_restart":
+		return w.executeArgoPodRestart(ctx, opID, result)
 	case "config.git_commit":
 		return w.executeConfigGitWorkflowAudit(ctx, opID, result)
 	case "project_version.validation_rerun":
@@ -956,6 +978,31 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed Argo pod log audit: %w", err)
+		}
+		return nil
+	case "argo.pod_restart":
+		safeError := "pod restart worker failed; details are withheld from operation logs"
+		backend := cleanPreviewString(result["backend"])
+		if backend == "" {
+			backend = "disabled"
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
+			VALUES ($1, $2, 'error', 'pod restart worker failed', jsonb_build_object(
+				'error', $3,
+				'restart_backend', $4,
+				'backend_state', $5,
+				'kubectl_command_invoked', COALESCE($6, false),
+				'kubernetes_api_call', COALESCE($7, false),
+				'rollout_restart_invoked', COALESCE($8, false),
+				'raw_response_included', false,
+				'stdout_included', false,
+				'stderr_included', false
+			))`, opID, job["id"], safeError, backend, cleanPreviewString(result["backend_state"]), boolOnlyFromAny(result["kubectl_command_invoked"]), boolOnlyFromAny(result["kubernetes_api_call"]), boolOnlyFromAny(result["rollout_restart_invoked"])); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed Argo pod restart: %w", err)
 		}
 		return nil
 	case "config.git_commit":
@@ -1266,6 +1313,38 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 			return fmt.Errorf("syncing canonical assets for completed Argo pod log audit: %w", err)
 		}
 		return nil
+	case "argo.pod_restart":
+		data, err := jsonParam(map[string]any{
+			"deployment_target_id":    result["deployment_target_id"],
+			"deployment_name":         result["deployment_name"],
+			"namespace":               result["namespace"],
+			"cluster_name":            result["cluster_name"],
+			"result_scope":            result["result_scope"],
+			"backend_state":           result["backend_state"],
+			"restart_backend":         result["backend"],
+			"kubeconfig_bound":        result["kubeconfig_bound"],
+			"kubernetes_api_call":     result["kubernetes_api_call"],
+			"kubectl_command_invoked": result["kubectl_command_invoked"],
+			"rbac_can_i_checked":      result["rbac_can_i_checked"],
+			"server_dry_run_checked":  result["server_dry_run_checked"],
+			"rollout_restart_invoked": result["rollout_restart_invoked"],
+			"log_body_included":       false,
+			"raw_response_included":   false,
+			"stdout_included":         false,
+			"stderr_included":         false,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
+			VALUES ($1, $2, 'info', 'pod restart completed with sanitized metadata', $3::jsonb)`, opID, job["id"], data); err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed Argo pod restart: %w", err)
+		}
+		return nil
 	case "config.git_commit":
 		data, err := jsonParam(map[string]any{
 			"result_scope":                   result["result_scope"],
@@ -1491,6 +1570,112 @@ func (w *ControlWorker) executeArgoPodLogAudit(ctx context.Context, opID string,
 	return result, err
 }
 
+func (w *ControlWorker) executeArgoPodRestart(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
+	op, err := queryOne(ctx, w.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	if err != nil {
+		return result, fmt.Errorf("loading pod restart operation: %w", err)
+	}
+	input := mapFromAny(op["input"])
+	targetID := cleanOptionalID(fmt.Sprint(input["deployment_target_id"]))
+	deploymentName := cleanOptionalText(fmt.Sprint(input["deployment_name"]))
+	namespace := cleanOptionalText(fmt.Sprint(input["namespace"]))
+	clusterName := cleanOptionalText(fmt.Sprint(input["cluster_name"]))
+	if targetID == "" || deploymentName == "" || namespace == "" || clusterName == "" {
+		return result, fmt.Errorf("pod restart operation is missing target metadata")
+	}
+	result["deployment_target_id"] = targetID
+	result["project_id"] = cleanOptionalID(fmt.Sprint(input["project_id"]))
+	result["deployment_target_name"] = cleanOptionalText(fmt.Sprint(input["deployment_target_name"]))
+	result["environment"] = cleanOptionalText(fmt.Sprint(input["environment"]))
+	result["cluster_name"] = clusterName
+	result["namespace"] = namespace
+	result["deployment_name"] = deploymentName
+	req := kubernetesPodRestartRequest{
+		ProjectID:          cleanOptionalID(fmt.Sprint(input["project_id"])),
+		DeploymentTargetID: targetID,
+		Environment:        cleanOptionalText(fmt.Sprint(input["environment"])),
+		ClusterName:        clusterName,
+		Namespace:          namespace,
+		DeploymentName:     deploymentName,
+	}
+	if !w.cfg.KubernetesRestartsEnabled {
+		liveResult, err := runKubernetesPodRestart(ctx, w.cfg, req)
+		for key, value := range liveResult {
+			result[key] = value
+		}
+		result["argocd_api_call"] = false
+		result["log_body_included"] = false
+		result["raw_response_included"] = false
+		result["stdout_included"] = false
+		result["stderr_included"] = false
+		result["secret_included"] = false
+		return result, err
+	}
+	if err := ensureNoActiveKubernetesPodRestart(ctx, w.store.DB, opID, result); err != nil {
+		return result, err
+	}
+	kubernetesEnv, err := loadKubernetesEnvironmentForPodRestart(ctx, w.store.DB, result)
+	if err != nil {
+		return result, err
+	}
+	kubeconfigRef := ""
+	if kubernetesEnv != nil {
+		result["kubernetes_environment_id"] = cleanOptionalID(fmt.Sprint(kubernetesEnv["id"]))
+		result["kubernetes_environment_name"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["name"]))
+		result["kubernetes_environment_status"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["status"]))
+		result["kubeconfig_secret_ref_present"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ref"])) != ""
+		kubeconfigRef = cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ref"]))
+	}
+	req.KubeconfigRef = kubeconfigRef
+	if err := validateKubernetesPodRestartRequest(req); err != nil {
+		return result, err
+	}
+	liveResult, err := runKubernetesPodRestart(ctx, w.cfg, req)
+	for key, value := range liveResult {
+		result[key] = value
+	}
+	result["argocd_api_call"] = false
+	result["log_body_included"] = false
+	result["raw_response_included"] = false
+	result["stdout_included"] = false
+	result["stderr_included"] = false
+	result["secret_included"] = false
+	return result, err
+}
+
+func ensureNoActiveKubernetesPodRestart(ctx context.Context, db sqlx.ExtContext, opID string, opResult map[string]any) error {
+	projectID := cleanOptionalID(fmt.Sprint(opResult["project_id"]))
+	environment := cleanOptionalText(fmt.Sprint(opResult["environment"]))
+	clusterName := cleanOptionalText(fmt.Sprint(opResult["cluster_name"]))
+	namespace := cleanOptionalText(fmt.Sprint(opResult["namespace"]))
+	deploymentName := cleanOptionalText(fmt.Sprint(opResult["deployment_name"]))
+	if projectID == "" || environment == "" || clusterName == "" || namespace == "" || deploymentName == "" {
+		return fmt.Errorf("pod restart operation is missing concurrency guard metadata")
+	}
+	row, err := queryOne(ctx, db, `
+		SELECT id
+		FROM operation_runs
+		WHERE id<>$1
+			AND project_id=$2
+			AND operation_type='argo.pod_restart'
+			AND status IN ('queued', 'running')
+			AND input->>'environment'=$3
+			AND input->>'cluster_name'=$4
+			AND input->>'namespace'=$5
+			AND input->>'deployment_name'=$6
+		LIMIT 1`, opID, projectID, environment, clusterName, namespace, deploymentName)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("checking active pod restart operation: %w", err)
+	}
+	if cleanOptionalID(fmt.Sprint(row["id"])) != "" {
+		return fmt.Errorf("another pod restart operation is already active for this deployment")
+	}
+	return nil
+}
+
 func loadKubernetesEnvironmentForPodLogs(ctx context.Context, db sqlx.ExtContext, opResult map[string]any) (map[string]any, error) {
 	projectID := cleanOptionalID(fmt.Sprint(opResult["project_id"]))
 	environment := cleanOptionalText(fmt.Sprint(opResult["environment"]))
@@ -1535,6 +1720,54 @@ func loadKubernetesEnvironmentForPodLogs(ctx context.Context, db sqlx.ExtContext
 	}
 	if cleanPreviewString(env["rbac_read_logs_status"]) != "reviewed" {
 		return nil, fmt.Errorf("Kubernetes logs RBAC review is not complete")
+	}
+	return env, nil
+}
+
+func loadKubernetesEnvironmentForPodRestart(ctx context.Context, db sqlx.ExtContext, opResult map[string]any) (map[string]any, error) {
+	projectID := cleanOptionalID(fmt.Sprint(opResult["project_id"]))
+	environment := cleanOptionalText(fmt.Sprint(opResult["environment"]))
+	clusterName := cleanOptionalText(fmt.Sprint(opResult["cluster_name"]))
+	namespace := cleanOptionalText(fmt.Sprint(opResult["namespace"]))
+	if projectID == "" || environment == "" || clusterName == "" || namespace == "" {
+		return nil, fmt.Errorf("pod restart operation is missing Kubernetes environment binding metadata")
+	}
+	rows, err := db.QueryxContext(ctx, `
+		SELECT id, name, kubeconfig_secret_ref, service_account, token_subject_review_status, rbac_restart_pods_status, status
+		FROM kubernetes_environments
+		WHERE project_id=$1 AND environment=$2 AND cluster_name=$3 AND namespace=$4
+		LIMIT 1`, projectID, environment, clusterName, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("loading Kubernetes environment for pod restart: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("loading Kubernetes environment for pod restart: %w", err)
+		}
+		return nil, fmt.Errorf("loading Kubernetes environment for pod restart: %w", ErrNotFound)
+	}
+	var id, name, kubeconfigRef, serviceAccount, tokenSubjectReviewStatus, rbacRestartPodsStatus, status string
+	if err := rows.Scan(&id, &name, &kubeconfigRef, &serviceAccount, &tokenSubjectReviewStatus, &rbacRestartPodsStatus, &status); err != nil {
+		return nil, fmt.Errorf("loading Kubernetes environment for pod restart: %w", err)
+	}
+	env := map[string]any{
+		"id":                          id,
+		"name":                        name,
+		"kubeconfig_secret_ref":       kubeconfigRef,
+		"service_account":             serviceAccount,
+		"token_subject_review_status": tokenSubjectReviewStatus,
+		"rbac_restart_pods_status":    rbacRestartPodsStatus,
+		"status":                      status,
+	}
+	if cleanPreviewString(env["status"]) != "ready" {
+		return nil, fmt.Errorf("Kubernetes environment is not ready")
+	}
+	if cleanPreviewString(env["token_subject_review_status"]) != "reviewed" {
+		return nil, fmt.Errorf("Kubernetes token subject review is not complete")
+	}
+	if cleanPreviewString(env["rbac_restart_pods_status"]) != "reviewed" {
+		return nil, fmt.Errorf("Kubernetes restart RBAC review is not complete")
 	}
 	return env, nil
 }

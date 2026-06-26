@@ -428,6 +428,15 @@ func sanitizeAnyValue(key string, value any) any {
 
 func isSensitiveMetadataKey(key string) bool {
 	key = strings.ToLower(key)
+	// These suffixes represent boolean or finite-enum readiness metadata.
+	// Values with secret material must not be stored under these field names.
+	if strings.HasSuffix(key, "_present") ||
+		strings.HasSuffix(key, "_configured") ||
+		strings.HasSuffix(key, "_ready") ||
+		strings.HasSuffix(key, "_status") ||
+		strings.HasSuffix(key, "_state") {
+		return false
+	}
 	return strings.Contains(key, "token") ||
 		strings.Contains(key, "secret") ||
 		strings.Contains(key, "password") ||

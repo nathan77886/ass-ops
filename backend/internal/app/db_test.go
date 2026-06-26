@@ -101,6 +101,20 @@ func TestNormalizeRowRedactsSensitiveByteStrings(t *testing.T) {
 	}
 }
 
+func TestNormalizeRowKeepsReviewStatusAndPresenceBooleans(t *testing.T) {
+	row := map[string]any{
+		"token_subject_review_status":   []byte("reviewed"),
+		"kubeconfig_secret_ref_present": true,
+		"rbac_restart_pods_status":      []byte("reviewed"),
+	}
+	normalizeRow(row)
+	if row["token_subject_review_status"] != "reviewed" ||
+		row["kubeconfig_secret_ref_present"] != true ||
+		row["rbac_restart_pods_status"] != "reviewed" {
+		t.Fatalf("review/presence metadata should not be redacted: %#v", row)
+	}
+}
+
 func TestCanonicalAssetSyncSQLIncludesUpsertAndRelationDedupe(t *testing.T) {
 	sql := canonicalAssetSyncSQL()
 	for _, token := range []string{
