@@ -147,6 +147,97 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.createSSHMachine': 'Create SSH machine',
     'form.runSSHCommand': 'Run SSH command',
     'form.podLogQuery': 'Pod log query',
+    'config.repoInitialized': 'Config repository initialized',
+    'config.workflowApprovalRequested': 'Config workflow approval requested',
+    'config.workflowAuditQueued': 'Config workflow audit queued',
+    'config.refsRefreshAlreadyQueued': 'Config refs refresh already queued',
+    'config.refsRefreshQueued': 'Config refs refresh queued',
+    'config.promotionSnapshotNotReady': 'Config promotion snapshot is not ready yet',
+    'config.promotionSnapshotRecorded': 'Config promotion snapshot recorded',
+    'config.promotionSnapshotCurrent': 'Config promotion snapshot already current',
+    'config.refsSnapshotNotReady': 'Config refs snapshot is not ready yet',
+    'config.refsSnapshotRecorded': 'Config refs snapshot recorded',
+    'config.refsSnapshotCurrent': 'Config refs snapshot already current',
+    'config.scaffoldTitle': 'Config scaffold preview',
+    'config.configReady': 'Config ready',
+    'config.initConfig': 'Init config',
+    'config.files': 'files',
+    'config.remotes': 'remotes',
+    'config.gitWrite': 'git write',
+    'config.noGitWrite': 'no git write',
+    'config.externalCall': 'external call',
+    'config.noExternalCall': 'no external call',
+    'config.contentIncluded': 'content included',
+    'config.pathsOnly': 'paths only',
+    'config.commit': 'commit',
+    'config.requestEnabled': 'request enabled',
+    'config.requestBlocked': 'request blocked',
+    'config.approval': 'approval',
+    'config.approvalMetadataReady': 'approval metadata ready',
+    'config.approvalMetadataMissing': 'approval metadata missing',
+    'config.requestReady': 'request ready',
+    'config.requestDisabled': 'request disabled',
+    'config.workspace': 'workspace',
+    'config.commitCreated': 'commit created',
+    'config.noCommit': 'no commit',
+    'config.review': 'review',
+    'config.reviewCreated': 'review created',
+    'config.noReview': 'no review',
+    'config.liveValidation': 'live validation',
+    'config.noLiveValidation': 'no live validation',
+    'config.refs': 'refs',
+    'config.fetchObserved': 'fetch observed',
+    'config.noFetchEvidence': 'no fetch evidence',
+    'config.pinObserved': 'pin observed',
+    'config.noPinEvidence': 'no pin evidence',
+    'config.validationObserved': 'validation observed',
+    'config.noValidationEvidence': 'no validation evidence',
+    'config.pin': 'pin',
+    'config.pinPreflight': 'pin preflight',
+    'config.pinWriteEnabled': 'pin write enabled',
+    'config.noPinWrite': 'no pin write',
+    'config.result': 'result',
+    'config.resultRecorded': 'result recorded',
+    'config.noResultRecord': 'no result record',
+    'config.pinRecorded': 'pin recorded',
+    'config.noPinRecord': 'no pin record',
+    'config.promotion': 'promotion',
+    'config.livePromotion': 'live promotion',
+    'config.noLivePromotion': 'no live promotion',
+    'config.promotionSnapshot': 'promotion snapshot',
+    'config.refsSnapshot': 'refs snapshot',
+    'config.assetStatusWritten': 'asset status written',
+    'config.assetStatusUnchanged': 'asset status unchanged',
+    'config.workflowAudit': 'workflow audit',
+    'config.auditOps': 'audit ops',
+    'config.auditLogs': 'audit logs',
+    'config.activeAudits': 'active audits',
+    'config.failedAudits': 'failed audits',
+    'config.refOps': 'ref ops',
+    'config.activeRefs': 'active refs',
+    'config.failedRefs': 'failed refs',
+    'config.pinEvidence': 'pin evidence',
+    'config.pinnedVersions': 'pinned versions',
+    'config.validatedVersions': 'validated versions',
+    'config.commitSteps': 'commit steps',
+    'config.refreshRefs': 'Refresh config refs',
+    'config.recordRefsSnapshot': 'Record refs snapshot',
+    'config.requestWorkflowAudit': 'Request config workflow audit',
+    'config.recordPromotionSnapshot': 'Record promotion snapshot',
+    'config.operationQueued': 'operation queued',
+    'config.sanitizedResultExpected': 'sanitized result expected',
+    'config.resultBlocked': 'result blocked',
+    'config.metadataWritten': 'metadata written',
+    'config.noMetadataWrite': 'no metadata write',
+    'config.shaIncluded': 'sha included',
+    'config.shaHidden': 'sha hidden',
+    'config.pinWritten': 'Config pin written',
+    'config.pinAlreadyRecorded': 'Config pin already recorded',
+    'config.refreshRefsHelp': 'Runs the guarded read-only Git ref refresh for the config remote and updates local synced-state metadata.',
+    'config.recordRefsSnapshotHelp': 'Records sanitized terminal ref-refresh evidence into the config repository asset status history.',
+    'config.requestWorkflowAuditHelp': 'Creates an approval-gated config.git_commit audit operation. Private test local_bare writes only run when the deployment flag and path guard are satisfied.',
+    'config.recordPromotionSnapshotHelp': 'Records sanitized audit-to-live promotion readiness metadata. It does not push, call providers, or expose SHAs.',
+    'config.blockedReasons': 'Blocked reasons',
     'field.name': 'Name',
     'field.slug': 'Slug',
     'field.description': 'Description',
@@ -204,6 +295,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.codex_binary': 'Codex binary',
     'field.model': 'Model',
     'field.prompt': 'Prompt',
+    'field.path': 'Path',
+    'field.purpose': 'Purpose',
     'help.slug': 'Stable URL/API slug for this project.',
     'help.repo_key': 'Stable short key used to identify this repository inside the project.',
     'help.repo_role': 'Use service for application code and config for deployment/config repositories.',
@@ -717,6 +810,97 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.createSSHMachine': '创建 SSH 主机',
     'form.runSSHCommand': '执行 SSH 命令',
     'form.podLogQuery': 'Pod 日志查询',
+    'config.repoInitialized': '配置仓库已初始化',
+    'config.workflowApprovalRequested': '配置工作流审批已发起',
+    'config.workflowAuditQueued': '配置工作流审计已入队',
+    'config.refsRefreshAlreadyQueued': '配置 refs 刷新已在队列中',
+    'config.refsRefreshQueued': '配置 refs 刷新已入队',
+    'config.promotionSnapshotNotReady': '配置提升快照尚未就绪',
+    'config.promotionSnapshotRecorded': '配置提升快照已记录',
+    'config.promotionSnapshotCurrent': '配置提升快照已是最新',
+    'config.refsSnapshotNotReady': '配置 refs 快照尚未就绪',
+    'config.refsSnapshotRecorded': '配置 refs 快照已记录',
+    'config.refsSnapshotCurrent': '配置 refs 快照已是最新',
+    'config.scaffoldTitle': '配置脚手架预览',
+    'config.configReady': '配置仓库就绪',
+    'config.initConfig': '初始化配置仓库',
+    'config.files': '个文件',
+    'config.remotes': '个远端',
+    'config.gitWrite': '已写 Git',
+    'config.noGitWrite': '未写 Git',
+    'config.externalCall': '有外部调用',
+    'config.noExternalCall': '无外部调用',
+    'config.contentIncluded': '包含内容',
+    'config.pathsOnly': '仅路径',
+    'config.commit': '提交',
+    'config.requestEnabled': '可请求',
+    'config.requestBlocked': '请求被阻止',
+    'config.approval': '审批',
+    'config.approvalMetadataReady': '审批元数据就绪',
+    'config.approvalMetadataMissing': '审批元数据缺失',
+    'config.requestReady': '请求就绪',
+    'config.requestDisabled': '请求禁用',
+    'config.workspace': '工作区',
+    'config.commitCreated': '已创建提交',
+    'config.noCommit': '未提交',
+    'config.review': '审查',
+    'config.reviewCreated': '已创建审查',
+    'config.noReview': '未创建审查',
+    'config.liveValidation': '已现场校验',
+    'config.noLiveValidation': '未现场校验',
+    'config.refs': 'Refs',
+    'config.fetchObserved': '已观测 fetch',
+    'config.noFetchEvidence': '无 fetch 证据',
+    'config.pinObserved': '已观测 pin',
+    'config.noPinEvidence': '无 pin 证据',
+    'config.validationObserved': '已观测校验',
+    'config.noValidationEvidence': '无校验证据',
+    'config.pin': 'Pin',
+    'config.pinPreflight': 'Pin 预检',
+    'config.pinWriteEnabled': 'Pin 写入开启',
+    'config.noPinWrite': '未写入 Pin',
+    'config.result': '结果',
+    'config.resultRecorded': '结果已记录',
+    'config.noResultRecord': '未记录结果',
+    'config.pinRecorded': 'Pin 已记录',
+    'config.noPinRecord': 'Pin 未记录',
+    'config.promotion': '提升',
+    'config.livePromotion': '现场提升',
+    'config.noLivePromotion': '未现场提升',
+    'config.promotionSnapshot': '提升快照',
+    'config.refsSnapshot': 'Refs 快照',
+    'config.assetStatusWritten': '资产状态已写入',
+    'config.assetStatusUnchanged': '资产状态未变化',
+    'config.workflowAudit': '工作流审计',
+    'config.auditOps': '个审计操作',
+    'config.auditLogs': '条审计日志',
+    'config.activeAudits': '个运行中审计',
+    'config.failedAudits': '个失败审计',
+    'config.refOps': '个 ref 操作',
+    'config.activeRefs': '个运行中 refs',
+    'config.failedRefs': '个失败 refs',
+    'config.pinEvidence': 'Pin 证据',
+    'config.pinnedVersions': '个已 pin 版本',
+    'config.validatedVersions': '个已校验版本',
+    'config.commitSteps': '个提交步骤',
+    'config.refreshRefs': '刷新配置 refs',
+    'config.recordRefsSnapshot': '记录 refs 快照',
+    'config.requestWorkflowAudit': '请求配置工作流审计',
+    'config.recordPromotionSnapshot': '记录提升快照',
+    'config.operationQueued': '操作已入队',
+    'config.sanitizedResultExpected': '预期脱敏结果',
+    'config.resultBlocked': '结果被阻止',
+    'config.metadataWritten': '元数据已写入',
+    'config.noMetadataWrite': '未写入元数据',
+    'config.shaIncluded': '包含 SHA',
+    'config.shaHidden': 'SHA 已隐藏',
+    'config.pinWritten': '配置 Pin 已写入',
+    'config.pinAlreadyRecorded': '配置 Pin 已记录',
+    'config.refreshRefsHelp': '对配置远端执行受保护的只读 Git refs 刷新，并更新本地同步状态元数据。',
+    'config.recordRefsSnapshotHelp': '把终态 refs 刷新证据以脱敏形式记录到配置仓库资产状态历史。',
+    'config.requestWorkflowAuditHelp': '创建需要审批的 config.git_commit 审计操作。只有部署开关和 local_bare 路径保护同时满足时，私有测试写入才会执行。',
+    'config.recordPromotionSnapshotHelp': '记录审计结果提升为现场流程前的脱敏就绪元数据；不会 push、调用提供方或暴露 SHA。',
+    'config.blockedReasons': '阻塞原因',
     'field.name': '名称',
     'field.slug': '标识',
     'field.description': '描述',
@@ -774,6 +958,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.codex_binary': 'Codex 可执行文件',
     'field.model': '模型',
     'field.prompt': '提示词',
+    'field.path': '路径',
+    'field.purpose': '用途',
     'help.slug': '项目在 URL/API 中使用的稳定标识。',
     'help.repo_key': '项目内识别该仓库的稳定短键。',
     'help.repo_role': '应用代码选择 service，部署/配置仓库选择 config。',
@@ -4985,6 +5171,7 @@ function AssetRelationGraph({ graph }: { graph: AnyRow }) {
 }
 
 function ProjectDetail() {
+	const { t } = useI18n();
 	const projects = useLoad(() => api('/api/projects'), []);
   const projectRows = projects.data?.items || [];
   const projectPick = useSelectedRow(projectRows);
@@ -5036,10 +5223,10 @@ function ProjectDetail() {
           default_branch: 'main'
         })
       });
-      message.success('Config repository initialized');
+      message.success(t('config.repoInitialized'));
       repos.reload();
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setConfigInitializing(false);
     }
@@ -5051,9 +5238,9 @@ function ProjectDetail() {
       const result = await api(`/api/git-repositories/${configRepo.id}/config-scaffold/request-git-workflow`, { method: 'POST', body: '{}' });
       setConfigWorkflowResult(result);
       configScaffold.reload();
-      message.success(result.approval ? 'Config workflow approval requested' : 'Config workflow audit queued');
+      message.success(result.approval ? t('config.workflowApprovalRequested') : t('config.workflowAuditQueued'));
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setConfigWorkflowRequesting(false);
     }
@@ -5065,9 +5252,9 @@ function ProjectDetail() {
       const result = await api(`/api/git-repositories/${configRepo.id}/config-scaffold/refresh-refs`, { method: 'POST', body: '{}' });
       configScaffold.reload();
       projectRemotes.reload();
-      message.success(result.idempotent ? 'Config refs refresh already queued' : 'Config refs refresh queued');
+      message.success(result.idempotent ? t('config.refsRefreshAlreadyQueued') : t('config.refsRefreshQueued'));
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setConfigRefsRefreshing(false);
     }
@@ -5080,12 +5267,12 @@ function ProjectDetail() {
       setConfigPromotionSnapshotResult(result);
       configScaffold.reload();
       if (result.recording_ready === false) {
-        message.warning(result.message || 'Config promotion snapshot is not ready yet');
+        message.warning(result.message || t('config.promotionSnapshotNotReady'));
       } else {
-        message.success(result.promotion_snapshot_written ? 'Config promotion snapshot recorded' : 'Config promotion snapshot already current');
+        message.success(result.promotion_snapshot_written ? t('config.promotionSnapshotRecorded') : t('config.promotionSnapshotCurrent'));
       }
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setConfigPromotionSnapshotRecording(false);
     }
@@ -5098,12 +5285,12 @@ function ProjectDetail() {
       setConfigRefSnapshotResult(result);
       configScaffold.reload();
       if (result.recording_ready === false) {
-        message.warning(result.message || 'Config refs snapshot is not ready yet');
+        message.warning(result.message || t('config.refsSnapshotNotReady'));
       } else {
-        message.success(result.ref_refresh_snapshot_written ? 'Config refs snapshot recorded' : 'Config refs snapshot already current');
+        message.success(result.ref_refresh_snapshot_written ? t('config.refsSnapshotRecorded') : t('config.refsSnapshotCurrent'));
       }
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setConfigRefSnapshotRecording(false);
     }
@@ -5199,7 +5386,7 @@ function ProjectDetail() {
         const validation = await api(`/api/project-versions/${row.id}/validation`);
         setVersionValidation(validation);
       }
-      message.success(safeResult.project_version_metadata_written ? 'Config pin written' : 'Config pin already recorded');
+      message.success(safeResult.project_version_metadata_written ? t('config.pinWritten') : t('config.pinAlreadyRecorded'));
     } catch (error: any) {
       message.error(error.message || 'Request failed');
     } finally {
@@ -5343,7 +5530,7 @@ function ProjectDetail() {
           <div className="toolbar">
             <Typography.Title level={2}>Git repositories</Typography.Title>
             <Space>
-              <Button onClick={initializeConfigRepo} disabled={Boolean(configRepo) || repos.loading} loading={configInitializing} icon={<SettingOutlined />}>{configRepo ? 'Config ready' : 'Init config'}</Button>
+              <Button onClick={initializeConfigRepo} disabled={Boolean(configRepo) || repos.loading} loading={configInitializing} icon={<SettingOutlined />}>{configRepo ? t('config.configReady') : t('config.initConfig')}</Button>
               <Button type="primary" onClick={() => setRepoOpen(true)}>Create</Button>
             </Space>
           </div>
@@ -5355,73 +5542,73 @@ function ProjectDetail() {
             { title: 'Default branch', dataIndex: 'default_branch' }
           ]} />
           {configScaffold.data && (
-            <Card title="Config scaffold preview" loading={configScaffold.loading}>
+            <Card title={t('config.scaffoldTitle')} loading={configScaffold.loading}>
               <Space direction="vertical" size={8} className="full">
                 <Space wrap>
                   <Tag color={configScaffold.data.scaffold_state === 'ready' ? 'green' : 'red'}>{configScaffold.data.scaffold_state || 'blocked'}</Tag>
-                  <Tag>{configScaffold.data.file_count || 0} files</Tag>
-                  <Tag>{configScaffold.data.remote_count || 0} remotes</Tag>
-                  <Tag>{configScaffold.data.git_write_performed ? 'git write' : 'no git write'}</Tag>
-                  <Tag>{configScaffold.data.external_call_made ? 'external call' : 'no external call'}</Tag>
-                  <Tag>{configScaffold.data.file_content_included ? 'content included' : 'paths only'}</Tag>
-                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.plan_state === 'planned' ? 'blue' : 'red'}>commit {configScaffold.data.git_commit_plan.plan_state}</Tag> : null}
-                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.operation_request_enabled ? 'blue' : 'default'}>{configScaffold.data.git_commit_plan.operation_request_enabled ? 'request enabled' : 'request blocked'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag color="gold">approval {configScaffold.data.git_commit_plan.approval_request_plan.request_state || 'blocked'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag>{configScaffold.data.git_commit_plan.approval_request_plan.metadata_ready ? 'approval metadata ready' : 'approval metadata missing'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag>{configScaffold.data.git_commit_plan.approval_request_plan.request_ready ? 'request ready' : 'request disabled'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.workspace_execution_plan ? <Tag color="gold">workspace {configScaffold.data.git_commit_plan.workspace_execution_plan.workspace_state || 'blocked'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.git_commit_created ? 'commit created' : 'no commit'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.remote_review_plan ? <Tag color={configScaffold.data.git_commit_plan.remote_review_plan.review_state === 'planned' ? 'gold' : 'red'}>review {configScaffold.data.git_commit_plan.remote_review_plan.review_state || 'blocked'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.remote_review_plan ? <Tag>{configScaffold.data.git_commit_plan.remote_review_plan.provider_review_created ? 'review created' : 'no review'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.live_commit_validation_performed ? 'live validation' : 'no live validation'}</Tag> : null}
-                  {configScaffold.data.config_ref_refresh_evidence ? <Tag color={configScaffold.data.config_ref_refresh_evidence.refresh_state === 'recorded' ? 'green' : configScaffold.data.config_ref_refresh_evidence.refresh_state === 'waiting_for_worker' ? 'blue' : 'default'}>refs {configScaffold.data.config_ref_refresh_evidence.refresh_state || 'not_requested'}</Tag> : null}
-                  {configScaffold.data.config_ref_refresh_evidence ? <Tag>{configScaffold.data.config_ref_refresh_evidence.git_fetch_performed ? 'fetch observed' : 'no fetch evidence'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.project_version_pin_observed ? 'green' : 'orange'}>{configScaffold.data.git_commit_plan.project_version_pin_observed ? 'pin observed' : 'no pin evidence'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.live_commit_validation_observed ? 'green' : 'orange'}>{configScaffold.data.git_commit_plan.live_commit_validation_observed ? 'validation observed' : 'no validation evidence'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.project_version_pin_plan ? <Tag color="gold">pin {configScaffold.data.git_commit_plan.project_version_pin_plan.pin_state || 'blocked'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.project_version_pin_plan?.pin_write_preflight_plan ? <Tag color={configScaffold.data.git_commit_plan.project_version_pin_plan.pin_write_preflight_plan.pin_write_ready_for_review ? 'gold' : configScaffold.data.git_commit_plan.project_version_pin_plan.pin_write_preflight_plan.preflight_state === 'observed' ? 'green' : 'default'}>pin preflight {configScaffold.data.git_commit_plan.project_version_pin_plan.pin_write_preflight_plan.preflight_state || 'blocked'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.project_version_pin_plan?.pin_write_preflight_plan ? <Tag>{configScaffold.data.git_commit_plan.project_version_pin_plan.pin_write_preflight_plan.project_version_update_enabled ? 'pin write enabled' : 'no pin write'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag color="gold">result {configScaffold.data.git_commit_plan.result_recording_plan.result_recording_state || 'blocked'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.result_written ? 'result recorded' : 'no result record'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.project_version_pin_written ? 'pin recorded' : 'no pin record'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.promotion_readiness_plan ? <Tag color={configScaffold.data.git_commit_plan.promotion_readiness_plan.promotion_ready ? 'green' : 'orange'}>promotion {configScaffold.data.git_commit_plan.promotion_readiness_plan.promotion_state || 'blocked'}</Tag> : null}
-                  {configScaffold.data.git_commit_plan?.promotion_readiness_plan ? <Tag>{configScaffold.data.git_commit_plan.promotion_readiness_plan.live_git_workflow_enabled ? 'live promotion' : 'no live promotion'}</Tag> : null}
-                  {configPromotionSnapshotResult ? <Tag color={configPromotionSnapshotResult.promotion_snapshot_written ? 'green' : configPromotionSnapshotResult.recording_state === 'asset_missing' ? 'red' : configPromotionSnapshotResult.recording_ready ? 'gold' : 'default'}>promotion snapshot {configPromotionSnapshotResult.recording_state || 'pending'}</Tag> : null}
-                  {configPromotionSnapshotResult ? <Tag>{configPromotionSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag> : null}
-                  {configRefSnapshotResult ? <Tag color={configRefSnapshotResult.ref_refresh_snapshot_written ? 'green' : configRefSnapshotResult.recording_state === 'asset_missing' ? 'red' : configRefSnapshotResult.recording_ready ? 'gold' : 'default'}>refs snapshot {configRefSnapshotResult.recording_state || 'pending'}</Tag> : null}
-                  {configRefSnapshotResult ? <Tag>{configRefSnapshotResult.asset_status_snapshot_written ? 'asset status written' : 'asset status unchanged'}</Tag> : null}
-                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag color={configWorkflowAuditEvidenceColor(configScaffold.data.git_workflow_audit_evidence.evidence_state)}>workflow audit {configScaffold.data.git_workflow_audit_evidence.evidence_state || 'unknown'}</Tag> : null}
-                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.git_workflow_audit_evidence.operation_count || 0} audit ops</Tag> : null}
-                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.git_workflow_audit_evidence.operation_log_count || 0} audit logs</Tag> : null}
-                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.active_count || 0) > 0 ? <Tag color="blue">{configScaffold.data.git_workflow_audit_evidence.active_count || 0} active audits</Tag> : null}
-                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.failed_count || 0) > 0 ? <Tag color="red">{configScaffold.data.git_workflow_audit_evidence.failed_count || 0} failed audits</Tag> : null}
-                  {configScaffold.data.config_ref_refresh_evidence && (configScaffold.data.config_ref_refresh_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.config_ref_refresh_evidence.operation_count || 0} ref ops</Tag> : null}
-                  {configScaffold.data.config_ref_refresh_evidence && (configScaffold.data.config_ref_refresh_evidence.active_count || 0) > 0 ? <Tag color="blue">{configScaffold.data.config_ref_refresh_evidence.active_count || 0} active refs</Tag> : null}
-                  {configScaffold.data.config_ref_refresh_evidence && (configScaffold.data.config_ref_refresh_evidence.failed_count || 0) > 0 ? <Tag color="red">{configScaffold.data.config_ref_refresh_evidence.failed_count || 0} failed refs</Tag> : null}
-                  {configScaffold.data.project_version_pin_evidence ? <Tag color={configScaffold.data.project_version_pin_evidence.pin_state === 'recorded' ? 'green' : 'default'}>pin evidence {configScaffold.data.project_version_pin_evidence.pin_state || 'not_recorded'}</Tag> : null}
-                  {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.pinned_version_count || 0} pinned versions</Tag> : null}
-                  {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.validated_version_count || 0} validated versions</Tag> : null}
-                  {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.steps?.length || 0} commit steps</Tag> : null}
+                  <Tag>{configScaffold.data.file_count || 0} {t('config.files')}</Tag>
+                  <Tag>{configScaffold.data.remote_count || 0} {t('config.remotes')}</Tag>
+                  <Tag>{configScaffold.data.git_write_performed ? t('config.gitWrite') : t('config.noGitWrite')}</Tag>
+                  <Tag>{configScaffold.data.external_call_made ? t('config.externalCall') : t('config.noExternalCall')}</Tag>
+                  <Tag>{configScaffold.data.file_content_included ? t('config.contentIncluded') : t('config.pathsOnly')}</Tag>
+                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.plan_state === 'planned' ? 'blue' : 'red'}>{t('config.commit')} {configScaffold.data.git_commit_plan.plan_state}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.operation_request_enabled ? 'blue' : 'default'}>{configScaffold.data.git_commit_plan.operation_request_enabled ? t('config.requestEnabled') : t('config.requestBlocked')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag color="gold">{t('config.approval')} {configScaffold.data.git_commit_plan.approval_request_plan.request_state || 'blocked'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag>{configScaffold.data.git_commit_plan.approval_request_plan.metadata_ready ? t('config.approvalMetadataReady') : t('config.approvalMetadataMissing')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.approval_request_plan ? <Tag>{configScaffold.data.git_commit_plan.approval_request_plan.request_ready ? t('config.requestReady') : t('config.requestDisabled')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.workspace_execution_plan ? <Tag color="gold">{t('config.workspace')} {configScaffold.data.git_commit_plan.workspace_execution_plan.workspace_state || 'blocked'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.git_commit_created ? t('config.commitCreated') : t('config.noCommit')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.remote_review_plan ? <Tag color={configScaffold.data.git_commit_plan.remote_review_plan.review_state === 'planned' ? 'gold' : 'red'}>{t('config.review')} {configScaffold.data.git_commit_plan.remote_review_plan.review_state || 'blocked'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.remote_review_plan ? <Tag>{configScaffold.data.git_commit_plan.remote_review_plan.provider_review_created ? t('config.reviewCreated') : t('config.noReview')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.live_commit_validation_performed ? t('config.liveValidation') : t('config.noLiveValidation')}</Tag> : null}
+                  {configScaffold.data.config_ref_refresh_evidence ? <Tag color={configScaffold.data.config_ref_refresh_evidence.refresh_state === 'recorded' ? 'green' : configScaffold.data.config_ref_refresh_evidence.refresh_state === 'waiting_for_worker' ? 'blue' : 'default'}>{t('config.refs')} {configScaffold.data.config_ref_refresh_evidence.refresh_state || 'not_requested'}</Tag> : null}
+                  {configScaffold.data.config_ref_refresh_evidence ? <Tag>{configScaffold.data.config_ref_refresh_evidence.git_fetch_performed ? t('config.fetchObserved') : t('config.noFetchEvidence')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.project_version_pin_observed ? 'green' : 'orange'}>{configScaffold.data.git_commit_plan.project_version_pin_observed ? t('config.pinObserved') : t('config.noPinEvidence')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag color={configScaffold.data.git_commit_plan.live_commit_validation_observed ? 'green' : 'orange'}>{configScaffold.data.git_commit_plan.live_commit_validation_observed ? t('config.validationObserved') : t('config.noValidationEvidence')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.project_version_pin_plan ? <Tag color="gold">{t('config.pin')} {configScaffold.data.git_commit_plan.project_version_pin_plan.pin_state || 'blocked'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.project_version_pin_plan?.pin_write_preflight_plan ? <Tag color={configScaffold.data.git_commit_plan.project_version_pin_plan.pin_write_preflight_plan.pin_write_ready_for_review ? 'gold' : configScaffold.data.git_commit_plan.project_version_pin_plan.pin_write_preflight_plan.preflight_state === 'observed' ? 'green' : 'default'}>{t('config.pinPreflight')} {configScaffold.data.git_commit_plan.project_version_pin_plan.pin_write_preflight_plan.preflight_state || 'blocked'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.project_version_pin_plan?.pin_write_preflight_plan ? <Tag>{configScaffold.data.git_commit_plan.project_version_pin_plan.pin_write_preflight_plan.project_version_update_enabled ? t('config.pinWriteEnabled') : t('config.noPinWrite')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag color="gold">{t('config.result')} {configScaffold.data.git_commit_plan.result_recording_plan.result_recording_state || 'blocked'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.result_written ? t('config.resultRecorded') : t('config.noResultRecord')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.result_recording_plan ? <Tag>{configScaffold.data.git_commit_plan.result_recording_plan.project_version_pin_written ? t('config.pinRecorded') : t('config.noPinRecord')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.promotion_readiness_plan ? <Tag color={configScaffold.data.git_commit_plan.promotion_readiness_plan.promotion_ready ? 'green' : 'orange'}>{t('config.promotion')} {configScaffold.data.git_commit_plan.promotion_readiness_plan.promotion_state || 'blocked'}</Tag> : null}
+                  {configScaffold.data.git_commit_plan?.promotion_readiness_plan ? <Tag>{configScaffold.data.git_commit_plan.promotion_readiness_plan.live_git_workflow_enabled ? t('config.livePromotion') : t('config.noLivePromotion')}</Tag> : null}
+                  {configPromotionSnapshotResult ? <Tag color={configPromotionSnapshotResult.promotion_snapshot_written ? 'green' : configPromotionSnapshotResult.recording_state === 'asset_missing' ? 'red' : configPromotionSnapshotResult.recording_ready ? 'gold' : 'default'}>{t('config.promotionSnapshot')} {configPromotionSnapshotResult.recording_state || 'pending'}</Tag> : null}
+                  {configPromotionSnapshotResult ? <Tag>{configPromotionSnapshotResult.asset_status_snapshot_written ? t('config.assetStatusWritten') : t('config.assetStatusUnchanged')}</Tag> : null}
+                  {configRefSnapshotResult ? <Tag color={configRefSnapshotResult.ref_refresh_snapshot_written ? 'green' : configRefSnapshotResult.recording_state === 'asset_missing' ? 'red' : configRefSnapshotResult.recording_ready ? 'gold' : 'default'}>{t('config.refsSnapshot')} {configRefSnapshotResult.recording_state || 'pending'}</Tag> : null}
+                  {configRefSnapshotResult ? <Tag>{configRefSnapshotResult.asset_status_snapshot_written ? t('config.assetStatusWritten') : t('config.assetStatusUnchanged')}</Tag> : null}
+                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag color={configWorkflowAuditEvidenceColor(configScaffold.data.git_workflow_audit_evidence.evidence_state)}>{t('config.workflowAudit')} {configScaffold.data.git_workflow_audit_evidence.evidence_state || 'unknown'}</Tag> : null}
+                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.git_workflow_audit_evidence.operation_count || 0} {t('config.auditOps')}</Tag> : null}
+                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.git_workflow_audit_evidence.operation_log_count || 0} {t('config.auditLogs')}</Tag> : null}
+                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.active_count || 0) > 0 ? <Tag color="blue">{configScaffold.data.git_workflow_audit_evidence.active_count || 0} {t('config.activeAudits')}</Tag> : null}
+                  {configScaffold.data.git_workflow_audit_evidence && (configScaffold.data.git_workflow_audit_evidence.failed_count || 0) > 0 ? <Tag color="red">{configScaffold.data.git_workflow_audit_evidence.failed_count || 0} {t('config.failedAudits')}</Tag> : null}
+                  {configScaffold.data.config_ref_refresh_evidence && (configScaffold.data.config_ref_refresh_evidence.operation_count || 0) > 0 ? <Tag>{configScaffold.data.config_ref_refresh_evidence.operation_count || 0} {t('config.refOps')}</Tag> : null}
+                  {configScaffold.data.config_ref_refresh_evidence && (configScaffold.data.config_ref_refresh_evidence.active_count || 0) > 0 ? <Tag color="blue">{configScaffold.data.config_ref_refresh_evidence.active_count || 0} {t('config.activeRefs')}</Tag> : null}
+                  {configScaffold.data.config_ref_refresh_evidence && (configScaffold.data.config_ref_refresh_evidence.failed_count || 0) > 0 ? <Tag color="red">{configScaffold.data.config_ref_refresh_evidence.failed_count || 0} {t('config.failedRefs')}</Tag> : null}
+                  {configScaffold.data.project_version_pin_evidence ? <Tag color={configScaffold.data.project_version_pin_evidence.pin_state === 'recorded' ? 'green' : 'default'}>{t('config.pinEvidence')} {configScaffold.data.project_version_pin_evidence.pin_state || 'not_recorded'}</Tag> : null}
+                  {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.pinned_version_count || 0} {t('config.pinnedVersions')}</Tag> : null}
+                  {configScaffold.data.project_version_pin_evidence ? <Tag>{configScaffold.data.project_version_pin_evidence.validated_version_count || 0} {t('config.validatedVersions')}</Tag> : null}
+                  {configScaffold.data.git_commit_plan ? <Tag>{configScaffold.data.git_commit_plan.steps?.length || 0} {t('config.commitSteps')}</Tag> : null}
                 </Space>
                 <Space wrap>
-                  <Button size="small" loading={configRefsRefreshing} disabled={!configScaffold.data.remote_count} onClick={refreshConfigRefs}>Refresh config refs</Button>
-                  <Button size="small" loading={configRefSnapshotRecording} disabled={configScaffold.data.config_ref_refresh_evidence?.refresh_state !== 'recorded'} onClick={recordConfigRefSnapshot}>Record refs snapshot</Button>
-                  <Button size="small" type="primary" loading={configWorkflowRequesting} disabled={!configScaffold.data.git_commit_plan?.operation_request_enabled} onClick={requestConfigGitWorkflow}>Request config workflow audit</Button>
-                  <Button size="small" loading={configPromotionSnapshotRecording} disabled={!configScaffold.data.git_commit_plan?.promotion_readiness_plan?.promotion_ready} onClick={recordConfigPromotionSnapshot}>Record promotion snapshot</Button>
-                  {configWorkflowResult?.approval ? <Tag color="gold">approval requested</Tag> : null}
-                  {configWorkflowResult?.operation ? <Tag color="blue">operation queued</Tag> : null}
-                  {configWorkflowResult?.operation_request_result ? <Tag>{configWorkflowResult.operation_request_result.git_write_performed ? 'git write' : 'no git write'}</Tag> : null}
-                  {configWorkflowResult?.operation_request_result ? <Tag>{configWorkflowResult.operation_request_result.sanitized_result_expected ? 'sanitized result expected' : 'result blocked'}</Tag> : null}
-                  {configPinResult ? <Tag color={configPinResult.project_version_metadata_written ? 'green' : 'default'}>pin {configPinResult.pin_state || 'recorded'}</Tag> : null}
-                  {configPinResult ? <Tag>{configPinResult.project_version_metadata_written ? 'metadata written' : 'no metadata write'}</Tag> : null}
-                  {configPinResult ? <Tag>{configPinResult.external_call_made ? 'external call' : 'no external call'}</Tag> : null}
-                  {configPinResult ? <Tag>{configPinResult.commit_sha_included ? 'sha included' : 'sha hidden'}</Tag> : null}
+                  <Tooltip title={t('config.refreshRefsHelp')}><Button size="small" loading={configRefsRefreshing} disabled={!configScaffold.data.remote_count} onClick={refreshConfigRefs}>{t('config.refreshRefs')}</Button></Tooltip>
+                  <Tooltip title={t('config.recordRefsSnapshotHelp')}><Button size="small" loading={configRefSnapshotRecording} disabled={configScaffold.data.config_ref_refresh_evidence?.refresh_state !== 'recorded'} onClick={recordConfigRefSnapshot}>{t('config.recordRefsSnapshot')}</Button></Tooltip>
+                  <Tooltip title={t('config.requestWorkflowAuditHelp')}><Button size="small" type="primary" loading={configWorkflowRequesting} disabled={!configScaffold.data.git_commit_plan?.operation_request_enabled} onClick={requestConfigGitWorkflow}>{t('config.requestWorkflowAudit')}</Button></Tooltip>
+                  <Tooltip title={t('config.recordPromotionSnapshotHelp')}><Button size="small" loading={configPromotionSnapshotRecording} disabled={!configScaffold.data.git_commit_plan?.promotion_readiness_plan?.promotion_ready} onClick={recordConfigPromotionSnapshot}>{t('config.recordPromotionSnapshot')}</Button></Tooltip>
+                  {configWorkflowResult?.approval ? <Tag color="gold">{t('config.approvalRequested')}</Tag> : null}
+                  {configWorkflowResult?.operation ? <Tag color="blue">{t('config.operationQueued')}</Tag> : null}
+                  {configWorkflowResult?.operation_request_result ? <Tag>{configWorkflowResult.operation_request_result.git_write_performed ? t('config.gitWrite') : t('config.noGitWrite')}</Tag> : null}
+                  {configWorkflowResult?.operation_request_result ? <Tag>{configWorkflowResult.operation_request_result.sanitized_result_expected ? t('config.sanitizedResultExpected') : t('config.resultBlocked')}</Tag> : null}
+                  {configPinResult ? <Tag color={configPinResult.project_version_metadata_written ? 'green' : 'default'}>{t('config.pin')} {configPinResult.pin_state || 'recorded'}</Tag> : null}
+                  {configPinResult ? <Tag>{configPinResult.project_version_metadata_written ? t('config.metadataWritten') : t('config.noMetadataWrite')}</Tag> : null}
+                  {configPinResult ? <Tag>{configPinResult.external_call_made ? t('config.externalCall') : t('config.noExternalCall')}</Tag> : null}
+                  {configPinResult ? <Tag>{configPinResult.commit_sha_included ? t('config.shaIncluded') : t('config.shaHidden')}</Tag> : null}
                 </Space>
                 {Array.isArray(configScaffold.data.blocked_reasons) && configScaffold.data.blocked_reasons.length > 0 && (
-                  <Alert showIcon type="warning" message={configScaffold.data.blocked_reasons.join(', ')} />
+                  <Alert showIcon type="warning" message={`${t('config.blockedReasons')}: ${configScaffold.data.blocked_reasons.join(', ')}`} />
                 )}
                 {Array.isArray(configScaffold.data.git_commit_plan?.blocked_reasons) && configScaffold.data.git_commit_plan.blocked_reasons.length > 0 && (
-                  <Alert showIcon type="warning" message={configScaffold.data.git_commit_plan.blocked_reasons.join(', ')} />
+                  <Alert showIcon type="warning" message={`${t('config.blockedReasons')}: ${configScaffold.data.git_commit_plan.blocked_reasons.join(', ')}`} />
                 )}
                 <Table<AnyRow>
                   size="small"
@@ -5429,9 +5616,9 @@ function ProjectDetail() {
                   dataSource={configScaffold.data.files || []}
                   pagination={false}
                   columns={[
-                    { title: 'Path', dataIndex: 'path' },
-                    { title: 'Env', render: (_, row) => <Tag>{row.environment || 'all'}</Tag> },
-                    { title: 'Purpose', dataIndex: 'purpose' }
+                    { title: t('field.path'), dataIndex: 'path' },
+                    { title: t('field.environment'), render: (_, row) => <Tag>{row.environment || 'all'}</Tag> },
+                    { title: t('field.purpose'), dataIndex: 'purpose' }
                   ]}
                 />
               </Space>
