@@ -68,8 +68,38 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.refresh': 'Refresh',
     'common.required': 'This field is required',
     'common.validUrl': 'Enter a valid URL',
+    'common.action': 'Action',
+    'common.actions': 'Actions',
+    'common.created': 'Created',
+    'common.updated': 'Updated',
+    'common.synced': 'Synced',
+    'common.target': 'Target',
+    'common.environment': 'Environment',
+    'common.namespace': 'Namespace',
+    'common.cluster': 'Cluster',
+    'common.execution': 'Execution',
+    'common.readiness': 'Readiness',
+    'common.reason': 'Reason',
+    'common.revision': 'Revision',
+    'common.observed': 'Observed',
+    'common.captured': 'Captured',
+    'common.secretRef': 'Secret ref',
+    'common.metadata': 'Metadata',
+    'common.server': 'Server',
+    'common.sync': 'Sync',
+    'common.never': 'never',
+    'common.unknown': 'unknown',
+    'common.configured': 'configured',
+    'common.missing': 'missing',
+    'common.bound': 'bound',
+    'common.unbound': 'unbound',
+    'common.yes': 'yes',
+    'common.no': 'no',
     'title.sshMachines': 'SSH Machines',
     'title.argoConnections': 'Argo Connections',
+    'title.argoSsh': 'Argo / SSH',
+    'title.sshRehearsal': 'SSH rehearsal',
+    'title.argoApps': 'Argo Apps',
     'form.createProject': 'Create project',
     'form.createRepository': 'Create repository',
     'form.createAIRuntime': 'Create AI runtime',
@@ -113,6 +143,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.secret_token': 'Webhook secret',
     'field.server_url': 'Argo server URL',
     'field.auth_type': 'Auth type',
+    'field.argo_auth_type': 'Argo auth type',
+    'field.ssh_auth_type': 'SSH auth type',
     'field.token': 'Token',
     'field.insecure_skip_verify': 'Skip TLS verification',
     'field.kubeconfig_secret_ref': 'Kubeconfig secret ref',
@@ -124,6 +156,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.tail_lines': 'Tail lines',
     'field.since_seconds': 'Since seconds',
     'field.status': 'Status',
+    'field.deployment_target_id': 'Target',
     'field.host': 'Host',
     'field.port': 'Port',
     'field.username': 'Username',
@@ -150,6 +183,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.secret_token': 'Shared webhook secret. Store provider-side secret material carefully.',
     'help.server_url': 'Base URL of the Argo CD API server, for example https://argo.example.com.',
     'help.auth_type': 'Credential type the worker should use. Argo uses token; SSH uses key or password.',
+    'help.argo_auth_type': 'Argo CD connection authentication mode. The first deployable version supports bearer token only.',
+    'help.ssh_auth_type': 'SSH authentication mode prepared for the worker. Use key when the worker has an approved key reference; use password only for controlled test environments.',
     'help.token': 'Argo bearer token. It is sent to the gateway and should be scoped for the target environment.',
     'help.insecure_skip_verify': 'Only use for test clusters with self-signed TLS. Do not enable in production.',
     'help.environment': 'Environment key used to bind Argo deployment targets and Kubernetes access metadata, such as test or prod.',
@@ -160,6 +195,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.token_subject_review_status': 'Manual operator sign-off that the kubeconfig token subject was reviewed before live pod-log audits; this is not an automatic TokenReview.',
     'help.rbac_read_logs_status': 'Manual operator sign-off that the service account RBAC was reviewed for pod/log read access; this is not an automatic permission probe.',
     'help.status': 'Use ready only after the kubeconfig reference, token subject, and RBAC review are complete.',
+    'help.deployment_target_id': 'Argo-derived deployment target whose pod log metadata should be audited.',
     'help.pod_name': 'Exact pod name to audit. ASSOPS does not discover pods from this preview.',
     'help.container_name': 'Optional container name. Leave empty to use the Kubernetes default container.',
     'help.tail_lines': 'Maximum log lines kubectl may read for metadata counting; capped by the gateway.',
@@ -212,6 +248,70 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'pod.preview': 'Preview',
     'pod.requestAudit': 'Request audit',
     'pod.recordSnapshot': 'Record audit snapshot',
+    'config.verify': 'Verify',
+    'config.runCommand': 'Run command',
+    'config.refreshRuns': 'Refresh runs',
+    'config.recordProof': 'Record proof',
+    'config.recordSnapshot': 'Record snapshot',
+    'config.syncApps': 'Sync apps',
+    'config.checkGate': 'Check gate',
+    'config.sshPreviewUnavailable': 'SSH rehearsal preview unavailable',
+    'config.deploymentTargets': 'Targets',
+    'config.unhealthy': 'Unhealthy',
+    'config.environments': 'Environments',
+    'config.rollbackPoints': 'Rollback points',
+    'config.kubernetesEnv': 'Kubernetes env',
+    'config.tokenReview': 'Token review',
+    'config.logsRbac': 'Logs RBAC',
+    'config.kubeEnv': 'Kube env',
+    'config.apps': 'Apps',
+    'config.deployment': 'Deployment',
+    'config.rollbackPoint': 'Rollback point',
+    'config.sshHostUser': 'User',
+    'config.operationType': 'Type',
+    'config.exit': 'Exit',
+    'config.finished': 'Finished',
+    'value.execution_enabled': 'execution enabled',
+    'value.execution_disabled': 'execution disabled',
+    'value.ssh_started': 'ssh started',
+    'value.no_ssh_process': 'no ssh process',
+    'value.live_evidence_recorded': 'live evidence recorded',
+    'value.no_live_evidence': 'no live evidence',
+    'value.sanitized_result_recorded': 'sanitized result recorded',
+    'value.no_sanitized_result': 'no sanitized result',
+    'value.no_key_material': 'no key material',
+    'value.key_included': 'key included',
+    'value.no_command_output': 'no command output',
+    'value.output_included': 'output included',
+    'value.auth_recorded': 'auth recorded',
+    'value.no_auth_record': 'no auth record',
+    'value.verify_recorded': 'verify recorded',
+    'value.no_verify_record': 'no verify record',
+    'value.exec_recorded': 'exec recorded',
+    'value.no_exec_record': 'no exec record',
+    'value.operator_proof_recorded': 'operator proof recorded',
+    'value.no_operator_proof': 'no operator proof',
+    'value.target_proof_review_ready': 'target proof review ready',
+    'value.target_proof_pending': 'target proof pending',
+    'value.target_proof_registered': 'target proof registered',
+    'value.target_proof_unregistered': 'target proof unregistered',
+    'value.metadata_reviewed': 'metadata reviewed',
+    'value.ready': 'ready',
+    'value.metadata_only': 'metadata only',
+    'value.disabled': 'disabled',
+    'value.not_reviewed': 'not reviewed',
+    'value.reviewed': 'reviewed',
+    'value.failed': 'failed',
+    'value.waived': 'waived',
+    'value.completed': 'completed',
+    'value.running': 'running',
+    'value.queued': 'queued',
+    'value.canceled': 'canceled',
+    'value.blocked': 'blocked',
+    'value.unknown': 'unknown',
+    'value.key': 'SSH key',
+    'value.password': 'password',
+    'value.token': 'token',
     'menu.dashboard': 'Dashboard',
     'menu.assets': 'Assets',
     'menu.projects': 'Projects',
@@ -247,8 +347,38 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.refresh': '刷新',
     'common.required': '此项必填',
     'common.validUrl': '请输入有效 URL',
+    'common.action': '操作',
+    'common.actions': '操作',
+    'common.created': '创建时间',
+    'common.updated': '更新时间',
+    'common.synced': '同步时间',
+    'common.target': '目标',
+    'common.environment': '环境',
+    'common.namespace': '命名空间',
+    'common.cluster': '集群',
+    'common.execution': '执行',
+    'common.readiness': '就绪度',
+    'common.reason': '原因',
+    'common.revision': '版本',
+    'common.observed': '观测时间',
+    'common.captured': '采集时间',
+    'common.secretRef': '密钥引用',
+    'common.metadata': '元数据',
+    'common.server': '服务地址',
+    'common.sync': '同步',
+    'common.never': '从未',
+    'common.unknown': '未知',
+    'common.configured': '已配置',
+    'common.missing': '缺失',
+    'common.bound': '已绑定',
+    'common.unbound': '未绑定',
+    'common.yes': '是',
+    'common.no': '否',
     'title.sshMachines': 'SSH 主机',
     'title.argoConnections': 'Argo 连接',
+    'title.argoSsh': 'Argo / SSH',
+    'title.sshRehearsal': 'SSH 演练',
+    'title.argoApps': 'Argo 应用',
     'form.createProject': '创建项目',
     'form.createRepository': '创建代码仓库',
     'form.createAIRuntime': '创建 AI 运行时',
@@ -292,6 +422,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.secret_token': 'Webhook 密钥',
     'field.server_url': 'Argo 服务地址',
     'field.auth_type': '认证类型',
+    'field.argo_auth_type': 'Argo 认证类型',
+    'field.ssh_auth_type': 'SSH 认证类型',
     'field.token': '令牌',
     'field.insecure_skip_verify': '跳过 TLS 校验',
     'field.kubeconfig_secret_ref': 'Kubeconfig 密钥引用',
@@ -303,6 +435,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.tail_lines': '日志行数',
     'field.since_seconds': '最近秒数',
     'field.status': '状态',
+    'field.deployment_target_id': '目标',
     'field.host': '主机',
     'field.port': '端口',
     'field.username': '用户名',
@@ -329,6 +462,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.secret_token': 'Webhook 共享密钥，请谨慎保存提供方侧的密钥材料。',
     'help.server_url': 'Argo CD API 服务基础地址，例如 https://argo.example.com。',
     'help.auth_type': 'Worker 使用的凭证类型。Argo 使用 token，SSH 使用 key 或 password。',
+    'help.argo_auth_type': 'Argo CD 连接的认证方式。首个可部署版本仅支持 bearer token。',
+    'help.ssh_auth_type': 'Worker 连接 SSH 主机时准备使用的认证方式。Worker 已有审查过的 key 引用时选 key；password 仅用于受控测试环境。',
     'help.token': 'Argo bearer token，会提交给 gateway，应限制在目标环境权限内。',
     'help.insecure_skip_verify': '仅用于自签 TLS 的测试集群；生产环境不要启用。',
     'help.environment': '用于绑定 Argo 部署目标和 Kubernetes 访问元数据的环境键，例如 test 或 prod。',
@@ -339,6 +474,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.token_subject_review_status': '人工签核项，表示操作者已审查 kubeconfig token 主体；这不是自动 TokenReview。',
     'help.rbac_read_logs_status': '人工签核项，表示操作者已审查服务账号具备该命名空间 pod/log 读取权限；这不是自动权限探测。',
     'help.status': '仅在 kubeconfig 引用、token 主体、RBAC 审查都完成后选择 ready。',
+    'help.deployment_target_id': '由 Argo 同步出的部署目标，用于审计该目标下 Pod 日志元数据。',
     'help.pod_name': '要审计的精确 Pod 名称。该预览不会自动发现 Pod。',
     'help.container_name': '可选容器名。留空表示使用 Kubernetes 默认容器。',
     'help.tail_lines': 'kubectl 可读取用于元数据计数的最大日志行数，网关会强制上限。',
@@ -391,6 +527,70 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'pod.preview': '预览',
     'pod.requestAudit': '请求审计',
     'pod.recordSnapshot': '记录审计快照',
+    'config.verify': '验证',
+    'config.runCommand': '执行命令',
+    'config.refreshRuns': '刷新记录',
+    'config.recordProof': '记录证明',
+    'config.recordSnapshot': '记录快照',
+    'config.syncApps': '同步应用',
+    'config.checkGate': '检查门禁',
+    'config.sshPreviewUnavailable': 'SSH 演练预览不可用',
+    'config.deploymentTargets': '部署目标',
+    'config.unhealthy': '异常',
+    'config.environments': '环境数',
+    'config.rollbackPoints': '回滚点',
+    'config.kubernetesEnv': 'Kubernetes 环境',
+    'config.tokenReview': 'Token 审查',
+    'config.logsRbac': '日志 RBAC',
+    'config.kubeEnv': 'Kube 环境',
+    'config.apps': '应用',
+    'config.deployment': '部署',
+    'config.rollbackPoint': '回滚点',
+    'config.sshHostUser': '用户',
+    'config.operationType': '类型',
+    'config.exit': '退出码',
+    'config.finished': '完成时间',
+    'value.execution_enabled': '执行已启用',
+    'value.execution_disabled': '执行未启用',
+    'value.ssh_started': 'SSH 已启动',
+    'value.no_ssh_process': '无 SSH 进程',
+    'value.live_evidence_recorded': '已记录 live 证据',
+    'value.no_live_evidence': '无 live 证据',
+    'value.sanitized_result_recorded': '已记录脱敏结果',
+    'value.no_sanitized_result': '无脱敏结果',
+    'value.no_key_material': '无密钥材料',
+    'value.key_included': '包含密钥',
+    'value.no_command_output': '无命令输出',
+    'value.output_included': '包含输出',
+    'value.auth_recorded': '认证已记录',
+    'value.no_auth_record': '认证未记录',
+    'value.verify_recorded': '验证已记录',
+    'value.no_verify_record': '验证未记录',
+    'value.exec_recorded': '执行已记录',
+    'value.no_exec_record': '执行未记录',
+    'value.operator_proof_recorded': '已记录人工证明',
+    'value.no_operator_proof': '无人工证明',
+    'value.target_proof_review_ready': '目标证明可审查',
+    'value.target_proof_pending': '目标证明待补充',
+    'value.target_proof_registered': '目标证明已登记',
+    'value.target_proof_unregistered': '目标证明未登记',
+    'value.metadata_reviewed': '元数据已审查',
+    'value.ready': '就绪',
+    'value.metadata_only': '仅元数据',
+    'value.disabled': '已禁用',
+    'value.not_reviewed': '未审查',
+    'value.reviewed': '已审查',
+    'value.failed': '失败',
+    'value.waived': '已豁免',
+    'value.completed': '已完成',
+    'value.running': '运行中',
+    'value.queued': '排队中',
+    'value.canceled': '已取消',
+    'value.blocked': '受阻',
+    'value.unknown': '未知',
+    'value.key': 'SSH Key',
+    'value.password': '密码',
+    'value.token': 'Token',
     'menu.dashboard': '仪表盘',
     'menu.assets': '资产',
     'menu.projects': '项目',
@@ -7942,50 +8142,50 @@ function ConfigPage() {
   }
   return (
     <Space direction="vertical" size={16} className="full">
-      <Typography.Title level={2}>Argo / SSH</Typography.Title>
+      <Typography.Title level={2}>{t('title.argoSsh')}</Typography.Title>
       <EntitySelect label={t('common.project')} rows={projectRows} value={projectPick.selectedID} onChange={projectPick.setSelectedID} />
       <Tabs items={[
-        { key: 'ssh', label: 'SSH Machines', children: <Space direction="vertical" size={16} className="full">
+        { key: 'ssh', label: t('title.sshMachines'), children: <Space direction="vertical" size={16} className="full">
           <Toolbar title="SSH Machines" onCreate={() => setSSHOpen(true)} disabled={!project} />
           <EntitySelect label={t('title.sshMachines')} rows={sshRows} value={sshPick.selectedID} onChange={sshPick.setSelectedID} />
           <Space>
-            <Button onClick={verifySSHMachine} disabled={!sshPick.selectedID}>Verify</Button>
-            <Button type="primary" onClick={() => setCommandOpen(true)} disabled={!sshPick.selectedID}>Run command</Button>
-            <Button onClick={() => { sshRuns.reload(); sshRehearsal.reload(); }} loading={sshRehearsal.loading} disabled={!project}>Refresh runs</Button>
-            <Button onClick={recordSSHTargetEnvironmentProof} loading={sshProofLoading} disabled={!sshPick.selectedID || sshRehearsalView?.rehearsal_state !== 'ready' || !sshRehearsalView?.target_environment_attestation_ready}>Record proof</Button>
-            <Button onClick={recordSSHRehearsalSnapshot} loading={sshSnapshotLoading} disabled={!sshPick.selectedID || !sshRehearsalView?.target_environment_attestation_ready}>Record snapshot</Button>
+            <Button onClick={verifySSHMachine} disabled={!sshPick.selectedID}>{t('config.verify')}</Button>
+            <Button type="primary" onClick={() => setCommandOpen(true)} disabled={!sshPick.selectedID}>{t('config.runCommand')}</Button>
+            <Button onClick={() => { sshRuns.reload(); sshRehearsal.reload(); }} loading={sshRehearsal.loading} disabled={!project}>{t('config.refreshRuns')}</Button>
+            <Button onClick={recordSSHTargetEnvironmentProof} loading={sshProofLoading} disabled={!sshPick.selectedID || sshRehearsalView?.rehearsal_state !== 'ready' || !sshRehearsalView?.target_environment_attestation_ready}>{t('config.recordProof')}</Button>
+            <Button onClick={recordSSHRehearsalSnapshot} loading={sshSnapshotLoading} disabled={!sshPick.selectedID || !sshRehearsalView?.target_environment_attestation_ready}>{t('config.recordSnapshot')}</Button>
           </Space>
-          {sshRehearsal.error && <Alert showIcon type="warning" message="SSH rehearsal preview unavailable" description={sshRehearsal.error} />}
+          {sshRehearsal.error && <Alert showIcon type="warning" message={t('config.sshPreviewUnavailable')} description={sshRehearsal.error} />}
           {sshRehearsalView && (
-            <Card title="SSH rehearsal">
+            <Card title={t('title.sshRehearsal')}>
               <Space direction="vertical" size={8} className="full">
                 <Space wrap>
-                  <Tag color={sshRehearsalView.rehearsal_state === 'ready' ? 'green' : sshRehearsalView.rehearsal_state === 'blocked' ? 'red' : 'gold'}>{sshRehearsalView.rehearsal_state}</Tag>
-                  <Tag>{sshRehearsalView.execution_enabled ? 'execution enabled' : 'execution disabled'}</Tag>
-                  <Tag>{sshRehearsalView.ssh_process_started ? 'ssh started' : 'no ssh process'}</Tag>
-                  <Tag color={sshRehearsalView.live_evidence_recorded ? 'green' : 'default'}>{sshRehearsalView.live_evidence_recorded ? 'live evidence recorded' : 'no live evidence'}</Tag>
-                  <Tag color={sshRehearsalView.sanitized_result_recorded ? 'green' : 'default'}>{sshRehearsalView.sanitized_result_recorded ? 'sanitized result recorded' : 'no sanitized result'}</Tag>
+                  <Tag color={sshRehearsalView.rehearsal_state === 'ready' ? 'green' : sshRehearsalView.rehearsal_state === 'blocked' ? 'red' : 'gold'}>{translatedValue(sshRehearsalView.rehearsal_state, t)}</Tag>
+                  <Tag>{t(sshRehearsalView.execution_enabled ? 'value.execution_enabled' : 'value.execution_disabled')}</Tag>
+                  <Tag>{t(sshRehearsalView.ssh_process_started ? 'value.ssh_started' : 'value.no_ssh_process')}</Tag>
+                  <Tag color={sshRehearsalView.live_evidence_recorded ? 'green' : 'default'}>{t(sshRehearsalView.live_evidence_recorded ? 'value.live_evidence_recorded' : 'value.no_live_evidence')}</Tag>
+                  <Tag color={sshRehearsalView.sanitized_result_recorded ? 'green' : 'default'}>{t(sshRehearsalView.sanitized_result_recorded ? 'value.sanitized_result_recorded' : 'value.no_sanitized_result')}</Tag>
                   {sshRehearsalView.approval_request_plan ? <Tag color="gold">approval {sshRehearsalView.approval_request_plan.request_state || 'blocked'}</Tag> : null}
                   {sshRehearsalView.auth_binding_plan ? <Tag color={sshRehearsalView.auth_binding_plan.binding_state === 'planned' ? 'gold' : sshRehearsalView.auth_binding_plan.binding_state === 'observed' ? 'green' : 'red'}>auth {sshRehearsalView.auth_binding_plan.binding_state || 'blocked'}</Tag> : null}
                   {sshRehearsalView.verify_execution_plan ? <Tag color={sshRehearsalView.verify_execution_plan.verify_state === 'observed' ? 'green' : sshRehearsalView.verify_execution_plan.verify_state === 'planned' ? 'gold' : 'red'}>verify {sshRehearsalView.verify_execution_plan.verify_state || 'blocked'}</Tag> : null}
                   {sshRehearsalView.exec_execution_plan ? <Tag color={sshRehearsalView.exec_execution_plan.exec_state === 'observed' ? 'green' : sshRehearsalView.exec_execution_plan.exec_state === 'planned' ? 'gold' : 'red'}>exec {sshRehearsalView.exec_execution_plan.exec_state || 'blocked'}</Tag> : null}
-                  <Tag>{sshRehearsalView.private_key_included ? 'key included' : 'no key material'}</Tag>
-                  <Tag>{sshRehearsalView.stdout_included || sshRehearsalView.stderr_included ? 'output included' : 'no command output'}</Tag>
+                  <Tag>{t(sshRehearsalView.private_key_included ? 'value.key_included' : 'value.no_key_material')}</Tag>
+                  <Tag>{t(sshRehearsalView.stdout_included || sshRehearsalView.stderr_included ? 'value.output_included' : 'value.no_command_output')}</Tag>
                   {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.recording_state || 'blocked'} recording</Tag> : null}
-                  {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.auth_binding_recorded ? 'auth recorded' : 'no auth record'}</Tag> : null}
-                  {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.verify_result_recorded ? 'verify recorded' : 'no verify record'}</Tag> : null}
-                  {sshRehearsalView.result_recording_plan ? <Tag>{sshRehearsalView.result_recording_plan.exec_result_recorded ? 'exec recorded' : 'no exec record'}</Tag> : null}
+                  {sshRehearsalView.result_recording_plan ? <Tag>{t(sshRehearsalView.result_recording_plan.auth_binding_recorded ? 'value.auth_recorded' : 'value.no_auth_record')}</Tag> : null}
+                  {sshRehearsalView.result_recording_plan ? <Tag>{t(sshRehearsalView.result_recording_plan.verify_result_recorded ? 'value.verify_recorded' : 'value.no_verify_record')}</Tag> : null}
+                  {sshRehearsalView.result_recording_plan ? <Tag>{t(sshRehearsalView.result_recording_plan.exec_result_recorded ? 'value.exec_recorded' : 'value.no_exec_record')}</Tag> : null}
                   {sshRehearsalView.live_rehearsal_control_evidence ? <Tag color={sshRehearsalView.live_rehearsal_control_evidence.control_state === 'ready' ? 'green' : sshRehearsalView.live_rehearsal_control_evidence.control_state === 'blocked' ? 'red' : 'gold'}>controls {sshRehearsalView.live_rehearsal_control_evidence.control_state || 'blocked'}</Tag> : null}
                   {sshRehearsalView.live_rehearsal_control_evidence ? <Tag>{sshRehearsalView.live_rehearsal_control_evidence.runbook_reference_recorded ? 'runbook recorded' : 'no runbook'}</Tag> : null}
                   {sshRehearsalView.live_rehearsal_control_evidence ? <Tag>{sshRehearsalView.live_rehearsal_control_evidence.fixture_reference_recorded ? 'fixture recorded' : 'no fixture'}</Tag> : null}
-                  {sshRehearsalView.operator_approved_proof_recorded ? <Tag color="green">operator proof recorded</Tag> : <Tag>no operator proof</Tag>}
+                  {sshRehearsalView.operator_approved_proof_recorded ? <Tag color="green">{t('value.operator_proof_recorded')}</Tag> : <Tag>{t('value.no_operator_proof')}</Tag>}
                   {sshRehearsalView.environment_proof_plan ? <Tag color={sshRehearsalView.environment_proof_plan.environment_proof_state === 'ready' ? 'green' : sshRehearsalView.environment_proof_plan.environment_proof_state === 'blocked' ? 'red' : 'gold'}>env proof {sshRehearsalView.environment_proof_plan.environment_proof_state || 'blocked'}</Tag> : null}
                   {sshRehearsalView.environment_proof_plan ? <Tag>{sshRehearsalView.environment_proof_plan.environment_proof_ready ? 'env proof ready' : 'env proof pending'}</Tag> : null}
                   {sshRehearsalView.target_environment_attestation_plan ? <Tag color={sshRehearsalView.target_environment_attestation_plan.attestation_state === 'ready_for_operator_review' ? 'green' : sshRehearsalView.target_environment_attestation_plan.attestation_state === 'blocked' ? 'red' : 'gold'}>target attestation {sshRehearsalView.target_environment_attestation_plan.attestation_state || 'blocked'}</Tag> : null}
                   {sshRehearsalView.target_environment_attestation_plan ? <Tag>{sshRehearsalView.target_environment_attestation_plan.environment_probe_performed ? 'env probed' : 'no env probe'}</Tag> : null}
                   {sshRehearsalView.target_environment_attestation_plan ? <Tag>{sshRehearsalView.target_environment_attestation_plan.raw_output_recorded ? 'raw output recorded' : 'no raw output'}</Tag> : null}
-                  {sshRehearsalView.target_environment_attestation_ready ? <Tag color="green">target proof review ready</Tag> : <Tag>target proof pending</Tag>}
-                  {sshRehearsalView.target_environment_proof_registered ? <Tag color="green">target proof registered</Tag> : <Tag>target proof unregistered</Tag>}
+                  {sshRehearsalView.target_environment_attestation_ready ? <Tag color="green">{t('value.target_proof_review_ready')}</Tag> : <Tag>{t('value.target_proof_pending')}</Tag>}
+                  {sshRehearsalView.target_environment_proof_registered ? <Tag color="green">{t('value.target_proof_registered')}</Tag> : <Tag>{t('value.target_proof_unregistered')}</Tag>}
                   {sshRehearsalView.target_environment_proof_registration ? <Tag color={sshRehearsalView.target_environment_proof_registration.proof_state === 'recorded' ? 'green' : sshRehearsalView.target_environment_proof_registration.proof_state === 'lookup_failed' ? 'red' : 'gold'}>proof {sshRehearsalView.target_environment_proof_registration.proof_state || 'not_recorded'}</Tag> : null}
                   {sshRehearsalView.recent_evidence?.evidence_state ? <Tag color={sshRehearsalView.recent_evidence.evidence_state === 'recorded' ? 'green' : sshRehearsalView.recent_evidence.evidence_state === 'failed' ? 'red' : 'gold'}>evidence {sshRehearsalView.recent_evidence.evidence_state}</Tag> : null}
                   <Tag>{sshRehearsalView.recent_evidence?.verify_runs || 0} verify runs</Tag>
@@ -8017,35 +8217,35 @@ function ConfigPage() {
               </Space>
             </Card>
           )}
-          <Table rowKey="id" dataSource={sshRows} pagination={false} columns={[
-            { title: 'Name', dataIndex: 'name' },
-            { title: 'Host', dataIndex: 'host' },
-            { title: 'Port', dataIndex: 'port' },
-            { title: 'User', dataIndex: 'username' },
-            { title: 'Auth', dataIndex: 'auth_type' }
+          <Table<AnyRow> rowKey="id" dataSource={sshRows} pagination={false} columns={[
+            { title: t('common.name'), dataIndex: 'name' },
+            { title: t('field.host'), dataIndex: 'host' },
+            { title: t('field.port'), dataIndex: 'port' },
+            { title: t('config.sshHostUser'), dataIndex: 'username' },
+            { title: t('common.auth'), render: (_, row) => translatedValue(row.auth_type, t) }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={sshRuns.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-            { title: 'Type', render: (_, row) => <Tag color={row.operation_type === 'ssh.verify' ? 'cyan' : 'default'}>{row.operation_type || 'unknown'}</Tag> },
-            { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{row.status}</Tag> },
-            { title: 'Command', dataIndex: 'command' },
-            { title: 'Exit', dataIndex: 'exit_code' },
-            { title: 'Created', dataIndex: 'created_at' },
-            { title: 'Finished', dataIndex: 'finished_at' }
+            { title: t('config.operationType'), render: (_, row) => <Tag color={row.operation_type === 'ssh.verify' ? 'cyan' : 'default'}>{row.operation_type || t('common.unknown')}</Tag> },
+            { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('field.command'), dataIndex: 'command' },
+            { title: t('config.exit'), dataIndex: 'exit_code' },
+            { title: t('common.created'), dataIndex: 'created_at' },
+            { title: t('config.finished'), dataIndex: 'finished_at' }
           ]} />
         </Space> },
-        { key: 'argo', label: 'Argo Apps', children: <Space direction="vertical" size={16} className="full">
+        { key: 'argo', label: t('title.argoApps'), children: <Space direction="vertical" size={16} className="full">
           <Toolbar title="Argo Connections" onCreate={() => setArgoOpen(true)} disabled={!project} />
           <EntitySelect label={t('title.argoConnections')} rows={argoRows} value={argoPick.selectedID} onChange={argoPick.setSelectedID} />
           <Space>
-            <Button type="primary" loading={Boolean(argoSyncOpID)} onClick={syncArgoApps} disabled={!argoPick.selectedID || Boolean(argoSyncOpID)}>Sync apps</Button>
+            <Button type="primary" loading={Boolean(argoSyncOpID)} onClick={syncArgoApps} disabled={!argoPick.selectedID || Boolean(argoSyncOpID)}>{t('config.syncApps')}</Button>
             <Button onClick={() => setKubernetesEnvironmentOpen(true)} disabled={!project}>{t('form.addKubernetesEnvironment')}</Button>
             <Button onClick={() => { argoConnections.reload(); argoApps.reload(); kubernetesEnvironments.reload(); deploymentTargets.reload(); deploymentRecords.reload(); rollbackPoints.reload(); }} disabled={!project}>{t('common.refresh')}</Button>
           </Space>
           <div className="metricGrid">
-            <Card><Typography.Text type="secondary">Targets</Typography.Text><Typography.Title level={3}>{deploymentPosture.targets}</Typography.Title></Card>
-            <Card><Typography.Text type="secondary">Unhealthy</Typography.Text><Typography.Title level={3}>{deploymentPosture.unhealthy}</Typography.Title></Card>
-            <Card><Typography.Text type="secondary">Environments</Typography.Text><Typography.Title level={3}>{deploymentPosture.environments}</Typography.Title></Card>
-            <Card><Typography.Text type="secondary">Rollback points</Typography.Text><Typography.Title level={3}>{deploymentPosture.rollbackPoints}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('config.deploymentTargets')}</Typography.Text><Typography.Title level={3}>{deploymentPosture.targets}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('config.unhealthy')}</Typography.Text><Typography.Title level={3}>{deploymentPosture.unhealthy}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('config.environments')}</Typography.Text><Typography.Title level={3}>{deploymentPosture.environments}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('config.rollbackPoints')}</Typography.Text><Typography.Title level={3}>{deploymentPosture.rollbackPoints}</Typography.Title></Card>
           </div>
           {deploymentPosture.summary !== 'No deployment targets yet' && <Alert showIcon type={deploymentPosture.unhealthy > 0 ? 'warning' : 'success'} message={deploymentPosture.summary} />}
           {deploymentExecutionGuardrail && <Alert showIcon type={deploymentExecutionGuardrail.type} message={deploymentExecutionGuardrail.message} description={deploymentExecutionGuardrail.description} />}
@@ -8053,8 +8253,8 @@ function ConfigPage() {
           <Card title={t('form.podLogQuery')}>
             <Space direction="vertical" size={12} className="full">
               <Form layout="inline" onFinish={previewPodLogs} initialValues={{ tail_lines: 200, since_seconds: 0 }}>
-                <Form.Item name="deployment_target_id" rules={[{ required: true, message: 'target is required' }]}>
-                  <Select placeholder="Target" style={{ width: 220 }} options={(deploymentTargets.data?.items || []).map((target: AnyRow) => ({ value: target.id, label: `${target.name || target.namespace} (${target.environment || 'env'})` }))} />
+                <Form.Item name="deployment_target_id" label={fieldLabel('deployment_target_id', t)} rules={[{ required: true, message: t('common.required') }]}>
+                  <Select placeholder={t('common.target')} style={{ width: 220 }} options={(deploymentTargets.data?.items || []).map((target: AnyRow) => ({ value: target.id, label: `${target.name || target.namespace} (${target.environment || 'env'})` }))} />
                 </Form.Item>
                 <Form.Item name="pod_name" rules={[{ required: true, message: t('common.required') }]}>
                   <Input placeholder={t('field.pod_name')} style={{ width: 180 }} suffix={<Tooltip title={t('help.pod_name')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
@@ -8125,65 +8325,72 @@ function ConfigPage() {
             </Space>
           </Card>
           <Table<AnyRow> rowKey="id" dataSource={argoRows} pagination={false} columns={[
-            { title: 'Name', dataIndex: 'name' },
-            { title: 'Server', dataIndex: 'server_url' },
-            { title: 'Auth', dataIndex: 'auth_type' },
-            { title: 'Sync', render: (_, row) => <Tag color={row.last_sync_status === 'completed' ? 'green' : row.last_sync_status === 'failed' ? 'red' : row.last_sync_status === 'running' ? 'blue' : 'default'}>{row.last_sync_status || 'never'}</Tag> },
-            { title: 'Created', dataIndex: 'created_at' }
+            { title: t('common.name'), dataIndex: 'name' },
+            { title: t('common.server'), dataIndex: 'server_url' },
+            { title: t('common.auth'), render: (_, row) => translatedValue(row.auth_type, t) },
+            { title: t('common.sync'), render: (_, row) => <Tag color={row.last_sync_status === 'completed' ? 'green' : row.last_sync_status === 'failed' ? 'red' : row.last_sync_status === 'running' ? 'blue' : 'default'}>{row.last_sync_status ? translatedValue(row.last_sync_status, t) : t('common.never')}</Tag> },
+            { title: t('common.created'), dataIndex: 'created_at' }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={kubernetesEnvironments.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-            { title: 'Kubernetes env', dataIndex: 'name' },
-            { title: 'Environment', dataIndex: 'environment' },
-            { title: 'Namespace', dataIndex: 'namespace' },
-            { title: 'Cluster', dataIndex: 'cluster_name' },
-            { title: 'Secret ref', render: (_, row) => row.kubeconfig_secret_ref_present ? <Tag color="green">configured</Tag> : <Tag color="red">missing</Tag> },
-            { title: 'Token review', render: (_, row) => <Tag color={row.token_subject_review_ready ? 'green' : 'gold'}>{row.token_subject_review_status || 'not_reviewed'}</Tag> },
-            { title: 'Logs RBAC', render: (_, row) => <Tag color={row.rbac_read_logs_ready ? 'green' : 'gold'}>{row.rbac_read_logs_status || 'not_reviewed'}</Tag> },
-            { title: 'Metadata', render: (_, row) => <Tag color={row.log_access_metadata_ready ? 'green' : 'gold'}>{row.log_access_metadata_ready ? 'metadata reviewed' : row.status || 'metadata_only'}</Tag> }
+            { title: t('config.kubernetesEnv'), dataIndex: 'name' },
+            { title: t('common.environment'), dataIndex: 'environment' },
+            { title: t('common.namespace'), dataIndex: 'namespace' },
+            { title: t('common.cluster'), dataIndex: 'cluster_name' },
+            { title: t('common.secretRef'), render: (_, row) => row.kubeconfig_secret_ref_present ? <Tag color="green">{t('common.configured')}</Tag> : <Tag color="red">{t('common.missing')}</Tag> },
+            { title: t('config.tokenReview'), render: (_, row) => <Tag color={row.token_subject_review_ready ? 'green' : 'gold'}>{translatedValue(row.token_subject_review_status || 'not_reviewed', t)}</Tag> },
+            { title: t('config.logsRbac'), render: (_, row) => <Tag color={row.rbac_read_logs_ready ? 'green' : 'gold'}>{translatedValue(row.rbac_read_logs_status || 'not_reviewed', t)}</Tag> },
+            { title: t('common.metadata'), render: (_, row) => <Tag color={row.log_access_metadata_ready ? 'green' : 'gold'}>{row.log_access_metadata_ready ? t('value.metadata_reviewed') : translatedValue(row.status || 'metadata_only', t)}</Tag> }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={deploymentTargets.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-            { title: 'Target', dataIndex: 'name' },
-            { title: 'Environment', dataIndex: 'environment' },
-            { title: 'Namespace', dataIndex: 'namespace' },
-            { title: 'Cluster', dataIndex: 'cluster_name' },
-            { title: 'Kube env', render: (_, row) => row.kubernetes_environment_id ? <Tag color={row.kubeconfig_secret_ref_present ? 'green' : 'gold'}>{row.kubernetes_environment_name || 'bound'}</Tag> : <Tag>unbound</Tag> },
-            { title: 'Apps', dataIndex: 'argo_app_count' },
-            { title: 'Execution', render: (_, row) => <Space direction="vertical" size={4}>{deploymentExecutionReadinessView(row)}{deploymentExecutionGateResults[row.id] ? deploymentExecutionGateView(deploymentExecutionGateResults[row.id]) : null}</Space> },
-            { title: 'Action', render: (_, row) => <Button size="small" onClick={() => checkDeploymentExecutionGate(String(row.id || ''))} loading={deploymentExecutionGateLoadingID === row.id} disabled={!row.id || Boolean(deploymentExecutionGateLoadingID)}>Check gate</Button> },
-            { title: 'Status', render: (_, row) => <Tag color={argoStatusColor(row.status)}>{row.status}</Tag> }
+            { title: t('common.target'), dataIndex: 'name' },
+            { title: t('common.environment'), dataIndex: 'environment' },
+            { title: t('common.namespace'), dataIndex: 'namespace' },
+            { title: t('common.cluster'), dataIndex: 'cluster_name' },
+            { title: t('config.kubeEnv'), render: (_, row) => row.kubernetes_environment_id ? <Tag color={row.kubeconfig_secret_ref_present ? 'green' : 'gold'}>{row.kubernetes_environment_name || t('common.bound')}</Tag> : <Tag>{t('common.unbound')}</Tag> },
+            { title: t('config.apps'), dataIndex: 'argo_app_count' },
+            { title: t('common.execution'), render: (_, row) => <Space direction="vertical" size={4}>{deploymentExecutionReadinessView(row)}{deploymentExecutionGateResults[row.id] ? deploymentExecutionGateView(deploymentExecutionGateResults[row.id]) : null}</Space> },
+            { title: t('common.action'), render: (_, row) => <Button size="small" onClick={() => checkDeploymentExecutionGate(String(row.id || ''))} loading={deploymentExecutionGateLoadingID === row.id} disabled={!row.id || Boolean(deploymentExecutionGateLoadingID)}>{t('config.checkGate')}</Button> },
+            { title: t('common.status'), render: (_, row) => <Tag color={argoStatusColor(row.status)}>{translatedValue(row.status, t)}</Tag> }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={deploymentRecords.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-            { title: 'Deployment', dataIndex: 'name' },
-            { title: 'Target', dataIndex: 'deployment_target_name' },
-            { title: 'Environment', dataIndex: 'environment' },
-            { title: 'Status', render: (_, row) => <Tag color={argoStatusColor(row.status)}>{row.status}</Tag> },
-            { title: 'Revision', dataIndex: 'revision' },
-            { title: 'Observed', dataIndex: 'observed_at' }
+            { title: t('config.deployment'), dataIndex: 'name' },
+            { title: t('common.target'), dataIndex: 'deployment_target_name' },
+            { title: t('common.environment'), dataIndex: 'environment' },
+            { title: t('common.status'), render: (_, row) => <Tag color={argoStatusColor(row.status)}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('common.revision'), dataIndex: 'revision' },
+            { title: t('common.observed'), dataIndex: 'observed_at' }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={rollbackPoints.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-            { title: 'Rollback point', dataIndex: 'name' },
-            { title: 'Target', dataIndex: 'deployment_target_name' },
-            { title: 'Environment', dataIndex: 'environment' },
-            { title: 'Revision', dataIndex: 'revision' },
-            { title: 'Readiness', render: (_, row) => <Tag color={rollbackReadinessColor(row.rollback_readiness)}>{row.rollback_readiness || 'unknown'}</Tag> },
-            { title: 'Reason', dataIndex: 'rollback_readiness_reason', render: (value) => value || '-' },
-            { title: 'Execution', render: (_, row) => <Space direction="vertical" size={4}>{rollbackExecutionPlanView(row)}{rollbackExecutionGateResults[row.id] ? rollbackExecutionGateView(rollbackExecutionGateResults[row.id]) : null}</Space> },
-            { title: 'Action', render: (_, row) => <Button size="small" onClick={() => checkRollbackExecutionGate(String(row.id || ''))} loading={rollbackExecutionGateLoadingID === row.id} disabled={!row.id || Boolean(rollbackExecutionGateLoadingID)}>Check gate</Button> },
-            { title: 'Status', render: (_, row) => <Tag color={argoStatusColor(row.status)}>{row.status}</Tag> },
-            { title: 'Captured', dataIndex: 'captured_at' }
+            { title: t('config.rollbackPoint'), dataIndex: 'name' },
+            { title: t('common.target'), dataIndex: 'deployment_target_name' },
+            { title: t('common.environment'), dataIndex: 'environment' },
+            { title: t('common.revision'), dataIndex: 'revision' },
+            { title: t('common.readiness'), render: (_, row) => <Tag color={rollbackReadinessColor(row.rollback_readiness)}>{translatedValue(row.rollback_readiness || 'unknown', t)}</Tag> },
+            { title: t('common.reason'), dataIndex: 'rollback_readiness_reason', render: (value) => value || '-' },
+            { title: t('common.execution'), render: (_, row) => <Space direction="vertical" size={4}>{rollbackExecutionPlanView(row)}{rollbackExecutionGateResults[row.id] ? rollbackExecutionGateView(rollbackExecutionGateResults[row.id]) : null}</Space> },
+            { title: t('common.action'), render: (_, row) => <Button size="small" onClick={() => checkRollbackExecutionGate(String(row.id || ''))} loading={rollbackExecutionGateLoadingID === row.id} disabled={!row.id || Boolean(rollbackExecutionGateLoadingID)}>{t('config.checkGate')}</Button> },
+            { title: t('common.status'), render: (_, row) => <Tag color={argoStatusColor(row.status)}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('common.captured'), dataIndex: 'captured_at' }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={argoApps.data?.items || []} pagination={{ pageSize: 8 }} columns={[
-            { title: 'Name', dataIndex: 'name' },
-            { title: 'Target', dataIndex: 'deployment_target_name' },
-            { title: 'Environment', dataIndex: 'environment' },
-            { title: 'Namespace', dataIndex: 'namespace' },
-            { title: 'Status', render: (_, row) => <Tag color={argoStatusColor(row.status)}>{row.status}</Tag> },
-            { title: 'Synced', dataIndex: 'synced_at' },
-            { title: 'Updated', dataIndex: 'updated_at' }
+            { title: t('common.name'), dataIndex: 'name' },
+            { title: t('common.target'), dataIndex: 'deployment_target_name' },
+            { title: t('common.environment'), dataIndex: 'environment' },
+            { title: t('common.namespace'), dataIndex: 'namespace' },
+            { title: t('common.status'), render: (_, row) => <Tag color={argoStatusColor(row.status)}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('common.synced'), dataIndex: 'synced_at' },
+            { title: t('common.updated'), dataIndex: 'updated_at' }
           ]} />
         </Space> }
       ]} />
-      <CreateModal title="Create Argo connection" open={argoOpen} setOpen={setArgoOpen} fields={['name', 'server_url', 'auth_type', 'token', 'insecure_skip_verify']} onSubmit={createArgoConnection} />
+      <CreateModal
+        title="Create Argo connection"
+        open={argoOpen}
+        setOpen={setArgoOpen}
+        fields={['name', 'server_url', { name: 'auth_type', metaKey: 'argo_auth_type' }, 'token', 'insecure_skip_verify']}
+        initialValues={{ auth_type: 'token', insecure_skip_verify: false }}
+        onSubmit={createArgoConnection}
+      />
       <Modal title={t('form.addKubernetesEnvironment')} open={kubernetesEnvironmentOpen} onCancel={() => setKubernetesEnvironmentOpen(false)} onOk={() => kubernetesEnvironmentForm.submit()} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
         <Form form={kubernetesEnvironmentForm} layout="vertical" onFinish={createKubernetesEnvironment} initialValues={{ token_subject_review_status: 'not_reviewed', rbac_read_logs_status: 'not_reviewed', status: 'metadata_only' }}>
           <Typography.Paragraph type="secondary">{t('k8s.modalDescription')}</Typography.Paragraph>
@@ -8194,8 +8401,15 @@ function ConfigPage() {
           ))}
         </Form>
       </Modal>
-      <CreateModal title="Create SSH machine" open={sshOpen} setOpen={setSSHOpen} fields={['name', 'host', 'port', 'username', 'auth_type']} onSubmit={(v) => project ? api(`/api/projects/${project.id}/ssh-machines`, { method: 'POST', body: JSON.stringify({ ...v, port: Number(v.port || 22) }) }).then(ssh.reload) : Promise.resolve()} />
-      <CreateModal title="Run SSH command" open={commandOpen} setOpen={setCommandOpen} fields={['command', 'timeout_seconds']} onSubmit={runSSHCommand} />
+      <CreateModal
+        title="Create SSH machine"
+        open={sshOpen}
+        setOpen={setSSHOpen}
+        fields={['name', 'host', 'port', 'username', { name: 'auth_type', metaKey: 'ssh_auth_type' }]}
+        initialValues={{ port: 22, auth_type: 'key' }}
+        onSubmit={(v) => project ? api(`/api/projects/${project.id}/ssh-machines`, { method: 'POST', body: JSON.stringify({ ...v, port: Number(v.port || 22) }) }).then(ssh.reload) : Promise.resolve()}
+      />
+      <CreateModal title="Run SSH command" open={commandOpen} setOpen={setCommandOpen} fields={['command', 'timeout_seconds']} initialValues={{ timeout_seconds: 60 }} onSubmit={runSSHCommand} />
     </Space>
   );
 }
@@ -8227,6 +8441,13 @@ function translateTitle(title: string, t: (key: string) => string) {
   return key ? t(key) : title;
 }
 
+function translatedValue(value: any, t: (key: string) => string) {
+  const raw = String(value || '').trim();
+  if (!raw) return '-';
+  const translated = t(`value.${raw}`);
+  return translated === `value.${raw}` ? raw.replaceAll('_', ' ') : translated;
+}
+
 type FieldMeta = {
   labelKey?: string;
   helpKey?: string;
@@ -8235,6 +8456,17 @@ type FieldMeta = {
   required?: boolean;
   placeholder?: string;
 };
+
+type ModalField = string | (FieldMeta & { name: string; metaKey?: string });
+
+function resolveModalField(field: ModalField) {
+  if (typeof field === 'string') {
+    return { name: field, meta: fieldMeta[field] || {} };
+  }
+  const base = fieldMeta[field.metaKey || field.name] || {};
+  const { name, metaKey: _metaKey, ...override } = field;
+  return { name, meta: { ...base, ...override } };
+}
 
 const fieldMeta: Record<string, FieldMeta> = {
   name: { required: true },
@@ -8267,6 +8499,8 @@ const fieldMeta: Record<string, FieldMeta> = {
   secret_token: { input: 'password', helpKey: 'help.secret_token' },
   server_url: { input: 'url', required: true, helpKey: 'help.server_url', placeholder: 'https://argo.example.com' },
   auth_type: { input: 'select', options: ['token', 'key', 'password'], helpKey: 'help.auth_type' },
+  argo_auth_type: { input: 'select', options: ['token'], labelKey: 'field.argo_auth_type', helpKey: 'help.argo_auth_type', required: true },
+  ssh_auth_type: { input: 'select', options: ['key', 'password'], labelKey: 'field.ssh_auth_type', helpKey: 'help.ssh_auth_type', required: true },
   token: { input: 'password', helpKey: 'help.token' },
   insecure_skip_verify: { input: 'checkbox', helpKey: 'help.insecure_skip_verify' },
   kubeconfig_secret_ref: { required: true, helpKey: 'help.kubeconfig_secret_ref', placeholder: 'assops/test/namespace-reader' },
@@ -8278,7 +8512,8 @@ const fieldMeta: Record<string, FieldMeta> = {
   container_name: { helpKey: 'help.container_name' },
   tail_lines: { input: 'number', helpKey: 'help.tail_lines', placeholder: '200' },
   since_seconds: { input: 'number', helpKey: 'help.since_seconds', placeholder: '0' },
-  host: { required: true, helpKey: 'help.host' },
+  deployment_target_id: { input: 'select', required: true, helpKey: 'help.deployment_target_id' },
+  host: { required: true, helpKey: 'help.host', placeholder: 'worker-host.example.com' },
   port: { input: 'number', helpKey: 'help.port', placeholder: '22' },
   username: { required: true, helpKey: 'help.username' },
   command: { input: 'textarea', required: true, helpKey: 'help.command' },
@@ -8289,10 +8524,11 @@ const fieldMeta: Record<string, FieldMeta> = {
   prompt: { input: 'textarea', required: true, helpKey: 'help.prompt' }
 };
 
-function fieldLabel(field: string, t: (key: string) => string) {
-  const meta = fieldMeta[field] || {};
-  const label = meta.labelKey ? t(meta.labelKey) : t(`field.${field}`);
-  const fallback = label === `field.${field}` ? field.replaceAll('_', ' ') : label;
+function fieldLabel(field: string, t: (key: string) => string, metaOverride?: FieldMeta) {
+  const meta = { ...(fieldMeta[field] || {}), ...(metaOverride || {}) };
+  const labelKey = meta.labelKey || `field.${field}`;
+  const label = t(labelKey);
+  const fallback = label === labelKey ? field.replaceAll('_', ' ') : label;
   if (!meta.helpKey) return fallback;
   return (
     <Space size={4}>
@@ -8308,16 +8544,16 @@ function fieldValuePropName(field: string) {
   return fieldMeta[field]?.input === 'checkbox' ? 'checked' : 'value';
 }
 
-function fieldRules(field: string, t: (key: string) => string = createTranslator('en')) {
-  const meta = fieldMeta[field] || {};
+function fieldRules(field: string, t: (key: string) => string = createTranslator('en'), metaOverride?: FieldMeta) {
+  const meta = { ...(fieldMeta[field] || {}), ...(metaOverride || {}) };
   const rules: AnyRow[] = [];
   if (meta.required || field === 'name' || field === 'title' || field === 'command') rules.push({ required: true, message: t('common.required') });
   if (field === 'server_url' || field === 'web_url') rules.push({ type: 'url', message: t('common.validUrl') });
   return rules;
 }
 
-function fieldInput(field: string, t: (key: string) => string) {
-  const meta = fieldMeta[field] || {};
+function fieldInput(field: string, t: (key: string) => string, metaOverride?: FieldMeta) {
+  const meta = { ...(fieldMeta[field] || {}), ...(metaOverride || {}) };
   const placeholder = meta.placeholder;
   if (meta.input === 'checkbox') return <Checkbox>{t(`field.${field}`)}</Checkbox>;
   if (meta.input === 'select' && meta.options) {
@@ -8330,7 +8566,7 @@ function fieldInput(field: string, t: (key: string) => string) {
   return <Input placeholder={placeholder} />;
 }
 
-function CreateModal({ title, open, setOpen, fields, onSubmit }: { title: string; open: boolean; setOpen: (v: boolean) => void; fields: string[]; onSubmit: (values: AnyRow) => Promise<any> }) {
+function CreateModal({ title, open, setOpen, fields, onSubmit, initialValues }: { title: string; open: boolean; setOpen: (v: boolean) => void; fields: ModalField[]; onSubmit: (values: AnyRow) => Promise<any>; initialValues?: AnyRow }) {
   const { t } = useI18n();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
@@ -8348,12 +8584,15 @@ function CreateModal({ title, open, setOpen, fields, onSubmit }: { title: string
   }
   return (
     <Modal title={translateTitle(title, t)} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={submitting} okButtonProps={{ disabled: submitting }} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
-      <Form form={form} layout="vertical" onFinish={submit}>
-        {fields.map((field) => (
-          <Form.Item key={field} name={field} label={fieldLabel(field, t)} rules={fieldRules(field, t)} valuePropName={fieldValuePropName(field)}>
-            {fieldInput(field, t)}
+      <Form form={form} layout="vertical" onFinish={submit} initialValues={initialValues}>
+        {fields.map((field) => {
+          const resolved = resolveModalField(field);
+          return (
+          <Form.Item key={resolved.name} name={resolved.name} label={fieldLabel(resolved.name, t, resolved.meta)} rules={fieldRules(resolved.name, t, resolved.meta)} valuePropName={resolved.meta.input === 'checkbox' ? 'checked' : fieldValuePropName(resolved.name)}>
+            {fieldInput(resolved.name, t, resolved.meta)}
           </Form.Item>
-        ))}
+          );
+        })}
       </Form>
     </Modal>
   );
