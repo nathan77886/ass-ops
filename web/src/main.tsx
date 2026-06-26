@@ -113,6 +113,13 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.enable': 'Enable',
     'common.disable': 'Disable',
     'common.requestFailed': 'Request failed',
+    'common.error': 'Error',
+    'common.message': 'Message',
+    'common.level': 'Level',
+    'common.day': 'Day',
+    'common.completed': 'Completed',
+    'common.failed': 'Failed',
+    'common.avg': 'Avg',
     'title.sshMachines': 'SSH Machines',
     'title.argoConnections': 'Argo Connections',
     'title.argoSsh': 'Argo / SSH',
@@ -348,6 +355,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.severity': 'Severity',
     'git.threshold': 'Threshold',
     'git.detail': 'Detail',
+    'git.syncAsset': 'Sync asset',
+    'git.run': 'Run',
+    'git.rerun': 'Rerun',
     'config.verify': 'Verify',
     'config.runCommand': 'Run command',
     'config.refreshRuns': 'Refresh runs',
@@ -649,6 +659,13 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.enable': '启用',
     'common.disable': '禁用',
     'common.requestFailed': '请求失败',
+    'common.error': '错误',
+    'common.message': '消息',
+    'common.level': '级别',
+    'common.day': '日期',
+    'common.completed': '已完成',
+    'common.failed': '失败',
+    'common.avg': '平均',
     'title.sshMachines': 'SSH 主机',
     'title.argoConnections': 'Argo 连接',
     'title.argoSsh': 'Argo / SSH',
@@ -884,6 +901,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.severity': '严重度',
     'git.threshold': '阈值',
     'git.detail': '详情',
+    'git.syncAsset': '同步资产',
+    'git.run': '运行',
+    'git.rerun': '重新运行',
     'config.verify': '验证',
     'config.runCommand': '执行命令',
     'config.refreshRuns': '刷新记录',
@@ -6196,64 +6216,64 @@ function GitRemotes() {
           ]} />
         </Space> }
       ]} />
-      <Modal title={syncAssetDetail.data?.asset?.name || 'Sync asset'} open={Boolean(syncAssetID)} onCancel={() => setSyncAssetID(undefined)} footer={null} width={980} destroyOnHidden>
+      <Modal title={syncAssetDetail.data?.asset?.name || t('git.syncAsset')} open={Boolean(syncAssetID)} onCancel={() => setSyncAssetID(undefined)} footer={null} width={980} destroyOnHidden>
         {syncAssetDetail.data && <Space direction="vertical" size={16} className="full">
           <Space wrap>
-            <Tag>{syncAssetDetail.data.asset?.trigger_mode}</Tag>
-            <Tag>{syncAssetDetail.data.asset?.sync_mode}</Tag>
-            <Tag color={syncAssetDetail.data.asset?.last_sync_status === 'completed' ? 'green' : syncAssetDetail.data.asset?.last_sync_status === 'failed' ? 'red' : 'blue'}>{syncAssetDetail.data.asset?.last_sync_status || 'never'}</Tag>
-            <Tag color={syncAssetDetail.data.asset?.enabled ? 'green' : 'default'}>{syncAssetDetail.data.asset?.enabled ? 'enabled' : 'disabled'}</Tag>
-            {syncAssetDetail.data.asset?.archived_at ? <Tag>archived</Tag> : null}
+            <Tag>{translatedValue(syncAssetDetail.data.asset?.trigger_mode, t)}</Tag>
+            <Tag>{translatedValue(syncAssetDetail.data.asset?.sync_mode, t)}</Tag>
+            <Tag color={syncAssetDetail.data.asset?.last_sync_status === 'completed' ? 'green' : syncAssetDetail.data.asset?.last_sync_status === 'failed' ? 'red' : 'blue'}>{syncAssetDetail.data.asset?.last_sync_status ? translatedValue(syncAssetDetail.data.asset?.last_sync_status, t) : t('common.never')}</Tag>
+            <Tag color={syncAssetDetail.data.asset?.enabled ? 'green' : 'default'}>{syncAssetDetail.data.asset?.enabled ? t('common.enable') : t('common.disable')}</Tag>
+            {syncAssetDetail.data.asset?.archived_at ? <Tag>{t('value.archived')}</Tag> : null}
           </Space>
           <Space wrap>
-            <Button size="small" type="primary" onClick={() => runRepoSyncAsset(syncAssetDetail.data.asset.id)} disabled={!syncAssetDetail.data.asset?.enabled || Boolean(syncAssetDetail.data.asset?.archived_at)}>Run</Button>
-            <Button size="small" onClick={() => setSyncAssetEditOpen(true)} disabled={Boolean(syncAssetDetail.data.asset?.archived_at)}>Edit</Button>
-            <Button size="small" onClick={() => toggleRepoSyncAsset(syncAssetDetail.data.asset.id, !syncAssetDetail.data.asset?.enabled)} disabled={Boolean(syncAssetDetail.data.asset?.archived_at)}>{syncAssetDetail.data.asset?.enabled ? 'Disable' : 'Enable'}</Button>
-            {syncAssetDetail.data.asset?.archived_at ? <Button size="small" onClick={() => restoreRepoSyncAsset(syncAssetDetail.data.asset.id)}>Restore</Button> : <Button size="small" danger onClick={() => archiveRepoSyncAsset(syncAssetDetail.data.asset.id)}>Archive</Button>}
+            <Button size="small" type="primary" onClick={() => runRepoSyncAsset(syncAssetDetail.data.asset.id)} disabled={!syncAssetDetail.data.asset?.enabled || Boolean(syncAssetDetail.data.asset?.archived_at)}>{t('git.run')}</Button>
+            <Button size="small" onClick={() => setSyncAssetEditOpen(true)} disabled={Boolean(syncAssetDetail.data.asset?.archived_at)}>{t('common.edit')}</Button>
+            <Button size="small" onClick={() => toggleRepoSyncAsset(syncAssetDetail.data.asset.id, !syncAssetDetail.data.asset?.enabled)} disabled={Boolean(syncAssetDetail.data.asset?.archived_at)}>{syncAssetDetail.data.asset?.enabled ? t('common.disable') : t('common.enable')}</Button>
+            {syncAssetDetail.data.asset?.archived_at ? <Button size="small" onClick={() => restoreRepoSyncAsset(syncAssetDetail.data.asset.id)}>{t('common.restore')}</Button> : <Button size="small" danger onClick={() => archiveRepoSyncAsset(syncAssetDetail.data.asset.id)}>{t('common.archive')}</Button>}
           </Space>
           <div className="metricGrid">
-            <Card><Typography.Text type="secondary">Runs</Typography.Text><Typography.Title level={4}>{syncAssetDetail.data.asset?.total_runs || 0}</Typography.Title></Card>
-            <Card><Typography.Text type="secondary">Success rate</Typography.Text><Typography.Title level={4}>{syncAssetDetail.data.asset?.success_rate ?? 0}%</Typography.Title></Card>
-            <Card><Typography.Text type="secondary">Avg duration</Typography.Text><Typography.Title level={4}>{secondsText(syncAssetDetail.data.asset?.avg_duration_seconds)}</Typography.Title></Card>
-            <Card><Typography.Text type="secondary">Last failure</Typography.Text><Typography.Title level={5}>{shortText(syncAssetDetail.data.asset?.last_failure_message || syncAssetDetail.data.asset?.last_failure_at)}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.runs')}</Typography.Text><Typography.Title level={4}>{syncAssetDetail.data.asset?.total_runs || 0}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.successRate')}</Typography.Text><Typography.Title level={4}>{syncAssetDetail.data.asset?.success_rate ?? 0}%</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.avgDuration')}</Typography.Text><Typography.Title level={4}>{secondsText(syncAssetDetail.data.asset?.avg_duration_seconds)}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.lastFailure')}</Typography.Text><Typography.Title level={5}>{shortText(syncAssetDetail.data.asset?.last_failure_message || syncAssetDetail.data.asset?.last_failure_at)}</Typography.Title></Card>
           </div>
-          <Typography.Title level={5}>Capacity signals</Typography.Title>
+          <Typography.Title level={5}>{t('git.capacitySignals')}</Typography.Title>
           <Table<AnyRow> rowKey="name" size="small" dataSource={syncAssetDetail.data.capacity_signals || []} pagination={false} columns={[
-            { title: 'Signal', dataIndex: 'name' },
-            { title: 'Severity', render: (_, row) => <Tag color={signalSeverityColor(row.severity)}>{row.severity || 'ok'}</Tag> },
-            { title: 'Status', render: (_, row) => String(row.status ?? '-') },
-            { title: 'Source', render: (_, row) => row.threshold_configuration_applied ? <Tag color="green">configured</Tag> : <Tag>default</Tag> },
-            { title: 'Threshold', render: (_, row) => row.threshold ? shortText(row.threshold, 88) : '-' },
-            { title: 'Detail', render: (_, row) => shortText(row.detail, 120) }
+            { title: t('git.signal'), dataIndex: 'name' },
+            { title: t('git.severity'), render: (_, row) => <Tag color={signalSeverityColor(row.severity)}>{translatedValue(row.severity || 'ok', t)}</Tag> },
+            { title: t('common.status'), render: (_, row) => row.status ? translatedValue(row.status, t) : '-' },
+            { title: t('common.source'), render: (_, row) => row.threshold_configuration_applied ? <Tag color="green">{t('common.configured')}</Tag> : <Tag>{t('value.default')}</Tag> },
+            { title: t('git.threshold'), render: (_, row) => row.threshold ? shortText(row.threshold, 88) : '-' },
+            { title: t('git.detail'), render: (_, row) => shortText(row.detail, 120) }
           ]} />
-          <Typography.Title level={5}>14-day trend</Typography.Title>
+          <Typography.Title level={5}>{t('git.trend14d')}</Typography.Title>
           <Table<AnyRow> rowKey="day" size="small" dataSource={syncAssetDetail.data.trend || []} pagination={{ pageSize: 7 }} columns={[
-            { title: 'Day', dataIndex: 'day' },
-            { title: 'Runs', dataIndex: 'total_runs' },
-            { title: 'Completed', dataIndex: 'completed_runs' },
-            { title: 'Failed', dataIndex: 'failed_runs' },
-            { title: 'Active', dataIndex: 'active_runs' },
-            { title: 'Avg', render: (_, row) => secondsText(row.avg_duration_seconds) }
+            { title: t('common.day'), dataIndex: 'day' },
+            { title: t('git.runs'), dataIndex: 'total_runs' },
+            { title: t('common.completed'), dataIndex: 'completed_runs' },
+            { title: t('common.failed'), dataIndex: 'failed_runs' },
+            { title: t('git.active'), dataIndex: 'active_runs' },
+            { title: t('common.avg'), render: (_, row) => secondsText(row.avg_duration_seconds) }
           ]} />
           <Table<AnyRow> rowKey="id" size="small" dataSource={syncAssetDetail.data.runs || []} pagination={{ pageSize: 5 }} columns={[
-            { title: 'Run', dataIndex: 'id' },
-            { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{row.status}</Tag> },
-            { title: 'Ref', dataIndex: 'ref' },
-            { title: 'Error', dataIndex: 'error_message' },
-            { title: 'Created', dataIndex: 'created_at' },
-            { title: 'Action', render: (_, row) => row.status === 'failed' ? <Button size="small" onClick={() => rerunRepoSyncRun(row.id)}>Rerun</Button> : null }
+            { title: t('git.run'), dataIndex: 'id' },
+            { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('common.ref'), dataIndex: 'ref' },
+            { title: t('common.error'), dataIndex: 'error_message' },
+            { title: t('common.created'), dataIndex: 'created_at' },
+            { title: t('common.action'), render: (_, row) => row.status === 'failed' ? <Button size="small" onClick={() => rerunRepoSyncRun(row.id)}>{t('git.rerun')}</Button> : null }
           ]} />
           <Table<AnyRow> rowKey="id" size="small" dataSource={syncAssetDetail.data.webhook_events || []} pagination={{ pageSize: 5 }} columns={[
             { title: 'Webhook', dataIndex: 'delivery_id' },
-            { title: 'Status', render: (_, row) => <Tag color={row.status === 'queued' ? 'green' : row.status === 'failed' || row.status === 'rejected' ? 'red' : 'default'}>{row.status}</Tag> },
-            { title: 'Event', dataIndex: 'event_type' },
-            { title: 'Error', dataIndex: 'error_message' },
-            { title: 'Received', dataIndex: 'received_at' }
+            { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'queued' ? 'green' : row.status === 'failed' || row.status === 'rejected' ? 'red' : 'default'}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('common.event'), dataIndex: 'event_type' },
+            { title: t('common.error'), dataIndex: 'error_message' },
+            { title: t('common.received'), dataIndex: 'received_at' }
           ]} />
           <Table<AnyRow> rowKey="id" size="small" dataSource={syncAssetDetail.data.operation_logs || []} pagination={{ pageSize: 5 }} columns={[
-            { title: 'Level', dataIndex: 'level' },
-            { title: 'Message', dataIndex: 'message' },
-            { title: 'Created', dataIndex: 'created_at' }
+            { title: t('common.level'), dataIndex: 'level' },
+            { title: t('common.message'), dataIndex: 'message' },
+            { title: t('common.created'), dataIndex: 'created_at' }
           ]} />
         </Space>}
       </Modal>
