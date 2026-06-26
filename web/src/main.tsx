@@ -305,6 +305,36 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.activeArtifacts': 'active artifacts',
     'git.expiredArtifacts': 'expired',
     'git.artifactDescription': 'Artifact names, sizes, expiry, and sync timestamps are shown from the local read model. Download URLs and provider tokens are not exposed.',
+    'git.selectRepositoryAndTarget': 'Select a repository and target remote first',
+    'git.tagQueued': 'Tag queued',
+    'git.lookupAlreadyQueued': 'Lookup already queued',
+    'git.lookupQueued': 'Lookup queued',
+    'git.tagSnapshotRecorded': 'Tag result snapshot recorded',
+    'git.tagSnapshotCurrent': 'Tag result snapshot already current',
+    'git.actionsSnapshotRecorded': 'Actions refresh snapshot recorded',
+    'git.actionsSnapshotCurrent': 'Actions refresh snapshot already current',
+    'git.actionsSnapshotNotReady': 'Actions refresh snapshot not ready',
+    'git.actionsRefreshAlreadyQueued': 'Actions refresh already queued',
+    'git.actionsRefreshQueued': 'Actions refresh queued',
+    'git.selectGitHubRemote': 'Select a GitHub remote first',
+    'git.actionsSyncQueued': 'GitHub Actions sync queued. Refresh shortly to see results.',
+    'git.actionsSelectRemote': 'Select a GitHub remote to tie pipeline state back to this repository.',
+    'git.actionsUnavailablePrefix': 'Remote',
+    'git.actionsUnavailableMiddle': 'is a',
+    'git.actionsUnavailableSuffix': 'remote, so GitHub Actions are unavailable for this selection.',
+    'git.actionsAttachedPrefix': 'Remote',
+    'git.actionsAttachedMiddle': 'is attached to',
+    'git.actionsAttachedIn': 'in',
+    'git.actionsLatestStatus': 'Latest status',
+    'git.problemRuns': 'problem runs in this batch.',
+    'git.problemRun': 'problem run in this batch.',
+    'git.unknownBranch': 'unknown branch',
+    'git.noActionsRunsSynced': 'No GitHub Actions runs synced',
+    'git.selectedRepository': 'the selected repository',
+    'git.selectedProject': 'the selected project',
+    'git.nonGitHub': 'non-GitHub',
+    'git.onBranch': 'on',
+    'git.expires': 'expires',
     'git.rotateSecret': 'Rotate secret',
     'git.recordCallbackSnapshot': 'Record callback snapshot',
     'git.recordThresholdAudit': 'Record threshold audit',
@@ -811,6 +841,36 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.activeArtifacts': '活跃制品',
     'git.expiredArtifacts': '已过期',
     'git.artifactDescription': '制品名称、大小、过期时间和同步时间来自本地只读模型；不会暴露下载 URL 或提供方 token。',
+    'git.selectRepositoryAndTarget': '请先选择代码仓库和目标远端',
+    'git.tagQueued': '标签已入队',
+    'git.lookupAlreadyQueued': '查询已在队列中',
+    'git.lookupQueued': '查询已入队',
+    'git.tagSnapshotRecorded': '标签结果快照已记录',
+    'git.tagSnapshotCurrent': '标签结果快照已是最新',
+    'git.actionsSnapshotRecorded': 'Actions 刷新快照已记录',
+    'git.actionsSnapshotCurrent': 'Actions 刷新快照已是最新',
+    'git.actionsSnapshotNotReady': 'Actions 刷新快照尚未就绪',
+    'git.actionsRefreshAlreadyQueued': 'Actions 刷新已在队列中',
+    'git.actionsRefreshQueued': 'Actions 刷新已入队',
+    'git.selectGitHubRemote': '请先选择 GitHub 远端',
+    'git.actionsSyncQueued': 'GitHub Actions 同步已入队，请稍后刷新查看结果。',
+    'git.actionsSelectRemote': '请选择 GitHub 远端，以便把流水线状态关联回该仓库。',
+    'git.actionsUnavailablePrefix': '远端',
+    'git.actionsUnavailableMiddle': '是',
+    'git.actionsUnavailableSuffix': '远端，因此当前选择不可查看 GitHub Actions。',
+    'git.actionsAttachedPrefix': '远端',
+    'git.actionsAttachedMiddle': '已关联到',
+    'git.actionsAttachedIn': '所属项目',
+    'git.actionsLatestStatus': '最新状态',
+    'git.problemRuns': '条异常运行记录在本批次中。',
+    'git.problemRun': '条异常运行记录在本批次中。',
+    'git.unknownBranch': '未知分支',
+    'git.noActionsRunsSynced': '暂无已同步的 GitHub Actions 运行记录',
+    'git.selectedRepository': '当前选择的仓库',
+    'git.selectedProject': '当前选择的项目',
+    'git.nonGitHub': '非 GitHub',
+    'git.onBranch': '分支',
+    'git.expires': '过期时间',
     'git.rotateSecret': '轮换密钥',
     'git.recordCallbackSnapshot': '记录回调快照',
     'git.recordThresholdAudit': '记录阈值审计',
@@ -1385,16 +1445,18 @@ function githubActionStatusColor(row: AnyRow) {
   return 'default';
 }
 
-function githubActionRemoteDescription(sourceRemote: AnyRow | undefined, repo: AnyRow | undefined, project: AnyRow | undefined, summary: ReturnType<typeof githubActionsSummary>) {
-  if (!sourceRemote) return 'Select a GitHub remote to tie pipeline state back to this repository.';
+function githubActionRemoteDescription(sourceRemote: AnyRow | undefined, repo: AnyRow | undefined, project: AnyRow | undefined, summary: ReturnType<typeof githubActionsSummary>, t: (key: string) => string) {
+  if (!sourceRemote) return t('git.actionsSelectRemote');
   const provider = String(sourceRemote.provider_type || sourceRemote.kind || '').toLowerCase();
   const remoteName = sourceRemote.name || sourceRemote.remote_key || sourceRemote.id;
-  if (provider !== 'github') return `Remote ${remoteName} is a ${provider || 'non-GitHub'} remote, so GitHub Actions are unavailable for this selection.`;
-  const failureNote = summary.failures > 0 ? ` ${summary.failures} problem run${summary.failures === 1 ? '' : 's'} in this batch.` : '';
-  return `Remote ${remoteName} is attached to ${repo?.display_name || repo?.name || 'the selected repository'} in ${project?.name || 'the selected project'}. Latest status: ${summary.latestStatus}.${failureNote}`;
+  if (provider !== 'github') {
+    return `${t('git.actionsUnavailablePrefix')} ${remoteName} ${t('git.actionsUnavailableMiddle')} ${provider || t('git.nonGitHub')} ${t('git.actionsUnavailableSuffix')}`;
+  }
+  const failureNote = summary.failures > 0 ? ` ${summary.failures} ${t(summary.failures === 1 ? 'git.problemRun' : 'git.problemRuns')}` : '';
+  return `${t('git.actionsAttachedPrefix')} ${remoteName} ${t('git.actionsAttachedMiddle')} ${repo?.display_name || repo?.name || t('git.selectedRepository')} ${t('git.actionsAttachedIn')} ${project?.name || t('git.selectedProject')}. ${t('git.actionsLatestStatus')}: ${translatedValue(summary.latestStatus, t)}.${failureNote}`;
 }
 
-function githubActionsSummary(rows: AnyRow[]) {
+function githubActionsSummary(rows: AnyRow[], t: (key: string) => string) {
   const failures = rows.filter((row) => githubActionFailureStates.includes(githubActionState(row))).length;
   const successes = rows.filter((row) => githubActionSuccessStates.includes(githubActionState(row))).length;
   const active = rows.filter((row) => githubActionActiveStates.includes(String(row.status || '').toLowerCase())).length;
@@ -1404,7 +1466,7 @@ function githubActionsSummary(rows: AnyRow[]) {
     successes,
     failures,
     active,
-    latestLabel: latest ? `${latest.workflow_name || 'GitHub Actions'} on ${latest.branch || 'unknown branch'}` : 'No GitHub Actions runs synced',
+    latestLabel: latest ? `${latest.workflow_name || 'GitHub Actions'} ${t('git.onBranch')} ${latest.branch || t('git.unknownBranch')}` : t('git.noActionsRunsSynced'),
     latestStatus: latest ? String(latest.conclusion || latest.status || 'unknown') : 'none'
   };
 }
@@ -5523,7 +5585,7 @@ function GitRemotes() {
   const sourceRemote = sourcePick.selected;
   const targetPick = useSelectedRow(remoteRows.filter((row: AnyRow) => row.id !== sourcePick.selectedID));
   const actions = useLoad(() => sourcePick.selectedID ? api(`/api/git-remotes/${sourcePick.selectedID}/github-actions`) : Promise.resolve({ items: [] }), [sourcePick.selectedID]);
-  const actionsSummary = githubActionsSummary(actions.data?.items || []);
+  const actionsSummary = githubActionsSummary(actions.data?.items || [], t);
   const artifactsSummary = githubActionArtifactsSummary(actions.data?.items || []);
   const [includeArchivedSyncAssets, setIncludeArchivedSyncAssets] = useState(false);
   const [runStatusFilter, setRunStatusFilter] = useState('');
@@ -5771,14 +5833,14 @@ function GitRemotes() {
   }
   async function createTag(values: AnyRow) {
     if (!repo || !targetPick.selectedID) {
-      message.error('Select a repository and target remote first');
+      message.error(t('git.selectRepositoryAndTarget'));
       return;
     }
     const result = await api(`/api/git-repositories/${repo.id}/tags`, {
       method: 'POST',
       body: JSON.stringify({ ...values, target_remote_ids: [targetPick.selectedID] })
     });
-    message.success(result.approval ? 'Approval requested' : 'Tag queued');
+    message.success(result.approval ? t('config.approvalRequested') : t('git.tagQueued'));
     tagRuns.reload();
     remotes.reload();
   }
@@ -5786,10 +5848,10 @@ function GitRemotes() {
     setRunningTagLookupID(id);
     try {
       const result = await api(`/api/repo-tag-runs/${id}/live-lookup`, { method: 'POST', body: '{}' });
-      message.success(result.idempotent ? 'Lookup already queued' : 'Lookup queued');
+      message.success(result.idempotent ? t('git.lookupAlreadyQueued') : t('git.lookupQueued'));
       tagRuns.reload();
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setRunningTagLookupID(undefined);
     }
@@ -5803,9 +5865,9 @@ function GitRemotes() {
       });
       setTagSnapshotResults((current) => ({ ...current, [id]: result }));
       tagRuns.reload();
-      message.success(result.tag_result_snapshot_written ? 'Tag result snapshot recorded' : 'Tag result snapshot already current');
+      message.success(result.tag_result_snapshot_written ? t('git.tagSnapshotRecorded') : t('git.tagSnapshotCurrent'));
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setRecordingTagSnapshotID(undefined);
     }
@@ -5819,9 +5881,9 @@ function GitRemotes() {
       });
       setTagActionsSnapshotResults((current) => ({ ...current, [id]: result }));
       tagRuns.reload();
-      message.success(result.actions_refresh_snapshot_written ? 'Actions refresh snapshot recorded' : result.recording_ready ? 'Actions refresh snapshot already current' : 'Actions refresh snapshot not ready');
+      message.success(result.actions_refresh_snapshot_written ? t('git.actionsSnapshotRecorded') : result.recording_ready ? t('git.actionsSnapshotCurrent') : t('git.actionsSnapshotNotReady'));
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setRecordingTagActionsSnapshotID(undefined);
     }
@@ -5830,23 +5892,23 @@ function GitRemotes() {
     setRefreshingTagActionsID(id);
     try {
       const result = await api(`/api/repo-tag-runs/${id}/actions-refresh`, { method: 'POST', body: '{}' });
-      message.success(result.idempotent ? 'Actions refresh already queued' : 'Actions refresh queued');
+      message.success(result.idempotent ? t('git.actionsRefreshAlreadyQueued') : t('git.actionsRefreshQueued'));
       tagRuns.reload();
       actions.reload();
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setRefreshingTagActionsID(undefined);
     }
   }
   async function syncGitHubActions() {
     if (!sourcePick.selectedID) {
-      message.error('Select a GitHub remote first');
+      message.error(t('git.selectGitHubRemote'));
       return;
     }
     try {
       await api(`/api/git-remotes/${sourcePick.selectedID}/github-actions/sync`, { method: 'POST', body: '{}' });
-      message.success('GitHub Actions sync queued. Refresh shortly to see results.');
+      message.success(t('git.actionsSyncQueued'));
       actions.reload();
     } catch (error: any) {
       message.error(error.message);
@@ -6096,7 +6158,7 @@ function GitRemotes() {
             showIcon
             type={actionsSummary.failures > 0 ? 'warning' : actionsSummary.total > 0 ? 'success' : 'info'}
             message={actionsSummary.latestLabel}
-            description={githubActionRemoteDescription(sourceRemote, repo, project, actionsSummary)}
+            description={githubActionRemoteDescription(sourceRemote, repo, project, actionsSummary, t)}
           />
           <div className="metricGrid">
             <Card><Typography.Text type="secondary">{t('git.runs')}</Typography.Text><Typography.Title level={4}>{actionsSummary.total}</Typography.Title></Card>
@@ -6123,7 +6185,7 @@ function GitRemotes() {
               const artifacts = Array.isArray(row.artifacts) ? row.artifacts : [];
               if (!artifacts.length) return <Typography.Text type="secondary">-</Typography.Text>;
               return <Space size={4} wrap>{artifacts.slice(0, 3).map((artifact: AnyRow) => (
-                <Tooltip key={artifact.id || artifact.external_artifact_id} title={`${artifact.expired ? 'expired' : 'active'} · ${bytesText(artifact.size_in_bytes)} · expires ${artifact.expires_at || '-'}`}>
+                <Tooltip key={artifact.id || artifact.external_artifact_id} title={`${artifact.expired ? t('git.expiredArtifacts') : t('git.active')} · ${bytesText(artifact.size_in_bytes)} · ${t('git.expires')} ${artifact.expires_at || '-'}`}>
                   <Tag color={artifact.expired ? 'default' : 'blue'}>
                     {shortText(`${artifact.name || artifact.external_artifact_id} ${bytesText(artifact.size_in_bytes)}`, 32)}
                   </Tag>
