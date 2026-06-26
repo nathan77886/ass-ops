@@ -395,6 +395,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.username': 'Remote SSH user used by the worker.',
     'help.command': 'Command to run after approval. Avoid secrets and destructive operations.',
     'help.timeout_seconds': 'Maximum command runtime before the worker treats it as timed out.',
+    'help.tag_name': 'Git tag to create on the selected remote, for example v1.0.0. Tag creation is approval-gated.',
+    'help.target_sha': 'Commit SHA that the new tag should point to. Use a reviewed commit from the selected repository.',
+    'help.branch': 'Branch context used for the tag operation and GitHub Actions lookup, usually main or the selected release branch.',
+    'help.tag_message': 'Optional annotated tag message. Avoid secrets, private ticket data, or deployment credentials.',
     'help.runtime_type': 'Runtime implementation. The first deployable version uses codex-cli.',
     'help.codex_binary': 'Binary name or path the worker can execute.',
     'help.model': 'Optional model override for the runtime.',
@@ -1421,6 +1425,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.username': 'Worker 登录远端主机使用的 SSH 用户。',
     'help.command': '审批后执行的命令，避免包含密钥或破坏性操作。',
     'help.timeout_seconds': '命令最大运行时间，超过后 Worker 会视为超时。',
+    'help.tag_name': '要在所选远端创建的 Git 标签，例如 v1.0.0。创建标签需要审批。',
+    'help.target_sha': '新标签指向的提交 SHA，请使用所选仓库中已审查的提交。',
+    'help.branch': '标签操作和 GitHub Actions 查询使用的分支上下文，通常是 main 或选中的发布分支。',
+    'help.tag_message': '可选的 annotated tag 消息。不要写入密钥、私有工单数据或部署凭据。',
     'help.runtime_type': '运行时实现。首个可部署版本使用 codex-cli。',
     'help.codex_binary': 'Worker 可以执行的二进制名称或路径。',
     'help.model': '可选的运行时模型覆盖值。',
@@ -9928,7 +9936,7 @@ function ConfigPage() {
                 <Form.Item name="deployment_target_id" label={fieldLabel('deployment_target_id', t)} rules={[{ required: true, message: t('common.required') }]}>
                   <Select placeholder={t('common.target')} style={{ width: 220 }} options={(deploymentTargets.data?.items || []).map((target: AnyRow) => ({ value: target.id, label: `${target.name || target.namespace} (${target.environment || 'env'})` }))} />
                 </Form.Item>
-                <Form.Item name="pod_name" label={<Space size={4}>{fieldLabel('pod_name', t)}<Tooltip title={t('help.pod_name')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip></Space>} rules={[{ required: true, message: t('common.required') }]}>
+                <Form.Item name="pod_name" label={fieldLabel('pod_name', t)} rules={[{ required: true, message: t('common.required') }]}>
                   <AutoComplete
                     placeholder={t('field.pod_name')}
                     style={{ width: 220 }}
@@ -9941,7 +9949,7 @@ function ConfigPage() {
                     }}
                   />
                 </Form.Item>
-                <Form.Item name="container_name" label={<Space size={4}>{fieldLabel('container_name', t)}<Tooltip title={t('help.container_name')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip></Space>}>
+                <Form.Item name="container_name" label={fieldLabel('container_name', t)}>
                   <AutoComplete
                     placeholder={t('field.container_name')}
                     style={{ width: 170 }}
@@ -9949,7 +9957,7 @@ function ConfigPage() {
                     filterOption={(inputValue, option) => String(option?.value || '').toLowerCase().includes(inputValue.toLowerCase())}
                   />
                 </Form.Item>
-                <Form.Item name="deployment_name" label={<Space size={4}>{fieldLabel('deployment_name', t)}<Tooltip title={t('help.deployment_name')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip></Space>}>
+                <Form.Item name="deployment_name" label={fieldLabel('deployment_name', t)}>
                   <Input placeholder={t('field.deployment_name')} style={{ width: 190 }} />
                 </Form.Item>
                 <Form.Item name="tail_lines">
@@ -10217,10 +10225,10 @@ const fieldMeta: Record<string, FieldMeta> = {
   remote_role: { input: 'select', options: ['source', 'mirror', 'target', 'config', 'origin'], helpKey: 'help.remote_role' },
   urls: { input: 'textarea', helpKey: 'help.urls', placeholder: 'git@example.com:org/repo.git, https://example.com/org/repo.git' },
   default_branch: { helpKey: 'help.default_branch', placeholder: 'main' },
-  tag_name: { required: true, placeholder: 'v1.0.0' },
-  target_sha: { required: true },
-  branch: { placeholder: 'main' },
-  tag_message: { input: 'textarea' },
+  tag_name: { required: true, helpKey: 'help.tag_name', placeholder: 'v1.0.0' },
+  target_sha: { required: true, helpKey: 'help.target_sha' },
+  branch: { helpKey: 'help.branch', placeholder: 'main' },
+  tag_message: { input: 'textarea', helpKey: 'help.tag_message' },
   trigger_mode: { input: 'select', options: ['manual', 'webhook', 'push', 'manual_or_webhook'], helpKey: 'help.trigger_mode' },
   sync_mode: { input: 'select', options: ['selected_refs', 'all_refs'], helpKey: 'help.sync_mode' },
   transport: { input: 'select', options: ['ssh', 'https'], helpKey: 'help.transport' },
