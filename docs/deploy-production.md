@@ -299,10 +299,11 @@ Review that file before rollout and apply it together with the environment-speci
 ```bash
 helm upgrade --install assops deploy/helm/assops \
   -f deploy/helm/assops/values.yaml \
+  -f /backups/release-notes/values.production.reviewed.yaml \
   -f /backups/release-notes/helm-values-v0.1.0.yaml
 ```
 
-Generate a promotion plan for the release notes. This validates the release bundle again and writes a Markdown checklist with the exact attestation verification and Helm rollout commands:
+Generate a promotion plan for the release notes. This validates the release bundle again and writes a Markdown checklist with the exact attestation verification and Helm rollout command shape. Replace `<reviewed-environment-values.yaml>` in the generated plan with the same environment overlay used by the protected promotion workflow.
 
 ```bash
 docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml run --rm db-tool \
