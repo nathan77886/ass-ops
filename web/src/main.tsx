@@ -755,6 +755,35 @@ function githubActionsSummary(rows: AnyRow[]) {
   };
 }
 
+function githubActionArtifactsSummary(rows: AnyRow[]) {
+  return rows.reduce((summary, row) => {
+    const artifacts = Array.isArray(row.artifacts) ? row.artifacts : [];
+    const count = Number(row.artifact_count ?? artifacts.length ?? 0);
+    const active = Number(row.active_artifact_count ?? artifacts.filter((artifact: AnyRow) => !artifact.expired).length);
+    const expired = Number(row.expired_artifact_count ?? artifacts.filter((artifact: AnyRow) => artifact.expired).length);
+    const bytes = Number(row.total_artifact_size_in_bytes ?? artifacts.reduce((sum: number, artifact: AnyRow) => sum + Number(artifact.size_in_bytes || 0), 0));
+    return {
+      total: summary.total + (Number.isFinite(count) ? count : 0),
+      active: summary.active + (Number.isFinite(active) ? active : 0),
+      expired: summary.expired + (Number.isFinite(expired) ? expired : 0),
+      bytes: summary.bytes + (Number.isFinite(bytes) ? bytes : 0)
+    };
+  }, { total: 0, active: 0, expired: 0, bytes: 0 });
+}
+
+function bytesText(value: any) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '-';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let next = bytes;
+  let unit = 0;
+  while (next >= 1024 && unit < units.length - 1) {
+    next /= 1024;
+    unit += 1;
+  }
+  return `${next.toFixed(next >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
 function templateProvisionSummary(row: AnyRow) {
   const details = row.result?.details || {};
   const reconciliation = details.repository_reconciliation || {};
@@ -4840,6 +4869,7 @@ function GitRemotes() {
   const targetPick = useSelectedRow(remoteRows.filter((row: AnyRow) => row.id !== sourcePick.selectedID));
   const actions = useLoad(() => sourcePick.selectedID ? api(`/api/git-remotes/${sourcePick.selectedID}/github-actions`) : Promise.resolve({ items: [] }), [sourcePick.selectedID]);
   const actionsSummary = githubActionsSummary(actions.data?.items || []);
+  const artifactsSummary = githubActionArtifactsSummary(actions.data?.items || []);
   const [includeArchivedSyncAssets, setIncludeArchivedSyncAssets] = useState(false);
   const [runStatusFilter, setRunStatusFilter] = useState('');
   const runs = useLoad(() => {
@@ -5418,7 +5448,17 @@ function GitRemotes() {
             <Card><Typography.Text type="secondary">Success</Typography.Text><Typography.Title level={4}>{actionsSummary.successes}</Typography.Title></Card>
             <Card><Typography.Text type="secondary">Failures</Typography.Text><Typography.Title level={4}>{actionsSummary.failures}</Typography.Title></Card>
             <Card><Typography.Text type="secondary">Active</Typography.Text><Typography.Title level={4}>{actionsSummary.active}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">Artifacts</Typography.Text><Typography.Title level={4}>{artifactsSummary.total}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">Artifact size</Typography.Text><Typography.Title level={4}>{bytesText(artifactsSummary.bytes)}</Typography.Title></Card>
           </div>
+          {artifactsSummary.total > 0 ? (
+            <Alert
+              showIcon
+              type={artifactsSummary.expired > 0 ? 'warning' : 'info'}
+              message={`${artifactsSummary.active} active artifacts / ${artifactsSummary.expired} expired`}
+              description="Artifact names, sizes, expiry, and sync timestamps are shown from the local read model. Download URLs and provider tokens are not exposed."
+            />
+          ) : null}
           <Table<AnyRow> rowKey="id" dataSource={actions.data?.items || []} pagination={{ pageSize: 6 }} columns={[
             { title: 'Workflow', dataIndex: 'workflow_name' },
             { title: 'Branch', dataIndex: 'branch' },
@@ -5428,9 +5468,11 @@ function GitRemotes() {
               const artifacts = Array.isArray(row.artifacts) ? row.artifacts : [];
               if (!artifacts.length) return <Typography.Text type="secondary">-</Typography.Text>;
               return <Space size={4} wrap>{artifacts.slice(0, 3).map((artifact: AnyRow) => (
-                <Tag key={artifact.id || artifact.external_artifact_id} color={artifact.expired ? 'default' : 'blue'}>
-                  {shortText(artifact.name || artifact.external_artifact_id, 24)}
-                </Tag>
+                <Tooltip key={artifact.id || artifact.external_artifact_id} title={`${artifact.expired ? 'expired' : 'active'} · ${bytesText(artifact.size_in_bytes)} · expires ${artifact.expires_at || '-'}`}>
+                  <Tag color={artifact.expired ? 'default' : 'blue'}>
+                    {shortText(`${artifact.name || artifact.external_artifact_id} ${bytesText(artifact.size_in_bytes)}`, 32)}
+                  </Tag>
+                </Tooltip>
               ))}{artifacts.length > 3 ? <Tag>+{artifacts.length - 3}</Tag> : null}</Space>;
             } },
             { title: 'Synced', dataIndex: 'synced_at' }

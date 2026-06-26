@@ -38906,6 +38906,116 @@ func TestGitHubActionArtifactsMigrationAndFreshInit(t *testing.T) {
 	}
 }
 
+func TestListGitHubActionsReturnsArtifactSummaryWithoutProviderURLs(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+
+	mock.ExpectQuery(`(?s)SELECT pgr\.project_id\s+FROM git_remotes gr\s+JOIN project_git_repositories pgr ON pgr\.id=gr\.project_git_repository_id\s+WHERE gr\.id=\$1`).
+		WithArgs("remote-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`(?s)SELECT\s+gar\.id,\s+gar\.operation_run_id,\s+gar\.git_remote_id,\s+gar\.external_run_id,\s+gar\.workflow_name,\s+gar\.run_id,\s+gar\.branch,\s+gar\.commit_sha,\s+gar\.status,\s+gar\.conclusion,\s+gar\.html_url,\s+gar\.started_at,\s+gar\.updated_at,\s+gar\.synced_at,\s+gar\.created_at,\s+COALESCE\(artifact_summary\.artifact_count, 0\) AS artifact_count,\s+COALESCE\(artifact_summary\.active_artifact_count, 0\) AS active_artifact_count,\s+COALESCE\(artifact_summary\.expired_artifact_count, 0\) AS expired_artifact_count,\s+COALESCE\(artifact_summary\.total_artifact_size_in_bytes, 0\) AS total_artifact_size_in_bytes,\s+artifact_summary\.latest_artifact_synced_at AS latest_artifact_synced_at,\s+COALESCE\(artifact_summary\.artifacts, '\[\]'::jsonb\) AS artifacts`).
+		WithArgs("remote-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"operation_run_id",
+			"git_remote_id",
+			"external_run_id",
+			"workflow_name",
+			"run_id",
+			"branch",
+			"commit_sha",
+			"status",
+			"conclusion",
+			"html_url",
+			"started_at",
+			"updated_at",
+			"synced_at",
+			"created_at",
+			"artifact_count",
+			"active_artifact_count",
+			"expired_artifact_count",
+			"total_artifact_size_in_bytes",
+			"latest_artifact_synced_at",
+			"artifacts",
+		}).AddRow(
+			"run-1",
+			nil,
+			"remote-1",
+			"external-run-1",
+			"CI",
+			"123456",
+			"main",
+			"0123456789abcdef0123456789abcdef01234567",
+			"completed",
+			"success",
+			"https://github.com/example/repo/actions/runs/123456",
+			time.Date(2026, 6, 26, 7, 50, 0, 0, time.UTC),
+			time.Date(2026, 6, 26, 7, 59, 0, 0, time.UTC),
+			time.Date(2026, 6, 26, 8, 0, 0, 0, time.UTC),
+			time.Date(2026, 6, 26, 7, 45, 0, 0, time.UTC),
+			2,
+			1,
+			1,
+			int64(3072),
+			time.Date(2026, 6, 26, 8, 1, 0, 0, time.UTC),
+			[]byte(`[
+				{"id":"artifact-1","external_artifact_id":"456","name":"linux-build","size_in_bytes":2048,"expired":false,"synced_at":"2026-06-26T08:01:00Z"},
+				{"id":"artifact-2","external_artifact_id":"789","name":"old-build","size_in_bytes":1024,"expired":true,"synced_at":"2026-06-26T08:01:00Z"}
+			]`),
+		))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/git-remotes/remote-1/github-actions", nil)
+	req = withRouteParam(req, "id", "remote-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.listGitHubActions(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	items := mapSliceFromAny(payload["items"])
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want one row", payload["items"])
+	}
+	row := items[0]
+	if intFromAny(row["artifact_count"], 0) != 2 ||
+		intFromAny(row["active_artifact_count"], 0) != 1 ||
+		intFromAny(row["expired_artifact_count"], 0) != 1 ||
+		intFromAny(row["total_artifact_size_in_bytes"], 0) != 3072 {
+		t.Fatalf("artifact summary row = %#v", row)
+	}
+	artifacts := mapSliceFromAny(row["artifacts"])
+	if len(artifacts) != 2 || artifacts[0]["name"] != "linux-build" || artifacts[1]["expired"] != true {
+		t.Fatalf("artifacts = %#v", artifacts)
+	}
+	if _, ok := row["metadata"]; ok {
+		t.Fatalf("GitHub Actions response leaked run metadata: %#v", row)
+	}
+	for _, artifact := range artifacts {
+		if _, ok := artifact["metadata"]; ok {
+			t.Fatalf("GitHub Actions artifact response leaked metadata: %#v", artifact)
+		}
+	}
+	encoded := rr.Body.String()
+	for _, forbidden := range []string{"archive_download_url", "actions/artifacts/456/zip", "Authorization", "Bearer", "metadata"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("GitHub Actions artifact response leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestKubernetesEnvironmentsMigrationAndFreshInit(t *testing.T) {
 	migration, err := os.ReadFile("../../migrations/021_kubernetes_environments.sql")
 	if err != nil {

@@ -8945,13 +8945,35 @@ func (s *Server) listGitHubActions(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := queryMaps(r.Context(), s.store.DB, `
 		SELECT
-			gar.*,
+			gar.id,
+			gar.operation_run_id,
+			gar.git_remote_id,
+			gar.external_run_id,
+			gar.workflow_name,
+			gar.run_id,
+			gar.branch,
+			gar.commit_sha,
+			gar.status,
+			gar.conclusion,
+			gar.html_url,
+			gar.started_at,
+			gar.updated_at,
+			gar.synced_at,
+			gar.created_at,
 			COALESCE(artifact_summary.artifact_count, 0) AS artifact_count,
+			COALESCE(artifact_summary.active_artifact_count, 0) AS active_artifact_count,
+			COALESCE(artifact_summary.expired_artifact_count, 0) AS expired_artifact_count,
+			COALESCE(artifact_summary.total_artifact_size_in_bytes, 0) AS total_artifact_size_in_bytes,
+			artifact_summary.latest_artifact_synced_at AS latest_artifact_synced_at,
 			COALESCE(artifact_summary.artifacts, '[]'::jsonb) AS artifacts
 		FROM github_action_runs gar
 		LEFT JOIN LATERAL (
 			SELECT
 				COUNT(*)::int AS artifact_count,
+				COUNT(*) FILTER (WHERE NOT gaa.expired)::int AS active_artifact_count,
+				COUNT(*) FILTER (WHERE gaa.expired)::int AS expired_artifact_count,
+				COALESCE(SUM(gaa.size_in_bytes), 0)::bigint AS total_artifact_size_in_bytes,
+				MAX(gaa.synced_at) AS latest_artifact_synced_at,
 				jsonb_agg(
 					jsonb_build_object(
 						'id', gaa.id,

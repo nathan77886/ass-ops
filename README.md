@@ -134,7 +134,7 @@ make release-backup-schedule-plan REPO=nathan77886/ass-ops ENV=production RUNNER
 Real local adapters are available for:
 
 - Git repository sync and tag push through the control worker.
-- GitHub Actions run sync through the GitHub REST API.
+- GitHub Actions run and artifact metadata sync through the GitHub REST API, with artifact names/sizes/expiry shown from the local read model and no download URLs or provider tokens exposed.
 - GitHub `workflow_run` webhooks that update the Actions read model.
 - Argo CD application sync through the Argo CD REST API.
 - SSH command execution on registered SSH machines.
@@ -204,7 +204,7 @@ Implemented as real local code:
 - Asset Center inventory search, relation-degree ranked cross-project graph search, saved graph views, selected-asset relation graph, status history, manual graph relation edits, operation-run, worker-job, and project-template-run asset visibility with target/output links, and upstream/downstream dependency path queries
 - Canonical asset ledger backfill/sync from current domain tables, deduplicated asset status snapshots, graph repair reporting, plus best-effort refresh after key asset-producing writes and worker operation completion
 - Provider account management for GitHub/Gitea template repository creation, with masked token-env display, dry-run token rotation candidate planning, and template account selectors
-- Gitea/GitHub webhook connection, HMAC verification, event audit asset graph visibility, connection health summaries, callback rehearsal readiness preview, RepoSyncAsset enqueue, and GitHub Actions read-model updates
+- Gitea/GitHub webhook connection, HMAC verification, event audit asset graph visibility, connection health summaries, callback rehearsal readiness preview, RepoSyncAsset enqueue, and GitHub Actions/artifact read-model updates
 - RepoSyncAsset archive/restore, filtered sync run history, per-asset sync health analytics, list-level risk summaries, 14-day trend, and provider/capacity signals with visible warning/danger thresholds
 - Background approval expiry sweep with expired-event notifications
 - Approval summary metrics, admin/owner approval rule editing with audit history, reminder-candidate SLA watch, manual and scheduled reminder delivery, escalation routing with destination adapter readiness previews, approval delegation/revocation, multi-approver progress, per-user decision audit, saved audit views, audit filters for status/action/requester/keyword/time windows, approval detail drilldown, and approval request/rule asset graph visibility
