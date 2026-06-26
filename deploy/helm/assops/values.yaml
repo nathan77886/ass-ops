@@ -19,6 +19,8 @@ image:
 gatewayURL: https://assops.example.com
 
 secret:
+  # Override every value in this block from an environment-owned Secret or
+  # production values file before deploying outside local/test environments.
   create: true
   name: ""
   databaseURL: postgres://assops:change-me-postgres@assops-postgres:5432/assops?sslmode=disable
@@ -81,8 +83,8 @@ serviceAccount:
   automountServiceAccountToken: true
 
 nodeWorker:
-  name: prod-node
-  kind: control-worker
+  name: prod-local-node
+  kind: local
   capabilities: echo,git,ssh,ai
 
 resources: {}

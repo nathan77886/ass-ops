@@ -14,6 +14,17 @@ ASSOPS is an operations control-plane MVP for projects, Git remotes, worker jobs
 
 ## Quick Start
 
+Run the full local/test stack with Docker Compose:
+
+```bash
+docker compose -f deploy/docker-compose.yml up --build
+```
+
+Open `http://localhost:8080`.
+
+For hot-reload development, run only PostgreSQL in Compose and start the
+processes locally:
+
 ```bash
 docker compose -f deploy/docker-compose.yml up -d postgres
 go run ./backend/cmd/gateway
@@ -22,7 +33,7 @@ go run ./backend/cmd/node-worker
 cd web && pnpm install && pnpm dev
 ```
 
-Open `http://localhost:5173`.
+Open `http://localhost:5173` for the Vite dev server.
 
 Default local development login:
 
@@ -41,6 +52,8 @@ ASSOPS_ADMIN_EMAIL=you@example.com ASSOPS_ADMIN_PASSWORD='change-me' go run ./ba
 
 ```bash
 make postgres
+make compose-up
+make compose-down
 make gateway
 make worker
 make node-worker

@@ -13563,7 +13563,7 @@ func dueOperationApprovalRemindersSQL() string {
 				END,
 				oa.expires_at NULLS LAST,
 				oa.created_at ASC
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF oa SKIP LOCKED
 			LIMIT 20
 		)
 		UPDATE operation_approvals oa
@@ -13614,7 +13614,7 @@ func dueOperationApprovalEscalationsSQL() string {
 				AND COALESCE(decision_counts.approved_count, 0) < oa.required_approval_count
 				AND (oa.last_escalated_at IS NULL OR oa.last_escalated_at <= now() - interval '120 minutes')
 			ORDER BY oa.created_at ASC
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF oa SKIP LOCKED
 			LIMIT 20
 		)
 		UPDATE operation_approvals oa

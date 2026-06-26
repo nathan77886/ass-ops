@@ -1,7 +1,13 @@
-.PHONY: postgres gateway worker node-worker web build test tool context db-migrate db-migrations db-seed-demo db-sync-assets db-backup-retain db-rehearse-restore release-validate-bundle release-helm-values release-promotion-plan release-backup-schedule-plan helm-lint helm-template helm-smoke
+.PHONY: postgres compose-up compose-down gateway worker node-worker web build test tool context db-migrate db-migrations db-seed-demo db-sync-assets db-backup-retain db-rehearse-restore release-validate-bundle release-helm-values release-promotion-plan release-backup-schedule-plan helm-lint helm-template helm-smoke
 
 postgres:
 	docker compose -f deploy/docker-compose.yml up -d postgres
+
+compose-up:
+	docker compose -f deploy/docker-compose.yml up --build
+
+compose-down:
+	docker compose -f deploy/docker-compose.yml down
 
 gateway:
 	go run ./backend/cmd/gateway

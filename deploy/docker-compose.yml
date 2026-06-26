@@ -1,10 +1,31 @@
+x-assops-env: &assops-env
+  DATABASE_URL: postgres://assops:${ASSOPS_POSTGRES_PASSWORD:-assops}@postgres:5432/assops?sslmode=disable
+  ASSOPS_ADDR: :8080
+  # Public/browser-facing origin used when displaying webhook URLs.
+  # Node workers override this with the in-cluster service URL for API calls.
+  ASSOPS_GATEWAY_URL: ${ASSOPS_GATEWAY_URL:-http://localhost:8080}
+  ASSOPS_CONTEXT_DIR: /var/lib/assops/context
+  ASSOPS_LOCAL_BARE_BASE_DIRS: /var/lib/assops/bare-repos
+  ASSOPS_JWT_SECRET: ${ASSOPS_JWT_SECRET:-dev-assops-change-me}
+  ASSOPS_WEBHOOK_SECRET_KEY: ${ASSOPS_WEBHOOK_SECRET_KEY:-dev-assops-webhook-change-me}
+  ASSOPS_APPROVAL_WEBHOOK_URL: ${ASSOPS_APPROVAL_WEBHOOK_URL:-}
+  ASSOPS_APPROVAL_WEBHOOK_TOKEN: ${ASSOPS_APPROVAL_WEBHOOK_TOKEN:-}
+  ASSOPS_ADMIN_EMAIL: ${ASSOPS_ADMIN_EMAIL:-admin@assops.local}
+  ASSOPS_ADMIN_PASSWORD: ${ASSOPS_ADMIN_PASSWORD:-admin1234}
+  ASSOPS_GITHUB_ACTIONS_READ_TOKEN: ${ASSOPS_GITHUB_ACTIONS_READ_TOKEN:-}
+  ASSOPS_ARGO_READ_TOKEN: ${ASSOPS_ARGO_READ_TOKEN:-}
+  ASSOPS_SSH_KEY_DIR: /etc/assops/ssh/keys
+  ASSOPS_SSH_KNOWN_HOSTS_DIR: /etc/assops/ssh/known_hosts
+  ASSOPS_WORKER_INTERVAL_SECONDS: ${ASSOPS_WORKER_INTERVAL_SECONDS:-3}
+  ASSOPS_WORKER_HEALTH_ADDR: :8081
+  ASSOPS_NODE_WORKER_HEALTH_ADDR: :8082
+
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: assops-postgres
     environment:
       POSTGRES_USER: assops
-      POSTGRES_PASSWORD: assops
+      POSTGRES_PASSWORD: ${ASSOPS_POSTGRES_PASSWORD:-assops}
       POSTGRES_DB: assops
     ports:
       - "${ASSOPS_POSTGRES_PORT:-5432}:5432"
@@ -35,5 +56,82 @@ services:
       timeout: 3s
       retries: 20
 
+  gateway:
+    build:
+      context: ..
+      target: gateway
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    environment:
+      <<: *assops-env
+    volumes:
+      - assops_context:/var/lib/assops/context
+      - assops_bare_repos:/var/lib/assops/bare-repos
+      - assops_ssh:/etc/assops/ssh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost$${ASSOPS_ADDR}/healthz >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  worker:
+    build:
+      context: ..
+      target: worker
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    environment:
+      <<: *assops-env
+    volumes:
+      - assops_context:/var/lib/assops/context
+      - assops_bare_repos:/var/lib/assops/bare-repos
+      - assops_ssh:/etc/assops/ssh:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost$${ASSOPS_WORKER_HEALTH_ADDR}/healthz >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  node-worker:
+    build:
+      context: ..
+      target: node-worker
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    # "control-worker" is reserved for the built-in control worker queue.
+    command: ["-name", "local-node", "-kind", "local", "-capabilities", "echo,git,ssh,ai"]
+    environment:
+      <<: *assops-env
+      ASSOPS_GATEWAY_URL: http://gateway:8080
+    volumes:
+      - assops_ssh:/etc/assops/ssh:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost$${ASSOPS_NODE_WORKER_HEALTH_ADDR}/healthz >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  web:
+    build:
+      context: ..
+      target: web
+    ports:
+      - "${ASSOPS_WEB_PORT:-8080}:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+
 volumes:
   assops_pg:
+  assops_context:
+  assops_bare_repos:
+  assops_ssh:

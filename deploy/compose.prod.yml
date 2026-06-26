@@ -98,7 +98,7 @@ services:
       context: ..
       target: node-worker
     restart: unless-stopped
-    command: ["-name", "prod-node", "-kind", "control-worker", "-capabilities", "echo,git,ssh,ai"]
+    command: ["-name", "prod-local-node", "-kind", "local", "-capabilities", "echo,git,ssh,ai"]
     environment:
       <<: *assops-env
       ASSOPS_GATEWAY_URL: http://gateway:8080
