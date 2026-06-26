@@ -46,6 +46,9 @@ spec:
             - name: ssh
               mountPath: /etc/assops/ssh
               readOnly: true
+            - name: kubeconfigs
+              mountPath: /etc/assops/kubeconfigs
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /healthz
@@ -79,6 +82,13 @@ spec:
           {{- if .Values.persistence.ssh.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "assops.fullname" . }}-ssh
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: kubeconfigs
+          {{- if .Values.persistence.kubeconfigs.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "assops.fullname" . }}-kubeconfigs
           {{- else }}
           emptyDir: {}
           {{- end }}
@@ -131,6 +141,9 @@ spec:
             - name: ssh
               mountPath: /etc/assops/ssh
               readOnly: true
+            - name: kubeconfigs
+              mountPath: /etc/assops/kubeconfigs
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /healthz
@@ -164,6 +177,13 @@ spec:
           {{- if .Values.persistence.ssh.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "assops.fullname" . }}-ssh
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: kubeconfigs
+          {{- if .Values.persistence.kubeconfigs.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "assops.fullname" . }}-kubeconfigs
           {{- else }}
           emptyDir: {}
           {{- end }}

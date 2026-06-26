@@ -36,6 +36,9 @@ env:
   approvalWebhookURL: ""
   workerIntervalSeconds: "3"
   localBareBaseDirs: /var/lib/assops/bare-repos
+  kubernetesLogsEnabled: "false"
+  kubeconfigSecretDir: /etc/assops/kubeconfigs
+  kubectlPath: kubectl
 
 persistence:
   context:
@@ -52,6 +55,11 @@ persistence:
     enabled: true
     size: 1Gi
     # Production overlays should set an environment-reviewed StorageClass.
+    storageClassName: ""
+  kubeconfigs:
+    enabled: true
+    size: 1Gi
+    # Store only reviewed namespace-scoped kubeconfig files here.
     storageClassName: ""
   backups:
     enabled: true

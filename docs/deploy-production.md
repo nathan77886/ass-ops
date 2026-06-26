@@ -55,6 +55,8 @@ ASSOPS_APPROVAL_WEBHOOK_URL=''
 ASSOPS_APPROVAL_WEBHOOK_TOKEN=''
 ASSOPS_GITHUB_ACTIONS_READ_TOKEN=''
 ASSOPS_ARGO_READ_TOKEN=''
+ASSOPS_KUBERNETES_LOGS_ENABLED='false'
+ASSOPS_KUBECTL_PATH='kubectl'
 ASSOPS_WORKER_INTERVAL_SECONDS='3'
 ASSOPS_WORKER_HEALTH_ADDR=':8081'
 ASSOPS_NODE_WORKER_HEALTH_ADDR=':8082'
@@ -76,12 +78,21 @@ The production Compose file defines:
 
 - `assops_pg`: PostgreSQL data.
 - `assops_context`: generated context files.
+- `assops_bare_repos`: local bare repositories used by Git sync/template flows.
 - `assops_ssh`: SSH keys and known_hosts mounted read-only into services that need them.
+- `assops_kubeconfigs`: namespace-scoped kubeconfig files mounted read-only into gateway/worker for live pod-log metadata audits.
+- `assops_backups`: PostgreSQL backup and restore rehearsal artifacts for the `db-tool` profile.
 
 Put SSH key files under the `assops_ssh` volume paths expected by the app:
 
 - `/etc/assops/ssh/keys`
 - `/etc/assops/ssh/known_hosts`
+
+Put reviewed kubeconfig files under the `assops_kubeconfigs` volume path expected by the app:
+
+- `/etc/assops/kubeconfigs`
+
+The value stored in the ASSOPS Kubernetes environment form is a relative path below that directory, such as `test/assops-reader.yaml`. Do not paste kubeconfig contents into the UI.
 
 ## Database Migrations
 
@@ -411,6 +422,22 @@ Operational contract for kubeconfig files:
 - Rotate by writing a new file and atomically renaming it within the same directory, rather than overwriting in place.
 - `kubectl logs` is invoked without a shell and with a 30 second timeout. Failures are recorded as failed operations without automatic retry.
 - Operation results store only sanitized metadata such as backend state, pod identity, line count, truncation flag, and timestamps. They do not store stdout, stderr, raw Kubernetes responses, kubeconfig content, tokens, authorization headers, or log bodies.
+
+## First Deployable Test Checklist
+
+For a first private test environment using Compose:
+
+1. Copy `deploy/.env.prod.example` to `deploy/.env.prod` and replace every `change-me-*` value.
+2. Start the stack with `docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml up -d --build`.
+3. Confirm `web`, `gateway`, `worker`, and `node-worker` are healthy with `docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml ps`.
+4. Log in through the web UI and create a project.
+5. Add an Argo connection, sync apps, and confirm deployment targets appear.
+6. For pod-log metadata audit, place a namespace-scoped kubeconfig file into the `assops_kubeconfigs` volume, set `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, restart gateway/worker, then create a Kubernetes environment row whose environment, cluster, namespace, and relative kubeconfig ref match the deployment target.
+7. Use the Argo Pod log query preview first. Only request an audit after the live backend tag is ready; the result records sanitized metadata only.
+8. Add Git remotes for the project repository, sync GitHub Actions, and verify action runs/artifact summaries appear from the local read model.
+9. Create or sync a tag run, refresh GitHub Actions for the tag target, and record the local sanitized snapshots when the UI marks them ready.
+
+For Helm-based test environments, set the same integration values in a reviewed values file. The chart mounts `/etc/assops/kubeconfigs` into gateway and worker from the `persistence.kubeconfigs` volume and exposes `env.kubernetesLogsEnabled`, `env.kubeconfigSecretDir`, and `env.kubectlPath`.
 
 The production values example enables stricter pod/container security settings for Go workloads and migration jobs. Review these settings with the actual images and cluster policy before rollout, especially if you override images.
 

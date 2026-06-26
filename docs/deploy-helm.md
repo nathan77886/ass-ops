@@ -52,6 +52,9 @@ The external secret must provide:
 - `ASSOPS_APPROVAL_WEBHOOK_TOKEN`
 - `ASSOPS_GITHUB_ACTIONS_READ_TOKEN`
 - `ASSOPS_ARGO_READ_TOKEN`
+- `ASSOPS_KUBERNETES_LOGS_ENABLED`
+- `ASSOPS_KUBECONFIG_SECRET_DIR`
+- `ASSOPS_KUBECTL_PATH`
 
 If you install with a release name other than `assops` while using the built-in PostgreSQL, override `secret.databaseURL` so the host matches `<release-name>-assops-postgres`.
 
@@ -95,4 +98,5 @@ Application Pods do not need Kubernetes API credentials. The production example 
 - The default PostgreSQL is suitable for demos only. Use managed PostgreSQL for shared environments.
 - Default PVCs use `ReadWriteOnce`; use a single-node cluster, a compatible scheduler placement, or `ReadWriteMany` storage before scaling beyond one node.
 - SSH material is mounted from the `assops-ssh` PVC and read-only in application pods; load key files into that volume out of band.
+- Kubeconfig material for pod-log metadata audits is mounted from the `assops-kubeconfigs` PVC and read-only in gateway/worker pods. Store only reviewed namespace-scoped kubeconfig files there, and keep the UI `kubeconfig_secret_ref` as a relative path below `/etc/assops/kubeconfigs`.
 - Web uses a chart-rendered nginx config so `/api` and `/healthz` route to the chart gateway Service.

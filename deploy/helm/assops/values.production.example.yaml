@@ -43,6 +43,9 @@ env:
   approvalWebhookURL: ""
   workerIntervalSeconds: "3"
   localBareBaseDirs: /var/lib/assops/bare-repos
+  kubernetesLogsEnabled: "false"
+  kubeconfigSecretDir: /etc/assops/kubeconfigs
+  kubectlPath: kubectl
 
 persistence:
   context:
@@ -54,6 +57,10 @@ persistence:
     size: 10Gi
     storageClassName: assops-retain
   ssh:
+    enabled: true
+    size: 1Gi
+    storageClassName: assops-retain
+  kubeconfigs:
     enabled: true
     size: 1Gi
     storageClassName: assops-retain
