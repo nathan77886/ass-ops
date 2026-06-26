@@ -111,6 +111,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.run': 'Run',
     'common.restore': 'Restore',
     'common.archive': 'Archive',
+    'common.remove': 'Remove',
     'common.edit': 'Edit',
     'common.enable': 'Enable',
     'common.disable': 'Disable',
@@ -133,6 +134,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.syncRuns': 'Sync runs',
     'title.tagRuns': 'Tag runs',
     'title.githubActions': 'GitHub Actions',
+    'title.projectDetail': 'Project Detail',
+    'title.gitRepositories': 'Git repositories',
+    'title.versions': 'Versions',
+    'title.versionValidation': 'Version validation',
     'form.createProject': 'Create project',
     'form.createRepository': 'Create repository',
     'form.createAIRuntime': 'Create AI runtime',
@@ -147,6 +152,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.createSSHMachine': 'Create SSH machine',
     'form.runSSHCommand': 'Run SSH command',
     'form.podLogQuery': 'Pod log query',
+    'form.createVersionManifest': 'Create version manifest',
     'argo.connectionModalDescription': 'Adds the Argo CD API endpoint ASSOPS will poll for applications, deployment targets, rollout state, pod log metadata, and guarded restart requests.',
     'ssh.machineModalDescription': 'Registers a worker-reachable SSH host. The first deployable version records auth mode and target metadata, then runs verification or approved commands through worker jobs.',
     'ssh.commandModalDescription': 'Queues an approved SSH command for the selected machine. Keep commands non-destructive and avoid printing secrets.',
@@ -227,6 +233,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.recordRefsSnapshot': 'Record refs snapshot',
     'config.requestWorkflowAudit': 'Request config workflow audit',
     'config.recordPromotionSnapshot': 'Record promotion snapshot',
+    'config.recordValidationSnapshot': 'Record validation snapshot',
     'config.operationQueued': 'operation queued',
     'config.sanitizedResultExpected': 'sanitized result expected',
     'config.resultBlocked': 'result blocked',
@@ -300,6 +307,16 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.prompt': 'Prompt',
     'field.path': 'Path',
     'field.purpose': 'Purpose',
+    'field.version': 'Version',
+    'field.source': 'Source',
+    'field.repository': 'Repository',
+    'field.remote': 'Remote',
+    'field.tag': 'Tag',
+    'field.commit_sha': 'Commit SHA',
+    'field.config_commit_sha': 'Config commit SHA',
+    'field.github_action_run_id': 'Actions run',
+    'field.argo_revision': 'Argo revision',
+    'field.metadata_json': 'Extra metadata JSON',
     'help.slug': 'Stable URL/API slug for this project.',
     'help.repo_key': 'Stable short key used to identify this repository inside the project.',
     'help.repo_role': 'Use service for application code and config for deployment/config repositories.',
@@ -348,6 +365,28 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.name': 'Human-readable name shown in ASSOPS lists.',
     'help.argo_connection_name': 'Short name for this Argo CD connection, for example test-argo or prod-argo.',
     'help.ssh_machine_name': 'Short name for this SSH target, for example test-worker or jump-host.',
+    'project.createFirst': 'Create a project first.',
+    'project.contextGenerated': 'Context generated',
+    'project.generateContext': 'Generate context',
+    'project.noDescription': 'No description',
+    'version.validationPreviewReady': 'Version validation preview ready',
+    'version.refreshQueued': 'Version refresh operations queued',
+    'version.snapshotRecorded': 'Validation snapshot recorded',
+    'version.snapshotCurrent': 'Validation snapshot already current',
+    'version.refreshSnapshotNotReady': 'Version validation refreshed, but snapshot recording is not ready yet',
+    'version.refreshSnapshotRecorded': 'Version validation refreshed and snapshot recorded',
+    'version.refreshSnapshotCurrent': 'Version validation refreshed; snapshot already current',
+    'version.refreshSnapshotFailed': 'Version validation refreshed, but snapshot recording failed',
+    'version.refreshFailed': 'Version refresh finished with failed operations',
+    'version.refreshCanceled': 'Version refresh was canceled',
+    'version.refreshStillRunning': 'Version refresh is still running. Validation was refreshed with the latest observed state.',
+    'version.validationRefreshFailed': 'Validation refresh failed',
+    'version.addRepoRemoteFirst': 'Add at least one Git repository and Git remote before creating a version manifest.',
+    'version.repositoryItem': 'Repository item',
+    'version.addRepositoryItem': 'Add repository item',
+    'version.validate': 'Validate',
+    'version.backgroundRerun': 'Background rerun',
+    'version.pinConfig': 'Pin config',
     'option.code': 'Code',
     'option.service': 'Service',
     'option.github': 'GitHub',
@@ -780,6 +819,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.run': '运行',
     'common.restore': '恢复',
     'common.archive': '归档',
+    'common.remove': '移除',
     'common.edit': '编辑',
     'common.enable': '启用',
     'common.disable': '禁用',
@@ -802,6 +842,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.syncRuns': '同步记录',
     'title.tagRuns': '标签记录',
     'title.githubActions': 'GitHub Actions',
+    'title.projectDetail': '项目详情',
+    'title.gitRepositories': 'Git 仓库',
+    'title.versions': '版本',
+    'title.versionValidation': '版本校验',
     'form.createProject': '创建项目',
     'form.createRepository': '创建代码仓库',
     'form.createAIRuntime': '创建 AI 运行时',
@@ -816,6 +860,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.createSSHMachine': '创建 SSH 主机',
     'form.runSSHCommand': '执行 SSH 命令',
     'form.podLogQuery': 'Pod 日志查询',
+    'form.createVersionManifest': '创建版本清单',
     'argo.connectionModalDescription': '添加 Argo CD API 端点，ASSOPS 会用它同步应用、部署目标、运行状态、Pod 日志元数据，以及受保护的重启请求。',
     'ssh.machineModalDescription': '登记 Worker 可访问的 SSH 主机。首个可部署版本会记录认证方式和目标元数据，再通过 Worker Job 执行验证或已审批命令。',
     'ssh.commandModalDescription': '向当前 SSH 主机下发需审批的命令。请保持命令非破坏性，并避免输出密钥。',
@@ -896,6 +941,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.recordRefsSnapshot': '记录 refs 快照',
     'config.requestWorkflowAudit': '请求配置工作流审计',
     'config.recordPromotionSnapshot': '记录提升快照',
+    'config.recordValidationSnapshot': '记录校验快照',
     'config.operationQueued': '操作已入队',
     'config.sanitizedResultExpected': '预期脱敏结果',
     'config.resultBlocked': '结果被阻止',
@@ -969,6 +1015,16 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.prompt': '提示词',
     'field.path': '路径',
     'field.purpose': '用途',
+    'field.version': '版本',
+    'field.source': '来源',
+    'field.repository': '仓库',
+    'field.remote': '远端',
+    'field.tag': '标签',
+    'field.commit_sha': 'Commit SHA',
+    'field.config_commit_sha': '配置仓库 Commit SHA',
+    'field.github_action_run_id': 'Actions 运行',
+    'field.argo_revision': 'Argo Revision',
+    'field.metadata_json': '额外元数据 JSON',
     'help.slug': '项目在 URL/API 中使用的稳定标识。',
     'help.repo_key': '项目内识别该仓库的稳定短键。',
     'help.repo_role': '应用代码选择 service，部署/配置仓库选择 config。',
@@ -1017,6 +1073,28 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.name': 'ASSOPS 列表中展示的人类可读名称。',
     'help.argo_connection_name': '该 Argo CD 连接的短名称，例如 test-argo 或 prod-argo。',
     'help.ssh_machine_name': '该 SSH 目标的短名称，例如 test-worker 或 jump-host。',
+    'project.createFirst': '请先创建项目。',
+    'project.contextGenerated': '上下文已生成',
+    'project.generateContext': '生成上下文',
+    'project.noDescription': '暂无描述',
+    'version.validationPreviewReady': '版本校验预览已就绪',
+    'version.refreshQueued': '版本刷新操作已入队',
+    'version.snapshotRecorded': '校验快照已记录',
+    'version.snapshotCurrent': '校验快照已是最新',
+    'version.refreshSnapshotNotReady': '版本校验已刷新，但快照记录尚未就绪',
+    'version.refreshSnapshotRecorded': '版本校验已刷新并记录快照',
+    'version.refreshSnapshotCurrent': '版本校验已刷新，快照已是最新',
+    'version.refreshSnapshotFailed': '版本校验已刷新，但快照记录失败',
+    'version.refreshFailed': '版本刷新完成，但有失败操作',
+    'version.refreshCanceled': '版本刷新已取消',
+    'version.refreshStillRunning': '版本刷新仍在运行；已用最新观测状态刷新校验视图。',
+    'version.validationRefreshFailed': '版本校验刷新失败',
+    'version.addRepoRemoteFirst': '创建版本清单前，请先添加至少一个 Git 仓库和 Git 远端。',
+    'version.repositoryItem': '仓库项',
+    'version.addRepositoryItem': '添加仓库项',
+    'version.validate': '校验',
+    'version.backgroundRerun': '后台重跑',
+    'version.pinConfig': '固定配置',
     'option.code': '代码',
     'option.service': '服务',
     'option.github': 'GitHub',
@@ -5329,7 +5407,7 @@ function ProjectDetail() {
       const result = await api(`/api/project-versions/${row.id}/validation`);
       setVersionValidation(result);
       setVersionRefreshResult(undefined);
-      message.success('Version validation preview ready');
+      message.success(t('version.validationPreviewReady'));
     } catch (error: any) {
       message.error(error.message || 'Request failed');
     } finally {
@@ -5350,7 +5428,7 @@ function ProjectDetail() {
         validation_rerun_status: 'waiting_for_workers'
       });
       versionValidationAutoReloadAttempts.current = 0;
-      message.success('Version refresh operations queued');
+      message.success(t('version.refreshQueued'));
     } catch (error: any) {
       message.error(error.message || 'Request failed');
     } finally {
@@ -5418,7 +5496,7 @@ function ProjectDetail() {
         const validation = await api(`/api/project-versions/${row.id}/validation`);
         setVersionValidation(validation);
       }
-      message.success(safeResult.validation_snapshot_written ? 'Validation snapshot recorded' : 'Validation snapshot already current');
+      message.success(safeResult.validation_snapshot_written ? t('version.snapshotRecorded') : t('version.snapshotCurrent'));
     } catch (error: any) {
       message.error(error.message || 'Request failed');
     } finally {
@@ -5472,17 +5550,17 @@ function ProjectDetail() {
             try {
               const snapshot = await autoRecordValidationSnapshot(versionID);
               if (snapshot.recording_ready === false) {
-                message.warning(snapshot.message || 'Version validation refreshed, but snapshot recording is not ready yet');
+                message.warning(snapshot.message || t('version.refreshSnapshotNotReady'));
               } else {
-                message.success(snapshot.validation_snapshot_written ? 'Version validation refreshed and snapshot recorded' : 'Version validation refreshed; snapshot already current');
+                message.success(snapshot.validation_snapshot_written ? t('version.refreshSnapshotRecorded') : t('version.refreshSnapshotCurrent'));
               }
             } catch (error: any) {
-              message.warning(error.message || 'Version validation refreshed, but snapshot recording failed');
+              message.warning(error.message || t('version.refreshSnapshotFailed'));
             }
           } else if (rerunStatus === 'refresh_failed') {
-            message.error('Version refresh finished with failed operations');
+            message.error(t('version.refreshFailed'));
           } else if (rerunStatus === 'refresh_canceled') {
-            message.warning('Version refresh was canceled');
+            message.warning(t('version.refreshCanceled'));
           }
           return;
         }
@@ -5496,7 +5574,7 @@ function ProjectDetail() {
             validation_rerun_status: rerunStatus,
             last_checked_at: new Date().toISOString()
           });
-          message.warning('Version refresh is still running. Validation was refreshed with the latest observed state.');
+          message.warning(t('version.refreshStillRunning'));
           if (timer !== undefined) window.clearInterval(timer);
           return;
         }
@@ -5515,10 +5593,10 @@ function ProjectDetail() {
           version_id: versionID,
           status: 'error',
           attempts,
-          error: error.message || 'Request failed',
+          error: error.message || t('common.requestFailed'),
           last_checked_at: new Date().toISOString()
         });
-        message.error(error.message || 'Validation refresh failed');
+        message.error(error.message || t('version.validationRefreshFailed'));
         if (timer !== undefined) window.clearInterval(timer);
       }
     };
@@ -5531,27 +5609,27 @@ function ProjectDetail() {
   }, [versionValidationAutoReload?.version_id, versionValidationAutoReload?.status]);
   return (
     <Space direction="vertical" size={16} className="full">
-      <Typography.Title level={2}>Project Detail</Typography.Title>
-      <EntitySelect label="Project" rows={projectRows} value={projectPick.selectedID} onChange={projectPick.setSelectedID} />
-      {!project && <Alert type="info" showIcon message="Create a project first." />}
+      <Typography.Title level={2}>{t('title.projectDetail')}</Typography.Title>
+      <EntitySelect label={t('common.project')} rows={projectRows} value={projectPick.selectedID} onChange={projectPick.setSelectedID} />
+      {!project && <Alert type="info" showIcon message={t('project.createFirst')} />}
       {project && (
         <>
-          <Card title={project.name} extra={<Button onClick={() => api(`/api/projects/${project.id}/context/generate`, { method: 'POST' }).then(() => message.success('Context generated'))}>Generate context</Button>}>
-            <Typography.Paragraph>{project.description || 'No description'}</Typography.Paragraph>
+          <Card title={project.name} extra={<Button onClick={() => api(`/api/projects/${project.id}/context/generate`, { method: 'POST' }).then(() => message.success(t('project.contextGenerated')))}>{t('project.generateContext')}</Button>}>
+            <Typography.Paragraph>{project.description || t('project.noDescription')}</Typography.Paragraph>
           </Card>
           <div className="toolbar">
-            <Typography.Title level={2}>Git repositories</Typography.Title>
+            <Typography.Title level={2}>{t('title.gitRepositories')}</Typography.Title>
             <Space>
               <Button onClick={initializeConfigRepo} disabled={Boolean(configRepo) || repos.loading} loading={configInitializing} icon={<SettingOutlined />}>{configRepo ? t('config.configReady') : t('config.initConfig')}</Button>
-              <Button type="primary" onClick={() => setRepoOpen(true)}>Create</Button>
+              <Button type="primary" onClick={() => setRepoOpen(true)}>{t('common.create')}</Button>
             </Space>
           </div>
           <Table<AnyRow> rowKey="id" dataSource={repos.data?.items || []} pagination={false} columns={[
-            { title: 'Name', dataIndex: 'name' },
-            { title: 'Key', dataIndex: 'repo_key' },
-            { title: 'Role', render: (_, row) => <Tag color={row.repo_role === 'config' ? 'geekblue' : 'default'}>{row.repo_role || 'code'}</Tag> },
-            { title: 'Status', render: (_, row) => <Tag>{row.status || 'active'}</Tag> },
-            { title: 'Default branch', dataIndex: 'default_branch' }
+            { title: t('common.name'), dataIndex: 'name' },
+            { title: t('common.key'), dataIndex: 'repo_key' },
+            { title: t('common.role'), render: (_, row) => <Tag color={row.repo_role === 'config' ? 'geekblue' : 'default'}>{translatedValue(row.repo_role || 'code', t)}</Tag> },
+            { title: t('common.status'), render: (_, row) => <Tag>{translatedValue(row.status || 'active', t)}</Tag> },
+            { title: t('field.default_branch'), dataIndex: 'default_branch' }
           ]} />
           {configScaffold.data && (
             <Card title={t('config.scaffoldTitle')} loading={configScaffold.loading}>
@@ -5639,7 +5717,7 @@ function ProjectDetail() {
           <CreateModal title="Create repository" open={repoOpen} setOpen={setRepoOpen} fields={['name', 'repo_key', 'display_name', 'repo_role', 'description', 'default_branch']} onSubmit={(v) => api(`/api/projects/${project.id}/git-repositories`, { method: 'POST', body: JSON.stringify(v) }).then(repos.reload)} />
           <Toolbar title="Versions" onCreate={() => setVersionOpen(true)} />
           {versionValidation && (
-            <Card title="Version validation">
+            <Card title={t('title.versionValidation')}>
               <Space direction="vertical" size={8} className="full">
                 <Space wrap>
                   <Tag color={versionValidation.validation_state === 'ready' ? 'green' : versionValidation.validation_state === 'partial' ? 'gold' : 'red'}>{versionValidation.validation_state || 'blocked'}</Tag>
@@ -5686,7 +5764,7 @@ function ProjectDetail() {
                       loading={refreshingVersionID === versionValidation.version_id}
                       onClick={() => refreshVersion({ id: versionValidation.version_id })}
                     >
-                      Run refresh
+                      {t('common.refresh')}
                     </Button>
                     <Typography.Text type="secondary">{versionValidation.provider_refresh_plan.execution_plan.required_operator_action}</Typography.Text>
                   </Space>
@@ -5698,7 +5776,7 @@ function ProjectDetail() {
                     disabled={!versionValidation.version_id}
                     onClick={() => recordValidationSnapshot({ id: versionValidation.version_id })}
                   >
-                    Record validation snapshot
+                    {t('config.recordValidationSnapshot')}
                   </Button>
                   {versionSnapshotResult ? <Tag color={versionSnapshotResult.validation_snapshot_written ? 'green' : versionSnapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>snapshot {versionSnapshotResult.recording_state || 'unknown'}</Tag> : null}
                   {versionSnapshotResult ? <Tag>{versionSnapshotResult.recording_trigger || 'operator_request'}</Tag> : null}
@@ -5740,17 +5818,17 @@ function ProjectDetail() {
             pagination={false}
             expandable={{ expandedRowRender: (row) => <JSONBlock value={row.metadata} /> }}
             columns={[
-              { title: 'Version', dataIndex: 'version' },
-              { title: 'Source', render: (_, row) => <Tag>{row.source || 'manual'}</Tag> },
-              { title: 'Repositories', render: (_, row) => Array.isArray(row.metadata?.repositories) ? row.metadata.repositories.length : 0 },
-              { title: 'Created', render: (_, row) => shortText(row.created_at, 24) },
+              { title: t('field.version'), dataIndex: 'version' },
+              { title: t('common.source'), render: (_, row) => <Tag>{translatedValue(row.source || 'manual', t)}</Tag> },
+              { title: t('title.gitRepositories'), render: (_, row) => Array.isArray(row.metadata?.repositories) ? row.metadata.repositories.length : 0 },
+              { title: t('common.created'), render: (_, row) => shortText(row.created_at, 24) },
               {
-                title: 'Actions',
+                title: t('common.actions'),
                 render: (_, row) => (
                   <Space>
-                    <Button size="small" loading={validatingVersionID === row.id} onClick={() => validateVersion(row)}>Validate</Button>
-                    <Button size="small" loading={rerunningValidationID === row.id} onClick={() => requestValidationRerun(row)}>Background rerun</Button>
-                    <Button size="small" disabled={!configRepo} loading={configPinningVersionID === row.id} onClick={() => pinConfigCommit(row)}>Pin config</Button>
+                    <Button size="small" loading={validatingVersionID === row.id} onClick={() => validateVersion(row)}>{t('version.validate')}</Button>
+                    <Button size="small" loading={rerunningValidationID === row.id} onClick={() => requestValidationRerun(row)}>{t('version.backgroundRerun')}</Button>
+                    <Button size="small" disabled={!configRepo} loading={configPinningVersionID === row.id} onClick={() => pinConfigCommit(row)}>{t('version.pinConfig')}</Button>
                   </Space>
                 )
               }
@@ -5764,6 +5842,7 @@ function ProjectDetail() {
 }
 
 function VersionManifestModal({ open, setOpen, repos, remotes, onSubmit }: { open: boolean; setOpen: (value: boolean) => void; repos: AnyRow[]; remotes: AnyRow[]; onSubmit: (values: AnyRow) => Promise<any> }) {
+  const { t } = useI18n();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   async function submit(values: AnyRow) {
@@ -5773,30 +5852,30 @@ function VersionManifestModal({ open, setOpen, repos, remotes, onSubmit }: { ope
       form.resetFields();
       setOpen(false);
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setSubmitting(false);
     }
   }
   return (
-    <Modal title="Create version manifest" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={submitting} okButtonProps={{ disabled: submitting || !repos.length || !remotes.length }} width={820} destroyOnHidden>
+    <Modal title={t('form.createVersionManifest')} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={submitting} okButtonProps={{ disabled: submitting || !repos.length || !remotes.length }} width={820} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
       <Form form={form} layout="vertical" onFinish={submit} initialValues={{ source: 'manual', repositories: [{}] }}>
         <Space className="full" size={12}>
-          <Form.Item name="version" label="version" rules={[{ required: true, message: 'version is required' }]} className="selector">
+          <Form.Item name="version" label={t('field.version')} rules={[{ required: true, message: t('common.required') }]} className="selector">
             <Input placeholder="v0.1.0" />
           </Form.Item>
-          <Form.Item name="source" label="source" className="selector">
+          <Form.Item name="source" label={t('field.source')} className="selector">
             <Input placeholder="manual" />
           </Form.Item>
         </Space>
-        {(!repos.length || !remotes.length) && <Alert type="warning" showIcon message="Add at least one Git repository and Git remote before creating a version manifest." />}
+        {(!repos.length || !remotes.length) && <Alert type="warning" showIcon message={t('version.addRepoRemoteFirst')} />}
         <Form.List name="repositories">
           {(fields, { add, remove }) => (
             <Space direction="vertical" size={8} className="full">
               {fields.map((field) => (
-                <Card key={field.key} size="small" title={`Repository item ${field.name + 1}`} extra={fields.length > 1 ? <Button size="small" danger onClick={() => remove(field.name)}>Remove</Button> : null}>
+                <Card key={field.key} size="small" title={`${t('version.repositoryItem')} ${field.name + 1}`} extra={fields.length > 1 ? <Button size="small" danger onClick={() => remove(field.name)}>{t('common.remove')}</Button> : null}>
                   <div className="manifestGrid">
-                    <Form.Item {...field} name={[field.name, 'repository_id']} label="repository" rules={[{ required: true, message: 'repository is required' }]}>
+                    <Form.Item {...field} name={[field.name, 'repository_id']} label={t('field.repository')} rules={[{ required: true, message: t('common.required') }]}>
                       <Select
                         options={repos.map((repo) => ({ value: repo.id, label: `${repo.repo_key || repo.name} (${repo.repo_role || 'code'})` }))}
                         onChange={() => {
@@ -5810,16 +5889,16 @@ function VersionManifestModal({ open, setOpen, repos, remotes, onSubmit }: { ope
                         const repositoryID = getFieldValue(['repositories', field.name, 'repository_id']);
                         const remoteOptions = remotes.filter((remote) => !repositoryID || remote.repository_id === repositoryID);
                         return (
-                          <Form.Item {...field} name={[field.name, 'remote_id']} label="remote" rules={[{ required: true, message: 'remote is required' }]}>
+                          <Form.Item {...field} name={[field.name, 'remote_id']} label={t('field.remote')} rules={[{ required: true, message: t('common.required') }]}>
                             <Select options={remoteOptions.map((remote) => ({ value: remote.id, label: `${remote.repository_key || 'repo'} / ${remote.remote_key || remote.name}` }))} />
                           </Form.Item>
                         );
                       }}
                     </Form.Item>
-                    <Form.Item {...field} name={[field.name, 'tag']} label="tag">
+                    <Form.Item {...field} name={[field.name, 'tag']} label={t('field.tag')}>
                       <Input placeholder="v0.1.0" />
                     </Form.Item>
-                    <Form.Item {...field} name={[field.name, 'commit_sha']} label="commit sha">
+                    <Form.Item {...field} name={[field.name, 'commit_sha']} label={t('field.commit_sha')}>
                       <Input placeholder="abc123" />
                     </Form.Item>
                     <Form.Item noStyle shouldUpdate>
@@ -5828,26 +5907,26 @@ function VersionManifestModal({ open, setOpen, repos, remotes, onSubmit }: { ope
                         const repo = repos.find((item) => item.id === repositoryID);
                         if ((repo?.repo_role || '') !== 'config') return null;
                         return (
-                          <Form.Item {...field} name={[field.name, 'config_commit_sha']} label="config commit sha">
+                          <Form.Item {...field} name={[field.name, 'config_commit_sha']} label={t('field.config_commit_sha')}>
                             <Input placeholder="config repository commit" />
                           </Form.Item>
                         );
                       }}
                     </Form.Item>
-                    <Form.Item {...field} name={[field.name, 'github_action_run_id']} label="actions run">
+                    <Form.Item {...field} name={[field.name, 'github_action_run_id']} label={t('field.github_action_run_id')}>
                       <Input placeholder="123456" />
                     </Form.Item>
-                    <Form.Item {...field} name={[field.name, 'argo_revision']} label="argo revision">
+                    <Form.Item {...field} name={[field.name, 'argo_revision']} label={t('field.argo_revision')}>
                       <Input placeholder="optional" />
                     </Form.Item>
                   </div>
                 </Card>
               ))}
-              <Button onClick={() => add({})} disabled={!repos.length || !remotes.length}>Add repository item</Button>
+              <Button onClick={() => add({})} disabled={!repos.length || !remotes.length}>{t('version.addRepositoryItem')}</Button>
             </Space>
           )}
         </Form.List>
-        <Form.Item name="metadata_json" label="extra metadata JSON">
+        <Form.Item name="metadata_json" label={t('field.metadata_json')}>
           <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder='{"notes":"release candidate"}' />
         </Form.Item>
       </Form>
@@ -9403,6 +9482,7 @@ const titleKeys: Record<string, string> = {
   'Git Remotes': 'title.gitRemotes',
   'SSH Machines': 'title.sshMachines',
   'Argo Connections': 'title.argoConnections',
+  'Versions': 'title.versions',
   'Create project': 'form.createProject',
   'Create repository': 'form.createRepository',
   'Create AI runtime': 'form.createAIRuntime',
