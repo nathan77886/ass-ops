@@ -322,6 +322,9 @@ jobs:
             --set image.worker.tag=ci \
             --set image.nodeWorker.tag=ci \
             --set image.web.tag=ci \
+            --set env.version=ci \
+            --set env.commit="${GITHUB_SHA}" \
+            --set env.buildTime=ci-smoke \
             --set persistence.context.enabled=false \
             --set persistence.bareRepos.enabled=false \
             --set persistence.ssh.enabled=false \
@@ -345,7 +348,24 @@ jobs:
           pf_pid=$!
           trap 'kill "$pf_pid" 2>/dev/null || true' EXIT
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:18080/healthz; then
+            if curl -fsS http://127.0.0.1:18080/healthz >/tmp/assops-healthz.json; then
+              python3 - <<'PY'
+          import json
+          import os
+
+          with open("/tmp/assops-healthz.json", encoding="utf-8") as handle:
+              health = json.load(handle)
+          expected = {
+              "ok": True,
+              "component": "gateway",
+              "version": "ci",
+              "commit": os.environ["GITHUB_SHA"],
+              "build_time": "ci-smoke",
+          }
+          mismatches = {key: health.get(key) for key, value in expected.items() if health.get(key) != value}
+          if mismatches:
+              raise SystemExit(f"unexpected health response: {health!r}")
+          PY
               exit 0
             fi
             sleep 2

@@ -123,6 +123,9 @@ helm-smoke:
 		--set image.worker.tag=ci \
 		--set image.nodeWorker.tag=ci \
 		--set image.web.tag=ci \
+		--set env.version=ci \
+		--set env.commit=local-smoke \
+		--set env.buildTime=local-smoke \
 		--set persistence.context.enabled=false \
 		--set persistence.bareRepos.enabled=false \
 		--set persistence.ssh.enabled=false \
@@ -141,7 +144,14 @@ helm-smoke:
 	pf_pid="$$!"; \
 	trap 'kill "$$pf_pid" 2>/dev/null || true; cleanup' EXIT; \
 	for _ in $$(seq 1 30); do \
-		if curl -fsS http://127.0.0.1:18080/healthz; then exit 0; fi; \
+		if response="$$(curl -fsS http://127.0.0.1:18080/healthz)"; then \
+			printf '%s\n' "$$response"; \
+			printf '%s' "$$response" | grep -q '"component":"gateway"'; \
+			printf '%s' "$$response" | grep -q '"version":"ci"'; \
+			printf '%s' "$$response" | grep -q '"commit":"local-smoke"'; \
+			printf '%s' "$$response" | grep -q '"build_time":"local-smoke"'; \
+			exit 0; \
+		fi; \
 		sleep 2; \
 	done; \
 	cat /tmp/assops-web-port-forward.log; \

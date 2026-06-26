@@ -22,7 +22,7 @@ helm template assops deploy/helm/assops -f /tmp/assops-dev-values.yaml
 ```
 
 The chart includes `values.schema.json`, so `helm lint` also validates common value shape mistakes such as invalid image pull policies, non-numeric worker intervals, and missing external secret names when `secret.create=false`.
-CI renders both the default values and `values.production.example.yaml`, then runs a disposable kind smoke test that builds the gateway, worker, node-worker, and web images from the pull request, loads them into a temporary cluster, installs the chart with the built-in PostgreSQL, waits for the migration hook and Deployments, and probes the web Service `/healthz`.
+CI renders both the default values and `values.production.example.yaml`, then runs a disposable kind smoke test that builds the gateway, worker, node-worker, and web images from the pull request, loads them into a temporary cluster, installs the chart with the built-in PostgreSQL, waits for the migration hook and Deployments, and probes the web Service `/healthz`. The smoke probe parses the health JSON and verifies the gateway component plus release metadata so a green run proves the chart passed build identity through the deployed gateway.
 
 ## First Test Environment
 
