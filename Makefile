@@ -1,4 +1,4 @@
-.PHONY: postgres compose-up compose-down gateway worker node-worker web build test tool context db-migrate db-migrations db-seed-demo db-sync-assets db-backup-retain db-rehearse-restore api-smoke api-smoke-self-test first-deployable-check release-validate-bundle release-helm-values release-helm-test-readiness-plan release-promotion-plan release-backup-schedule-plan helm-lint helm-template helm-smoke
+.PHONY: postgres compose-up compose-down gateway worker node-worker web build test tool context db-migrate db-migrations db-seed-demo db-sync-assets db-backup-retain db-rehearse-restore api-smoke api-smoke-self-test helm-test-smoke first-deployable-check release-validate-bundle release-helm-values release-helm-test-readiness-plan release-promotion-plan release-backup-schedule-plan helm-lint helm-template helm-smoke
 
 postgres:
 	docker compose -f deploy/docker-compose.yml up -d postgres
@@ -60,6 +60,9 @@ api-smoke:
 
 api-smoke-self-test:
 	bash scripts/api-smoke-self-test.sh
+
+helm-test-smoke:
+	bash scripts/helm-test-smoke.sh
 
 first-deployable-check:
 	@set -e; \

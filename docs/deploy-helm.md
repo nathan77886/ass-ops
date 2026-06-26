@@ -96,7 +96,20 @@ helm upgrade --install assops deploy/helm/assops \
   -f /path/to/private-test-values.yaml
 ```
 
-Verify the test workloads and the gateway health payload through the web Service:
+Verify the test workloads, gateway API, worker health, and node-worker health:
+
+```bash
+ASSOPS_HELM_SMOKE_NAMESPACE=assops-test \
+ASSOPS_HELM_SMOKE_RELEASE=assops \
+ASSOPS_ADMIN_EMAIL=admin@example.com \
+ASSOPS_ADMIN_PASSWORD='<admin-password>' \
+make helm-test-smoke
+```
+
+The smoke command waits for all four Deployments, verifies worker and node-worker health Service endpoints, opens local port-forwards, runs the gateway API smoke through the web Service, and checks the worker and node-worker `/healthz` payloads. It is read-only: it does not apply manifests, mutate Kubernetes resources, or create ASSOPS rows.
+By default it derives Helm object names the same way the chart does: release `assops` maps to `assops-*`, while a release such as `test` maps to `test-assops-*`. Set `ASSOPS_HELM_SMOKE_FULLNAME` if you use `fullnameOverride`.
+
+For manual diagnosis, the equivalent checks are:
 
 ```bash
 kubectl -n assops-test rollout status deployment/assops-gateway --timeout=180s
