@@ -739,6 +739,10 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 		syncResult, err := NewGitHubActionsSyncer().Sync(ctx, w.store.DB, opID)
 		mergeGitHubActionsResult(result, syncResult)
 		return result, err
+	case "github.labels.sync":
+		syncResult, err := NewGitHubActionsSyncer().SyncLabels(ctx, w.store.DB, opID)
+		mergeGitHubRepositoryLabelsResult(result, syncResult)
+		return result, err
 	case "argo.apps.sync":
 		syncResult, err := NewArgoSyncer().SyncApps(ctx, w.store.DB, opID)
 		mergeArgoSyncResult(result, syncResult)
@@ -868,6 +872,37 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed GitHub Actions sync: %w", err)
+		}
+		return nil
+	case "github.labels.sync":
+		remoteID, _ := result["remote_id"].(string)
+		if remoteID == "" {
+			op, err := queryOne(ctx, tx, "SELECT git_remote_id FROM operation_runs WHERE id=$1", opID)
+			if err != nil {
+				return err
+			}
+			remoteID, _ = op["git_remote_id"].(string)
+			remoteID = strings.TrimSpace(remoteID)
+			if remoteID == "" {
+				if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+					return fmt.Errorf("syncing canonical assets for failed GitHub labels sync without remote: %w", err)
+				}
+				return nil
+			}
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM github_repository_labels WHERE git_remote_id=$1", remoteID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
+			UPDATE git_remotes
+			SET last_sync_status='failed',
+				updated_at=now()
+			WHERE id=$1`, remoteID)
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed GitHub labels sync: %w", err)
 		}
 		return nil
 	case "argo.apps.sync":
@@ -1175,6 +1210,26 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for GitHub Actions sync: %w", err)
+		}
+		return nil
+	case "github.labels.sync":
+		if err := w.recordGitHubRepositoryLabelsAdapterRun(ctx, tx, opID, result); err != nil {
+			return err
+		}
+		remoteID, _ := result["remote_id"].(string)
+		if remoteID == "" {
+			return nil
+		}
+		_, err := tx.ExecContext(ctx, `
+			UPDATE git_remotes
+			SET last_sync_status='completed',
+				updated_at=now()
+			WHERE id=$1`, remoteID)
+		if err != nil {
+			return err
+		}
+		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for GitHub labels sync: %w", err)
 		}
 		return nil
 	case "argo.apps.sync":
@@ -2631,6 +2686,18 @@ func mergeGitHubActionsResult(result map[string]any, syncResult *GitHubActionsSy
 	result["count"] = len(syncResult.Runs)
 }
 
+func mergeGitHubRepositoryLabelsResult(result map[string]any, syncResult *GitHubRepositoryLabelsSyncResult) {
+	if syncResult == nil {
+		return
+	}
+	result["_github_repository_labels_result"] = syncResult
+	result["remote_id"] = syncResult.RemoteID
+	result["repository"] = syncResult.Owner + "/" + syncResult.Repo
+	result["count"] = len(syncResult.Labels)
+	result["provider_response_included"] = false
+	result["credential_included"] = false
+}
+
 func mergeSSHExecutionResult(result map[string]any, execution *SSHExecutionResult) {
 	if execution == nil {
 		return
@@ -2731,6 +2798,45 @@ func (w *ControlWorker) recordGitHubActionsAdapterRun(ctx context.Context, tx *s
 		}
 	}
 	result["artifact_count"] = artifactCount
+	return nil
+}
+
+func (w *ControlWorker) recordGitHubRepositoryLabelsAdapterRun(ctx context.Context, tx *sqlx.Tx, opID string, result map[string]any) error {
+	syncResult, ok := result["_github_repository_labels_result"].(*GitHubRepositoryLabelsSyncResult)
+	delete(result, "_github_repository_labels_result")
+	if !ok || syncResult == nil || syncResult.RemoteID == "" {
+		return nil
+	}
+	result["remote_id"] = syncResult.RemoteID
+	result["repository"] = syncResult.Owner + "/" + syncResult.Repo
+	result["count"] = len(syncResult.Labels)
+	result["provider_response_included"] = false
+	result["credential_included"] = false
+	if _, err := tx.ExecContext(ctx, "DELETE FROM github_repository_labels WHERE git_remote_id=$1", syncResult.RemoteID); err != nil {
+		return err
+	}
+	for _, label := range syncResult.Labels {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO github_repository_labels(
+				operation_run_id, git_remote_id, external_label_id, node_id,
+				name, color, description, is_default, synced_at
+			)
+			VALUES (
+				$1, $2, $3, $4,
+				$5, $6, $7, $8, now()
+			)`,
+			opID,
+			syncResult.RemoteID,
+			label.ExternalLabelID,
+			label.NodeID,
+			label.Name,
+			label.Color,
+			label.Description,
+			label.IsDefault,
+		); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

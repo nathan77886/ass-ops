@@ -74,6 +74,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.created': 'Created',
     'common.updated': 'Updated',
     'common.synced': 'Synced',
+    'common.description': 'Description',
     'common.target': 'Target',
     'common.environment': 'Environment',
     'common.namespace': 'Namespace',
@@ -293,6 +294,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.createWebhook': 'Create webhook',
     'git.createTag': 'Create tag',
     'git.syncGitHubActions': 'Sync GitHub Actions',
+    'git.syncGitHubLabels': 'Sync GitHub Labels',
     'git.allTags': 'All tags',
     'git.createRepositoryFirst': 'Create a project repository before adding remotes.',
     'git.showArchived': 'Show archived',
@@ -313,6 +315,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.workflow': 'Workflow',
     'git.sha': 'SHA',
     'git.artifacts': 'Artifacts',
+    'git.labels': 'Labels',
+    'git.defaultLabels': 'default labels',
+    'git.customLabels': 'custom labels',
     'git.artifactSize': 'Artifact size',
     'git.activeArtifacts': 'active artifacts',
     'git.expiredArtifacts': 'expired',
@@ -330,6 +335,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.actionsRefreshQueued': 'Actions refresh queued',
     'git.selectGitHubRemote': 'Select a GitHub remote first',
     'git.actionsSyncQueued': 'GitHub Actions sync queued. Refresh shortly to see results.',
+    'git.labelsSyncQueued': 'GitHub Labels sync queued. Refresh shortly to see results.',
+    'git.labelDescription': 'Repository label names, colors, descriptions, default flags, and sync timestamps are shown from the local read model. Provider URLs and credentials are not exposed.',
     'git.actionsSelectRemote': 'Select a GitHub remote to tie pipeline state back to this repository.',
     'git.actionsUnavailablePrefix': 'Remote',
     'git.actionsUnavailableMiddle': 'is a',
@@ -626,6 +633,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.created': '创建时间',
     'common.updated': '更新时间',
     'common.synced': '同步时间',
+    'common.description': '描述',
     'common.target': '目标',
     'common.environment': '环境',
     'common.namespace': '命名空间',
@@ -845,6 +853,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.createWebhook': '创建 Webhook',
     'git.createTag': '创建标签',
     'git.syncGitHubActions': '同步 GitHub Actions',
+    'git.syncGitHubLabels': '同步 GitHub 标签',
     'git.allTags': '全部标签',
     'git.createRepositoryFirst': '请先创建项目代码仓库，再添加远端。',
     'git.showArchived': '显示已归档',
@@ -865,6 +874,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.workflow': '工作流',
     'git.sha': 'SHA',
     'git.artifacts': '制品',
+    'git.labels': '标签',
+    'git.defaultLabels': '默认标签',
+    'git.customLabels': '自定义标签',
     'git.artifactSize': '制品大小',
     'git.activeArtifacts': '活跃制品',
     'git.expiredArtifacts': '已过期',
@@ -882,6 +894,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.actionsRefreshQueued': 'Actions 刷新已入队',
     'git.selectGitHubRemote': '请先选择 GitHub 远端',
     'git.actionsSyncQueued': 'GitHub Actions 同步已入队，请稍后刷新查看结果。',
+    'git.labelsSyncQueued': 'GitHub 标签同步已入队，请稍后刷新查看结果。',
+    'git.labelDescription': '代码仓库标签名称、颜色、描述、默认标记和同步时间来自本地只读模型；不会暴露提供方 URL 或凭据。',
     'git.actionsSelectRemote': '请选择 GitHub 远端，以便把流水线状态关联回该仓库。',
     'git.actionsUnavailablePrefix': '远端',
     'git.actionsUnavailableMiddle': '是',
@@ -1518,6 +1532,24 @@ function githubActionArtifactsSummary(rows: AnyRow[]) {
       bytes: summary.bytes + (Number.isFinite(bytes) ? bytes : 0)
     };
   }, { total: 0, active: 0, expired: 0, bytes: 0 });
+}
+
+function githubLabelsSummary(rows: AnyRow[]) {
+  const defaults = rows.filter((row) => row.is_default).length;
+  return {
+    total: rows.length,
+    defaults,
+    custom: Math.max(0, rows.length - defaults),
+    latestSyncedAt: rows.reduce((latest: string, row) => {
+      const syncedAt = String(row.synced_at || '');
+      return syncedAt > latest ? syncedAt : latest;
+    }, '')
+  };
+}
+
+function githubLabelSwatchColor(value: any) {
+  const color = String(value || '').trim().replace(/^#/, '');
+  return /^[0-9a-fA-F]{6}$/.test(color) ? `#${color.toLowerCase()}` : '#d9d9d9';
 }
 
 function bytesText(value: any) {
@@ -5618,8 +5650,10 @@ function GitRemotes() {
   const sourceRemote = sourcePick.selected;
   const targetPick = useSelectedRow(remoteRows.filter((row: AnyRow) => row.id !== sourcePick.selectedID));
   const actions = useLoad(() => sourcePick.selectedID ? api(`/api/git-remotes/${sourcePick.selectedID}/github-actions`) : Promise.resolve({ items: [] }), [sourcePick.selectedID]);
+  const labels = useLoad(() => sourcePick.selectedID ? api(`/api/git-remotes/${sourcePick.selectedID}/github-labels`) : Promise.resolve({ items: [] }), [sourcePick.selectedID]);
   const actionsSummary = githubActionsSummary(actions.data?.items || [], t);
   const artifactsSummary = githubActionArtifactsSummary(actions.data?.items || []);
+  const labelsSummary = githubLabelsSummary(labels.data?.items || []);
   const [includeArchivedSyncAssets, setIncludeArchivedSyncAssets] = useState(false);
   const [runStatusFilter, setRunStatusFilter] = useState('');
   const runs = useLoad(() => {
@@ -5947,6 +5981,19 @@ function GitRemotes() {
       message.error(error.message);
     }
   }
+  async function syncGitHubLabels() {
+    if (!sourcePick.selectedID) {
+      message.error(t('git.selectGitHubRemote'));
+      return;
+    }
+    try {
+      await api(`/api/git-remotes/${sourcePick.selectedID}/github-labels/sync`, { method: 'POST', body: '{}' });
+      message.success(t('git.labelsSyncQueued'));
+      labels.reload();
+    } catch (error: any) {
+      message.error(error.message);
+    }
+  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="Git Remotes" onCreate={() => setOpen(true)} disabled={!repo} />
@@ -5962,6 +6009,7 @@ function GitRemotes() {
         <Button onClick={() => setWebhookOpen(true)} disabled={!project || !sourcePick.selectedID}>{t('git.createWebhook')}</Button>
         <Button onClick={() => setTagOpen(true)} disabled={!repo || !targetPick.selectedID}>{t('git.createTag')}</Button>
         <Button onClick={syncGitHubActions} disabled={!sourcePick.selectedID}>{t('git.syncGitHubActions')}</Button>
+        <Button onClick={syncGitHubLabels} disabled={!sourcePick.selectedID}>{t('git.syncGitHubLabels')}</Button>
       </Space>
       <div className="refsRow">
         <Space direction="vertical" size={4} className="selector">
@@ -6225,6 +6273,29 @@ function GitRemotes() {
                 </Tooltip>
               ))}{artifacts.length > 3 ? <Tag>+{artifacts.length - 3}</Tag> : null}</Space>;
             } },
+            { title: t('common.synced'), dataIndex: 'synced_at' }
+          ]} />
+        </Space> },
+        { key: 'labels', label: t('git.labels'), children: <Space direction="vertical" size={12} className="full">
+          <Alert
+            showIcon
+            type={labelsSummary.total > 0 ? 'success' : 'info'}
+            message={`${labelsSummary.total} ${t('git.labels')}`}
+            description={t('git.labelDescription')}
+          />
+          <div className="metricGrid">
+            <Card><Typography.Text type="secondary">{t('git.labels')}</Typography.Text><Typography.Title level={4}>{labelsSummary.total}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.defaultLabels')}</Typography.Text><Typography.Title level={4}>{labelsSummary.defaults}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.customLabels')}</Typography.Text><Typography.Title level={4}>{labelsSummary.custom}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('common.synced')}</Typography.Text><Typography.Title level={4}>{labelsSummary.latestSyncedAt || '-'}</Typography.Title></Card>
+          </div>
+          <Table<AnyRow> rowKey="id" dataSource={labels.data?.items || []} pagination={{ pageSize: 10 }} columns={[
+            { title: t('git.labels'), render: (_, row) => <Space size={6}>
+              <span style={{ width: 12, height: 12, borderRadius: 2, background: githubLabelSwatchColor(row.color), display: 'inline-block', border: '1px solid rgba(0,0,0,0.12)' }} />
+              <Typography.Text strong>{row.name}</Typography.Text>
+              {row.is_default ? <Tag>{t('git.defaultLabels')}</Tag> : null}
+            </Space> },
+            { title: t('common.description'), dataIndex: 'description' },
             { title: t('common.synced'), dataIndex: 'synced_at' }
           ]} />
         </Space> }

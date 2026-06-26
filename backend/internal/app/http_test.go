@@ -39128,6 +39128,114 @@ func TestKubernetesEnvironmentsMigrationAndFreshInit(t *testing.T) {
 	}
 }
 
+func TestGitHubRepositoryLabelsMigrationAndFreshInit(t *testing.T) {
+	migration, err := os.ReadFile("../../migrations/022_github_repository_labels.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	for _, token := range []string{
+		"CREATE TABLE IF NOT EXISTS github_repository_labels",
+		"git_remote_id UUID NOT NULL REFERENCES git_remotes(id) ON DELETE CASCADE",
+		"external_label_id TEXT NOT NULL DEFAULT ''",
+		"node_id TEXT NOT NULL DEFAULT ''",
+		"is_default BOOLEAN NOT NULL DEFAULT false",
+		"idx_github_repository_labels_remote",
+		"idx_github_repository_labels_remote_name",
+		"idx_github_repository_labels_remote_external",
+	} {
+		if !strings.Contains(string(migration), token) {
+			t.Fatalf("github repository labels migration missing %q", token)
+		}
+	}
+	for _, path := range []string{"../../../deploy/docker-compose.yml", "../../../deploy/compose.prod.yml"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(content), "022_github_repository_labels.sql") {
+			t.Fatalf("%s missing 022_github_repository_labels.sql init mount", path)
+		}
+	}
+}
+
+func TestListGitHubLabelsReturnsSanitizedMetadata(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+
+	mock.ExpectQuery(`(?s)SELECT pgr\.project_id\s+FROM git_remotes gr\s+JOIN project_git_repositories pgr ON pgr\.id=gr\.project_git_repository_id\s+WHERE gr\.id=\$1`).
+		WithArgs("remote-1").
+		WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow("project-1"))
+	mock.ExpectQuery(`(?s)SELECT\s+id,\s+operation_run_id,\s+git_remote_id,\s+external_label_id,\s+node_id,\s+name,\s+color,\s+description,\s+is_default,\s+synced_at,\s+created_at,\s+false AS provider_response_included,\s+false AS credential_included,\s+'github_repository_label_read_model' AS result_scope\s+FROM github_repository_labels`).
+		WithArgs("remote-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"operation_run_id",
+			"git_remote_id",
+			"external_label_id",
+			"node_id",
+			"name",
+			"color",
+			"description",
+			"is_default",
+			"synced_at",
+			"created_at",
+			"provider_response_included",
+			"credential_included",
+			"result_scope",
+		}).AddRow(
+			"label-1",
+			"op-1",
+			"remote-1",
+			"123",
+			"label-node",
+			"release",
+			"0e8a16",
+			"Release coordination",
+			true,
+			time.Date(2026, 6, 26, 8, 1, 0, 0, time.UTC),
+			time.Date(2026, 6, 26, 8, 0, 0, 0, time.UTC),
+			false,
+			false,
+			"github_repository_label_read_model",
+		))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/git-remotes/remote-1/github-labels", nil)
+	req = withRouteParam(req, "id", "remote-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.listGitHubLabels(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	items := mapSliceFromAny(payload["items"])
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want one row", payload["items"])
+	}
+	row := items[0]
+	if row["name"] != "release" || row["color"] != "0e8a16" || row["is_default"] != true {
+		t.Fatalf("unexpected label row: %#v", row)
+	}
+	encoded := rr.Body.String()
+	for _, forbidden := range []string{"Authorization", "Bearer", "github.com", "url", "metadata", "token"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("GitHub labels response leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestProviderReviewAttemptsMigrationAndFreshInit(t *testing.T) {
 	migration, err := os.ReadFile("../../migrations/014_provider_review_attempts.sql")
 	if err != nil {

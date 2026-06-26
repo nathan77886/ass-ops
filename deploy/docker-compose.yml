@@ -55,6 +55,7 @@ services:
       - ../backend/migrations/019_provider_review_attempt_claims.sql:/docker-entrypoint-initdb.d/019_provider_review_attempt_claims.sql:ro
       - ../backend/migrations/020_github_action_artifacts.sql:/docker-entrypoint-initdb.d/020_github_action_artifacts.sql:ro
       - ../backend/migrations/021_kubernetes_environments.sql:/docker-entrypoint-initdb.d/021_kubernetes_environments.sql:ro
+      - ../backend/migrations/022_github_repository_labels.sql:/docker-entrypoint-initdb.d/022_github_repository_labels.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U assops -d assops"]
       interval: 5s

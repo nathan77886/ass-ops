@@ -27,6 +27,13 @@ type GitHubActionsSyncResult struct {
 	Runs     []GitHubActionRunInput
 }
 
+type GitHubRepositoryLabelsSyncResult struct {
+	RemoteID string
+	Owner    string
+	Repo     string
+	Labels   []GitHubRepositoryLabelInput
+}
+
 type GitHubActionRunInput struct {
 	ExternalRunID string
 	WorkflowName  string
@@ -51,6 +58,15 @@ type GitHubActionArtifactInput struct {
 	UpdatedAt          *time.Time
 	ExpiresAt          *time.Time
 	Metadata           map[string]any
+}
+
+type GitHubRepositoryLabelInput struct {
+	ExternalLabelID string
+	NodeID          string
+	Name            string
+	Color           string
+	Description     string
+	IsDefault       bool
 }
 
 func NewGitHubActionsSyncer() *GitHubActionsSyncer {
@@ -92,6 +108,32 @@ func (s *GitHubActionsSyncer) Sync(ctx context.Context, db sqlx.ExtContext, opID
 	return result, nil
 }
 
+func (s *GitHubActionsSyncer) SyncLabels(ctx context.Context, db sqlx.ExtContext, opID string) (*GitHubRepositoryLabelsSyncResult, error) {
+	op, err := queryOne(ctx, db, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	if err != nil {
+		return nil, err
+	}
+	remoteID := strings.TrimSpace(fmt.Sprint(op["git_remote_id"]))
+	if remoteID == "" || remoteID == "<nil>" {
+		return nil, fmt.Errorf("operation is missing git_remote_id")
+	}
+	remote, err := queryOne(ctx, db, "SELECT * FROM git_remotes WHERE id=$1", remoteID)
+	if err != nil {
+		return nil, fmt.Errorf("loading GitHub remote: %w", err)
+	}
+	owner, repo, err := gitHubRepositoryFromRemote(remote)
+	if err != nil {
+		return nil, err
+	}
+	result := &GitHubRepositoryLabelsSyncResult{RemoteID: remoteID, Owner: owner, Repo: repo}
+	labels, err := s.fetchRepositoryLabels(ctx, owner, repo, tokenFromRemote(remote))
+	if err != nil {
+		return result, err
+	}
+	result.Labels = labels
+	return result, nil
+}
+
 func (s *GitHubActionsSyncer) fetchWorkflowRuns(ctx context.Context, owner, repo, branch string, limit int, token string) ([]GitHubActionRunInput, error) {
 	apiBase := strings.TrimRight(s.APIBase, "/")
 	if apiBase == "" {
@@ -127,8 +169,8 @@ func (s *GitHubActionsSyncer) fetchWorkflowRuns(ctx context.Context, owner, repo
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
-		return nil, fmt.Errorf("GitHub Actions API returned %s: %s", res.Status, strings.TrimSpace(string(body)))
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1024))
+		return nil, fmt.Errorf("GitHub Actions API returned %s", res.Status)
 	}
 	if err := validateGitHubTokenScopes(res.Header.Get("X-OAuth-Scopes")); err != nil {
 		return nil, err
@@ -189,6 +231,113 @@ func (s *GitHubActionsSyncer) fetchWorkflowRuns(ctx context.Context, owner, repo
 	return runs, nil
 }
 
+func (s *GitHubActionsSyncer) fetchRepositoryLabels(ctx context.Context, owner, repo, token string) ([]GitHubRepositoryLabelInput, error) {
+	const perPage = 100
+	const maxLabels = 500
+	apiBase := strings.TrimRight(s.APIBase, "/")
+	if apiBase == "" {
+		apiBase = "https://api.github.com"
+	}
+	client := s.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	labels := []GitHubRepositoryLabelInput{}
+	for page := 1; len(labels) < maxLabels; page++ {
+		endpoint, err := url.Parse(apiBase + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/labels")
+		if err != nil {
+			return nil, err
+		}
+		query := endpoint.Query()
+		query.Set("per_page", strconv.Itoa(perPage))
+		query.Set("page", strconv.Itoa(page))
+		endpoint.RawQuery = query.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		req.Header.Set("User-Agent", "assops-mvp")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		res, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("querying GitHub labels: %w", err)
+		}
+		if res.StatusCode >= 300 {
+			_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1024))
+			_ = res.Body.Close()
+			return nil, fmt.Errorf("GitHub labels API returned %s", res.Status)
+		}
+		if err := validateGitHubTokenScopes(res.Header.Get("X-OAuth-Scopes")); err != nil {
+			_ = res.Body.Close()
+			return nil, err
+		}
+		var payload []struct {
+			ID          int64  `json:"id"`
+			NodeID      string `json:"node_id"`
+			Name        string `json:"name"`
+			Color       string `json:"color"`
+			Description string `json:"description"`
+			Default     bool   `json:"default"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+			_ = res.Body.Close()
+			return nil, fmt.Errorf("decoding GitHub labels response: %w", err)
+		}
+		_ = res.Body.Close()
+		for _, label := range payload {
+			if len(labels) >= maxLabels {
+				break
+			}
+			name := strings.TrimSpace(label.Name)
+			if name == "" {
+				continue
+			}
+			labels = append(labels, GitHubRepositoryLabelInput{
+				ExternalLabelID: strconv.FormatInt(label.ID, 10),
+				NodeID:          strings.TrimSpace(label.NodeID),
+				Name:            name,
+				Color:           cleanGitHubLabelColor(label.Color),
+				Description:     strings.TrimSpace(label.Description),
+				IsDefault:       label.Default,
+			})
+		}
+		if !githubLinkHasNext(res.Header.Get("Link")) {
+			break
+		}
+	}
+	return labels, nil
+}
+
+func githubLinkHasNext(linkHeader string) bool {
+	for _, part := range strings.Split(linkHeader, ",") {
+		part = strings.TrimSpace(part)
+		if strings.Contains(part, `rel="next"`) {
+			return true
+		}
+	}
+	return false
+}
+
+func cleanGitHubLabelColor(color string) string {
+	color = strings.TrimPrefix(strings.TrimSpace(color), "#")
+	if len(color) > 64 {
+		return color[:64]
+	}
+	if len(color) == 6 {
+		for _, ch := range color {
+			if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+				return color
+			}
+		}
+		return strings.ToLower(color)
+	}
+	return color
+}
+
 func (s *GitHubActionsSyncer) fetchWorkflowRunArtifacts(ctx context.Context, owner, repo, runID, token string) ([]GitHubActionArtifactInput, error) {
 	const perPage = 100
 	const maxArtifacts = 500
@@ -225,9 +374,9 @@ func (s *GitHubActionsSyncer) fetchWorkflowRunArtifacts(ctx context.Context, own
 			return nil, fmt.Errorf("querying GitHub Actions artifacts: %w", err)
 		}
 		if res.StatusCode >= 300 {
-			body, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
+			_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1024))
 			_ = res.Body.Close()
-			return nil, fmt.Errorf("GitHub Actions artifacts API returned %s: %s", res.Status, strings.TrimSpace(string(body)))
+			return nil, fmt.Errorf("GitHub Actions artifacts API returned %s", res.Status)
 		}
 		if err := validateGitHubTokenScopes(res.Header.Get("X-OAuth-Scopes")); err != nil {
 			_ = res.Body.Close()

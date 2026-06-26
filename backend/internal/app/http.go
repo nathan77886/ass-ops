@@ -135,9 +135,11 @@ func (s *Server) Handler() http.Handler {
 		r.Put("/api/git-remotes/{id}", s.updateGitRemote)
 		r.Patch("/api/git-remotes/{id}", s.updateGitRemote)
 		r.Get("/api/git-remotes/{id}/github-actions", s.listGitHubActions)
+		r.Get("/api/git-remotes/{id}/github-labels", s.listGitHubLabels)
 		r.Post("/api/git-remotes/{id}/sync", s.createRemoteOperation("repo.sync"))
 		r.Post("/api/git-remotes/{id}/tag", s.createRemoteOperation("repo.tag"))
 		r.Post("/api/git-remotes/{id}/github-actions/sync", s.createRemoteOperation("github.actions.sync"))
+		r.Post("/api/git-remotes/{id}/github-labels/sync", s.createRemoteOperation("github.labels.sync"))
 		r.Get("/api/repo-sync-runs", s.listRepoSyncRuns)
 		r.Post("/api/repo-sync-runs/{id}/rerun", s.rerunRepoSyncRun)
 		r.Get("/api/repo-sync-assets/{id}", s.getRepoSyncAsset)
@@ -8995,6 +8997,39 @@ func (s *Server) listGitHubActions(w http.ResponseWriter, r *http.Request) {
 		WHERE gar.git_remote_id=$1
 		ORDER BY gar.created_at DESC
 		LIMIT 50`, chi.URLParam(r, "id"))
+	writeQueryResult(w, items, err)
+}
+
+func (s *Server) listGitHubLabels(w http.ResponseWriter, r *http.Request) {
+	remoteID := chi.URLParam(r, "id")
+	projectID, err := projectIDForGitRemote(r.Context(), s.store.DB, remoteID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_remote", ID: remoteID, ProjectID: projectID}, "read") {
+		return
+	}
+	items, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT
+			id,
+			operation_run_id,
+			git_remote_id,
+			external_label_id,
+			node_id,
+			name,
+			color,
+			description,
+			is_default,
+			synced_at,
+			created_at,
+			false AS provider_response_included,
+			false AS credential_included,
+			'github_repository_label_read_model' AS result_scope
+		FROM github_repository_labels
+		WHERE git_remote_id=$1
+		ORDER BY lower(name)
+		LIMIT 500`, remoteID)
 	writeQueryResult(w, items, err)
 }
 
