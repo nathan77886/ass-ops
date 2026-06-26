@@ -138,10 +138,13 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.gitRepositories': 'Git repositories',
     'title.versions': 'Versions',
     'title.versionValidation': 'Version validation',
+    'title.providerAccounts': 'Provider Accounts',
     'form.createProject': 'Create project',
     'form.createRepository': 'Create repository',
     'form.createAIRuntime': 'Create AI runtime',
     'form.createAgentTask': 'Create agent task',
+    'form.createProviderAccount': 'Create provider account',
+    'form.rotateProviderTokenEnv': 'Rotate provider token env',
     'form.createRemote': 'Create remote',
     'form.createTag': 'Create tag',
     'form.saveRepoSyncAsset': 'Save repo sync asset',
@@ -317,6 +320,12 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.github_action_run_id': 'Actions run',
     'field.argo_revision': 'Argo revision',
     'field.metadata_json': 'Extra metadata JSON',
+    'field.api_base_url': 'API base URL',
+    'field.web_base_url': 'Web base URL',
+    'field.token_env': 'Token env',
+    'field.default_owner': 'Default owner',
+    'field.visibility': 'Visibility',
+    'field.reason': 'Reason',
     'help.slug': 'Stable URL/API slug for this project.',
     'help.repo_key': 'Stable short key used to identify this repository inside the project.',
     'help.repo_role': 'Use service for application code and config for deployment/config repositories.',
@@ -365,6 +374,12 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.name': 'Human-readable name shown in ASSOPS lists.',
     'help.argo_connection_name': 'Short name for this Argo CD connection, for example test-argo or prod-argo.',
     'help.ssh_machine_name': 'Short name for this SSH target, for example test-worker or jump-host.',
+    'help.api_base_url': 'Provider API base URL used by gateway/worker integrations, for example https://api.github.com.',
+    'help.web_base_url': 'Browser base URL used for operator navigation, for example https://github.com.',
+    'help.token_env': 'Environment variable name that contains the provider token. Store only the env var name here, never the token value.',
+    'help.default_owner': 'Default organization or owner used when creating or syncing repositories.',
+    'help.visibility': 'Default repository visibility requested from the provider when a template provisions a repository.',
+    'help.metadata_json': 'Optional non-secret JSON metadata. Do not paste provider tokens, SSH keys, cookies, or kubeconfig content.',
     'project.createFirst': 'Create a project first.',
     'project.contextGenerated': 'Context generated',
     'project.generateContext': 'Generate context',
@@ -387,6 +402,36 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'version.validate': 'Validate',
     'version.backgroundRerun': 'Background rerun',
     'version.pinConfig': 'Pin config',
+    'provider.accountCreated': 'Provider account created',
+    'provider.checkCompleted': 'Provider check completed',
+    'provider.tokenEnvRotated': 'Provider token env rotated',
+    'provider.rotatedCount': 'Rotated {count} provider account{plural}',
+    'provider.tokenRotationFailed': 'Provider token rotation failed',
+    'provider.accounts': 'accounts',
+    'provider.noAccounts': 'No provider accounts configured.',
+    'provider.noAutoPlan': 'No automated rotation plan available.',
+    'provider.executeReadyRotations': 'Execute ready rotations',
+    'provider.apiBase': 'API base',
+    'provider.owner': 'Owner',
+    'provider.visibility': 'Visibility',
+    'provider.tokenEnv': 'Token env',
+    'provider.rotation': 'Rotation',
+    'provider.autoRotation': 'Auto rotation',
+    'provider.check': 'Check',
+    'provider.rotate': 'Rotate',
+    'provider.unchecked': 'unchecked',
+    'provider.httpStatus': 'HTTP',
+    'provider.daysLeft': 'd left',
+    'provider.since': 'since',
+    'provider.due': 'due',
+    'provider.soon': 'soon',
+    'provider.missing': 'missing',
+    'provider.unknown': 'unknown',
+    'provider.fresh': 'fresh',
+    'provider.autoReady': 'auto-ready',
+    'provider.autoBlocked': 'auto-blocked',
+    'provider.notNeeded': 'not needed',
+    'provider.tokenEnvRequired': 'token env is required',
     'option.code': 'Code',
     'option.service': 'Service',
     'option.github': 'GitHub',
@@ -410,6 +455,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.token': 'Token',
     'option.key': 'SSH key',
     'option.password': 'Password',
+    'option.private': 'Private',
+    'option.public': 'Public',
+    'option.internal': 'Internal',
     'option.not_reviewed': 'Not reviewed',
     'option.reviewed': 'Reviewed',
     'option.failed': 'Failed',
@@ -923,10 +971,13 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.gitRepositories': 'Git 仓库',
     'title.versions': '版本',
     'title.versionValidation': '版本校验',
+    'title.providerAccounts': '提供方账号',
     'form.createProject': '创建项目',
     'form.createRepository': '创建代码仓库',
     'form.createAIRuntime': '创建 AI 运行时',
     'form.createAgentTask': '创建 Agent 任务',
+    'form.createProviderAccount': '创建提供方账号',
+    'form.rotateProviderTokenEnv': '轮换提供方 Token 环境变量',
     'form.createRemote': '创建代码远端',
     'form.createTag': '创建标签',
     'form.saveRepoSyncAsset': '保存同步资产',
@@ -1102,6 +1153,12 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.github_action_run_id': 'Actions 运行',
     'field.argo_revision': 'Argo Revision',
     'field.metadata_json': '额外元数据 JSON',
+    'field.api_base_url': 'API 基础地址',
+    'field.web_base_url': '网页基础地址',
+    'field.token_env': 'Token 环境变量',
+    'field.default_owner': '默认 Owner',
+    'field.visibility': '可见性',
+    'field.reason': '原因',
     'help.slug': '项目在 URL/API 中使用的稳定标识。',
     'help.repo_key': '项目内识别该仓库的稳定短键。',
     'help.repo_role': '应用代码选择 service，部署/配置仓库选择 config。',
@@ -1149,6 +1206,12 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.prompt': '发送给选定 Agent 运行时的任务提示词。',
     'help.name': 'ASSOPS 列表中展示的人类可读名称。',
     'help.argo_connection_name': '该 Argo CD 连接的短名称，例如 test-argo 或 prod-argo。',
+    'help.api_base_url': 'Gateway/Worker 集成使用的提供方 API 基础地址，例如 https://api.github.com。',
+    'help.web_base_url': '人工跳转使用的浏览器基础地址，例如 https://github.com。',
+    'help.token_env': '保存提供方 token 的环境变量名。这里只保存变量名，不要填写 token 值。',
+    'help.default_owner': '创建或同步仓库时使用的默认组织或 owner。',
+    'help.visibility': '模板创建仓库时向提供方请求的默认仓库可见性。',
+    'help.metadata_json': '可选的非敏感 JSON 元数据。不要粘贴 provider token、SSH key、Cookie 或 kubeconfig 内容。',
     'help.ssh_machine_name': '该 SSH 目标的短名称，例如 test-worker 或 jump-host。',
     'project.createFirst': '请先创建项目。',
     'project.contextGenerated': '上下文已生成',
@@ -1172,6 +1235,36 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'version.validate': '校验',
     'version.backgroundRerun': '后台重跑',
     'version.pinConfig': '固定配置',
+    'provider.accountCreated': '提供方账号已创建',
+    'provider.checkCompleted': '提供方检查已完成',
+    'provider.tokenEnvRotated': '提供方 Token 环境变量已轮换',
+    'provider.rotatedCount': '已轮换 {count} 个提供方账号',
+    'provider.tokenRotationFailed': '提供方 Token 轮换失败',
+    'provider.accounts': '个账号',
+    'provider.noAccounts': '尚未配置提供方账号。',
+    'provider.noAutoPlan': '暂无自动轮换计划。',
+    'provider.executeReadyRotations': '执行就绪轮换',
+    'provider.apiBase': 'API 基础地址',
+    'provider.owner': 'Owner',
+    'provider.visibility': '可见性',
+    'provider.tokenEnv': 'Token 环境变量',
+    'provider.rotation': '轮换',
+    'provider.autoRotation': '自动轮换',
+    'provider.check': '检查',
+    'provider.rotate': '轮换',
+    'provider.unchecked': '未检查',
+    'provider.httpStatus': 'HTTP',
+    'provider.daysLeft': '天后到期',
+    'provider.since': '自',
+    'provider.due': '已到期',
+    'provider.soon': '即将到期',
+    'provider.missing': '缺失',
+    'provider.unknown': '未知',
+    'provider.fresh': '新鲜',
+    'provider.autoReady': '可自动轮换',
+    'provider.autoBlocked': '自动轮换受阻',
+    'provider.notNeeded': '无需轮换',
+    'provider.tokenEnvRequired': 'Token 环境变量必填',
     'option.code': '代码',
     'option.service': '服务',
     'option.github': 'GitHub',
@@ -1195,6 +1288,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.token': 'Token',
     'option.key': 'SSH Key',
     'option.password': '密码',
+    'option.private': '私有',
+    'option.public': '公开',
+    'option.internal': '内部',
     'option.not_reviewed': '未审查',
     'option.reviewed': '已审查',
     'option.failed': '失败',
@@ -2194,7 +2290,7 @@ function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
   });
 }
 
-function providerTokenRotationSummary(row: AnyRow) {
+function providerTokenRotationSummary(row: AnyRow, t: (key: string) => string = createTranslator('en')) {
   const rotation = row.token_rotation_status || {};
   const status = String(rotation.status || 'unknown');
   const colors: Record<string, string> = {
@@ -2205,30 +2301,30 @@ function providerTokenRotationSummary(row: AnyRow) {
     unknown: 'default'
   };
   const daysUntilDue = Number(rotation.days_until_due);
-  const dueText = Number.isFinite(daysUntilDue) && status !== 'due' ? `${daysUntilDue}d left` : '';
-  const lastText = rotation.last_rotated_at ? `since ${String(rotation.last_rotated_at).slice(0, 10)}` : '';
+  const dueText = Number.isFinite(daysUntilDue) && status !== 'due' ? `${daysUntilDue}${t('provider.daysLeft')}` : '';
+  const lastText = rotation.last_rotated_at ? `${t('provider.since')} ${String(rotation.last_rotated_at).slice(0, 10)}` : '';
   return {
     color: colors[status] || 'default',
-    label: status,
+    label: t(`provider.${status}`),
     detail: [dueText, lastText].filter(Boolean).join(' · ')
   };
 }
 
-function providerTokenRotationSummaryTags(summary: AnyRow = {}) {
+function providerTokenRotationSummaryTags(summary: AnyRow = {}, t: (key: string) => string = createTranslator('en')) {
   return [
-    { key: 'due', label: `${summary.due || 0} due`, color: (summary.due || 0) > 0 ? 'red' : 'default' },
-    { key: 'soon', label: `${summary.soon || 0} soon`, color: (summary.soon || 0) > 0 ? 'gold' : 'default' },
-    { key: 'missing', label: `${summary.missing || 0} missing`, color: (summary.missing || 0) > 0 ? 'red' : 'default' },
-    { key: 'unknown', label: `${summary.unknown || 0} unknown`, color: (summary.unknown || 0) > 0 ? 'orange' : 'default' },
-    { key: 'fresh', label: `${summary.fresh || 0} fresh`, color: 'green' }
+    { key: 'due', label: `${summary.due || 0} ${t('provider.due')}`, color: (summary.due || 0) > 0 ? 'red' : 'default' },
+    { key: 'soon', label: `${summary.soon || 0} ${t('provider.soon')}`, color: (summary.soon || 0) > 0 ? 'gold' : 'default' },
+    { key: 'missing', label: `${summary.missing || 0} ${t('provider.missing')}`, color: (summary.missing || 0) > 0 ? 'red' : 'default' },
+    { key: 'unknown', label: `${summary.unknown || 0} ${t('provider.unknown')}`, color: (summary.unknown || 0) > 0 ? 'orange' : 'default' },
+    { key: 'fresh', label: `${summary.fresh || 0} ${t('provider.fresh')}`, color: 'green' }
   ];
 }
 
-function providerAutoRotationPlanTags(plan: AnyRow = {}) {
+function providerAutoRotationPlanTags(plan: AnyRow = {}, t: (key: string) => string = createTranslator('en')) {
   return [
-    { key: 'ready', label: `${plan.ready || 0} auto-ready`, color: (plan.ready || 0) > 0 ? 'green' : 'default' },
-    { key: 'blocked', label: `${plan.blocked || 0} auto-blocked`, color: (plan.blocked || 0) > 0 ? 'red' : 'default' },
-    { key: 'not_needed', label: `${plan.not_needed || 0} not needed`, color: 'default' },
+    { key: 'ready', label: `${plan.ready || 0} ${t('provider.autoReady')}`, color: (plan.ready || 0) > 0 ? 'green' : 'default' },
+    { key: 'blocked', label: `${plan.blocked || 0} ${t('provider.autoBlocked')}`, color: (plan.blocked || 0) > 0 ? 'red' : 'default' },
+    { key: 'not_needed', label: `${plan.not_needed || 0} ${t('provider.notNeeded')}`, color: 'default' },
     { key: 'mode', label: plan.mode || 'dry_run', color: plan.automation_enabled ? 'green' : 'blue' }
   ];
 }
@@ -2241,7 +2337,7 @@ function providerAutoRotationPlanByID(plan: AnyRow = {}) {
   }, {});
 }
 
-function providerAutoRotationStatus(row: AnyRow, planByID: Record<string, AnyRow>) {
+function providerAutoRotationStatus(row: AnyRow, planByID: Record<string, AnyRow>, t: (key: string) => string = createTranslator('en')) {
   const plan = planByID[String(row.id)] || {};
   const status = String(plan.status || 'unknown');
   const colors: Record<string, string> = {
@@ -2252,7 +2348,7 @@ function providerAutoRotationStatus(row: AnyRow, planByID: Record<string, AnyRow
   };
   return {
     color: colors[status] || 'default',
-    label: status,
+    label: translatedValue(status, t),
     candidate: String(plan.masked_candidate_env || ''),
     next: String(plan.next_action || plan.blocked_reason || '')
   };
@@ -4991,6 +5087,7 @@ function TemplateUseModal({ template, open, setOpen, onSubmit }: { template?: An
 }
 
 function ProviderAccounts() {
+  const { t } = useI18n();
   const accounts = useLoad(() => api('/api/provider-accounts'), []);
   const tokenRotationSummary = accounts.data?.token_rotation_summary || {};
   const tokenRotationPlan = accounts.data?.token_rotation_plan || {};
@@ -5004,18 +5101,18 @@ function ProviderAccounts() {
       method: 'POST',
       body: JSON.stringify({
         ...values,
-        enabled: values.enabled !== 'false',
+        enabled: values.enabled !== false && values.enabled !== 'false',
         metadata: parseJSONField(values.metadata_json)
       })
     });
-    message.success('Provider account created');
+    message.success(t('provider.accountCreated'));
     accounts.reload();
   }
   async function checkAccount(id: string) {
     setCheckingID(id);
     try {
       const res = await api(`/api/provider-accounts/${id}/check`, { method: 'POST' });
-      message[res.check?.status === 'ok' ? 'success' : 'warning'](res.check?.message || 'Provider check completed');
+      message[res.check?.status === 'ok' ? 'success' : 'warning'](res.check?.message || t('provider.checkCompleted'));
       accounts.reload();
     } finally {
       setCheckingID('');
@@ -5031,7 +5128,7 @@ function ProviderAccounts() {
       method: 'POST',
       body: JSON.stringify({ token_env: values.token_env, reason: values.reason || '' })
     });
-    message.success('Provider token env rotated');
+    message.success(t('provider.tokenEnvRotated'));
     setRotatingID('');
     rotateForm.resetFields();
     accounts.reload();
@@ -5042,9 +5139,10 @@ function ProviderAccounts() {
         method: 'POST',
         body: JSON.stringify({ reason: 'operator executed ready provider token rotation plan' })
       });
-      message.success(`Rotated ${result.rotated_count || 0} provider account${result.rotated_count === 1 ? '' : 's'}`);
+      const count = Number(result.rotated_count || 0);
+      message.success(t('provider.rotatedCount').replace('{count}', String(count)).replace('{plural}', count === 1 ? '' : 's'));
     } catch (err: any) {
-      message.error(err?.message || 'Provider token rotation failed');
+      message.error(err?.message || t('provider.tokenRotationFailed'));
     } finally {
       accounts.reload();
     }
@@ -5053,26 +5151,26 @@ function ProviderAccounts() {
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="Provider Accounts" onCreate={() => setOpen(true)} />
       <Space wrap>
-        <Tag>{tokenRotationSummary.total || 0} accounts</Tag>
-        {providerTokenRotationSummaryTags(tokenRotationSummary).map((item) => <Tag key={item.key} color={item.color}>{item.label}</Tag>)}
-        <Typography.Text type={tokenRotationSummary.action_required ? 'danger' : 'secondary'}>{tokenRotationSummary.next_action || 'No provider accounts configured.'}</Typography.Text>
+        <Tag>{tokenRotationSummary.total || 0} {t('provider.accounts')}</Tag>
+        {providerTokenRotationSummaryTags(tokenRotationSummary, t).map((item) => <Tag key={item.key} color={item.color}>{item.label}</Tag>)}
+        <Typography.Text type={tokenRotationSummary.action_required ? 'danger' : 'secondary'}>{tokenRotationSummary.next_action || t('provider.noAccounts')}</Typography.Text>
       </Space>
       <Space wrap>
-        {providerAutoRotationPlanTags(tokenRotationPlan).map((item) => <Tag key={item.key} color={item.color}>{item.label}</Tag>)}
-        <Typography.Text type={tokenRotationPlan.blocked ? 'danger' : 'secondary'}>{tokenRotationPlan.next_action || 'No automated rotation plan available.'}</Typography.Text>
-        <Button size="small" onClick={executeReadyTokenRotations} disabled={!Number(tokenRotationPlan.ready || 0)}>Execute ready rotations</Button>
+        {providerAutoRotationPlanTags(tokenRotationPlan, t).map((item) => <Tag key={item.key} color={item.color}>{item.label}</Tag>)}
+        <Typography.Text type={tokenRotationPlan.blocked ? 'danger' : 'secondary'}>{tokenRotationPlan.next_action || t('provider.noAutoPlan')}</Typography.Text>
+        <Button size="small" onClick={executeReadyTokenRotations} disabled={!Number(tokenRotationPlan.ready || 0)}>{t('provider.executeReadyRotations')}</Button>
       </Space>
       <Table<AnyRow> rowKey="id" dataSource={accounts.data?.items || []} pagination={{ pageSize: 10 }} columns={[
-        { title: 'Name', dataIndex: 'name' },
-        { title: 'Provider', dataIndex: 'provider_type' },
-        { title: 'API base', dataIndex: 'api_base_url' },
-        { title: 'Owner', dataIndex: 'default_owner' },
-        { title: 'Visibility', dataIndex: 'visibility' },
-        { title: 'Token env', dataIndex: 'masked_token_env' },
+        { title: t('common.name'), dataIndex: 'name' },
+        { title: t('common.provider'), render: (_, row) => translatedValue(row.provider_type, t) },
+        { title: t('provider.apiBase'), dataIndex: 'api_base_url' },
+        { title: t('provider.owner'), dataIndex: 'default_owner' },
+        { title: t('provider.visibility'), render: (_, row) => translatedValue(row.visibility, t) },
+        { title: t('provider.tokenEnv'), dataIndex: 'masked_token_env' },
         {
-          title: 'Rotation',
+          title: t('provider.rotation'),
           render: (_, row) => {
-            const rotation = providerTokenRotationSummary(row);
+            const rotation = providerTokenRotationSummary(row, t);
             return (
               <Space direction="vertical" size={2}>
                 <Tag color={rotation.color}>{rotation.label}</Tag>
@@ -5082,9 +5180,9 @@ function ProviderAccounts() {
           }
         },
         {
-          title: 'Auto rotation',
+          title: t('provider.autoRotation'),
           render: (_, row) => {
-            const rotation = providerAutoRotationStatus(row, tokenRotationPlanByID);
+            const rotation = providerAutoRotationStatus(row, tokenRotationPlanByID, t);
             return (
               <Space direction="vertical" size={2}>
                 <Tag color={rotation.color}>{rotation.label}</Tag>
@@ -5095,37 +5193,38 @@ function ProviderAccounts() {
           }
         },
         {
-          title: 'Check',
+          title: t('provider.check'),
           render: (_, row) => {
             const check = row.metadata?.provider_check || {};
             const ok = check.status === 'ok';
             return (
               <Space direction="vertical" size={2}>
-                <Tag color={ok ? 'green' : check.status ? 'red' : 'default'}>{check.status || 'unchecked'}</Tag>
+                <Tag color={ok ? 'green' : check.status ? 'red' : 'default'}>{check.status ? translatedValue(check.status, t) : t('provider.unchecked')}</Tag>
                 {check.actor ? <Typography.Text type="secondary">{check.actor}</Typography.Text> : null}
-                {check.http_status ? <Typography.Text type="secondary">HTTP {check.http_status}</Typography.Text> : null}
+                {check.http_status ? <Typography.Text type="secondary">{t('provider.httpStatus')} {check.http_status}</Typography.Text> : null}
                 {check.message ? <Typography.Text type="secondary">{check.message}</Typography.Text> : null}
               </Space>
             );
           }
 	        },
-	        { title: 'Status', render: (_, row) => <Tag color={row.enabled ? 'green' : 'default'}>{row.enabled ? 'enabled' : 'disabled'}</Tag> },
-	        { title: 'Updated', dataIndex: 'updated_at' },
-	        { title: 'Action', render: (_, row) => <Space><Button size="small" onClick={() => checkAccount(row.id)} loading={checkingID === row.id}>Check</Button><Button size="small" onClick={() => openRotateToken(row)}>Rotate</Button></Space> }
+	        { title: t('common.status'), render: (_, row) => <Tag color={row.enabled ? 'green' : 'default'}>{translatedValue(row.enabled ? 'enabled' : 'disabled', t)}</Tag> },
+	        { title: t('common.updated'), dataIndex: 'updated_at' },
+	        { title: t('common.action'), render: (_, row) => <Space><Button size="small" onClick={() => checkAccount(row.id)} loading={checkingID === row.id}>{t('provider.check')}</Button><Button size="small" onClick={() => openRotateToken(row)}>{t('provider.rotate')}</Button></Space> }
 	      ]} />
 	      <CreateModal
 	        title="Create provider account"
         open={open}
         setOpen={setOpen}
 	        fields={['name', 'provider_type', 'api_base_url', 'web_base_url', 'token_env', 'default_owner', 'visibility', 'enabled', 'metadata_json']}
+        initialValues={{ provider_type: 'github', visibility: 'private', enabled: true }}
 	        onSubmit={createAccount}
 	      />
-      <Modal title="Rotate provider token env" open={Boolean(rotatingID)} onCancel={() => setRotatingID('')} onOk={() => rotateForm.submit()} destroyOnHidden>
+      <Modal title={t('form.rotateProviderTokenEnv')} open={Boolean(rotatingID)} onCancel={() => setRotatingID('')} onOk={() => rotateForm.submit()} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
         <Form form={rotateForm} layout="vertical" onFinish={rotateTokenEnv}>
-          <Form.Item name="token_env" label="token env" rules={[{ required: true, message: 'token env is required' }]}>
+          <Form.Item name="token_env" label={fieldLabel('token_env', t)} rules={[{ required: true, message: t('provider.tokenEnvRequired') }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="reason" label="reason">
+          <Form.Item name="reason" label={fieldLabel('reason', t)}>
             <Input />
           </Form.Item>
         </Form>
@@ -9641,6 +9740,8 @@ const titleKeys: Record<string, string> = {
   'Create repository': 'form.createRepository',
   'Create AI runtime': 'form.createAIRuntime',
   'Create agent task': 'form.createAgentTask',
+  'Provider Accounts': 'title.providerAccounts',
+  'Create provider account': 'form.createProviderAccount',
   'Create remote': 'form.createRemote',
   'Create tag': 'form.createTag',
   'Save repo sync asset': 'form.saveRepoSyncAsset',
@@ -9697,6 +9798,11 @@ const fieldMeta: Record<string, FieldMeta> = {
   remote_key: { required: true, helpKey: 'help.remote_key', placeholder: 'github' },
   provider_type: { input: 'select', options: ['github', 'gitea', 'git'], helpKey: 'help.provider_type', required: true },
   provider: { input: 'select', options: ['github', 'gitea'], helpKey: 'help.provider_type', required: true },
+  api_base_url: { input: 'url', helpKey: 'help.api_base_url', placeholder: 'https://api.github.com' },
+  web_base_url: { input: 'url', helpKey: 'help.web_base_url', placeholder: 'https://github.com' },
+  token_env: { required: true, helpKey: 'help.token_env', placeholder: 'GITHUB_TOKEN' },
+  default_owner: { helpKey: 'help.default_owner', placeholder: 'org-or-owner' },
+  visibility: { input: 'select', options: ['private', 'public', 'internal'], helpKey: 'help.visibility' },
   remote_url: { input: 'url', helpKey: 'help.remote_url', placeholder: 'git@github.com:org/repo.git' },
   web_url: { input: 'url', helpKey: 'help.web_url', placeholder: 'https://github.com/org/repo' },
   remote_role: { input: 'select', options: ['source', 'mirror', 'target', 'config', 'origin'], helpKey: 'help.remote_role' },
@@ -9711,6 +9817,7 @@ const fieldMeta: Record<string, FieldMeta> = {
   transport: { input: 'select', options: ['ssh', 'https'], helpKey: 'help.transport' },
   driver: { input: 'select', options: ['projectops_worker_git_ssh'], helpKey: 'help.driver' },
   enabled: { input: 'checkbox' },
+  metadata_json: { input: 'textarea', helpKey: 'help.metadata_json', placeholder: '{}' },
   secret_token: { input: 'password', helpKey: 'help.secret_token' },
   server_url: { input: 'url', required: true, helpKey: 'help.server_url', placeholder: 'https://argo.example.com' },
   auth_type: { input: 'select', options: ['token', 'key', 'password'], helpKey: 'help.auth_type' },
@@ -9765,7 +9872,7 @@ function fieldRules(field: string, t: (key: string) => string = createTranslator
   const meta = { ...(fieldMeta[field] || {}), ...(metaOverride || {}) };
   const rules: AnyRow[] = [];
   if (meta.required || field === 'name' || field === 'title' || field === 'command') rules.push({ required: true, message: t('common.required') });
-  if (field === 'server_url' || field === 'web_url') rules.push({ type: 'url', message: t('common.validUrl') });
+  if (field === 'server_url' || field === 'web_url' || field === 'api_base_url' || field === 'web_base_url') rules.push({ type: 'url', message: t('common.validUrl') });
   return rules;
 }
 
