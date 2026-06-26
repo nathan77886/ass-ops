@@ -21,6 +21,11 @@ on:
         required: true
         default: assops
         type: string
+      smoke_url:
+        description: Optional public ASSOPS URL for post-deploy API smoke, for example https://assops.example.com
+        required: false
+        default: ""
+        type: string
       environment_values:
         description: Optional environment values file committed in the repository
         required: true
@@ -188,3 +193,14 @@ jobs:
           kubectl get deployments,pods \
             --namespace "$NAMESPACE" \
             -l "app.kubernetes.io/instance=${HELM_RELEASE}"
+
+      - name: Run API smoke
+        if: ${{ inputs.smoke_url != '' }}
+        env:
+          ASSOPS_GATEWAY_URL: ${{ inputs.smoke_url }}
+          ASSOPS_ADMIN_EMAIL: ${{ secrets.ASSOPS_ADMIN_EMAIL }}
+          ASSOPS_ADMIN_PASSWORD: ${{ secrets.ASSOPS_ADMIN_PASSWORD }}
+        run: |
+          test -n "$ASSOPS_ADMIN_EMAIL" || (echo "ASSOPS_ADMIN_EMAIL environment secret is required for smoke_url" && exit 1)
+          test -n "$ASSOPS_ADMIN_PASSWORD" || (echo "ASSOPS_ADMIN_PASSWORD environment secret is required for smoke_url" && exit 1)
+          bash scripts/api-smoke.sh

@@ -2178,8 +2178,12 @@ func TestReleasePromotionPlanIncludesVerificationAndRollout(t *testing.T) {
 		"namespace-scoped kubeconfig",
 		"rollback point",
 		"operator approval",
+		"deploy=true",
+		"smoke_url",
 		"helm template assops deploy/helm/assops",
 		"helm upgrade --install assops deploy/helm/assops",
+		"--wait-for-jobs",
+		"scripts/api-smoke.sh",
 	} {
 		if !strings.Contains(plan, want) {
 			t.Fatalf("promotion plan missing %q in:\n%s", want, plan)
