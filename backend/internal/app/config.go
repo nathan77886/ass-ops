@@ -18,6 +18,9 @@ type Config struct {
 	ApprovalWebhookToken           string
 	ProviderReviewExecutionEnabled bool
 	ProviderReviewMutationArmed    bool
+	KubernetesPodLogsEnabled       bool
+	KubeconfigSecretDir            string
+	KubectlPath                    string
 	AdminEmail                     string
 	AdminPassword                  string
 	ContextDir                     string
@@ -38,6 +41,9 @@ func LoadConfig() Config {
 		ApprovalWebhookToken:           env("ASSOPS_APPROVAL_WEBHOOK_TOKEN", ""),
 		ProviderReviewExecutionEnabled: envBool("ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION", false),
 		ProviderReviewMutationArmed:    envBool("ASSOPS_ARM_PROVIDER_REVIEW_MUTATION", false),
+		KubernetesPodLogsEnabled:       envBool("ASSOPS_KUBERNETES_LOGS_ENABLED", false),
+		KubeconfigSecretDir:            env("ASSOPS_KUBECONFIG_SECRET_DIR", "/etc/assops/kubeconfigs"),
+		KubectlPath:                    env("ASSOPS_KUBECTL_PATH", "kubectl"),
 		AdminEmail:                     env("ASSOPS_ADMIN_EMAIL", "admin@assops.local"),
 		AdminPassword:                  env("ASSOPS_ADMIN_PASSWORD", "admin1234"),
 		ContextDir:                     env("ASSOPS_CONTEXT_DIR", ".assops/context"),

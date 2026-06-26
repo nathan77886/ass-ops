@@ -14,6 +14,9 @@ x-assops-env: &assops-env
   ASSOPS_ADMIN_PASSWORD: ${ASSOPS_ADMIN_PASSWORD:-admin1234}
   ASSOPS_GITHUB_ACTIONS_READ_TOKEN: ${ASSOPS_GITHUB_ACTIONS_READ_TOKEN:-}
   ASSOPS_ARGO_READ_TOKEN: ${ASSOPS_ARGO_READ_TOKEN:-}
+  ASSOPS_KUBERNETES_LOGS_ENABLED: ${ASSOPS_KUBERNETES_LOGS_ENABLED:-false}
+  ASSOPS_KUBECONFIG_SECRET_DIR: /etc/assops/kubeconfigs
+  ASSOPS_KUBECTL_PATH: ${ASSOPS_KUBECTL_PATH:-kubectl}
   ASSOPS_SSH_KEY_DIR: /etc/assops/ssh/keys
   ASSOPS_SSH_KNOWN_HOSTS_DIR: /etc/assops/ssh/known_hosts
   ASSOPS_WORKER_INTERVAL_SECONDS: ${ASSOPS_WORKER_INTERVAL_SECONDS:-3}
@@ -70,6 +73,7 @@ services:
       - assops_context:/var/lib/assops/context
       - assops_bare_repos:/var/lib/assops/bare-repos
       - assops_ssh:/etc/assops/ssh:ro
+      - assops_kubeconfigs:/etc/assops/kubeconfigs:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,6 +95,7 @@ services:
       - assops_context:/var/lib/assops/context
       - assops_bare_repos:/var/lib/assops/bare-repos
       - assops_ssh:/etc/assops/ssh:ro
+      - assops_kubeconfigs:/etc/assops/kubeconfigs:ro
     depends_on:
       gateway:
         condition: service_healthy
@@ -137,3 +142,4 @@ volumes:
   assops_context:
   assops_bare_repos:
   assops_ssh:
+  assops_kubeconfigs:

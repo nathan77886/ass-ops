@@ -1443,7 +1443,7 @@ func TestRecordArgoPodLogAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
 }
 
 func expectArgoPodLogTargetQuery(mock sqlmock.Sqlmock, namespace string) {
-	mock.ExpectQuery(`(?s)SELECT dt\.id, dt\.project_id, dt\.name, dt\.environment, dt\.cluster_name, dt\.namespace, dt\.status,\s+ke\.id AS kubernetes_environment_id,\s+ke\.name AS kubernetes_environment_name,\s+\(ke\.kubeconfig_secret_ref <> ''\) AS kubeconfig_secret_ref_present,\s+\(ke\.service_account <> ''\) AS service_account_present,\s+ke\.token_subject_review_status,\s+ke\.rbac_read_logs_status,\s+ke\.status AS kubernetes_environment_status\s+FROM deployment_targets dt\s+LEFT JOIN kubernetes_environments ke`).
+	mock.ExpectQuery(`(?s)SELECT dt\.id, dt\.project_id, dt\.name, dt\.environment, dt\.cluster_name, dt\.namespace, dt\.status,\s+ke\.id AS kubernetes_environment_id,\s+ke\.name AS kubernetes_environment_name,\s+\(ke\.kubeconfig_secret_ref <> ''\) AS kubeconfig_secret_ref_present,\s+ke\.kubeconfig_secret_ref,\s+\(ke\.service_account <> ''\) AS service_account_present,\s+ke\.token_subject_review_status,\s+ke\.rbac_read_logs_status,\s+ke\.status AS kubernetes_environment_status\s+FROM deployment_targets dt\s+LEFT JOIN kubernetes_environments ke`).
 		WithArgs("target-1", "project-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id",
@@ -1456,6 +1456,7 @@ func expectArgoPodLogTargetQuery(mock sqlmock.Sqlmock, namespace string) {
 			"kubernetes_environment_id",
 			"kubernetes_environment_name",
 			"kubeconfig_secret_ref_present",
+			"kubeconfig_secret_ref",
 			"service_account_present",
 			"token_subject_review_status",
 			"rbac_read_logs_status",
@@ -1468,6 +1469,7 @@ func expectArgoPodLogTargetQuery(mock sqlmock.Sqlmock, namespace string) {
 			"prod-cluster",
 			namespace,
 			"Healthy",
+			nil,
 			nil,
 			nil,
 			nil,
@@ -2005,7 +2007,8 @@ func TestExecuteArgoPodLogAuditReturnsSanitizedMetadataOnly(t *testing.T) {
 	}
 	if result["deployment_target_id"] != "target-1" ||
 		result["pod_name"] != "api-7d9f" ||
-		result["result_scope"] != "sanitized_metadata_only" ||
+		result["result_scope"] != "sanitized_live_log_metadata" ||
+		result["backend_state"] != "disabled" ||
 		result["line_count"] != 0 ||
 		result["kubeconfig_bound"] != false ||
 		result["kubernetes_api_call"] != false ||

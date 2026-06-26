@@ -617,13 +617,17 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 		}
 		return nil
 	case "argo.pod_logs":
+		backend := "disabled"
+		if w.cfg.KubernetesPodLogsEnabled {
+			backend = "kubectl_logs"
+		}
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
 			VALUES ($1, $2, 'info', 'pod log audit worker started', jsonb_build_object(
-				'live_log_backend', 'disabled',
+				'live_log_backend', $3,
 				'kubeconfig_bound', false,
 				'log_body_included', false
-			))`, opID, job["id"]); err != nil {
+			))`, opID, job["id"], backend); err != nil {
 			return err
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
@@ -899,13 +903,20 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		return nil
 	case "argo.pod_logs":
 		safeError := "pod log audit worker failed; details are withheld from operation logs"
+		backend := cleanPreviewString(result["live_log_backend"])
+		if backend == "" {
+			backend = "disabled"
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
 			VALUES ($1, $2, 'error', 'pod log audit worker failed', jsonb_build_object(
 				'error', $3,
-				'live_log_backend', 'disabled',
+				'live_log_backend', $4,
+				'backend_state', $5,
+				'kubectl_command_invoked', COALESCE($6, false),
+				'kubernetes_api_call', COALESCE($7, false),
 				'log_body_included', false
-			))`, opID, job["id"], safeError); err != nil {
+			))`, opID, job["id"], safeError, backend, cleanPreviewString(result["backend_state"]), boolOnlyFromAny(result["kubectl_command_invoked"]), boolOnlyFromAny(result["kubernetes_api_call"])); err != nil {
 			return err
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
@@ -1170,23 +1181,30 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 		return w.recordArgoSyncAdapterRun(ctx, tx, result)
 	case "argo.pod_logs":
 		data, err := jsonParam(map[string]any{
-			"deployment_target_id":  result["deployment_target_id"],
-			"pod_name":              result["pod_name"],
-			"container_name":        result["container_name"],
-			"namespace":             result["namespace"],
-			"cluster_name":          result["cluster_name"],
-			"result_scope":          result["result_scope"],
-			"line_count":            result["line_count"],
-			"kubeconfig_bound":      false,
-			"log_body_included":     false,
-			"raw_response_included": false,
+			"deployment_target_id":          result["deployment_target_id"],
+			"pod_name":                      result["pod_name"],
+			"container_name":                result["container_name"],
+			"namespace":                     result["namespace"],
+			"cluster_name":                  result["cluster_name"],
+			"result_scope":                  result["result_scope"],
+			"line_count":                    result["line_count"],
+			"truncated":                     result["truncated"],
+			"backend_state":                 result["backend_state"],
+			"live_log_backend":              result["live_log_backend"],
+			"kubeconfig_bound":              result["kubeconfig_bound"],
+			"kubeconfig_secret_ref_present": result["kubeconfig_secret_ref_present"],
+			"kubernetes_api_call":           result["kubernetes_api_call"],
+			"kubectl_command_invoked":       result["kubectl_command_invoked"],
+			"log_stream_opened":             result["log_stream_opened"],
+			"log_body_included":             false,
+			"raw_response_included":         false,
 		})
 		if err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'info', 'pod log audit completed without live log retrieval', $3::jsonb)`, opID, job["id"], data); err != nil {
+			VALUES ($1, $2, 'info', 'pod log audit completed with sanitized metadata', $3::jsonb)`, opID, job["id"], data); err != nil {
 			return err
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
@@ -1365,6 +1383,7 @@ func (w *ControlWorker) executeArgoPodLogAudit(ctx context.Context, opID string,
 		return result, fmt.Errorf("pod log audit operation is missing target metadata")
 	}
 	result["deployment_target_id"] = targetID
+	result["project_id"] = cleanOptionalID(fmt.Sprint(input["project_id"]))
 	result["deployment_target_name"] = cleanOptionalText(fmt.Sprint(input["deployment_target_name"]))
 	result["environment"] = cleanOptionalText(fmt.Sprint(input["environment"]))
 	result["cluster_name"] = clusterName
@@ -1373,23 +1392,96 @@ func (w *ControlWorker) executeArgoPodLogAudit(ctx context.Context, opID string,
 	result["container_name"] = cleanOptionalText(fmt.Sprint(input["container_name"]))
 	result["tail_lines"] = intFromAny(input["tail_lines"], 200)
 	result["since_seconds"] = intFromAny(input["since_seconds"], 0)
-	result["result_scope"] = "sanitized_metadata_only"
-	result["backend_state"] = "disabled"
-	result["live_log_backend"] = "disabled"
-	result["kubeconfig_bound"] = false
+	kubernetesEnv, err := loadKubernetesEnvironmentForPodLogs(ctx, w.store.DB, result)
+	if err != nil {
+		if w.cfg.KubernetesPodLogsEnabled {
+			return result, err
+		}
+	}
+	kubeconfigRef := ""
+	if kubernetesEnv != nil {
+		result["kubernetes_environment_id"] = cleanOptionalID(fmt.Sprint(kubernetesEnv["id"]))
+		result["kubernetes_environment_name"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["name"]))
+		result["kubernetes_environment_status"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["status"]))
+		result["kubeconfig_secret_ref_present"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ref"])) != ""
+		kubeconfigRef = cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ref"]))
+	}
+	req := kubernetesPodLogRequest{
+		ProjectID:          cleanOptionalID(fmt.Sprint(input["project_id"])),
+		DeploymentTargetID: targetID,
+		Environment:        cleanOptionalText(fmt.Sprint(input["environment"])),
+		ClusterName:        clusterName,
+		Namespace:          namespace,
+		PodName:            podName,
+		ContainerName:      cleanOptionalText(fmt.Sprint(input["container_name"])),
+		TailLines:          intFromAny(input["tail_lines"], 200),
+		SinceSeconds:       intFromAny(input["since_seconds"], 0),
+		KubeconfigRef:      kubeconfigRef,
+	}
+	if w.cfg.KubernetesPodLogsEnabled {
+		if err := validateKubernetesPodLogRequest(req); err != nil {
+			return result, err
+		}
+	}
+	liveResult, err := runKubernetesPodLogs(ctx, w.cfg, req)
+	for key, value := range liveResult {
+		result[key] = value
+	}
 	result["kubernetes_client_created"] = false
-	result["kubernetes_api_call"] = false
 	result["argocd_api_call"] = false
-	result["kubectl_command_invoked"] = false
-	result["log_stream_opened"] = false
 	result["log_body_included"] = false
 	result["redacted_log_body_included"] = false
 	result["raw_response_included"] = false
 	result["secret_included"] = false
-	result["line_count"] = 0
-	result["truncated"] = false
-	result["message"] = "pod log audit completed; live Kubernetes/Argo log retrieval remains disabled and no log body was returned"
-	return result, nil
+	return result, err
+}
+
+func loadKubernetesEnvironmentForPodLogs(ctx context.Context, db sqlx.ExtContext, opResult map[string]any) (map[string]any, error) {
+	projectID := cleanOptionalID(fmt.Sprint(opResult["project_id"]))
+	environment := cleanOptionalText(fmt.Sprint(opResult["environment"]))
+	clusterName := cleanOptionalText(fmt.Sprint(opResult["cluster_name"]))
+	namespace := cleanOptionalText(fmt.Sprint(opResult["namespace"]))
+	if projectID == "" || environment == "" || clusterName == "" || namespace == "" {
+		return nil, fmt.Errorf("pod log operation is missing Kubernetes environment binding metadata")
+	}
+	rows, err := db.QueryxContext(ctx, `
+		SELECT id, name, kubeconfig_secret_ref, service_account, token_subject_review_status, rbac_read_logs_status, status
+		FROM kubernetes_environments
+		WHERE project_id=$1 AND environment=$2 AND cluster_name=$3 AND namespace=$4
+		LIMIT 1`, projectID, environment, clusterName, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("loading Kubernetes environment for pod logs: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("loading Kubernetes environment for pod logs: %w", err)
+		}
+		return nil, fmt.Errorf("loading Kubernetes environment for pod logs: %w", ErrNotFound)
+	}
+	var id, name, kubeconfigRef, serviceAccount, tokenSubjectReviewStatus, rbacReadLogsStatus, status string
+	if err := rows.Scan(&id, &name, &kubeconfigRef, &serviceAccount, &tokenSubjectReviewStatus, &rbacReadLogsStatus, &status); err != nil {
+		return nil, fmt.Errorf("loading Kubernetes environment for pod logs: %w", err)
+	}
+	env := map[string]any{
+		"id":                          id,
+		"name":                        name,
+		"kubeconfig_secret_ref":       kubeconfigRef,
+		"service_account":             serviceAccount,
+		"token_subject_review_status": tokenSubjectReviewStatus,
+		"rbac_read_logs_status":       rbacReadLogsStatus,
+		"status":                      status,
+	}
+	if cleanPreviewString(env["status"]) != "ready" {
+		return nil, fmt.Errorf("Kubernetes environment is not ready")
+	}
+	if cleanPreviewString(env["token_subject_review_status"]) != "reviewed" {
+		return nil, fmt.Errorf("Kubernetes token subject review is not complete")
+	}
+	if cleanPreviewString(env["rbac_read_logs_status"]) != "reviewed" {
+		return nil, fmt.Errorf("Kubernetes logs RBAC review is not complete")
+	}
+	return env, nil
 }
 
 func (w *ControlWorker) executeConfigGitWorkflowAudit(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {

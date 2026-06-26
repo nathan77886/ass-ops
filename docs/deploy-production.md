@@ -401,6 +401,17 @@ assops-tool release pod-log-rehearsal-plan \
 
 The plan validates the project slug, public staging HTTPS origin, environment identifier, and Kubernetes namespace shape, then lists the namespace-scoped kubeconfig review, token subject/RBAC review, approval request, sanitized result metadata, and pod-log audit snapshot evidence to collect. Localhost, private IP, `.local`, path, query, fragment, and userinfo origins are rejected. It does not read kubeconfig, call Kubernetes or Argo, open log streams, create approvals, enqueue workers, record snapshots, store log bodies, or expose cluster tokens, authorization headers, client keys, pod env, secret mounts, raw provider responses, raw log bodies, or redacted log bodies.
 
+The first live pod-log backend is opt-in and read-only. Set `ASSOPS_KUBERNETES_LOGS_ENABLED=true` only after the target namespace has a reviewed `kubernetes_environment` row and the worker can read a namespace-scoped kubeconfig from `ASSOPS_KUBECONFIG_SECRET_DIR` (default `/etc/assops/kubeconfigs`). The `kubeconfig_secret_ref` stored in ASSOPS is a relative file reference under that directory, never kubeconfig content. The worker rejects absolute paths, `..`, secret-shaped refs, directories, group/world-writable files, files over 1 MiB, and files that do not look like kubeconfig documents.
+
+Operational contract for kubeconfig files:
+
+- Provide kubeconfig files out of band through a read-only Secret or volume mount; ASSOPS never creates or rotates them.
+- Keep files namespace-scoped and least-privileged for pod log reads only.
+- Use permissions such as `0400` or `0600`; avoid group/world writable modes.
+- Rotate by writing a new file and atomically renaming it within the same directory, rather than overwriting in place.
+- `kubectl logs` is invoked without a shell and with a 30 second timeout. Failures are recorded as failed operations without automatic retry.
+- Operation results store only sanitized metadata such as backend state, pod identity, line count, truncation flag, and timestamps. They do not store stdout, stderr, raw Kubernetes responses, kubeconfig content, tokens, authorization headers, or log bodies.
+
 The production values example enables stricter pod/container security settings for Go workloads and migration jobs. Review these settings with the actual images and cluster policy before rollout, especially if you override images.
 
 It also enables chart-managed NetworkPolicies. Confirm that your CNI enforces NetworkPolicy and that the configured web ingress CIDRs match the ingress controller or load balancer path used by the cluster.
