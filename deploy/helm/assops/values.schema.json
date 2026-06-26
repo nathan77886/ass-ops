@@ -83,7 +83,15 @@
           "type": "string",
           "minLength": 1
         },
+        "configGitLocalBareWritesEnabled": {
+          "type": "string",
+          "enum": ["true", "false"]
+        },
         "kubernetesLogsEnabled": {
+          "type": "string",
+          "enum": ["true", "false"]
+        },
+        "kubernetesRestartsEnabled": {
           "type": "string",
           "enum": ["true", "false"]
         },

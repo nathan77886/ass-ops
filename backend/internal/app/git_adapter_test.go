@@ -205,6 +205,29 @@ func TestProvisionTemplateRepositoryCreatesLocalBareRepoAndPushesFiles(t *testin
 	}
 }
 
+func TestSafeResolvedLocalBareRemotePathRejectsFinalSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "repos")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "config.git")
+	target := filepath.Join(outside, "config.git")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if safeResolvedLocalBareRemotePath(link, []string{base}) {
+		t.Fatal("final symlink escaping outside base should be rejected")
+	}
+}
+
 func TestProvisionTemplateRepositoryIdempotentWhenBareRepoExists(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git binary is required for template repository provisioning test")
@@ -236,6 +259,108 @@ func TestProvisionTemplateRepositoryIdempotentWhenBareRepoExists(t *testing.T) {
 	}
 	if strings.TrimSpace(string(out)) != "# Billing" {
 		t.Fatalf("README content changed on idempotent provisioning: %q", out)
+	}
+}
+
+func TestCommitConfigScaffoldWritesLocalBareAndUpdatesSyncedState(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary is required for config scaffold commit test")
+	}
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	root := t.TempDir()
+	remotePath := filepath.Join(root, "repos", "config.git")
+	mock.ExpectQuery(`SELECT \* FROM project_git_repositories WHERE id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "repo_key", "repo_role", "default_branch"}).
+			AddRow("repo-1", "Config Repository", "config", "config", "main"))
+	mock.ExpectQuery(`SELECT \* FROM git_remotes\s+WHERE id=\$1 AND project_git_repository_id=\$2`).
+		WithArgs("remote-1", "repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "provider_type", "remote_url", "default_branch"}).
+			AddRow("remote-1", "repo-1", "local_bare", remotePath, "main"))
+	mock.ExpectQuery(`SELECT count\(\*\) AS candidate_count\s+FROM git_remotes`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"candidate_count"}).AddRow(1))
+
+	executor := &GitExecutor{WorkDir: filepath.Join(root, "work"), LocalBareBaseDirs: []string{filepath.Join(root, "repos")}}
+	result, err := executor.CommitConfigScaffold(context.Background(), sqlx.NewDb(db, "sqlmock"), "repo-1", "remote-1")
+	if err != nil {
+		t.Fatalf("CommitConfigScaffold: %v\nstdout=%s\nstderr=%s", err, result.Stdout, result.Stderr)
+	}
+	if result.AfterSHA == "" || result.Details["git_write_performed"] != true || result.Details["commit_sha_present"] != true {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	cmd := exec.Command("git", "--git-dir", remotePath, "show", "refs/heads/main:envs/test/values.yaml")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git show config values: %v: %s", err, out)
+	}
+	if !strings.Contains(string(out), "environment: test") || strings.Contains(string(out), "password:") {
+		t.Fatalf("unexpected config scaffold content: %s", out)
+	}
+	encoded, _ := json.Marshal(result.Details)
+	if strings.Contains(string(encoded), remotePath) || strings.Contains(string(encoded), result.AfterSHA) {
+		t.Fatalf("sanitized result leaked remote path or commit sha: %s", encoded)
+	}
+	mock.ExpectQuery(`SELECT \* FROM project_git_repositories WHERE id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "repo_key", "repo_role", "default_branch"}).
+			AddRow("repo-1", "Config Repository", "config", "config", "main"))
+	mock.ExpectQuery(`SELECT \* FROM git_remotes\s+WHERE id=\$1 AND project_git_repository_id=\$2`).
+		WithArgs("remote-1", "repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "provider_type", "remote_url", "default_branch"}).
+			AddRow("remote-1", "repo-1", "local_bare", remotePath, "main"))
+	mock.ExpectQuery(`SELECT count\(\*\) AS candidate_count\s+FROM git_remotes`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"candidate_count"}).AddRow(1))
+	second, err := executor.CommitConfigScaffold(context.Background(), sqlx.NewDb(db, "sqlmock"), "repo-1", "remote-1")
+	if err != nil {
+		t.Fatalf("second CommitConfigScaffold: %v\nstdout=%s\nstderr=%s", err, second.Stdout, second.Stderr)
+	}
+	if second.AfterSHA != result.AfterSHA ||
+		second.Details["git_commit_created"] != false ||
+		second.Details["git_push_performed"] != false ||
+		second.Details["no_changes"] != true {
+		t.Fatalf("idempotent result = %#v, want same SHA %q without commit/push", second.Details, result.AfterSHA)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestCommitConfigScaffoldRejectsAmbiguousLocalBareTargets(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	root := t.TempDir()
+	remotePath := filepath.Join(root, "repos", "config.git")
+	mock.ExpectQuery(`SELECT \* FROM project_git_repositories WHERE id=\$1`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "repo_key", "repo_role", "default_branch"}).
+			AddRow("repo-1", "Config Repository", "config", "config", "main"))
+	mock.ExpectQuery(`SELECT \* FROM git_remotes\s+WHERE id=\$1 AND project_git_repository_id=\$2`).
+		WithArgs("remote-1", "repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_git_repository_id", "provider_type", "remote_url", "default_branch"}).
+			AddRow("remote-1", "repo-1", "local_bare", remotePath, "main"))
+	mock.ExpectQuery(`SELECT count\(\*\) AS candidate_count\s+FROM git_remotes`).
+		WithArgs("repo-1").
+		WillReturnRows(sqlmock.NewRows([]string{"candidate_count"}).AddRow(2))
+
+	executor := &GitExecutor{WorkDir: filepath.Join(root, "work"), LocalBareBaseDirs: []string{filepath.Join(root, "repos")}}
+	_, err = executor.CommitConfigScaffold(context.Background(), sqlx.NewDb(db, "sqlmock"), "repo-1", "remote-1")
+	if err == nil || !strings.Contains(err.Error(), "exactly one local_bare remote") {
+		t.Fatalf("expected ambiguous local_bare error, got %v", err)
+	}
+	if _, statErr := os.Stat(remotePath); !os.IsNotExist(statErr) {
+		t.Fatalf("ambiguous target should not create remote repo, stat err=%v", statErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
 

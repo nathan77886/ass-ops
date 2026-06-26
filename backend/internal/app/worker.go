@@ -655,14 +655,19 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 		}
 		return nil
 	case "config.git_commit":
+		backend := "approval_gated_audit_only"
+		if w.cfg.ConfigGitLocalBareWritesEnabled {
+			backend = "local_bare_git_write_when_eligible"
+		}
 		if _, err := db.ExecContext(ctx, `
 			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'info', 'config git workflow audit worker started', jsonb_build_object(
+			VALUES ($1, $2, 'info', 'config git workflow worker started', jsonb_build_object(
+				'backend', $3,
 				'git_write_performed', false,
 				'external_call_made', false,
 				'file_content_included', false,
 				'secret_included', false
-			))`, opID, job["id"]); err != nil {
+			))`, opID, job["id"], backend); err != nil {
 			return err
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
@@ -772,7 +777,7 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 	case "argo.pod_restart":
 		return w.executeArgoPodRestart(ctx, opID, result)
 	case "config.git_commit":
-		return w.executeConfigGitWorkflowAudit(ctx, opID, result)
+		return w.executeConfigGitWorkflow(ctx, opID, result)
 	case "project_version.validation_rerun":
 		return w.executeProjectVersionValidationRerun(ctx, opID, result)
 	case "ssh.exec", "ssh.verify":
@@ -1006,10 +1011,10 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		}
 		return nil
 	case "config.git_commit":
-		safeError := "config git workflow audit worker failed; details are withheld from operation logs"
+		safeError := "config git workflow worker failed; details are withheld from operation logs"
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'error', 'config git workflow audit worker failed', jsonb_build_object(
+			VALUES ($1, $2, 'error', 'config git workflow worker failed', jsonb_build_object(
 				'error', $3,
 				'git_write_performed', false,
 				'external_call_made', false,
@@ -1349,6 +1354,18 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 		}
 		return nil
 	case "config.git_commit":
+		if sha := strings.TrimSpace(fmt.Sprint(result["config_commit_sha_internal"])); sha != "" && sha != "<nil>" {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE git_remotes
+				SET latest_sha=$1,
+					last_sync_status='synced',
+					updated_at=now()
+				WHERE id=$2 AND project_git_repository_id=$3`, sha, result["config_remote_id"], result["project_git_repository_id"]); err != nil {
+				delete(result, "config_commit_sha_internal")
+				return fmt.Errorf("updating config remote synced state: %w", err)
+			}
+		}
+		delete(result, "config_commit_sha_internal")
 		data, err := jsonParam(map[string]any{
 			"result_scope":                   result["result_scope"],
 			"project_git_repository_id":      result["project_git_repository_id"],
@@ -1356,21 +1373,33 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 			"provider_type":                  result["provider_type"],
 			"scaffold_file_count":            result["scaffold_file_count"],
 			"remote_count":                   result["remote_count"],
-			"git_write_performed":            false,
-			"external_call_made":             false,
+			"git_write_performed":            boolOnlyFromAny(result["git_write_performed"]),
+			"git_clone_performed":            boolOnlyFromAny(result["git_clone_performed"]),
+			"git_fetch_performed":            boolOnlyFromAny(result["git_fetch_performed"]),
+			"file_content_materialized":      boolOnlyFromAny(result["file_content_materialized"]),
+			"secret_scan_performed":          boolOnlyFromAny(result["secret_scan_performed"]),
+			"git_commit_created":             boolOnlyFromAny(result["git_commit_created"]),
+			"git_push_performed":             boolOnlyFromAny(result["git_push_performed"]),
+			"commit_sha_present":             boolOnlyFromAny(result["commit_sha_present"]),
+			"commit_sha_included":            false,
+			"external_call_made":             boolOnlyFromAny(result["external_call_made"]),
 			"file_content_included":          false,
 			"secret_included":                false,
 			"project_version_pin_written":    false,
-			"live_commit_validation":         "disabled",
+			"live_commit_validation":         result["live_commit_validation"],
 			"raw_git_output_recorded":        false,
 			"raw_provider_response_recorded": false,
 		})
 		if err != nil {
 			return err
 		}
+		message := "config git workflow completed with sanitized metadata"
+		if !boolOnlyFromAny(result["git_write_performed"]) {
+			message = "config git workflow audit completed without Git mutation"
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'info', 'config git workflow audit completed without Git mutation', $3::jsonb)`, opID, job["id"], data); err != nil {
+			VALUES ($1, $2, 'info', $3, $4::jsonb)`, opID, job["id"], message, data); err != nil {
 			return err
 		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
@@ -1776,11 +1805,110 @@ func loadKubernetesEnvironmentForPodRestart(ctx context.Context, db sqlx.ExtCont
 }
 
 func (w *ControlWorker) executeConfigGitWorkflowAudit(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
+	// Kept as the audit-only compatibility wrapper; executeConfigGitWorkflow is
+	// the adapter entrypoint and falls back to the same sanitized result shape.
 	op, err := queryOne(ctx, w.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
 	if err != nil {
 		return result, fmt.Errorf("loading config git workflow operation: %w", err)
 	}
 	input := mapFromAny(op["input"])
+	repoID := cleanOptionalID(fmt.Sprint(input["project_git_repository_id"]))
+	remoteID := cleanOptionalID(fmt.Sprint(input["config_remote_id"]))
+	if repoID == "" {
+		return result, fmt.Errorf("config git workflow operation is missing repository metadata")
+	}
+	result["result_scope"] = "sanitized_config_git_workflow_intent"
+	result["project_git_repository_id"] = repoID
+	result["config_remote_id"] = remoteID
+	result["provider_type"] = cleanOptionalText(fmt.Sprint(input["provider_type"]))
+	result["scaffold_file_count"] = intFromAny(input["scaffold_file_count"], 0)
+	result["remote_count"] = intFromAny(input["remote_count"], 0)
+	result["default_branch_configured"] = boolOnlyFromAny(input["default_branch_configured"])
+	result["workflow_intent_recorded"] = true
+	result["git_write_performed"] = false
+	result["git_clone_performed"] = false
+	result["git_fetch_performed"] = false
+	result["file_content_materialized"] = false
+	result["secret_scan_performed"] = false
+	result["git_commit_created"] = false
+	result["git_push_performed"] = false
+	result["provider_review_created"] = false
+	result["project_version_pin_written"] = false
+	result["live_commit_validation"] = "disabled"
+	result["external_call_made"] = false
+	result["file_content_included"] = false
+	result["secret_included"] = false
+	result["raw_git_output_recorded"] = false
+	result["raw_provider_response_recorded"] = false
+	result["suppressed_fields"] = []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "commit_sha", "provider_response_body", "provider_response_headers"}
+	result["disabled_backends"] = []string{"git_clone", "git_fetch", "file_write", "git_commit", "git_push", "pull_request_create", "project_version_update", "live_commit_validation"}
+	result["message"] = "config git workflow audit completed without Git mutation"
+	return result, nil
+}
+
+func (w *ControlWorker) executeConfigGitWorkflow(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
+	op, err := queryOne(ctx, w.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	if err != nil {
+		return result, fmt.Errorf("loading config git workflow operation: %w", err)
+	}
+	input := mapFromAny(op["input"])
+	if !w.cfg.ConfigGitLocalBareWritesEnabled ||
+		!boolOnlyFromAny(input["local_bare_write_eligible"]) ||
+		!strings.EqualFold(cleanOptionalText(fmt.Sprint(input["provider_type"])), "local_bare") {
+		return w.executeConfigGitWorkflowAuditFromInput(input, result)
+	}
+	repoID := cleanOptionalID(fmt.Sprint(input["project_git_repository_id"]))
+	remoteID := cleanOptionalID(fmt.Sprint(input["config_remote_id"]))
+	if repoID == "" || remoteID == "" {
+		return result, fmt.Errorf("config git workflow operation is missing local_bare repository metadata")
+	}
+	executor := NewGitExecutor("")
+	executor.LocalBareBaseDirs = w.cfg.LocalBareBaseDirs
+	execution, err := executor.CommitConfigScaffold(ctx, w.store.DB, repoID, remoteID)
+	if err != nil {
+		return result, err
+	}
+	details := map[string]any{}
+	if execution != nil {
+		details = execution.Details
+	}
+	result["result_scope"] = "sanitized_config_git_workflow_local_bare"
+	result["project_git_repository_id"] = repoID
+	result["config_remote_id"] = remoteID
+	result["provider_type"] = "local_bare"
+	result["scaffold_file_count"] = details["scaffold_file_count"]
+	result["remote_count"] = intFromAny(input["remote_count"], 0)
+	result["default_branch_configured"] = true
+	result["workflow_intent_recorded"] = true
+	result["git_write_performed"] = true
+	result["git_clone_performed"] = true
+	result["git_fetch_performed"] = boolOnlyFromAny(details["remote_existed"])
+	result["file_content_materialized"] = true
+	result["secret_scan_performed"] = true
+	result["secret_scan_kind"] = "template_secret_marker_scan"
+	result["git_commit_created"] = boolOnlyFromAny(details["git_commit_created"])
+	result["git_push_performed"] = boolOnlyFromAny(details["git_push_performed"])
+	result["provider_review_created"] = false
+	result["project_version_pin_written"] = false
+	result["live_commit_validation"] = "synced_state_updated"
+	result["external_call_made"] = false
+	result["file_content_included"] = false
+	result["secret_included"] = false
+	result["raw_git_output_recorded"] = false
+	result["raw_provider_response_recorded"] = false
+	result["commit_sha_present"] = execution != nil && execution.AfterSHA != ""
+	if execution != nil && execution.AfterSHA != "" {
+		result["config_commit_sha_internal"] = execution.AfterSHA
+	}
+	result["commit_sha_included"] = false
+	result["suppressed_fields"] = []string{"file_content", "secret_values", "git_credentials", "provider_token", "remote_url", "branch_name", "commit_message", "commit_sha", "git_output", "provider_response_body", "provider_response_headers"}
+	result["enabled_backends"] = []string{"local_bare_git_init", "file_write", "secret_scan", "git_commit", "git_push", "synced_state_update"}
+	result["disabled_backends"] = []string{"pull_request_create", "project_version_update", "provider_review"}
+	result["message"] = "config git workflow completed with sanitized local_bare Git metadata"
+	return result, nil
+}
+
+func (w *ControlWorker) executeConfigGitWorkflowAuditFromInput(input map[string]any, result map[string]any) (map[string]any, error) {
 	repoID := cleanOptionalID(fmt.Sprint(input["project_git_repository_id"]))
 	remoteID := cleanOptionalID(fmt.Sprint(input["config_remote_id"]))
 	if repoID == "" {

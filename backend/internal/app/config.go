@@ -8,50 +8,52 @@ import (
 )
 
 type Config struct {
-	Addr                           string
-	WorkerHealthAddr               string
-	NodeWorkerHealthAddr           string
-	DatabaseURL                    string
-	JWTSecret                      string
-	WebhookSecretKey               string
-	ApprovalWebhookURL             string
-	ApprovalWebhookToken           string
-	ProviderReviewExecutionEnabled bool
-	ProviderReviewMutationArmed    bool
-	KubernetesPodLogsEnabled       bool
-	KubernetesRestartsEnabled      bool
-	KubeconfigSecretDir            string
-	KubectlPath                    string
-	AdminEmail                     string
-	AdminPassword                  string
-	ContextDir                     string
-	GatewayURL                     string
-	LocalBareBaseDirs              []string
-	WorkerInterval                 time.Duration
+	Addr                            string
+	WorkerHealthAddr                string
+	NodeWorkerHealthAddr            string
+	DatabaseURL                     string
+	JWTSecret                       string
+	WebhookSecretKey                string
+	ApprovalWebhookURL              string
+	ApprovalWebhookToken            string
+	ProviderReviewExecutionEnabled  bool
+	ProviderReviewMutationArmed     bool
+	KubernetesPodLogsEnabled        bool
+	KubernetesRestartsEnabled       bool
+	ConfigGitLocalBareWritesEnabled bool
+	KubeconfigSecretDir             string
+	KubectlPath                     string
+	AdminEmail                      string
+	AdminPassword                   string
+	ContextDir                      string
+	GatewayURL                      string
+	LocalBareBaseDirs               []string
+	WorkerInterval                  time.Duration
 }
 
 func LoadConfig() Config {
 	return Config{
-		Addr:                           env("ASSOPS_ADDR", ":8080"),
-		WorkerHealthAddr:               env("ASSOPS_WORKER_HEALTH_ADDR", ":8081"),
-		NodeWorkerHealthAddr:           env("ASSOPS_NODE_WORKER_HEALTH_ADDR", ":8082"),
-		DatabaseURL:                    env("DATABASE_URL", "postgres://assops:assops@localhost:5432/assops?sslmode=disable"),
-		JWTSecret:                      env("ASSOPS_JWT_SECRET", "dev-assops-change-me"),
-		WebhookSecretKey:               env("ASSOPS_WEBHOOK_SECRET_KEY", "dev-assops-webhook-change-me"),
-		ApprovalWebhookURL:             env("ASSOPS_APPROVAL_WEBHOOK_URL", ""),
-		ApprovalWebhookToken:           env("ASSOPS_APPROVAL_WEBHOOK_TOKEN", ""),
-		ProviderReviewExecutionEnabled: envBool("ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION", false),
-		ProviderReviewMutationArmed:    envBool("ASSOPS_ARM_PROVIDER_REVIEW_MUTATION", false),
-		KubernetesPodLogsEnabled:       envBool("ASSOPS_KUBERNETES_LOGS_ENABLED", false),
-		KubernetesRestartsEnabled:      envBool("ASSOPS_KUBERNETES_RESTARTS_ENABLED", false),
-		KubeconfigSecretDir:            env("ASSOPS_KUBECONFIG_SECRET_DIR", "/etc/assops/kubeconfigs"),
-		KubectlPath:                    env("ASSOPS_KUBECTL_PATH", "kubectl"),
-		AdminEmail:                     env("ASSOPS_ADMIN_EMAIL", "admin@assops.local"),
-		AdminPassword:                  env("ASSOPS_ADMIN_PASSWORD", "admin1234"),
-		ContextDir:                     env("ASSOPS_CONTEXT_DIR", ".assops/context"),
-		GatewayURL:                     env("ASSOPS_GATEWAY_URL", "http://localhost:8080"),
-		LocalBareBaseDirs:              envList("ASSOPS_LOCAL_BARE_BASE_DIRS", ""),
-		WorkerInterval:                 time.Duration(envInt("ASSOPS_WORKER_INTERVAL_SECONDS", 3)) * time.Second,
+		Addr:                            env("ASSOPS_ADDR", ":8080"),
+		WorkerHealthAddr:                env("ASSOPS_WORKER_HEALTH_ADDR", ":8081"),
+		NodeWorkerHealthAddr:            env("ASSOPS_NODE_WORKER_HEALTH_ADDR", ":8082"),
+		DatabaseURL:                     env("DATABASE_URL", "postgres://assops:assops@localhost:5432/assops?sslmode=disable"),
+		JWTSecret:                       env("ASSOPS_JWT_SECRET", "dev-assops-change-me"),
+		WebhookSecretKey:                env("ASSOPS_WEBHOOK_SECRET_KEY", "dev-assops-webhook-change-me"),
+		ApprovalWebhookURL:              env("ASSOPS_APPROVAL_WEBHOOK_URL", ""),
+		ApprovalWebhookToken:            env("ASSOPS_APPROVAL_WEBHOOK_TOKEN", ""),
+		ProviderReviewExecutionEnabled:  envBool("ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION", false),
+		ProviderReviewMutationArmed:     envBool("ASSOPS_ARM_PROVIDER_REVIEW_MUTATION", false),
+		KubernetesPodLogsEnabled:        envBool("ASSOPS_KUBERNETES_LOGS_ENABLED", false),
+		KubernetesRestartsEnabled:       envBool("ASSOPS_KUBERNETES_RESTARTS_ENABLED", false),
+		ConfigGitLocalBareWritesEnabled: envBool("ASSOPS_CONFIG_GIT_LOCAL_BARE_WRITES_ENABLED", false),
+		KubeconfigSecretDir:             env("ASSOPS_KUBECONFIG_SECRET_DIR", "/etc/assops/kubeconfigs"),
+		KubectlPath:                     env("ASSOPS_KUBECTL_PATH", "kubectl"),
+		AdminEmail:                      env("ASSOPS_ADMIN_EMAIL", "admin@assops.local"),
+		AdminPassword:                   env("ASSOPS_ADMIN_PASSWORD", "admin1234"),
+		ContextDir:                      env("ASSOPS_CONTEXT_DIR", ".assops/context"),
+		GatewayURL:                      env("ASSOPS_GATEWAY_URL", "http://localhost:8080"),
+		LocalBareBaseDirs:               envList("ASSOPS_LOCAL_BARE_BASE_DIRS", ""),
+		WorkerInterval:                  time.Duration(envInt("ASSOPS_WORKER_INTERVAL_SECONDS", 3)) * time.Second,
 	}
 }
 

@@ -16,6 +16,7 @@ env:
   buildTime: unknown
   workerIntervalSeconds: "3"
   localBareBaseDirs: /var/lib/assops/bare-repos
+  configGitLocalBareWritesEnabled: "false"
   kubernetesLogsEnabled: "true"
   kubernetesRestartsEnabled: "false"
   kubeconfigSecretDir: /etc/assops/kubeconfigs

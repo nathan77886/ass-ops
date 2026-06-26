@@ -11777,6 +11777,73 @@ func TestRecordAdapterSuccessUpdatesRepoTagLookupWithoutOutput(t *testing.T) {
 	}
 }
 
+func TestRecordAdapterSuccessConfigGitCommitUpdatesSyncedStateWithoutLeakingSHA(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	worker := &ControlWorker{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)UPDATE git_remotes\s+SET latest_sha=\$1,\s+last_sync_status='synced',\s+updated_at=now\(\)\s+WHERE id=\$2 AND project_git_repository_id=\$3`).
+		WithArgs(sha, "remote-1", "repo-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`(?s)INSERT INTO operation_logs\(operation_run_id, worker_job_id, level, message, fields\)\s+VALUES \(\$1, \$2, 'info', \$3, \$4::jsonb\)`).
+		WithArgs("op-config", "job-config", "config git workflow completed with sanitized metadata", jsonEvidenceArg(func(fields map[string]any) bool {
+			encoded, _ := json.Marshal(fields)
+			return fields["git_write_performed"] == true &&
+				fields["commit_sha_present"] == true &&
+				fields["commit_sha_included"] == false &&
+				!strings.Contains(string(encoded), sha)
+		})).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).
+		WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
+	mock.ExpectCommit()
+
+	tx, err := worker.store.DB.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	result := map[string]any{
+		"result_scope":               "sanitized_config_git_workflow_local_bare",
+		"project_git_repository_id":  "repo-1",
+		"config_remote_id":           "remote-1",
+		"provider_type":              "local_bare",
+		"scaffold_file_count":        10,
+		"remote_count":               1,
+		"git_write_performed":        true,
+		"git_clone_performed":        true,
+		"git_fetch_performed":        false,
+		"file_content_materialized":  true,
+		"secret_scan_performed":      true,
+		"git_commit_created":         true,
+		"git_push_performed":         true,
+		"commit_sha_present":         true,
+		"external_call_made":         false,
+		"live_commit_validation":     "synced_state_updated",
+		"config_commit_sha_internal": sha,
+	}
+	err = worker.recordAdapterSuccess(context.Background(), tx, map[string]any{
+		"id":               "job-config",
+		"operation_run_id": "op-config",
+		"tool_name":        "config.git_commit",
+	}, result)
+	if err != nil {
+		t.Fatalf("record adapter success: %v", err)
+	}
+	if _, ok := result["config_commit_sha_internal"]; ok {
+		t.Fatal("internal config commit SHA should be removed before result serialization")
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordAdapterSuccessQueuesRepoTagLookupAndActionsRefresh(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

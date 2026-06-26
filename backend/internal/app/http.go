@@ -4422,25 +4422,38 @@ func configRepositoryGitWorkflowInput(repo map[string]any, remotes []map[string]
 	defaultBranch := cleanOptionalText(stringFromMap(repo, "default_branch"))
 	remoteID := ""
 	remoteProvider := ""
-	if len(remotes) > 0 {
-		remoteID = cleanOptionalID(fmt.Sprint(remotes[0]["id"]))
-		remoteProvider = cleanOptionalText(stringFromMap(remotes[0], "provider_type"))
+	localBareCandidates := 0
+	selectedRemote := map[string]any(nil)
+	for _, remote := range remotes {
+		if strings.EqualFold(cleanOptionalText(stringFromMap(remote, "provider_type")), "local_bare") {
+			localBareCandidates++
+			selectedRemote = remote
+		}
+	}
+	if localBareCandidates != 1 && len(remotes) > 0 {
+		selectedRemote = remotes[0]
+	}
+	if selectedRemote != nil {
+		remoteID = cleanOptionalID(fmt.Sprint(selectedRemote["id"]))
+		remoteProvider = cleanOptionalText(stringFromMap(selectedRemote, "provider_type"))
 		if defaultBranch == "" {
-			defaultBranch = cleanOptionalText(stringFromMap(remotes[0], "default_branch"))
+			defaultBranch = cleanOptionalText(stringFromMap(selectedRemote, "default_branch"))
 		}
 	}
 	return map[string]any{
-		"project_git_repository_id": cleanOptionalID(fmt.Sprint(repo["id"])),
-		"config_remote_id":          remoteID,
-		"provider_type":             remoteProvider,
-		"default_branch_configured": defaultBranch != "",
-		"scaffold_file_count":       preview["file_count"],
-		"remote_count":              preview["remote_count"],
-		"mode":                      "approval_gated_audit_only",
-		"file_content_included":     false,
-		"secret_included":           false,
-		"external_call_made":        false,
-		"git_write_performed":       false,
+		"project_git_repository_id":        cleanOptionalID(fmt.Sprint(repo["id"])),
+		"config_remote_id":                 remoteID,
+		"provider_type":                    remoteProvider,
+		"local_bare_write_candidate_count": localBareCandidates,
+		"local_bare_write_eligible":        localBareCandidates == 1 && strings.EqualFold(remoteProvider, "local_bare"),
+		"default_branch_configured":        defaultBranch != "",
+		"scaffold_file_count":              preview["file_count"],
+		"remote_count":                     preview["remote_count"],
+		"mode":                             "approval_gated_audit_only",
+		"file_content_included":            false,
+		"secret_included":                  false,
+		"external_call_made":               false,
+		"git_write_performed":              false,
 	}
 }
 
