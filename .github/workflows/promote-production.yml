@@ -68,6 +68,8 @@ jobs:
       - name: Generate Helm values overlay
         run: |
           test -f "${{ inputs.environment_values }}" || (echo "environment_values file not found: ${{ inputs.environment_values }}" && exit 1)
+          export ASSOPS_RELEASE_COMMIT="${GITHUB_SHA}"
+          export ASSOPS_RELEASE_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           go run ./backend/cmd/assops-tool release helm-values \
             "${{ inputs.ghcr_owner }}" \
             "${{ inputs.version }}" \
@@ -149,6 +151,8 @@ jobs:
         run: |
           mkdir -p dist/promotion
           test -f "${{ inputs.environment_values }}" || (echo "environment_values file not found: ${{ inputs.environment_values }}" && exit 1)
+          export ASSOPS_RELEASE_COMMIT="${GITHUB_SHA}"
+          export ASSOPS_RELEASE_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           go run ./backend/cmd/assops-tool release helm-values \
             "${{ inputs.ghcr_owner }}" \
             "${{ inputs.version }}" \

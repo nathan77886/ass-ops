@@ -192,6 +192,28 @@ func TestReleaseHelmValuesGeneratesGHCRImages(t *testing.T) {
 		"repository: nathan77886/assops-node-worker",
 		"repository: nathan77886/assops-web",
 		"tag: v0.1.0",
+		`version: "v0.1.0"`,
+		`commit: "release-commit-not-set"`,
+		`buildTime: "release-build-time-not-set"`,
+	} {
+		if !strings.Contains(values, want) {
+			t.Fatalf("releaseHelmValues missing %q in:\n%s", want, values)
+		}
+	}
+}
+
+func TestReleaseHelmValuesIncludesReleaseMetadataFromEnvironment(t *testing.T) {
+	t.Setenv("ASSOPS_RELEASE_COMMIT", "abc123def456")
+	t.Setenv("ASSOPS_RELEASE_BUILD_TIME", "2026-06-26T12:34:56Z")
+
+	values, err := releaseHelmValues("nathan77886", "v0.1.0")
+	if err != nil {
+		t.Fatalf("releaseHelmValues: %v", err)
+	}
+	for _, want := range []string{
+		`version: "v0.1.0"`,
+		`commit: "abc123def456"`,
+		`buildTime: "2026-06-26T12:34:56Z"`,
 	} {
 		if !strings.Contains(values, want) {
 			t.Fatalf("releaseHelmValues missing %q in:\n%s", want, values)
@@ -2168,6 +2190,33 @@ func TestReleasePromotionPlanIncludesVerificationAndRollout(t *testing.T) {
 func TestReleasePromotionPlanRejectsInvalidRepo(t *testing.T) {
 	if _, err := releasePromotionPlan("owner", "owner", "v0.1.0", "missing", "missing", "missing"); err == nil {
 		t.Fatal("expected invalid owner/repo to be rejected")
+	}
+}
+
+func TestReleasePromotionPlanAcceptsReleaseMetadataOverlay(t *testing.T) {
+	artifactDir := t.TempDir()
+	files := map[string]string{
+		"assops-v0.1.0-linux-amd64.tar.gz": "binary",
+		"assops-web-v0.1.0.tar.gz":         "web",
+		"assops-0.1.0.tgz":                 "helm",
+	}
+	writeSHA256SUMS(t, artifactDir, files)
+	reportPath := writeValidRehearsalReport(t, artifactDir, "postgres://assops@postgres:5432/assops_restore_test?sslmode=disable")
+	valuesPath := filepath.Join(artifactDir, "helm-values.yaml")
+	t.Setenv("ASSOPS_RELEASE_COMMIT", "abc123def456")
+	t.Setenv("ASSOPS_RELEASE_BUILD_TIME", "2026-06-26T12:34:56Z")
+	values, err := releaseHelmValues("nathan77886", "v0.1.0")
+	if err != nil {
+		t.Fatalf("releaseHelmValues: %v", err)
+	}
+	if err := writeTextFile(valuesPath, values); err != nil {
+		t.Fatalf("write values: %v", err)
+	}
+	t.Setenv("ASSOPS_RELEASE_COMMIT", "")
+	t.Setenv("ASSOPS_RELEASE_BUILD_TIME", "")
+
+	if _, err := releasePromotionPlan("nathan77886/ass-ops", "nathan77886", "v0.1.0", artifactDir, reportPath, valuesPath); err != nil {
+		t.Fatalf("releasePromotionPlan should accept metadata-only overlay drift: %v", err)
 	}
 }
 

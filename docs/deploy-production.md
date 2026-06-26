@@ -286,8 +286,12 @@ ghcr.io/<owner>/assops-web:v0.1.0
 Generate a Helm values overlay that pins all ASSOPS workloads to the reviewed GHCR release tag:
 
 ```bash
-docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml run --rm db-tool \
-  assops-tool release helm-values <owner> v0.1.0 /backups/release-notes/helm-values-v0.1.0.yaml
+ASSOPS_RELEASE_COMMIT="$(git rev-parse --short=12 HEAD)" \
+ASSOPS_RELEASE_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml run --rm \
+    -e ASSOPS_RELEASE_COMMIT \
+    -e ASSOPS_RELEASE_BUILD_TIME \
+    db-tool assops-tool release helm-values <owner> v0.1.0 /backups/release-notes/helm-values-v0.1.0.yaml
 ```
 
 Review that file before rollout and apply it together with the environment-specific values:

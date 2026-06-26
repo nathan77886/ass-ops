@@ -558,6 +558,8 @@ func releaseHelmValues(owner, version string) (string, error) {
 	if strings.ContainsAny(version, " \t\r\n") {
 		return "", fmt.Errorf("release version must not contain whitespace")
 	}
+	commit := safeReleaseMetadataValue(os.Getenv("ASSOPS_RELEASE_COMMIT"), "release-commit-not-set")
+	buildTime := safeReleaseMetadataValue(os.Getenv("ASSOPS_RELEASE_BUILD_TIME"), "release-build-time-not-set")
 	return fmt.Sprintf(`image:
   registry: ghcr.io
   pullPolicy: IfNotPresent
@@ -573,7 +575,23 @@ func releaseHelmValues(owner, version string) (string, error) {
   web:
     repository: %s/assops-web
     tag: %s
-`, owner, version, owner, version, owner, version, owner, version), nil
+env:
+  version: %s
+  commit: %s
+  buildTime: %s
+`, owner, version, owner, version, owner, version, owner, version, quoteYAMLString(version), quoteYAMLString(commit), quoteYAMLString(buildTime)), nil
+}
+
+func safeReleaseMetadataValue(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, "\r\n\t") {
+		return fallback
+	}
+	return value
+}
+
+func quoteYAMLString(value string) string {
+	return strconv.Quote(value)
 }
 
 func releasePromotionPlan(repo, owner, version, artifactDir, rehearsalReport, helmValuesPath string) (string, error) {
@@ -1737,11 +1755,28 @@ func validateReleaseHelmValuesFile(path, owner, version string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("checking Helm values path: %w", err)
 	}
-	if string(actual) != expected {
-		return "", fmt.Errorf("Helm values overlay does not match GHCR owner/version; regenerate it with release helm-values")
+	for _, snippet := range releaseHelmValuesRequiredSnippets(expected) {
+		if !strings.Contains(string(actual), snippet) {
+			return "", fmt.Errorf("Helm values overlay does not match GHCR owner/version; regenerate it with release helm-values")
+		}
+	}
+	if !strings.Contains(string(actual), "\n  commit: ") || !strings.Contains(string(actual), "\n  buildTime: ") {
+		return "", fmt.Errorf("Helm values overlay does not include release health metadata; regenerate it with release helm-values")
 	}
 	sum := sha256.Sum256(actual)
 	return fmt.Sprintf("%x", sum), nil
+}
+
+func releaseHelmValuesRequiredSnippets(values string) []string {
+	var snippets []string
+	for _, line := range strings.Split(values, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "commit:") || strings.HasPrefix(trimmed, "buildTime:") {
+			continue
+		}
+		snippets = append(snippets, line)
+	}
+	return snippets
 }
 
 func normalizePublicCallbackOrigin(raw string) (string, error) {

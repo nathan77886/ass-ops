@@ -120,11 +120,15 @@ If you install with a release name other than `assops` while using the built-in 
 Render the production-shaped example together with a release image overlay:
 
 ```bash
-go run ./backend/cmd/assops-tool release helm-values nathan77886 v0.1.0 /tmp/assops-release-values.yaml
+ASSOPS_RELEASE_COMMIT="$(git rev-parse --short=12 HEAD)" \
+ASSOPS_RELEASE_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  go run ./backend/cmd/assops-tool release helm-values nathan77886 v0.1.0 /tmp/assops-release-values.yaml
 helm template assops deploy/helm/assops \
   -f deploy/helm/assops/values.production.example.yaml \
   -f /tmp/assops-release-values.yaml
 ```
+
+The generated release overlay sets image tags and the `/healthz` metadata values under `env.version`, `env.commit`, and `env.buildTime`.
 
 Generate a local environment-readiness plan before any cluster-mutating promotion. This reads only the reviewed values overlay and checks that production-shaped guardrails are present: external Secret, external PostgreSQL, HTTPS/TLS ingress, ServiceAccount token isolation, NetworkPolicy, PodDisruptionBudget, persistent volumes, resource requests/limits, and non-root/drop-capability runtime posture.
 
