@@ -166,6 +166,8 @@ helm-smoke:
 	kubectl -n "$$namespace" rollout status "deployment/$${release}-worker" --timeout=120s; \
 	kubectl -n "$$namespace" rollout status "deployment/$${release}-node-worker" --timeout=120s; \
 	kubectl -n "$$namespace" rollout status "deployment/$${release}-web" --timeout=120s; \
+	kubectl -n "$$namespace" get endpoints "$${release}-worker-health" -o jsonpath='{.subsets[*].addresses[*].ip}' | grep -q .; \
+	kubectl -n "$$namespace" get endpoints "$${release}-node-worker-health" -o jsonpath='{.subsets[*].addresses[*].ip}' | grep -q .; \
 	kubectl -n "$$namespace" port-forward "svc/$${release}-web" 18080:80 >/tmp/assops-web-port-forward.log 2>&1 & \
 	pf_pid="$$!"; \
 	trap 'kill "$$pf_pid" 2>/dev/null || true; cleanup' EXIT; \

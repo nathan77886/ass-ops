@@ -404,6 +404,42 @@ jobs:
           cat /tmp/assops-web-port-forward.log
           exit 1
 
+      - name: Probe worker health services
+        run: |
+          probe_service() {
+            local service="$1"
+            local local_port="$2"
+            local service_port="$3"
+            local component="$4"
+            local log="/tmp/${service}-port-forward.log"
+
+            kubectl -n assops-smoke port-forward "svc/${service}" "${local_port}:${service_port}" >"$log" 2>&1 &
+            local pf_pid=$!
+            for _ in $(seq 1 30); do
+              if curl -fsS "http://127.0.0.1:${local_port}/healthz" >"/tmp/${service}-healthz.json"; then
+                python3 - "$component" "/tmp/${service}-healthz.json" <<'PY'
+          import json
+          import sys
+
+          expected_component = sys.argv[1]
+          with open(sys.argv[2], encoding="utf-8") as handle:
+              health = json.load(handle)
+          if health.get("ok") is not True or health.get("component") != expected_component:
+              raise SystemExit(f"unexpected {expected_component} health response: {health!r}")
+          PY
+                kill "$pf_pid" 2>/dev/null || true
+                return 0
+              fi
+              sleep 2
+            done
+            kill "$pf_pid" 2>/dev/null || true
+            cat "$log"
+            return 1
+          }
+
+          probe_service assops-worker-health 18081 8081 worker
+          probe_service assops-node-worker-health 18082 8082 node-worker
+
   docker:
     name: Docker Build (${{ matrix.target }})
     runs-on: ubuntu-latest

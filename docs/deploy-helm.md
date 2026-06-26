@@ -103,12 +103,15 @@ kubectl -n assops-test rollout status deployment/assops-gateway --timeout=180s
 kubectl -n assops-test rollout status deployment/assops-worker --timeout=180s
 kubectl -n assops-test rollout status deployment/assops-node-worker --timeout=180s
 kubectl -n assops-test rollout status deployment/assops-web --timeout=180s
+kubectl -n assops-test get endpoints assops-worker-health
+kubectl -n assops-test get endpoints assops-node-worker-health
 
 kubectl -n assops-test port-forward svc/assops-web 18080:80
 curl -fsS http://127.0.0.1:18080/healthz
 ```
 
 The health response should include `ok: true`, `component: gateway`, and the `version`, `commit`, and `build_time` values from the private overlay. If the response still shows `test`, `local`, or `unknown`, the release image overlay or private metadata values were not applied.
+The worker health Services are internal ClusterIP endpoints for rollout verification and emergency port-forward checks; they expose only `/healthz` for the control worker and node worker.
 
 Run the gateway API smoke through the same web Service port-forward:
 
