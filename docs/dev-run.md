@@ -53,15 +53,10 @@ go run ./backend/cmd/assops-tool db inspect-backup .assops/backups/assops-YYYYMM
 ## API smoke test
 
 ```bash
-TOKEN=$(curl -s http://localhost:8080/api/auth/login \
-  -H 'content-type: application/json' \
-  -d '{"email":"admin@assops.local","password":"admin1234"}' | jq -r .token)
-
-curl -s http://localhost:8080/api/projects \
-  -H "authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"name":"Demo","slug":"demo"}'
+make api-smoke
 ```
+
+Set `ASSOPS_GATEWAY_URL`, `ASSOPS_ADMIN_EMAIL`, and `ASSOPS_ADMIN_PASSWORD` to point the same smoke check at a deployed test gateway. The smoke check verifies `/healthz`, login, project listing, and worker queue summary without creating or modifying rows.
 
 ## Environment
 

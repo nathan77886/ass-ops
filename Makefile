@@ -1,4 +1,4 @@
-.PHONY: postgres compose-up compose-down gateway worker node-worker web build test tool context db-migrate db-migrations db-seed-demo db-sync-assets db-backup-retain db-rehearse-restore first-deployable-check release-validate-bundle release-helm-values release-helm-test-readiness-plan release-promotion-plan release-backup-schedule-plan helm-lint helm-template helm-smoke
+.PHONY: postgres compose-up compose-down gateway worker node-worker web build test tool context db-migrate db-migrations db-seed-demo db-sync-assets db-backup-retain db-rehearse-restore api-smoke first-deployable-check release-validate-bundle release-helm-values release-helm-test-readiness-plan release-promotion-plan release-backup-schedule-plan helm-lint helm-template helm-smoke
 
 postgres:
 	docker compose -f deploy/docker-compose.yml up -d postgres
@@ -54,6 +54,9 @@ db-rehearse-restore:
 	@test -f "$(BACKUP)" || (echo "BACKUP=$(BACKUP) does not exist" && exit 1)
 	@test -n "$(TARGET_DATABASE_URL)" || (echo "TARGET_DATABASE_URL=postgres://.../assops_restore_test is required" && exit 1)
 	go run ./backend/cmd/assops-tool db rehearse-restore "$(BACKUP)" "$(TARGET_DATABASE_URL)" $(if $(REHEARSAL_REPORT),"$(REHEARSAL_REPORT)")
+
+api-smoke:
+	bash scripts/api-smoke.sh
 
 first-deployable-check:
 	@set -e; \

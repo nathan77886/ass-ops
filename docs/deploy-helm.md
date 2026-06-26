@@ -110,6 +110,17 @@ curl -fsS http://127.0.0.1:18080/healthz
 
 The health response should include `ok: true`, `component: gateway`, and the `version`, `commit`, and `build_time` values from the private overlay. If the response still shows `test`, `local`, or `unknown`, the release image overlay or private metadata values were not applied.
 
+Run the gateway API smoke through the same web Service port-forward:
+
+```bash
+ASSOPS_GATEWAY_URL=http://127.0.0.1:18080 \
+ASSOPS_ADMIN_EMAIL=admin@example.com \
+ASSOPS_ADMIN_PASSWORD='<admin-password>' \
+make api-smoke
+```
+
+The smoke check verifies `/healthz`, login, project listing, and worker queue summary through the deployed gateway without creating or modifying rows.
+
 ## Production Values
 
 Prefer an external secret for production. Start from `deploy/helm/assops/values.production.example.yaml` and commit or store an environment-specific overlay outside the chart defaults:
