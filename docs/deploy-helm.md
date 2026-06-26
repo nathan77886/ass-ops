@@ -24,6 +24,47 @@ helm template assops deploy/helm/assops -f /tmp/assops-dev-values.yaml
 The chart includes `values.schema.json`, so `helm lint` also validates common value shape mistakes such as invalid image pull policies, non-numeric worker intervals, and missing external secret names when `secret.create=false`.
 CI renders both the default values and `values.production.example.yaml`, then runs a disposable kind smoke test that builds the gateway, worker, node-worker, and web images from the pull request, loads them into a temporary cluster, installs the chart with the built-in PostgreSQL, waits for the migration hook and Deployments, and probes the web Service `/healthz`.
 
+## First Test Environment
+
+For a private test namespace, start from `deploy/helm/assops/values.test.example.yaml`. It expects an environment-owned `assops-test-secret` and an external PostgreSQL URL so the checked-in example does not contain connection strings or password placeholders.
+
+The external test Secret must provide the same application keys as production:
+
+- `DATABASE_URL`
+- `ASSOPS_JWT_SECRET`
+- `ASSOPS_WEBHOOK_SECRET_KEY`
+- `ASSOPS_ADMIN_EMAIL`
+- `ASSOPS_ADMIN_PASSWORD`
+- `ASSOPS_APPROVAL_WEBHOOK_TOKEN`
+- `ASSOPS_GITHUB_ACTIONS_READ_TOKEN`
+- `ASSOPS_ARGO_READ_TOKEN`
+
+For a disposable namespace that uses the chart-managed PostgreSQL, enable `postgres.enabled`, `secret.create`, `secret.databaseURL`, and `postgres.password` only in a private values overlay.
+
+Create the namespace-scoped kubeconfig Secret out of band. The key name becomes the UI `kubeconfig_secret_ref` value:
+
+```bash
+kubectl -n assops-test create secret generic assops-kubeconfigs \
+  --from-file=test-assops-reader.yaml=/path/to/namespace-scoped-kubeconfig.yaml
+```
+
+Use the same key in the ASSOPS Kubernetes environment form:
+
+```text
+kubeconfig_secret_ref = test-assops-reader.yaml
+```
+
+Render or install with the test example plus your private override:
+
+```bash
+helm template assops deploy/helm/assops \
+  -n assops-test \
+  -f deploy/helm/assops/values.test.example.yaml \
+  -f /path/to/private-test-values.yaml
+```
+
+With the test example, gateway and worker mount `assops-kubeconfigs` read-only at `/etc/assops/kubeconfigs`, `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, and pod-log audit results remain sanitized metadata only.
+
 ## Production Values
 
 Prefer an external secret for production. Start from `deploy/helm/assops/values.production.example.yaml` and commit or store an environment-specific overlay outside the chart defaults:

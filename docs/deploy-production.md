@@ -437,7 +437,7 @@ For a first private test environment using Compose:
 8. Add Git remotes for the project repository, sync GitHub Actions, and verify action runs/artifact summaries appear from the local read model.
 9. Create or sync a tag run, refresh GitHub Actions for the tag target, and record the local sanitized snapshots when the UI marks them ready.
 
-For Helm-based test environments, set the same integration values in a reviewed values file. The chart mounts `/etc/assops/kubeconfigs` into gateway and worker from either `persistence.kubeconfigs.existingSecretName` or the `persistence.kubeconfigs` PVC, and exposes `env.kubernetesLogsEnabled`, `env.kubeconfigSecretDir`, and `env.kubectlPath`.
+For Helm-based test environments, start from `deploy/helm/assops/values.test.example.yaml`, then provide the referenced external application Secret and database URL out of band. The chart mounts `/etc/assops/kubeconfigs` into gateway and worker from either `persistence.kubeconfigs.existingSecretName` or the `persistence.kubeconfigs` PVC, and exposes `env.kubernetesLogsEnabled`, `env.kubeconfigSecretDir`, and `env.kubectlPath`.
 
 The production values example enables stricter pod/container security settings for Go workloads and migration jobs. Review these settings with the actual images and cluster policy before rollout, especially if you override images.
 

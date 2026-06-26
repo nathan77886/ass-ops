@@ -1,0 +1,54 @@
+replicaCount: 1
+
+gatewayURL: http://assops-web.assops-test.svc.cluster.local
+
+secret:
+  create: false
+  name: assops-test-secret
+
+postgres:
+  enabled: false
+
+env:
+  approvalWebhookURL: ""
+  workerIntervalSeconds: "3"
+  localBareBaseDirs: /var/lib/assops/bare-repos
+  kubernetesLogsEnabled: "true"
+  kubeconfigSecretDir: /etc/assops/kubeconfigs
+  kubectlPath: kubectl
+
+persistence:
+  context:
+    enabled: true
+    size: 1Gi
+  bareRepos:
+    enabled: true
+    size: 5Gi
+  ssh:
+    enabled: true
+    size: 1Gi
+  kubeconfigs:
+    enabled: true
+    size: 1Gi
+    existingSecretName: assops-kubeconfigs
+  backups:
+    enabled: true
+    size: 5Gi
+
+web:
+  service:
+    type: ClusterIP
+    port: 80
+
+ingress:
+  enabled: false
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+
+networkPolicy:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
