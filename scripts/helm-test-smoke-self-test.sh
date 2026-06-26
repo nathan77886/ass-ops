@@ -30,7 +30,7 @@ case "$1" in
     component="gateway"
     case "$target" in
       *node-worker-health) component="node-worker" ;;
-      *worker-health) component="worker" ;;
+      *worker-health) component="control-worker" ;;
     esac
 
     COMPONENT="$component" PORT="$local_port" python3 - <<'PY'

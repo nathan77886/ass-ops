@@ -199,7 +199,7 @@ jobs:
         run: |
           mkdir -p .assops/backups .assops/release-notes
           go run ./backend/cmd/assops-tool db backup-retain .assops/backups 3
-          BACKUP="$(ls -t .assops/backups/assops-*.dump | head -n 1)"
+          BACKUP="$(find .assops/backups -maxdepth 1 -type f -name 'assops-*.dump' | sort | tail -n 1)"
           test -n "$BACKUP"
           go run ./backend/cmd/assops-tool db rehearse-restore "$BACKUP" "$TARGET_DATABASE_URL" .assops/release-notes/restore-rehearsal-ci.json
 
@@ -443,7 +443,7 @@ jobs:
             return 1
           }
 
-          probe_service assops-worker-health 18081 8081 worker
+          probe_service assops-worker-health 18081 8081 control-worker
           probe_service assops-node-worker-health 18082 8082 node-worker
 
   docker:

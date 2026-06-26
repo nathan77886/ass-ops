@@ -81,7 +81,7 @@ jobs:
 
       - name: Generate checksums
         run: |
-          (cd dist && sha256sum *.tar.gz *.tgz > SHA256SUMS)
+          (cd dist && sha256sum ./*.tar.gz ./*.tgz > SHA256SUMS)
 
       - name: Validate release artifact layout
         run: |

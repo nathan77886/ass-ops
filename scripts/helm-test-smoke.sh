@@ -103,7 +103,7 @@ start_port_forward worker-health "$worker_local_port" 8081
 start_port_forward node-worker-health "$node_worker_local_port" 8082
 
 ASSOPS_GATEWAY_URL="http://127.0.0.1:${web_local_port}" bash scripts/api-smoke.sh
-check_component "http://127.0.0.1:${worker_local_port}/healthz" worker
+check_component "http://127.0.0.1:${worker_local_port}/healthz" control-worker
 check_component "http://127.0.0.1:${node_worker_local_port}/healthz" node-worker
 
 echo "helm-test-smoke passed for ${fullname} in namespace ${namespace}"

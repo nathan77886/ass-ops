@@ -76,7 +76,7 @@ jobs:
         run: |
           mkdir -p .assops/backups .assops/release-notes
           bin/assops-tool db backup-retain .assops/backups 3
-          BACKUP="$(ls -t .assops/backups/assops-*.dump | head -n 1)"
+          BACKUP="$(find .assops/backups -maxdepth 1 -type f -name 'assops-*.dump' | sort | tail -n 1)"
           test -n "$BACKUP"
           bin/assops-tool db rehearse-restore "$BACKUP" "$TARGET_DATABASE_URL" .assops/release-notes/restore-rehearsal-scheduled.json
 
