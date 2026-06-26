@@ -229,16 +229,17 @@ jobs:
           esac
           kubectl -n "$NAMESPACE" port-forward "svc/${fullname}-web" 18080:80 >/tmp/assops-web-port-forward.log 2>&1 &
           pf_pid=$!
-          cleanup() {
-            kill "$pf_pid" 2>/dev/null || true
-          }
-          trap cleanup EXIT
+          trap 'kill "$pf_pid" 2>/dev/null || true' EXIT
+          smoke_status=1
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:18080/healthz >/dev/null; then
               ASSOPS_GATEWAY_URL=http://127.0.0.1:18080 bash scripts/api-smoke.sh
-              exit 0
+              smoke_status=0
+              break
             fi
             sleep 2
           done
-          cat /tmp/assops-web-port-forward.log
-          exit 1
+          if [ "$smoke_status" -ne 0 ]; then
+            cat /tmp/assops-web-port-forward.log
+          fi
+          exit "$smoke_status"
