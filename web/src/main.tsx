@@ -115,6 +115,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.edit': 'Edit',
     'common.enable': 'Enable',
     'common.disable': 'Disable',
+    'common.revoke': 'Revoke',
     'common.requestFailed': 'Request failed',
     'common.error': 'Error',
     'common.message': 'Message',
@@ -134,6 +135,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.live': 'Live',
     'common.close': 'Close',
     'common.open': 'Open',
+    'common.history': 'History',
     'common.generate': 'Generate',
     'common.approve': 'Approve',
     'common.reject': 'Reject',
@@ -145,6 +147,13 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.path': 'Path',
     'common.collected': 'Collected',
     'common.externalId': 'External ID',
+    'common.user': 'User',
+    'common.actor': 'Actor',
+    'common.before': 'Before',
+    'common.after': 'After',
+    'common.finished': 'Finished',
+    'common.worker': 'Worker',
+    'common.tool': 'Tool',
     'title.sshMachines': 'SSH Machines',
     'title.argoConnections': 'Argo Connections',
     'title.argoSsh': 'Argo / SSH',
@@ -280,6 +289,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.recordPromotionSnapshotHelp': 'Records sanitized audit-to-live promotion readiness metadata. It does not push, call providers, or expose SHAs.',
     'config.blockedReasons': 'Blocked reasons',
     'field.name': 'Name',
+    'field.title': 'Title',
     'field.slug': 'Slug',
     'field.description': 'Description',
     'field.environment': 'Environment',
@@ -592,6 +602,83 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'dashboard.snapshotBlocked': 'snapshot blocked',
     'dashboard.snapshotWrite': 'snapshot write',
     'dashboard.noSnapshotWrite': 'no snapshot write',
+    'ops.pendingApprovals': 'Pending approvals',
+    'ops.expiringSoon': 'Expiring soon',
+    'ops.notificationFailures': 'Notification failures',
+    'ops.slaWatch': 'SLA watch',
+    'ops.reminderCandidates': 'Reminder candidates',
+    'ops.approval': 'Approval',
+    'ops.project': 'Project',
+    'ops.progress': 'Progress',
+    'ops.age': 'Age',
+    'ops.expiresIn': 'Expires In',
+    'ops.reminders': 'Reminders',
+    'ops.lastReminded': 'Last Reminded',
+    'ops.escalations': 'Escalations',
+    'ops.lastEscalated': 'Last Escalated',
+    'ops.requester': 'Requester',
+    'ops.requestedBy': 'Requested By',
+    'ops.decider': 'Decider',
+    'ops.remind': 'Remind',
+    'ops.approvalRules': 'Approval rules',
+    'ops.newRule': 'New rule',
+    'ops.resource': 'Resource',
+    'ops.approvers': 'Approvers',
+    'ops.expires': 'Expires',
+    'ops.notify': 'Notify',
+    'ops.escalate': 'Escalate',
+    'ops.enabled': 'Enabled',
+    'ops.editApprovalRule': 'Edit approval rule',
+    'ops.createApprovalRule': 'Create approval rule',
+    'ops.resourceType': 'Resource type',
+    'ops.approverRoles': 'Approver roles',
+    'ops.requiredApprovalCount': 'Required approval count',
+    'ops.expiresAfterMinutes': 'Expires after minutes',
+    'ops.notificationChannels': 'Notification channels',
+    'ops.escalationAfterMinutes': 'Escalation after minutes',
+    'ops.escalationChannels': 'Escalation channels',
+    'ops.priority': 'Priority',
+    'ops.metadataJson': 'Metadata JSON',
+    'ops.approvalRuleHistory': 'Approval rule history',
+    'ops.savedView': 'Saved view',
+    'ops.viewName': 'View name',
+    'ops.saveView': 'Save view',
+    'ops.updateView': 'Update view',
+    'ops.deleteView': 'Delete view',
+    'ops.approvalStatus': 'Approval status',
+    'ops.searchApproval': 'Search approval',
+    'ops.sinceRfc3339': 'Since RFC3339',
+    'ops.untilRfc3339': 'Until RFC3339',
+    'ops.delegateToEmail': 'Delegate to email',
+    'ops.delegate': 'Delegate',
+    'ops.delegations': 'Delegations',
+    'ops.decisions': 'Decisions',
+    'ops.decided': 'Decided',
+    'ops.operation': 'Operation',
+    'ops.workerJobs': 'Worker Jobs',
+    'ops.operationLogs': 'Operation Logs',
+    'ops.runRecords': 'Run Records',
+    'ops.noOperationYet': 'No operation has been created yet.',
+    'ops.deleteApprovalViewConfirm': 'Delete approval view?',
+    'ops.viewNameRequired': 'View name is required',
+    'ops.approvalViewSaved': 'Approval view saved',
+    'ops.approvalViewUpdated': 'Approval view updated',
+    'ops.approvalViewDeleted': 'Approval view deleted',
+    'ops.approvalRecorded': 'Approval recorded',
+    'ops.approvalApproved': 'Approval approved',
+    'ops.approvalRejected': 'Approval rejected',
+    'ops.reminderFailed': 'Reminder failed',
+    'ops.reminderSent': 'Reminder sent',
+    'ops.metadataJsonInvalid': 'Metadata must be valid JSON',
+    'ops.approvalRuleUpdated': 'Approval rule updated',
+    'ops.approvalRuleCreated': 'Approval rule created',
+    'ops.delegateEmailRequired': 'Delegate email is required',
+    'ops.approvalDelegated': 'Approval delegated',
+    'ops.delegationRevoked': 'Delegation revoked',
+    'ops.delegationRevokeFailed': 'Failed to revoke delegation',
+    'ops.logCount': '{count} logs',
+    'ops.oneLog': '1 log',
+    'ops.noTargets': 'No targets',
     'readiness.projectLabel': 'Create/import project asset',
     'readiness.projectNext': 'Create a project or run the demo seed.',
     'readiness.repositoriesLabel': 'Attach source and mirror repositories',
@@ -1145,6 +1232,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.edit': '编辑',
     'common.enable': '启用',
     'common.disable': '禁用',
+    'common.revoke': '撤销',
     'common.requestFailed': '请求失败',
     'common.error': '错误',
     'common.message': '消息',
@@ -1164,6 +1252,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.live': '实时',
     'common.close': '关闭',
     'common.open': '打开',
+    'common.history': '历史',
     'common.generate': '生成',
     'common.approve': '通过',
     'common.reject': '拒绝',
@@ -1175,6 +1264,13 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.path': '路径',
     'common.collected': '采集时间',
     'common.externalId': '外部 ID',
+    'common.user': '用户',
+    'common.actor': '操作者',
+    'common.before': '变更前',
+    'common.after': '变更后',
+    'common.finished': '完成时间',
+    'common.worker': 'Worker',
+    'common.tool': '工具',
     'title.sshMachines': 'SSH 主机',
     'title.argoConnections': 'Argo 连接',
     'title.argoSsh': 'Argo / SSH',
@@ -1310,6 +1406,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.recordPromotionSnapshotHelp': '记录审计结果提升为现场流程前的脱敏就绪元数据；不会 push、调用提供方或暴露 SHA。',
     'config.blockedReasons': '阻塞原因',
     'field.name': '名称',
+    'field.title': '标题',
     'field.slug': '标识',
     'field.description': '描述',
     'field.environment': '环境',
@@ -1622,6 +1719,83 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'dashboard.snapshotBlocked': '快照阻塞',
     'dashboard.snapshotWrite': '快照写入',
     'dashboard.noSnapshotWrite': '未写快照',
+    'ops.pendingApprovals': '待审批',
+    'ops.expiringSoon': '即将过期',
+    'ops.notificationFailures': '通知失败',
+    'ops.slaWatch': 'SLA 关注',
+    'ops.reminderCandidates': '提醒候选',
+    'ops.approval': '审批',
+    'ops.project': '项目',
+    'ops.progress': '进度',
+    'ops.age': '等待时长',
+    'ops.expiresIn': '剩余时间',
+    'ops.reminders': '提醒次数',
+    'ops.lastReminded': '上次提醒',
+    'ops.escalations': '升级次数',
+    'ops.lastEscalated': '上次升级',
+    'ops.requester': '申请人',
+    'ops.requestedBy': '申请人',
+    'ops.decider': '决策人',
+    'ops.remind': '提醒',
+    'ops.approvalRules': '审批规则',
+    'ops.newRule': '新建规则',
+    'ops.resource': '资源',
+    'ops.approvers': '审批角色',
+    'ops.expires': '过期时间',
+    'ops.notify': '通知',
+    'ops.escalate': '升级',
+    'ops.enabled': '启用',
+    'ops.editApprovalRule': '编辑审批规则',
+    'ops.createApprovalRule': '创建审批规则',
+    'ops.resourceType': '资源类型',
+    'ops.approverRoles': '审批角色',
+    'ops.requiredApprovalCount': '所需审批数',
+    'ops.expiresAfterMinutes': '多少分钟后过期',
+    'ops.notificationChannels': '通知渠道',
+    'ops.escalationAfterMinutes': '多少分钟后升级',
+    'ops.escalationChannels': '升级渠道',
+    'ops.priority': '优先级',
+    'ops.metadataJson': '元数据 JSON',
+    'ops.approvalRuleHistory': '审批规则历史',
+    'ops.savedView': '已保存视图',
+    'ops.viewName': '视图名称',
+    'ops.saveView': '保存视图',
+    'ops.updateView': '更新视图',
+    'ops.deleteView': '删除视图',
+    'ops.approvalStatus': '审批状态',
+    'ops.searchApproval': '搜索审批',
+    'ops.sinceRfc3339': '起始 RFC3339',
+    'ops.untilRfc3339': '截止 RFC3339',
+    'ops.delegateToEmail': '委派给邮箱',
+    'ops.delegate': '委派',
+    'ops.delegations': '委派记录',
+    'ops.decisions': '决策记录',
+    'ops.decided': '决策时间',
+    'ops.operation': '操作',
+    'ops.workerJobs': 'Worker 任务',
+    'ops.operationLogs': '操作日志',
+    'ops.runRecords': '运行记录',
+    'ops.noOperationYet': '尚未创建对应操作。',
+    'ops.deleteApprovalViewConfirm': '删除审批视图？',
+    'ops.viewNameRequired': '请填写视图名称',
+    'ops.approvalViewSaved': '审批视图已保存',
+    'ops.approvalViewUpdated': '审批视图已更新',
+    'ops.approvalViewDeleted': '审批视图已删除',
+    'ops.approvalRecorded': '审批已记录',
+    'ops.approvalApproved': '审批已通过',
+    'ops.approvalRejected': '审批已拒绝',
+    'ops.reminderFailed': '提醒发送失败',
+    'ops.reminderSent': '提醒已发送',
+    'ops.metadataJsonInvalid': '元数据必须是有效 JSON',
+    'ops.approvalRuleUpdated': '审批规则已更新',
+    'ops.approvalRuleCreated': '审批规则已创建',
+    'ops.delegateEmailRequired': '请填写委派邮箱',
+    'ops.approvalDelegated': '审批已委派',
+    'ops.delegationRevoked': '委派已撤销',
+    'ops.delegationRevokeFailed': '撤销委派失败',
+    'ops.logCount': '{count} 条日志',
+    'ops.oneLog': '1 条日志',
+    'ops.noTargets': '无目标',
     'readiness.projectLabel': '创建或导入项目资产',
     'readiness.projectNext': '创建项目，或运行 Demo 种子数据。',
     'readiness.repositoriesLabel': '关联源仓库和镜像仓库',
@@ -7358,13 +7532,13 @@ function approvalDestinationTags(value: any) {
   );
 }
 
-function approvalEscalationDestinationTags(row: AnyRow) {
+function approvalEscalationDestinationTags(row: AnyRow, t: (key: string) => string = createTranslator('en')) {
   if (!row.escalation_after_minutes) return '-';
   const destinations = Array.isArray(row.escalation_destinations) ? row.escalation_destinations : [];
   return (
     <Space wrap size={4}>
       <Tag>{row.escalation_after_minutes}m</Tag>
-      {destinations.length ? approvalDestinationTags(destinations) : <Tag color="gold">No targets</Tag>}
+      {destinations.length ? approvalDestinationTags(destinations) : <Tag color="gold">{t('ops.noTargets')}</Tag>}
     </Space>
   );
 }
@@ -7490,6 +7664,7 @@ function approvalRulePayload(values: AnyRow) {
 }
 
 function Operations({ embedded = false }: { embedded?: boolean }) {
+  const { t } = useI18n();
   const ops = useLoad(() => api('/api/operations'), []);
   const approvalSummary = useLoad(() => api('/api/operation-approvals/summary'), []);
   const approvalReminderCandidates = useLoad(() => api('/api/operation-approvals/reminder-candidates'), []);
@@ -7665,16 +7840,16 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   async function saveApprovalView() {
     const name = approvalViewName.trim();
     if (!name) {
-      message.warning('View name is required');
+      message.warning(t('ops.viewNameRequired'));
       return;
     }
     try {
       const view = await api('/api/operation-approval-views', { method: 'POST', body: JSON.stringify({ name, filters: currentApprovalFilters() }) });
-      message.success('Approval view saved');
+      message.success(t('ops.approvalViewSaved'));
       setApprovalViewID(view.id);
       approvalViews.reload();
     } catch (err: any) {
-      message.error(err.message || 'Could not save approval view');
+      message.error(err.message || t('common.requestFailed'));
     }
   }
   async function updateApprovalView() {
@@ -7682,22 +7857,22 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     const name = approvalViewName.trim();
     try {
       const view = await api(`/api/operation-approval-views/${approvalViewID}`, { method: 'PATCH', body: JSON.stringify({ name, filters: currentApprovalFilters() }) });
-      message.success('Approval view updated');
+      message.success(t('ops.approvalViewUpdated'));
       setApprovalViewName(view.name || name);
       approvalViews.reload();
     } catch (err: any) {
-      message.error(err.message || 'Could not update approval view');
+      message.error(err.message || t('common.requestFailed'));
     }
   }
   function deleteApprovalView() {
     if (!approvalViewID) return;
     Modal.confirm({
-      title: 'Delete approval view?',
-      okText: 'Delete',
+      title: t('ops.deleteApprovalViewConfirm'),
+      okText: t('ops.deleteView'),
       okButtonProps: { danger: true },
       onOk: async () => {
         await api(`/api/operation-approval-views/${approvalViewID}`, { method: 'DELETE' });
-        message.success('Approval view deleted');
+        message.success(t('ops.approvalViewDeleted'));
         setApprovalViewID(undefined);
         setApprovalViewName('');
         approvalViews.reload();
@@ -7706,7 +7881,7 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   }
   async function decideApproval(id: string, decision: 'approve' | 'reject') {
     const result = await api(`/api/operation-approvals/${id}/${decision}`, { method: 'POST', body: '{}' });
-    message.success(decision === 'approve' && result.status === 'pending' ? 'Approval recorded' : decision === 'approve' ? 'Approval approved' : 'Approval rejected');
+    message.success(decision === 'approve' && result.status === 'pending' ? t('ops.approvalRecorded') : decision === 'approve' ? t('ops.approvalApproved') : t('ops.approvalRejected'));
     approvals.reload();
     approvalSummary.reload();
     approvalReminderCandidates.reload();
@@ -7715,9 +7890,9 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   async function sendApprovalReminder(id: string) {
     const result = await api(`/api/operation-approvals/${id}/remind`, { method: 'POST', body: '{}' });
     if (result.notification_status === 'failed') {
-      message.warning('Reminder failed');
+      message.warning(t('ops.reminderFailed'));
     } else {
-      message.success('Reminder sent');
+      message.success(t('ops.reminderSent'));
     }
     approvals.reload();
     approvalSummary.reload();
@@ -7732,13 +7907,13 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     try {
       payload = approvalRulePayload(values);
     } catch (err: any) {
-      message.error(err.message || 'Metadata must be valid JSON');
+      message.error(err.message || t('ops.metadataJsonInvalid'));
       return;
     }
     const path = editingRule ? `/api/operation-approval-rules/${editingRule.id}` : '/api/operation-approval-rules';
     const method = editingRule ? 'PATCH' : 'POST';
     await api(path, { method, body: JSON.stringify(payload) });
-    message.success(editingRule ? 'Approval rule updated' : 'Approval rule created');
+    message.success(editingRule ? t('ops.approvalRuleUpdated') : t('ops.approvalRuleCreated'));
     setRuleOpen(false);
     setEditingRule(null);
     ruleForm.resetFields();
@@ -7747,11 +7922,11 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   async function delegateApproval() {
     if (!approvalAuditID) return;
     if (!delegateEmail.trim()) {
-      message.warning('Delegate email is required');
+      message.warning(t('ops.delegateEmailRequired'));
       return;
     }
     await api(`/api/operation-approvals/${approvalAuditID}/delegations`, { method: 'POST', body: JSON.stringify({ to_email: delegateEmail.trim(), reason: delegateReason.trim() }) });
-    message.success('Approval delegated');
+    message.success(t('ops.approvalDelegated'));
     setDelegateEmail('');
     setDelegateReason('');
     approvalAudit.reload();
@@ -7762,12 +7937,12 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     if (!approvalAuditID) return;
     try {
       await api(`/api/operation-approvals/${approvalAuditID}/delegations/${id}/revoke`, { method: 'POST', body: '{}' });
-      message.success('Delegation revoked');
+      message.success(t('ops.delegationRevoked'));
       approvalAudit.reload();
       approvals.reload();
       approvalReminderCandidates.reload();
     } catch (error: any) {
-      message.error(error.message || 'Failed to revoke delegation');
+      message.error(error.message || t('ops.delegationRevokeFailed'));
     }
   }
   async function claimProviderReviewAttempt(id: string) {
@@ -8390,12 +8565,12 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   }
   return (
     <Space direction="vertical" size={16} className="full">
-      {!embedded && <Typography.Title level={2}>Operations</Typography.Title>}
+      {!embedded && <Typography.Title level={2}>{t('title.operations')}</Typography.Title>}
       <div className="metricGrid">
-        <Card><Typography.Text type="secondary">Pending approvals</Typography.Text><Typography.Title level={3}>{approvalSummary.data?.pending ?? 0}</Typography.Title></Card>
-        <Card><Typography.Text type="secondary">Expiring soon</Typography.Text><Typography.Title level={3}>{approvalSummary.data?.expiring_soon ?? 0}</Typography.Title></Card>
-        <Card><Typography.Text type="secondary">Notification failures</Typography.Text><Typography.Title level={3}>{approvalSummary.data?.notification_failed ?? 0}</Typography.Title></Card>
-        <Card loading={approvalReminderCandidates.loading}><Typography.Text type="secondary">SLA watch</Typography.Text><Typography.Title level={3}>{approvalReminderCandidates.data?.items?.length ?? 0}</Typography.Title></Card>
+        <Card><Typography.Text type="secondary">{t('ops.pendingApprovals')}</Typography.Text><Typography.Title level={3}>{approvalSummary.data?.pending ?? 0}</Typography.Title></Card>
+        <Card><Typography.Text type="secondary">{t('ops.expiringSoon')}</Typography.Text><Typography.Title level={3}>{approvalSummary.data?.expiring_soon ?? 0}</Typography.Title></Card>
+        <Card><Typography.Text type="secondary">{t('ops.notificationFailures')}</Typography.Text><Typography.Title level={3}>{approvalSummary.data?.notification_failed ?? 0}</Typography.Title></Card>
+        <Card loading={approvalReminderCandidates.loading}><Typography.Text type="secondary">{t('ops.slaWatch')}</Typography.Text><Typography.Title level={3}>{approvalReminderCandidates.data?.items?.length ?? 0}</Typography.Title></Card>
       </div>
       {approvalReminderCandidates.error && <Alert showIcon type="error" message={approvalReminderCandidates.error} />}
       {Array.isArray(approvalSummary.data?.by_action) && approvalSummary.data.by_action.length > 0 && (
@@ -8403,129 +8578,129 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
           {approvalSummary.data.by_action.map((row: AnyRow) => <Tag key={row.action}>{row.action}: {row.count}</Tag>)}
         </Space>
       )}
-      <Typography.Title level={5}>Reminder candidates</Typography.Title>
+      <Typography.Title level={5}>{t('ops.reminderCandidates')}</Typography.Title>
       <Table<AnyRow> rowKey="id" size="small" dataSource={approvalReminderCandidates.data?.items || []} pagination={{ pageSize: 4 }} columns={[
-        { title: 'Approval', dataIndex: 'title' },
-        { title: 'Action', dataIndex: 'action' },
-        { title: 'Project', dataIndex: 'project_name' },
-        { title: 'Reason', render: (_, row) => <Tag color={row.escalation_level === 'danger' ? 'red' : row.escalation_level === 'warning' ? 'gold' : 'blue'}>{row.reminder_reason}</Tag> },
-        { title: 'Progress', render: (_, row) => `${row.approved_count || 0}/${row.required_approval_count || 1}` },
-        { title: 'Age', render: (_, row) => `${row.age_minutes || 0}m` },
-        { title: 'Expires In', render: (_, row) => row.minutes_until_expiry === null || row.minutes_until_expiry === undefined ? '-' : `${row.minutes_until_expiry}m` },
-        { title: 'Reminders', render: (_, row) => `${row.reminder_count || 0}` },
-        { title: 'Last Reminded', render: (_, row) => row.last_reminded_at || '-' },
-        { title: 'Escalations', render: (_, row) => `${row.escalation_count || 0}` },
-        { title: 'Last Escalated', render: (_, row) => row.last_escalated_at || '-' },
-        { title: 'Requester', dataIndex: 'requested_by_email' },
-        { title: 'Action', render: (_, row) => <Space>{canActOnApproval(row, currentRole) && <Button size="small" onClick={() => sendApprovalReminder(row.id)}>Remind</Button>}<Button size="small" onClick={() => setApprovalAuditID(row.id)}>Open</Button></Space> }
+        { title: t('ops.approval'), dataIndex: 'title' },
+        { title: t('common.action'), dataIndex: 'action' },
+        { title: t('ops.project'), dataIndex: 'project_name' },
+        { title: t('common.reason'), render: (_, row) => <Tag color={row.escalation_level === 'danger' ? 'red' : row.escalation_level === 'warning' ? 'gold' : 'blue'}>{translatedValue(row.reminder_reason, t)}</Tag> },
+        { title: t('ops.progress'), render: (_, row) => `${row.approved_count || 0}/${row.required_approval_count || 1}` },
+        { title: t('ops.age'), render: (_, row) => `${row.age_minutes || 0}m` },
+        { title: t('ops.expiresIn'), render: (_, row) => row.minutes_until_expiry === null || row.minutes_until_expiry === undefined ? '-' : `${row.minutes_until_expiry}m` },
+        { title: t('ops.reminders'), render: (_, row) => `${row.reminder_count || 0}` },
+        { title: t('ops.lastReminded'), render: (_, row) => row.last_reminded_at || '-' },
+        { title: t('ops.escalations'), render: (_, row) => `${row.escalation_count || 0}` },
+        { title: t('ops.lastEscalated'), render: (_, row) => row.last_escalated_at || '-' },
+        { title: t('ops.requester'), dataIndex: 'requested_by_email' },
+        { title: t('common.action'), render: (_, row) => <Space>{canActOnApproval(row, currentRole) && <Button size="small" onClick={() => sendApprovalReminder(row.id)}>{t('ops.remind')}</Button>}<Button size="small" onClick={() => setApprovalAuditID(row.id)}>{t('common.open')}</Button></Space> }
       ]} />
       <Space wrap>
-        <Typography.Title level={5} style={{ margin: 0 }}>Approval rules</Typography.Title>
-        {canEditApprovalRules && <Button size="small" onClick={() => openApprovalRule()}>New rule</Button>}
+        <Typography.Title level={5} style={{ margin: 0 }}>{t('ops.approvalRules')}</Typography.Title>
+        {canEditApprovalRules && <Button size="small" onClick={() => openApprovalRule()}>{t('ops.newRule')}</Button>}
       </Space>
       <Table<AnyRow> rowKey="id" size="small" dataSource={approvalRules.data?.items || []} pagination={{ pageSize: 4 }} columns={[
-        { title: 'Action', dataIndex: 'action' },
-        { title: 'Resource', render: (_, row) => row.resource_type || '*' },
-        { title: 'Approvers', render: (_, row) => approvalRoles(row.required_approver_roles).join(', ') },
-        { title: 'Count', dataIndex: 'required_approval_count' },
-        { title: 'Expires', render: (_, row) => `${row.expires_after_minutes || 0}m` },
-        { title: 'Notify', render: (_, row) => approvalDestinationTags(row.notification_destinations) },
-        { title: 'Escalate', render: (_, row) => approvalEscalationDestinationTags(row) },
-        { title: 'Enabled', render: (_, row) => <Tag color={row.enabled ? 'green' : 'default'}>{row.enabled ? 'enabled' : 'disabled'}</Tag> },
-        { title: 'Action', render: (_, row) => <Space>{canEditApprovalRules && <Button size="small" onClick={() => openApprovalRule(row)}>Edit</Button>}<Button size="small" onClick={() => setRuleAuditID(row.id)}>History</Button></Space> }
+        { title: t('common.action'), dataIndex: 'action' },
+        { title: t('ops.resource'), render: (_, row) => row.resource_type || '*' },
+        { title: t('ops.approvers'), render: (_, row) => approvalRoles(row.required_approver_roles).join(', ') },
+        { title: t('common.count'), dataIndex: 'required_approval_count' },
+        { title: t('ops.expires'), render: (_, row) => `${row.expires_after_minutes || 0}m` },
+        { title: t('ops.notify'), render: (_, row) => approvalDestinationTags(row.notification_destinations) },
+        { title: t('ops.escalate'), render: (_, row) => approvalEscalationDestinationTags(row, t) },
+        { title: t('ops.enabled'), render: (_, row) => <Tag color={row.enabled ? 'green' : 'default'}>{row.enabled ? t('common.enable') : t('common.disable')}</Tag> },
+        { title: t('common.action'), render: (_, row) => <Space>{canEditApprovalRules && <Button size="small" onClick={() => openApprovalRule(row)}>{t('common.edit')}</Button>}<Button size="small" onClick={() => setRuleAuditID(row.id)}>{t('common.history')}</Button></Space> }
       ]} />
-      <Modal title={editingRule ? 'Edit approval rule' : 'Create approval rule'} open={ruleOpen} onCancel={() => { setRuleOpen(false); setEditingRule(null); }} onOk={() => ruleForm.submit()} destroyOnHidden>
+      <Modal title={editingRule ? t('ops.editApprovalRule') : t('ops.createApprovalRule')} open={ruleOpen} onCancel={() => { setRuleOpen(false); setEditingRule(null); }} onOk={() => ruleForm.submit()} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
         <Form form={ruleForm} layout="vertical" onFinish={saveApprovalRule} initialValues={approvalRuleInitialValues(editingRule)}>
-          <Form.Item name="resource_type" label="Resource type">
+          <Form.Item name="resource_type" label={t('ops.resourceType')}>
             <Input placeholder="git_remote, ssh_machine, agent_task, operation, or blank" />
           </Form.Item>
-          <Form.Item name="action" label="Action" rules={[{ required: true, message: 'action is required' }]}>
+          <Form.Item name="action" label={t('common.action')} rules={[{ required: true, message: t('common.required') }]}>
             <Input placeholder="repo.tag" />
           </Form.Item>
-          <Form.Item name="required_approver_roles" label="Approver roles">
+          <Form.Item name="required_approver_roles" label={t('ops.approverRoles')}>
             <Input placeholder="admin, owner" />
           </Form.Item>
-          <Form.Item name="required_approval_count" label="Required approval count">
+          <Form.Item name="required_approval_count" label={t('ops.requiredApprovalCount')}>
             <Input type="number" min={1} />
           </Form.Item>
-          <Form.Item name="expires_after_minutes" label="Expires after minutes">
+          <Form.Item name="expires_after_minutes" label={t('ops.expiresAfterMinutes')}>
             <Input type="number" min={1} />
           </Form.Item>
-          <Form.Item name="notification_channels" label="Notification channels">
+          <Form.Item name="notification_channels" label={t('ops.notificationChannels')}>
             <Input placeholder="ui, webhook" />
           </Form.Item>
-          <Form.Item name="escalation_after_minutes" label="Escalation after minutes">
+          <Form.Item name="escalation_after_minutes" label={t('ops.escalationAfterMinutes')}>
             <Input type="number" min={0} />
           </Form.Item>
-          <Form.Item name="escalation_channels" label="Escalation channels">
+          <Form.Item name="escalation_channels" label={t('ops.escalationChannels')}>
             <Input placeholder="ui, webhook" />
           </Form.Item>
-          <Form.Item name="priority" label="Priority">
+          <Form.Item name="priority" label={t('ops.priority')}>
             <Input type="number" />
           </Form.Item>
           <Form.Item name="enabled" valuePropName="checked">
-            <Checkbox>Enabled</Checkbox>
+            <Checkbox>{t('ops.enabled')}</Checkbox>
           </Form.Item>
-          <Form.Item name="metadata_json" label="Metadata JSON">
+          <Form.Item name="metadata_json" label={t('ops.metadataJson')}>
             <Input.TextArea rows={4} />
           </Form.Item>
         </Form>
       </Modal>
-      <Modal title="Approval rule history" open={Boolean(ruleAuditID)} onCancel={() => setRuleAuditID(undefined)} footer={null} width={900} destroyOnHidden>
+      <Modal title={t('ops.approvalRuleHistory')} open={Boolean(ruleAuditID)} onCancel={() => setRuleAuditID(undefined)} footer={null} width={900} destroyOnHidden>
         <Table<AnyRow> rowKey="id" size="small" loading={ruleAudits.loading} dataSource={ruleAudits.data?.items || []} pagination={{ pageSize: 5 }} columns={[
-          { title: 'Action', render: (_, row) => <Tag color={row.action === 'create' ? 'green' : 'blue'}>{row.action}</Tag> },
-          { title: 'Actor', render: (_, row) => row.actor_email || row.actor_user_id || '-' },
-          { title: 'Before', render: (_, row) => <JSONBlock value={row.before_state || {}} /> },
-          { title: 'After', render: (_, row) => <JSONBlock value={row.after_state || {}} /> },
-          { title: 'Created', dataIndex: 'created_at' }
+          { title: t('common.action'), render: (_, row) => <Tag color={row.action === 'create' ? 'green' : 'blue'}>{translatedValue(row.action, t)}</Tag> },
+          { title: t('common.actor'), render: (_, row) => row.actor_email || row.actor_user_id || '-' },
+          { title: t('common.before'), render: (_, row) => <JSONBlock value={row.before_state || {}} /> },
+          { title: t('common.after'), render: (_, row) => <JSONBlock value={row.after_state || {}} /> },
+          { title: t('common.created'), dataIndex: 'created_at' }
         ]} />
       </Modal>
       <Space wrap>
-        <Select allowClear value={approvalViewID} placeholder="Saved view" style={{ width: 220 }} onChange={(value) => applyApprovalView(value)} options={(approvalViews.data?.items || []).map((row: AnyRow) => ({ value: row.id, label: row.name }))} />
-        <Input placeholder="View name" value={approvalViewName} onChange={(event) => setApprovalViewName(event.target.value)} style={{ width: 180 }} />
-        <Button onClick={saveApprovalView}>Save view</Button>
-        <Button disabled={!approvalViewID} onClick={updateApprovalView}>Update view</Button>
-        <Button danger disabled={!approvalViewID} onClick={deleteApprovalView}>Delete view</Button>
+        <Select allowClear value={approvalViewID} placeholder={t('ops.savedView')} style={{ width: 220 }} onChange={(value) => applyApprovalView(value)} options={(approvalViews.data?.items || []).map((row: AnyRow) => ({ value: row.id, label: row.name }))} />
+        <Input placeholder={t('ops.viewName')} value={approvalViewName} onChange={(event) => setApprovalViewName(event.target.value)} style={{ width: 180 }} />
+        <Button onClick={saveApprovalView}>{t('ops.saveView')}</Button>
+        <Button disabled={!approvalViewID} onClick={updateApprovalView}>{t('ops.updateView')}</Button>
+        <Button danger disabled={!approvalViewID} onClick={deleteApprovalView}>{t('ops.deleteView')}</Button>
       </Space>
       <Space wrap>
-        <Select allowClear value={approvalStatusFilter || undefined} placeholder="Approval status" style={{ width: 180 }} onChange={(value) => setApprovalStatusFilter(value || '')} options={['pending', 'approved', 'rejected', 'expired'].map((value) => ({ value, label: value }))} />
-        <Select allowClear value={approvalActionFilter || undefined} placeholder="Action" style={{ width: 200 }} onChange={(value) => setApprovalActionFilter(value || '')} options={approvalActionOptions} />
-        <Input allowClear placeholder="Resource type" value={approvalResourceTypeFilter} onChange={(event) => setApprovalResourceTypeFilter(event.target.value)} style={{ width: 180 }} />
-        <Input allowClear placeholder="Search approval" value={approvalSearch} onChange={(event) => setApprovalSearch(event.target.value)} style={{ width: 260 }} />
-        <Input allowClear placeholder="Requester" value={approvalRequestedByFilter} onChange={(event) => setApprovalRequestedByFilter(event.target.value)} style={{ width: 220 }} />
-        <Input allowClear placeholder="Since RFC3339" value={approvalSinceFilter} onChange={(event) => setApprovalSinceFilter(event.target.value)} style={{ width: 220 }} />
-        <Input allowClear placeholder="Until RFC3339" value={approvalUntilFilter} onChange={(event) => setApprovalUntilFilter(event.target.value)} style={{ width: 220 }} />
+        <Select allowClear value={approvalStatusFilter || undefined} placeholder={t('ops.approvalStatus')} style={{ width: 180 }} onChange={(value) => setApprovalStatusFilter(value || '')} options={['pending', 'approved', 'rejected', 'expired'].map((value) => ({ value, label: translatedValue(value, t) }))} />
+        <Select allowClear value={approvalActionFilter || undefined} placeholder={t('common.action')} style={{ width: 200 }} onChange={(value) => setApprovalActionFilter(value || '')} options={approvalActionOptions} />
+        <Input allowClear placeholder={t('ops.resourceType')} value={approvalResourceTypeFilter} onChange={(event) => setApprovalResourceTypeFilter(event.target.value)} style={{ width: 180 }} />
+        <Input allowClear placeholder={t('ops.searchApproval')} value={approvalSearch} onChange={(event) => setApprovalSearch(event.target.value)} style={{ width: 260 }} />
+        <Input allowClear placeholder={t('ops.requester')} value={approvalRequestedByFilter} onChange={(event) => setApprovalRequestedByFilter(event.target.value)} style={{ width: 220 }} />
+        <Input allowClear placeholder={t('ops.sinceRfc3339')} value={approvalSinceFilter} onChange={(event) => setApprovalSinceFilter(event.target.value)} style={{ width: 220 }} />
+        <Input allowClear placeholder={t('ops.untilRfc3339')} value={approvalUntilFilter} onChange={(event) => setApprovalUntilFilter(event.target.value)} style={{ width: 220 }} />
       </Space>
       <Table<AnyRow> rowKey="id" dataSource={approvals.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-        { title: 'Approval', dataIndex: 'title' },
-        { title: 'Action', dataIndex: 'action' },
-        { title: 'Project', dataIndex: 'project_name' },
-        { title: 'Status', render: (_, row) => <Tag color={row.status === 'approved' ? 'green' : row.status === 'rejected' || row.status === 'expired' ? 'red' : 'gold'}>{row.status}</Tag> },
-        { title: 'Progress', render: (_, row) => `${row.approved_count || 0}/${row.required_approval_count || 1}` },
-        { title: 'Notify', render: (_, row) => <Tag color={row.notification_status === 'failed' ? 'red' : row.notification_status === 'delivered' ? 'green' : 'default'}>{row.notification_status || 'pending'}</Tag> },
-        { title: 'Requested By', dataIndex: 'requested_by_email' },
-        { title: 'Created', dataIndex: 'created_at' },
-        { title: 'Expires', render: (_, row) => row.expires_at ? <Tag color={approvalStillActive(row) ? 'gold' : 'red'}>{row.expires_at}</Tag> : '-' },
+        { title: t('ops.approval'), dataIndex: 'title' },
+        { title: t('common.action'), dataIndex: 'action' },
+        { title: t('ops.project'), dataIndex: 'project_name' },
+        { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'approved' ? 'green' : row.status === 'rejected' || row.status === 'expired' ? 'red' : 'gold'}>{translatedValue(row.status, t)}</Tag> },
+        { title: t('ops.progress'), render: (_, row) => `${row.approved_count || 0}/${row.required_approval_count || 1}` },
+        { title: t('ops.notify'), render: (_, row) => <Tag color={row.notification_status === 'failed' ? 'red' : row.notification_status === 'delivered' ? 'green' : 'default'}>{translatedValue(row.notification_status || 'pending', t)}</Tag> },
+        { title: t('ops.requestedBy'), dataIndex: 'requested_by_email' },
+        { title: t('common.created'), dataIndex: 'created_at' },
+        { title: t('ops.expires'), render: (_, row) => row.expires_at ? <Tag color={approvalStillActive(row) ? 'gold' : 'red'}>{row.expires_at}</Tag> : '-' },
         {
-          title: 'Decision',
+          title: t('common.decision'),
           render: (_, row) => approvalStillActive(row) && canActOnApproval(row, currentRole) ? (
             <Space>
-              <Button size="small" type="primary" onClick={() => decideApproval(row.id, 'approve')}>Approve</Button>
-              <Button size="small" danger onClick={() => decideApproval(row.id, 'reject')}>Reject</Button>
+              <Button size="small" type="primary" onClick={() => decideApproval(row.id, 'approve')}>{t('common.approve')}</Button>
+              <Button size="small" danger onClick={() => decideApproval(row.id, 'reject')}>{t('common.reject')}</Button>
             </Space>
-          ) : row.status === 'pending' ? 'Pending' : row.decided_by_email || row.decision_reason || '-'
+          ) : row.status === 'pending' ? t('common.pending') : row.decided_by_email || row.decision_reason || '-'
         },
         {
-          title: 'Audit',
-          render: (_, row) => <Button size="small" onClick={() => setApprovalAuditID(row.id)}>Open</Button>
+          title: t('common.audit'),
+          render: (_, row) => <Button size="small" onClick={() => setApprovalAuditID(row.id)}>{t('common.open')}</Button>
         }
       ]} />
       <Table<AnyRow> rowKey="id" dataSource={ops.data?.items || []} pagination={{ pageSize: 8 }} columns={[
-        { title: 'Type', dataIndex: 'operation_type' },
-        { title: 'Title', dataIndex: 'title' },
-        { title: 'Status', render: (_, row) => <Tag color={operationStatusColor(row.status)}>{row.status}</Tag> },
-        { title: 'Created', dataIndex: 'created_at' },
-        { title: 'Logs', render: (_, row) => <Button size="small" onClick={() => setLiveOperationID(row.id)}>Live</Button> }
+        { title: t('common.type'), dataIndex: 'operation_type' },
+        { title: t('field.title'), dataIndex: 'title' },
+        { title: t('common.status'), render: (_, row) => <Tag color={operationStatusColor(row.status)}>{translatedValue(row.status, t)}</Tag> },
+        { title: t('common.created'), dataIndex: 'created_at' },
+        { title: t('common.logs'), render: (_, row) => <Button size="small" onClick={() => setLiveOperationID(row.id)}>{t('common.live')}</Button> }
       ]} />
       {liveOperationID && (
         <div className="liveLogPanel">
@@ -8533,30 +8708,30 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             <Space wrap>
               <Typography.Title level={5} style={{ margin: 0 }}>{liveOperation?.title || liveOperationID}</Typography.Title>
               <Tag color={liveLogTag.color}>{liveLogTag.label}</Tag>
-              <Tag>{liveLogs.logs.length} log{liveLogs.logs.length === 1 ? '' : 's'}</Tag>
-              <Button size="small" onClick={() => setLiveOperationID(undefined)}>Close</Button>
+              <Tag>{liveLogs.logs.length === 1 ? t('ops.oneLog') : t('ops.logCount').replace('{count}', String(liveLogs.logs.length))}</Tag>
+              <Button size="small" onClick={() => setLiveOperationID(undefined)}>{t('common.close')}</Button>
             </Space>
             {liveLogs.error && <Alert type="error" showIcon message={liveLogs.error} />}
             {!liveLogs.error && liveLogs.logs.length === 0 && <Alert type="info" showIcon message={emptyOperationLogMessage(liveLogs)} />}
             <Table<AnyRow> rowKey="id" size="small" dataSource={liveLogs.logs} pagination={{ pageSize: 8 }} columns={[
-              { title: 'Level', dataIndex: 'level', width: 110 },
-              { title: 'Message', dataIndex: 'message' },
-              { title: 'Fields', render: (_, row) => <JSONBlock value={row.fields} /> },
-              { title: 'Created', dataIndex: 'created_at', width: 220 }
+              { title: t('common.level'), dataIndex: 'level', width: 110 },
+              { title: t('common.message'), dataIndex: 'message' },
+              { title: t('common.fields'), render: (_, row) => <JSONBlock value={row.fields} /> },
+              { title: t('common.created'), dataIndex: 'created_at', width: 220 }
             ]} />
           </Space>
         </div>
       )}
-      <Modal title="Approval audit" open={Boolean(approvalAuditID)} onCancel={() => setApprovalAuditID(undefined)} footer={null} width={980} destroyOnHidden>
+      <Modal title={t('ops.approval') + ' ' + t('common.audit')} open={Boolean(approvalAuditID)} onCancel={() => setApprovalAuditID(undefined)} footer={null} width={980} destroyOnHidden>
         <Space direction="vertical" size={16} className="full">
           <Table<AnyRow> rowKey="id" size="small" pagination={false} dataSource={approvalAudit.data?.approval ? [approvalAudit.data.approval] : []} columns={[
-            { title: 'Approval', dataIndex: 'title' },
-            { title: 'Status', render: (_, row) => <Tag color={row.status === 'approved' ? 'green' : row.status === 'rejected' || row.status === 'expired' ? 'red' : 'gold'}>{row.status}</Tag> },
-            { title: 'Progress', render: (_, row) => `${row.approved_count || 0}/${row.required_approval_count || 1}` },
-            { title: 'Notify', render: (_, row) => <Tag color={row.notification_status === 'failed' ? 'red' : row.notification_status === 'delivered' ? 'green' : 'default'}>{row.notification_status || 'pending'}</Tag> },
-            { title: 'Requester', dataIndex: 'requested_by_email' },
-            { title: 'Decider', dataIndex: 'decided_by_email' },
-            { title: 'Created', dataIndex: 'created_at' }
+            { title: t('ops.approval'), dataIndex: 'title' },
+            { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'approved' ? 'green' : row.status === 'rejected' || row.status === 'expired' ? 'red' : 'gold'}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('ops.progress'), render: (_, row) => `${row.approved_count || 0}/${row.required_approval_count || 1}` },
+            { title: t('ops.notify'), render: (_, row) => <Tag color={row.notification_status === 'failed' ? 'red' : row.notification_status === 'delivered' ? 'green' : 'default'}>{translatedValue(row.notification_status || 'pending', t)}</Tag> },
+            { title: t('ops.requester'), dataIndex: 'requested_by_email' },
+            { title: t('ops.decider'), dataIndex: 'decided_by_email' },
+            { title: t('common.created'), dataIndex: 'created_at' }
           ]} />
           {approvalAudit.data?.approval?.notification_last_error && <Alert type="error" showIcon message={approvalAudit.data.approval.notification_last_error} />}
           <ProviderReviewApprovalAudit
@@ -8662,46 +8837,46 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
           />
           {approvalAudit.data?.approval && approvalStillActive(approvalAudit.data.approval) && canActOnApproval(approvalAudit.data.approval, currentRole) && (
             <Space wrap>
-              <Input placeholder="Delegate to email" value={delegateEmail} onChange={(event) => setDelegateEmail(event.target.value)} style={{ width: 240 }} />
-              <Input placeholder="Reason" value={delegateReason} onChange={(event) => setDelegateReason(event.target.value)} style={{ width: 260 }} />
-              <Button onClick={delegateApproval}>Delegate</Button>
+              <Input placeholder={t('ops.delegateToEmail')} value={delegateEmail} onChange={(event) => setDelegateEmail(event.target.value)} style={{ width: 240 }} />
+              <Input placeholder={t('common.reason')} value={delegateReason} onChange={(event) => setDelegateReason(event.target.value)} style={{ width: 260 }} />
+              <Button onClick={delegateApproval}>{t('ops.delegate')}</Button>
             </Space>
           )}
-          <Typography.Title level={5}>Delegations</Typography.Title>
+          <Typography.Title level={5}>{t('ops.delegations')}</Typography.Title>
           <Table<AnyRow> rowKey="id" size="small" dataSource={approvalAudit.data?.delegations || []} pagination={{ pageSize: 5 }} columns={[
-            { title: 'From', render: (_, row) => row.from_user_email || row.from_user_id || '-' },
-            { title: 'To', render: (_, row) => row.to_user_email || row.to_user_id || '-' },
-            { title: 'Reason', dataIndex: 'reason' },
-            { title: 'Status', render: (_, row) => <Tag color={row.revoked_at ? 'default' : 'green'}>{row.revoked_at ? 'revoked' : 'active'}</Tag> },
-            { title: 'Created', dataIndex: 'created_at' },
-            { title: 'Action', render: (_, row) => canRevokeApprovalDelegation(row, approvalAudit.data?.approval, me.data?.user, currentRole) ? <Button size="small" danger onClick={() => revokeDelegation(row.id)}>Revoke</Button> : '-' }
+            { title: t('common.from'), render: (_, row) => row.from_user_email || row.from_user_id || '-' },
+            { title: t('common.to'), render: (_, row) => row.to_user_email || row.to_user_id || '-' },
+            { title: t('common.reason'), dataIndex: 'reason' },
+            { title: t('common.status'), render: (_, row) => <Tag color={row.revoked_at ? 'default' : 'green'}>{translatedValue(row.revoked_at ? 'revoked' : 'active', t)}</Tag> },
+            { title: t('common.created'), dataIndex: 'created_at' },
+            { title: t('common.action'), render: (_, row) => canRevokeApprovalDelegation(row, approvalAudit.data?.approval, me.data?.user, currentRole) ? <Button size="small" danger onClick={() => revokeDelegation(row.id)}>{t('common.revoke')}</Button> : '-' }
           ]} />
-          <Typography.Title level={5}>Decisions</Typography.Title>
+          <Typography.Title level={5}>{t('ops.decisions')}</Typography.Title>
           <Table<AnyRow> rowKey="id" size="small" dataSource={approvalAudit.data?.decisions || []} pagination={{ pageSize: 5 }} columns={[
-            { title: 'Decision', render: (_, row) => <Tag color={row.decision === 'approved' ? 'green' : 'red'}>{row.decision}</Tag> },
-            { title: 'User', render: (_, row) => row.user_email || row.user_id || '-' },
-            { title: 'Reason', dataIndex: 'reason' },
-            { title: 'Decided', dataIndex: 'decided_at' }
+            { title: t('common.decision'), render: (_, row) => <Tag color={row.decision === 'approved' ? 'green' : 'red'}>{translatedValue(row.decision, t)}</Tag> },
+            { title: t('common.user'), render: (_, row) => row.user_email || row.user_id || '-' },
+            { title: t('common.reason'), dataIndex: 'reason' },
+            { title: t('ops.decided'), dataIndex: 'decided_at' }
           ]} />
-          <Typography.Title level={5}>Operation</Typography.Title>
-          {approvalAudit.data?.operation ? <JSONBlock value={approvalAudit.data.operation} /> : <Typography.Text type="secondary">No operation has been created yet.</Typography.Text>}
-          <Typography.Title level={5}>Worker Jobs</Typography.Title>
+          <Typography.Title level={5}>{t('ops.operation')}</Typography.Title>
+          {approvalAudit.data?.operation ? <JSONBlock value={approvalAudit.data.operation} /> : <Typography.Text type="secondary">{t('ops.noOperationYet')}</Typography.Text>}
+          <Typography.Title level={5}>{t('ops.workerJobs')}</Typography.Title>
           <Table<AnyRow> rowKey="id" size="small" dataSource={approvalAudit.data?.worker_jobs || []} pagination={{ pageSize: 5 }} columns={[
-            { title: 'Tool', dataIndex: 'tool_name' },
-            { title: 'Status', dataIndex: 'status' },
-            { title: 'Worker', dataIndex: 'assigned_worker_node_id' },
-            { title: 'Error', dataIndex: 'error' },
-            { title: 'Created', dataIndex: 'created_at' },
-            { title: 'Finished', dataIndex: 'finished_at' }
+            { title: t('common.tool'), dataIndex: 'tool_name' },
+            { title: t('common.status'), render: (_, row) => translatedValue(row.status, t) },
+            { title: t('common.worker'), dataIndex: 'assigned_worker_node_id' },
+            { title: t('common.error'), dataIndex: 'error' },
+            { title: t('common.created'), dataIndex: 'created_at' },
+            { title: t('common.finished'), dataIndex: 'finished_at' }
           ]} />
-          <Typography.Title level={5}>Operation Logs</Typography.Title>
+          <Typography.Title level={5}>{t('ops.operationLogs')}</Typography.Title>
           <Table<AnyRow> rowKey="id" size="small" dataSource={approvalAudit.data?.operation_logs || []} pagination={{ pageSize: 6 }} columns={[
-            { title: 'Level', dataIndex: 'level' },
-            { title: 'Message', dataIndex: 'message' },
-            { title: 'Fields', render: (_, row) => <JSONBlock value={row.fields} /> },
-            { title: 'Created', dataIndex: 'created_at' }
+            { title: t('common.level'), dataIndex: 'level' },
+            { title: t('common.message'), dataIndex: 'message' },
+            { title: t('common.fields'), render: (_, row) => <JSONBlock value={row.fields} /> },
+            { title: t('common.created'), dataIndex: 'created_at' }
           ]} />
-          <Typography.Title level={5}>Run Records</Typography.Title>
+          <Typography.Title level={5}>{t('ops.runRecords')}</Typography.Title>
           <JSONBlock value={approvalAudit.data?.run_records || {}} />
         </Space>
       </Modal>
