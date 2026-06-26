@@ -141,7 +141,7 @@ make helm-test-smoke
 
 Real local adapters are available for:
 
-- Git repository sync and tag push through the control worker.
+- Git repository sync and tag push through the control worker. Successful repository tags automatically enqueue a sanitized remote tag lookup, and GitHub target remotes also enqueue a GitHub Actions/artifact refresh operation tied back to the tag run.
 - GitHub Actions run, artifact, and repository-label metadata sync through the GitHub REST API, with artifact names/sizes/expiry and label names/colors/descriptions shown from the local read model and no download URLs, provider URLs, or provider tokens exposed.
 - GitHub `workflow_run` webhooks that update the Actions read model.
 - Argo CD application sync through the Argo CD REST API.

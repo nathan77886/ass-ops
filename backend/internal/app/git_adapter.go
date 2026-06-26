@@ -313,7 +313,11 @@ func (e *GitExecutor) Tag(ctx context.Context, db sqlx.ExtContext, opID string) 
 	if err := e.run(ctx, result, workTree, "git", "push", "target", "refs/tags/"+tagName+":refs/tags/"+tagName); err != nil {
 		return result, err
 	}
-	result.AfterSHA, _ = e.revParse(ctx, workTree, "refs/tags/"+tagName)
+	if peeledSHA, err := e.revParse(ctx, workTree, "refs/tags/"+tagName+"^{}"); err == nil && peeledSHA != "" {
+		result.AfterSHA = peeledSHA
+	} else {
+		result.AfterSHA, _ = e.revParse(ctx, workTree, "refs/tags/"+tagName)
+	}
 	return result, nil
 }
 

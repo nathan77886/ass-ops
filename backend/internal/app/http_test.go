@@ -11777,6 +11777,186 @@ func TestRecordAdapterSuccessUpdatesRepoTagLookupWithoutOutput(t *testing.T) {
 	}
 }
 
+func TestRecordAdapterSuccessQueuesRepoTagLookupAndActionsRefresh(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	worker := &ControlWorker{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)UPDATE repo_tag_runs\s+SET status='completed'`).
+		WithArgs("op-tag", "", "", "0123456789abcdef0123456789abcdef01234567").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`(?s)UPDATE git_remotes\s+SET updated_at=now\(\)\s+WHERE id=\(SELECT target_remote_id FROM repo_tag_runs WHERE operation_run_id=\$1 LIMIT 1\)`).
+		WithArgs("op-tag").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)SELECT\s+rtr\.id,\s+COALESCE\(rtr\.project_id, pgr\.project_id\)::text AS project_id,\s+COALESCE\(rtr\.target_remote_id, rtr\.git_remote_id\)::text AS target_remote_id,\s+rtr\.tag_name,\s+rtr\.target_sha\s+FROM repo_tag_runs rtr`).
+		WithArgs("op-tag").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "target_remote_id", "tag_name", "target_sha"}).
+			AddRow("tag-run-1", "project-1", "remote-1", "v0.1.0", "0123456789abcdef0123456789abcdef01234567"))
+	mock.ExpectQuery(`(?s)SELECT id, operation_type, status, error, started_at, finished_at, created_at, updated_at\s+FROM operation_runs\s+WHERE operation_type=\$1\s+AND input->>'repo_tag_run_id'=\$2\s+AND \(\$3 = '' OR input->>'refresh_kind'=\$3\).*ORDER BY created_at DESC`).
+		WithArgs("repo.tag.lookup", "tag-run-1", "").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`(?s)INSERT INTO operation_runs\(project_id, git_remote_id, operation_type, title, input\)`).
+		WithArgs("project-1", "remote-1", "repo.tag.lookup", "lookup repository tag after successful tag push", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "created_at", "updated_at"}).
+			AddRow("op-lookup", "repo.tag.lookup", "queued", time.Now(), time.Now()))
+	mock.ExpectExec(`(?s)INSERT INTO worker_jobs\(operation_run_id, tool_name, payload, required_capabilities, preferred_node_kind\)`).
+		WithArgs("op-lookup", "repo.tag.lookup", sqlmock.AnyArg(), sqlmock.AnyArg(), "").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT id, web_url, remote_url, urls FROM git_remotes WHERE id=\$1`).
+		WithArgs("remote-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "web_url", "remote_url", "urls"}).
+			AddRow("remote-1", "https://github.com/example/service", "git@github.com:example/service.git", nil))
+	mock.ExpectQuery(`(?s)SELECT id, operation_type, status, error, started_at, finished_at, created_at, updated_at\s+FROM operation_runs\s+WHERE operation_type=\$1\s+AND input->>'repo_tag_run_id'=\$2\s+AND \(\$3 = '' OR input->>'refresh_kind'=\$3\).*ORDER BY created_at DESC`).
+		WithArgs("github.actions.sync", "tag-run-1", "repo_tag_actions_refresh").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`(?s)INSERT INTO operation_runs\(project_id, git_remote_id, operation_type, title, input\)`).
+		WithArgs("project-1", "remote-1", "github.actions.sync", "refresh GitHub Actions after successful repository tag", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "created_at", "updated_at"}).
+			AddRow("op-actions", "github.actions.sync", "queued", time.Now(), time.Now()))
+	mock.ExpectExec(`(?s)INSERT INTO worker_jobs\(operation_run_id, tool_name, payload, required_capabilities, preferred_node_kind\)`).
+		WithArgs("op-actions", "github.actions.sync", sqlmock.AnyArg(), sqlmock.AnyArg(), "").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).
+		WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
+	mock.ExpectCommit()
+
+	tx, err := worker.store.DB.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	err = worker.recordAdapterSuccess(context.Background(), tx, map[string]any{
+		"id":               "job-tag",
+		"operation_run_id": "op-tag",
+		"tool_name":        "repo.create_tag",
+	}, map[string]any{
+		"after_sha": "0123456789abcdef0123456789abcdef01234567",
+	})
+	if err != nil {
+		t.Fatalf("record adapter success: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAdapterSuccessQueuesRepoTagLookupOnlyForNonGitHubRemote(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	worker := &ControlWorker{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)UPDATE repo_tag_runs\s+SET status='completed'`).
+		WithArgs("op-tag", "", "", "").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`(?s)UPDATE git_remotes\s+SET updated_at=now\(\)\s+WHERE id=\(SELECT target_remote_id FROM repo_tag_runs WHERE operation_run_id=\$1 LIMIT 1\)`).
+		WithArgs("op-tag").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)SELECT\s+rtr\.id,\s+COALESCE\(rtr\.project_id, pgr\.project_id\)::text AS project_id,\s+COALESCE\(rtr\.target_remote_id, rtr\.git_remote_id\)::text AS target_remote_id,\s+rtr\.tag_name,\s+rtr\.target_sha\s+FROM repo_tag_runs rtr`).
+		WithArgs("op-tag").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "target_remote_id", "tag_name", "target_sha"}).
+			AddRow("tag-run-1", "project-1", "remote-1", "v0.1.0", ""))
+	mock.ExpectQuery(`(?s)SELECT id, operation_type, status, error, started_at, finished_at, created_at, updated_at\s+FROM operation_runs\s+WHERE operation_type=\$1\s+AND input->>'repo_tag_run_id'=\$2\s+AND \(\$3 = '' OR input->>'refresh_kind'=\$3\).*ORDER BY created_at DESC`).
+		WithArgs("repo.tag.lookup", "tag-run-1", "").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`(?s)INSERT INTO operation_runs\(project_id, git_remote_id, operation_type, title, input\)`).
+		WithArgs("project-1", "remote-1", "repo.tag.lookup", "lookup repository tag after successful tag push", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "created_at", "updated_at"}).
+			AddRow("op-lookup", "repo.tag.lookup", "queued", time.Now(), time.Now()))
+	mock.ExpectExec(`(?s)INSERT INTO worker_jobs\(operation_run_id, tool_name, payload, required_capabilities, preferred_node_kind\)`).
+		WithArgs("op-lookup", "repo.tag.lookup", sqlmock.AnyArg(), sqlmock.AnyArg(), "").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`SELECT id, web_url, remote_url, urls FROM git_remotes WHERE id=\$1`).
+		WithArgs("remote-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "web_url", "remote_url", "urls"}).
+			AddRow("remote-1", "https://gitea.example.com/example/service", "git@gitea.example.com:example/service.git", nil))
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).
+		WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
+	mock.ExpectCommit()
+
+	tx, err := worker.store.DB.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	err = worker.recordAdapterSuccess(context.Background(), tx, map[string]any{
+		"id":               "job-tag",
+		"operation_run_id": "op-tag",
+		"tool_name":        "repo.create_tag",
+	}, map[string]any{})
+	if err != nil {
+		t.Fatalf("record adapter success: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestRecordAdapterSuccessDoesNotDuplicateCompletedRepoTagFollowUps(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	worker := &ControlWorker{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)UPDATE repo_tag_runs\s+SET status='completed'`).
+		WithArgs("op-tag", "", "", "0123456789abcdef0123456789abcdef01234567").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`(?s)UPDATE git_remotes\s+SET updated_at=now\(\)\s+WHERE id=\(SELECT target_remote_id FROM repo_tag_runs WHERE operation_run_id=\$1 LIMIT 1\)`).
+		WithArgs("op-tag").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(`(?s)SELECT\s+rtr\.id,\s+COALESCE\(rtr\.project_id, pgr\.project_id\)::text AS project_id,\s+COALESCE\(rtr\.target_remote_id, rtr\.git_remote_id\)::text AS target_remote_id,\s+rtr\.tag_name,\s+rtr\.target_sha\s+FROM repo_tag_runs rtr`).
+		WithArgs("op-tag").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "target_remote_id", "tag_name", "target_sha"}).
+			AddRow("tag-run-1", "project-1", "remote-1", "v0.1.0", "0123456789abcdef0123456789abcdef01234567"))
+	mock.ExpectQuery(`(?s)SELECT id, operation_type, status, error, started_at, finished_at, created_at, updated_at\s+FROM operation_runs\s+WHERE operation_type=\$1\s+AND input->>'repo_tag_run_id'=\$2\s+AND \(\$3 = '' OR input->>'refresh_kind'=\$3\).*ORDER BY created_at DESC`).
+		WithArgs("repo.tag.lookup", "tag-run-1", "").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "error", "started_at", "finished_at", "created_at", "updated_at"}).
+			AddRow("op-lookup", "repo.tag.lookup", "completed", "", time.Now(), time.Now(), time.Now(), time.Now()))
+	mock.ExpectQuery(`SELECT id, web_url, remote_url, urls FROM git_remotes WHERE id=\$1`).
+		WithArgs("remote-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "web_url", "remote_url", "urls"}).
+			AddRow("remote-1", "https://github.com/example/service", "git@github.com:example/service.git", nil))
+	mock.ExpectQuery(`(?s)SELECT id, operation_type, status, error, started_at, finished_at, created_at, updated_at\s+FROM operation_runs\s+WHERE operation_type=\$1\s+AND input->>'repo_tag_run_id'=\$2\s+AND \(\$3 = '' OR input->>'refresh_kind'=\$3\).*ORDER BY created_at DESC`).
+		WithArgs("github.actions.sync", "tag-run-1", "repo_tag_actions_refresh").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "operation_type", "status", "error", "started_at", "finished_at", "created_at", "updated_at"}).
+			AddRow("op-actions", "github.actions.sync", "completed", "", time.Now(), time.Now(), time.Now(), time.Now()))
+	mock.ExpectQuery(`(?s)WITH asset_inventory AS`).
+		WillReturnRows(sqlmock.NewRows([]string{"synced_assets", "inserted_relations", "pruned_relations", "inserted_status_snapshots"}).AddRow(0, 0, 0, 0))
+	mock.ExpectCommit()
+
+	tx, err := worker.store.DB.BeginTxx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	err = worker.recordAdapterSuccess(context.Background(), tx, map[string]any{
+		"id":               "job-tag",
+		"operation_run_id": "op-tag",
+		"tool_name":        "repo.tag",
+	}, map[string]any{
+		"after_sha": "0123456789abcdef0123456789abcdef01234567",
+	})
+	if err != nil {
+		t.Fatalf("record adapter success: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestRecordAdapterFailureUpdatesRepoTagLookupWithSanitizedError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

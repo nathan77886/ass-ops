@@ -1213,6 +1213,9 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 		if err != nil {
 			return err
 		}
+		if err := w.enqueueRepoTagPostSuccessOperations(ctx, tx, opID); err != nil {
+			return err
+		}
 		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed repo tag: %w", err)
 		}
@@ -2818,6 +2821,114 @@ func completeTemplateStepsWithRepositoryProvision(steps []map[string]any, provis
 		}
 	}
 	return steps
+}
+
+func (w *ControlWorker) enqueueRepoTagPostSuccessOperations(ctx context.Context, tx *sqlx.Tx, opID string) error {
+	run, err := queryOne(ctx, tx, `
+		SELECT
+			rtr.id,
+			COALESCE(rtr.project_id, pgr.project_id)::text AS project_id,
+			COALESCE(rtr.target_remote_id, rtr.git_remote_id)::text AS target_remote_id,
+			rtr.tag_name,
+			rtr.target_sha
+		FROM repo_tag_runs rtr
+		LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
+		WHERE rtr.operation_run_id=$1
+		LIMIT 1`, opID)
+	if err != nil {
+		return err
+	}
+	runID := strings.TrimSpace(stringFromMap(run, "id"))
+	projectID := strings.TrimSpace(stringFromMap(run, "project_id"))
+	targetRemoteID := strings.TrimSpace(stringFromMap(run, "target_remote_id"))
+	tagName := strings.TrimSpace(stringFromMap(run, "tag_name"))
+	if runID == "" || projectID == "" || targetRemoteID == "" || tagName == "" || !isSafeGitRefPart(tagName) {
+		return nil
+	}
+	// Keep the post-tag lookup and GitHub Actions refresh in the same
+	// transaction as the tag-run completion, so canonical assets see either
+	// the completed tag plus both queued follow-ups, or none of the follow-ups.
+	if err := enqueueRepoTagLookupAfterSuccess(ctx, tx, projectID, targetRemoteID, runID, tagName); err != nil {
+		return err
+	}
+	remote, err := queryOne(ctx, tx, "SELECT id, web_url, remote_url, urls FROM git_remotes WHERE id=$1", targetRemoteID)
+	if err != nil {
+		return err
+	}
+	if _, _, err := gitHubRepositoryFromRemote(remote); err != nil {
+		return nil
+	}
+	targetSHA := strings.TrimSpace(stringFromMap(run, "target_sha"))
+	if !isFullHexSHA(targetSHA) {
+		targetSHA = ""
+	}
+	return enqueueRepoTagGitHubActionsRefreshAfterSuccess(ctx, tx, projectID, targetRemoteID, runID, tagName, targetSHA)
+}
+
+func enqueueRepoTagLookupAfterSuccess(ctx context.Context, tx *sqlx.Tx, projectID, targetRemoteID, runID, tagName string) error {
+	existing, err := repoTagLookupExistingOperationForAuto(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		return nil
+	}
+	input := map[string]any{
+		"repo_tag_run_id":  runID,
+		"target_remote_id": targetRemoteID,
+		"tag_name":         tagName,
+		"trigger":          "repo_tag_success",
+	}
+	_, err = enqueueOperationTx(ctx, tx, projectID, targetRemoteID, "repo.tag.lookup", "lookup repository tag after successful tag push", input, []string{"git"}, "")
+	return err
+}
+
+func enqueueRepoTagGitHubActionsRefreshAfterSuccess(ctx context.Context, tx *sqlx.Tx, projectID, targetRemoteID, runID, tagName, targetSHA string) error {
+	existing, err := repoTagActionsRefreshExistingOperationForAuto(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		return nil
+	}
+	input := map[string]any{
+		"repo_tag_run_id":  runID,
+		"target_remote_id": targetRemoteID,
+		"refresh_kind":     "repo_tag_actions_refresh",
+		"commit_sha":       targetSHA,
+		"tag_name":         tagName,
+		"limit":            50,
+		"trigger":          "repo_tag_success",
+	}
+	_, err = enqueueOperationTx(ctx, tx, projectID, targetRemoteID, "github.actions.sync", "refresh GitHub Actions after successful repository tag", input, []string{"github", "git"}, "")
+	return err
+}
+
+func repoTagLookupExistingOperationForAuto(ctx context.Context, db sqlx.ExtContext, runID string) (map[string]any, error) {
+	return repoTagFollowUpOperationForAuto(ctx, db, runID, "repo.tag.lookup", "")
+}
+
+func repoTagActionsRefreshExistingOperationForAuto(ctx context.Context, db sqlx.ExtContext, runID string) (map[string]any, error) {
+	return repoTagFollowUpOperationForAuto(ctx, db, runID, "github.actions.sync", "repo_tag_actions_refresh")
+}
+
+func repoTagFollowUpOperationForAuto(ctx context.Context, db sqlx.ExtContext, runID, operationType, refreshKind string) (map[string]any, error) {
+	item, err := queryOne(ctx, db, `
+		SELECT id, operation_type, status, error, started_at, finished_at, created_at, updated_at
+		FROM operation_runs
+		WHERE operation_type=$1
+			AND input->>'repo_tag_run_id'=$2
+			AND ($3 = '' OR input->>'refresh_kind'=$3)
+			AND status IN ('queued', 'running', 'completed', 'succeeded', 'success', 'failed', 'canceled')
+		ORDER BY created_at DESC
+		LIMIT 1`, operationType, runID, refreshKind)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return item, nil
 }
 
 func templateStepsWithProvisionRetry(value any) []map[string]any {
