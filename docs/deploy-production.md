@@ -460,6 +460,7 @@ docker compose -f deploy/compose.prod.yml logs -f gateway worker node-worker
 ```
 
 The gateway, control worker, and node worker all expose `/healthz` inside their containers. The production Compose healthchecks use those internal endpoints and do not publish worker health ports to the host.
+The health response includes `component`, `version`, `commit`, and `build_time`; set the matching environment variables or Helm `env.*` values during release so the deployed build can be verified from the web `/healthz` proxy and each internal service.
 
 ## Security Notes
 

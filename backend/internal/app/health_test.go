@@ -12,6 +12,10 @@ import (
 )
 
 func TestHealthHandler(t *testing.T) {
+	t.Setenv("ASSOPS_VERSION", "v0.1.0")
+	t.Setenv("ASSOPS_COMMIT", "abc1234")
+	t.Setenv("ASSOPS_BUILD_TIME", "2026-06-26T00:00:00Z")
+
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
@@ -26,6 +30,20 @@ func TestHealthHandler(t *testing.T) {
 	}
 	if body["ok"] != true || body["component"] != "control-worker" {
 		t.Fatalf("body = %#v", body)
+	}
+	if body["version"] != "v0.1.0" || body["commit"] != "abc1234" || body["build_time"] != "2026-06-26T00:00:00Z" {
+		t.Fatalf("build metadata = %#v", body)
+	}
+}
+
+func TestHealthPayloadDefaultsBuildMetadata(t *testing.T) {
+	body := HealthPayload("gateway")
+
+	if body["ok"] != true || body["component"] != "gateway" {
+		t.Fatalf("body = %#v", body)
+	}
+	if body["version"] != "dev" || body["commit"] != "local" || body["build_time"] != "unknown" {
+		t.Fatalf("default build metadata = %#v", body)
 	}
 }
 

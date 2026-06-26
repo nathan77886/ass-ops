@@ -65,6 +65,8 @@ helm template assops deploy/helm/assops \
 
 With the test example, gateway and worker mount `assops-kubeconfigs` read-only at `/etc/assops/kubeconfigs`, `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, and pod-log audit results remain sanitized metadata only.
 
+Set `env.version`, `env.commit`, and `env.buildTime` in the private overlay when deploying a tagged test build. The gateway, control worker, and node worker expose these values from `/healthz`, and the chart web service proxies `/healthz` to the gateway so the running build can be checked without opening worker ports.
+
 ## Production Values
 
 Prefer an external secret for production. Start from `deploy/helm/assops/values.production.example.yaml` and commit or store an environment-specific overlay outside the chart defaults:
@@ -156,4 +158,4 @@ Application Pods do not need Kubernetes API credentials. The production example 
 - Default PVCs use `ReadWriteOnce`; use a single-node cluster, a compatible scheduler placement, or `ReadWriteMany` storage before scaling beyond one node.
 - SSH material is mounted from the `assops-ssh` PVC and read-only in application pods; load key files into that volume out of band.
 - Kubeconfig material for pod-log metadata audits is mounted read-only in gateway/worker pods from either `persistence.kubeconfigs.existingSecretName` or the `assops-kubeconfigs` PVC. Store only reviewed namespace-scoped kubeconfig files there, and keep the UI `kubeconfig_secret_ref` as a relative path below `/etc/assops/kubeconfigs`.
-- Web uses a chart-rendered nginx config so `/api` and `/healthz` route to the chart gateway Service.
+- Web uses a chart-rendered nginx config so `/api` and `/healthz` route to the chart gateway Service. `/healthz` includes `component`, `version`, `commit`, and `build_time` for deployment verification.

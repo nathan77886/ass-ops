@@ -66,7 +66,7 @@ func (s *Server) Handler() http.Handler {
 	r.Use(cors)
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		writeJSON(w, http.StatusOK, HealthPayload("gateway"))
 	})
 	r.Post("/api/auth/login", s.login)
 	r.Post("/api/webhooks/gitea/{id}", s.receiveGiteaWebhook)

@@ -10,6 +10,9 @@ data:
   ASSOPS_CONTEXT_DIR: /var/lib/assops/context
   ASSOPS_LOCAL_BARE_BASE_DIRS: {{ .Values.env.localBareBaseDirs | quote }}
   ASSOPS_APPROVAL_WEBHOOK_URL: {{ .Values.env.approvalWebhookURL | quote }}
+  ASSOPS_VERSION: {{ .Values.env.version | quote }}
+  ASSOPS_COMMIT: {{ .Values.env.commit | quote }}
+  ASSOPS_BUILD_TIME: {{ .Values.env.buildTime | quote }}
   ASSOPS_WORKER_INTERVAL_SECONDS: {{ .Values.env.workerIntervalSeconds | quote }}
   ASSOPS_WORKER_HEALTH_ADDR: ":8081"
   ASSOPS_NODE_WORKER_HEALTH_ADDR: ":8082"

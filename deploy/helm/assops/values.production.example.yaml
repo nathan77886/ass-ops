@@ -41,6 +41,9 @@ image:
 
 env:
   approvalWebhookURL: ""
+  version: v0.1.0
+  commit: reviewed-release-commit
+  buildTime: reviewed-release-build-time
   workerIntervalSeconds: "3"
   localBareBaseDirs: /var/lib/assops/bare-repos
   kubernetesLogsEnabled: "false"

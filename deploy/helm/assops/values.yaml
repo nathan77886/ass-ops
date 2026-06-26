@@ -34,6 +34,9 @@ secret:
 
 env:
   approvalWebhookURL: ""
+  version: dev
+  commit: local
+  buildTime: unknown
   workerIntervalSeconds: "3"
   localBareBaseDirs: /var/lib/assops/bare-repos
   kubernetesLogsEnabled: "false"

@@ -6,15 +6,35 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
+
+func HealthPayload(component string) map[string]any {
+	return map[string]any{
+		"ok":         true,
+		"component":  component,
+		"version":    envDefault("ASSOPS_VERSION", "dev"),
+		"commit":     envDefault("ASSOPS_COMMIT", "local"),
+		"build_time": envDefault("ASSOPS_BUILD_TIME", "unknown"),
+	}
+}
 
 func HealthHandler(component string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "component": component})
+		writeJSON(w, http.StatusOK, HealthPayload(component))
 	})
 	return mux
+}
+
+func envDefault(key, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func StartHealthServer(ctx context.Context, addr, component string, log *slog.Logger) error {

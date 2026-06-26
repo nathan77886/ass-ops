@@ -11,6 +11,9 @@ postgres:
 
 env:
   approvalWebhookURL: ""
+  version: test
+  commit: local
+  buildTime: unknown
   workerIntervalSeconds: "3"
   localBareBaseDirs: /var/lib/assops/bare-repos
   kubernetesLogsEnabled: "true"
