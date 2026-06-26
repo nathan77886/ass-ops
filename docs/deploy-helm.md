@@ -52,9 +52,25 @@ The external secret must provide:
 - `ASSOPS_APPROVAL_WEBHOOK_TOKEN`
 - `ASSOPS_GITHUB_ACTIONS_READ_TOKEN`
 - `ASSOPS_ARGO_READ_TOKEN`
-- `ASSOPS_KUBERNETES_LOGS_ENABLED`
-- `ASSOPS_KUBECONFIG_SECRET_DIR`
-- `ASSOPS_KUBECTL_PATH`
+
+Kubernetes pod-log audit settings are non-secret chart values under `env`:
+
+```yaml
+env:
+  kubernetesLogsEnabled: "true"
+  kubeconfigSecretDir: /etc/assops/kubeconfigs
+  kubectlPath: kubectl
+```
+
+For test or shared environments, prefer mounting reviewed namespace-scoped kubeconfig files from an existing Kubernetes Secret instead of preloading the chart PVC. Each Secret key is exposed as a file below `env.kubeconfigSecretDir`, so the UI `kubeconfig_secret_ref` should match the key or a relative path in that mounted Secret.
+
+```yaml
+persistence:
+  kubeconfigs:
+    existingSecretName: assops-kubeconfigs
+```
+
+When `persistence.kubeconfigs.existingSecretName` is set, the chart mounts that Secret read-only into gateway and worker pods and skips creating the kubeconfigs PVC.
 
 If you install with a release name other than `assops` while using the built-in PostgreSQL, override `secret.databaseURL` so the host matches `<release-name>-assops-postgres`.
 
@@ -98,5 +114,5 @@ Application Pods do not need Kubernetes API credentials. The production example 
 - The default PostgreSQL is suitable for demos only. Use managed PostgreSQL for shared environments.
 - Default PVCs use `ReadWriteOnce`; use a single-node cluster, a compatible scheduler placement, or `ReadWriteMany` storage before scaling beyond one node.
 - SSH material is mounted from the `assops-ssh` PVC and read-only in application pods; load key files into that volume out of band.
-- Kubeconfig material for pod-log metadata audits is mounted from the `assops-kubeconfigs` PVC and read-only in gateway/worker pods. Store only reviewed namespace-scoped kubeconfig files there, and keep the UI `kubeconfig_secret_ref` as a relative path below `/etc/assops/kubeconfigs`.
+- Kubeconfig material for pod-log metadata audits is mounted read-only in gateway/worker pods from either `persistence.kubeconfigs.existingSecretName` or the `assops-kubeconfigs` PVC. Store only reviewed namespace-scoped kubeconfig files there, and keep the UI `kubeconfig_secret_ref` as a relative path below `/etc/assops/kubeconfigs`.
 - Web uses a chart-rendered nginx config so `/api` and `/healthz` route to the chart gateway Service.

@@ -225,7 +225,8 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "size": { "type": "string", "minLength": 1 },
-        "storageClassName": { "type": "string" }
+        "storageClassName": { "type": "string" },
+        "existingSecretName": { "type": "string" }
       }
     }
   }

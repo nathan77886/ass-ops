@@ -86,7 +86,10 @@ spec:
           emptyDir: {}
           {{- end }}
         - name: kubeconfigs
-          {{- if .Values.persistence.kubeconfigs.enabled }}
+          {{- if .Values.persistence.kubeconfigs.existingSecretName }}
+          secret:
+            secretName: {{ .Values.persistence.kubeconfigs.existingSecretName | quote }}
+          {{- else if .Values.persistence.kubeconfigs.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "assops.fullname" . }}-kubeconfigs
           {{- else }}
@@ -181,7 +184,10 @@ spec:
           emptyDir: {}
           {{- end }}
         - name: kubeconfigs
-          {{- if .Values.persistence.kubeconfigs.enabled }}
+          {{- if .Values.persistence.kubeconfigs.existingSecretName }}
+          secret:
+            secretName: {{ .Values.persistence.kubeconfigs.existingSecretName | quote }}
+          {{- else if .Values.persistence.kubeconfigs.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "assops.fullname" . }}-kubeconfigs
           {{- else }}

@@ -61,6 +61,9 @@ persistence:
     size: 1Gi
     # Store only reviewed namespace-scoped kubeconfig files here.
     storageClassName: ""
+    # When set, gateway and worker mount this Secret at env.kubeconfigSecretDir
+    # instead of creating/using the kubeconfigs PVC. Secret keys become files.
+    existingSecretName: ""
   backups:
     enabled: true
     size: 5Gi

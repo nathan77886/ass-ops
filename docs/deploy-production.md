@@ -432,12 +432,12 @@ For a first private test environment using Compose:
 3. Confirm `web`, `gateway`, `worker`, and `node-worker` are healthy with `docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml ps`.
 4. Log in through the web UI and create a project.
 5. Add an Argo connection, sync apps, and confirm deployment targets appear.
-6. For pod-log metadata audit, place a namespace-scoped kubeconfig file into the `assops_kubeconfigs` volume, set `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, restart gateway/worker, then create a Kubernetes environment row whose environment, cluster, namespace, and relative kubeconfig ref match the deployment target.
+6. For pod-log metadata audit, provide a namespace-scoped kubeconfig file through either `persistence.kubeconfigs.existingSecretName` or the `assops_kubeconfigs` volume, set `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, restart gateway/worker, then create a Kubernetes environment row whose environment, cluster, namespace, and relative kubeconfig ref match the deployment target.
 7. Use the Argo Pod log query preview first. Only request an audit after the live backend tag is ready; the result records sanitized metadata only.
 8. Add Git remotes for the project repository, sync GitHub Actions, and verify action runs/artifact summaries appear from the local read model.
 9. Create or sync a tag run, refresh GitHub Actions for the tag target, and record the local sanitized snapshots when the UI marks them ready.
 
-For Helm-based test environments, set the same integration values in a reviewed values file. The chart mounts `/etc/assops/kubeconfigs` into gateway and worker from the `persistence.kubeconfigs` volume and exposes `env.kubernetesLogsEnabled`, `env.kubeconfigSecretDir`, and `env.kubectlPath`.
+For Helm-based test environments, set the same integration values in a reviewed values file. The chart mounts `/etc/assops/kubeconfigs` into gateway and worker from either `persistence.kubeconfigs.existingSecretName` or the `persistence.kubeconfigs` PVC, and exposes `env.kubernetesLogsEnabled`, `env.kubeconfigSecretDir`, and `env.kubectlPath`.
 
 The production values example enables stricter pod/container security settings for Go workloads and migration jobs. Review these settings with the actual images and cluster policy before rollout, especially if you override images.
 
