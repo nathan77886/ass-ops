@@ -166,6 +166,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.aiRuntime': 'AI Runtime',
     'title.agentTasks': 'Agent Tasks',
     'title.assets': 'Assets',
+    'title.dashboard': 'Dashboard',
     'form.createProject': 'Create project',
     'form.createRepository': 'Create repository',
     'form.createAIRuntime': 'Create AI runtime',
@@ -543,6 +544,70 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'asset.relationSaved': 'Asset relation saved',
     'asset.relationDeleted': 'Asset relation deleted',
     'asset.deleteRelationConfirm': 'Delete manual relation?',
+    'dashboard.gateway': 'Gateway',
+    'dashboard.online': 'Online',
+    'dashboard.recentOperations': 'Recent operations',
+    'dashboard.readyChecks': 'Ready checks',
+    'dashboard.needsEvidence': 'Needs evidence',
+    'dashboard.graphUnavailable': 'Asset graph unavailable: {error}',
+    'dashboard.graphMissing': 'Asset graph response missing nodes or edges',
+    'dashboard.retry': 'Retry',
+    'dashboard.firstVersionReadiness': 'First-Version Readiness',
+    'dashboard.demoDataPrepared': 'Demo readiness data prepared',
+    'dashboard.demoDataCurrent': 'Demo readiness data already prepared',
+    'dashboard.demoSnapshotRecorded': 'Demo readiness snapshot recorded',
+    'dashboard.demoSnapshotUnverified': 'Demo readiness snapshot recorded with unverified row count',
+    'dashboard.demoSnapshotCurrent': 'Demo readiness snapshot already current',
+    'dashboard.demoData': 'demo data',
+    'dashboard.remotes': 'remotes',
+    'dashboard.remoteUrlWritten': 'remote URL written',
+    'dashboard.noRemoteUrl': 'no remote URL',
+    'dashboard.providerCalled': 'provider called',
+    'dashboard.noProviderCall': 'no provider call',
+    'dashboard.snapshot': 'snapshot',
+    'dashboard.assetStatusWritten': 'asset status written',
+    'dashboard.noAssetStatusWrite': 'no asset status write',
+    'dashboard.rowsAffectedUnknown': 'rows affected unknown',
+    'dashboard.ensureDemoData': 'Ensure demo data',
+    'dashboard.recordDemoSnapshot': 'Record demo snapshot',
+    'dashboard.status': 'Status',
+    'dashboard.demoProof': 'Demo proof',
+    'dashboard.evidence': 'Evidence',
+    'dashboard.demoPlan': 'Demo plan',
+    'dashboard.next': 'Next',
+    'dashboard.env': 'env',
+    'dashboard.proof': 'proof',
+    'dashboard.multiRemotePath': 'multi-remote path',
+    'dashboard.graph': 'graph',
+    'dashboard.seedWritten': 'seed written',
+    'dashboard.noSeedWrite': 'no seed write',
+    'dashboard.graphWritten': 'graph written',
+    'dashboard.noGraphWrite': 'no graph write',
+    'dashboard.result': 'result',
+    'dashboard.snapshotReview': 'snapshot review',
+    'dashboard.snapshotBlocked': 'snapshot blocked',
+    'dashboard.snapshotWrite': 'snapshot write',
+    'dashboard.noSnapshotWrite': 'no snapshot write',
+    'readiness.projectLabel': 'Create/import project asset',
+    'readiness.projectNext': 'Create a project or run the demo seed.',
+    'readiness.repositoriesLabel': 'Attach source and mirror repositories',
+    'readiness.repositoriesNext': 'Add repository metadata and at least two Git remotes.',
+    'readiness.repoSyncLabel': 'Define RepoSyncAsset',
+    'readiness.repoSyncNext': 'Create a RepoSyncAsset between source and mirror remotes.',
+    'readiness.syncTriggerLabel': 'Trigger sync manually and from webhook',
+    'readiness.syncTriggerNext': 'Run a manual sync and receive or replay a Gitea webhook event.',
+    'readiness.githubActionsLabel': 'See GitHub tags and Actions state',
+    'readiness.githubActionsNext': 'Create a repository tag and sync GitHub Actions for the mirror remote or receive workflow_run webhooks.',
+    'readiness.sshLabel': 'Register SSH machines and audited commands',
+    'readiness.sshNext': 'Verify an SSH machine, then run an approval-gated command.',
+    'readiness.argoLabel': 'Sync Argo apps to deployment targets',
+    'readiness.argoNext': 'Create an Argo connection, sync apps, and inspect deployment targets.',
+    'readiness.operationsLabel': 'View operation history and logs',
+    'readiness.operationsNext': 'Run any controlled operation and inspect its logs.',
+    'readiness.approvalLabel': 'Enforce approval for high-risk operations',
+    'readiness.approvalNext': 'Queue a high-risk action that creates an approval request.',
+    'readiness.contextLabel': 'Generate AI-readable context from graph',
+    'readiness.contextNext': 'Create an agent task or AI runtime after syncing the canonical asset ledger.',
     'option.code': 'Code',
     'option.service': 'Service',
     'option.github': 'GitHub',
@@ -1127,6 +1192,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.aiRuntime': 'AI 运行时',
     'title.agentTasks': 'Agent 任务',
     'title.assets': '资产中心',
+    'title.dashboard': '仪表盘',
     'form.createProject': '创建项目',
     'form.createRepository': '创建代码仓库',
     'form.createAIRuntime': '创建 AI 运行时',
@@ -1504,6 +1570,70 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'asset.relationSaved': '资产关系已保存',
     'asset.relationDeleted': '资产关系已删除',
     'asset.deleteRelationConfirm': '删除手动关系？',
+    'dashboard.gateway': '网关',
+    'dashboard.online': '在线',
+    'dashboard.recentOperations': '最近操作',
+    'dashboard.readyChecks': '就绪检查',
+    'dashboard.needsEvidence': '缺少证据',
+    'dashboard.graphUnavailable': '资产图谱不可用：{error}',
+    'dashboard.graphMissing': '资产图谱响应缺少节点或边',
+    'dashboard.retry': '重试',
+    'dashboard.firstVersionReadiness': '首版就绪度',
+    'dashboard.demoDataPrepared': 'Demo 就绪数据已准备',
+    'dashboard.demoDataCurrent': 'Demo 就绪数据已是最新',
+    'dashboard.demoSnapshotRecorded': 'Demo 就绪快照已记录',
+    'dashboard.demoSnapshotUnverified': 'Demo 就绪快照已记录，但行数未验证',
+    'dashboard.demoSnapshotCurrent': 'Demo 就绪快照已是最新',
+    'dashboard.demoData': 'Demo 数据',
+    'dashboard.remotes': '个远端',
+    'dashboard.remoteUrlWritten': '已写远端 URL',
+    'dashboard.noRemoteUrl': '未写远端 URL',
+    'dashboard.providerCalled': '已调用提供方',
+    'dashboard.noProviderCall': '未调用提供方',
+    'dashboard.snapshot': '快照',
+    'dashboard.assetStatusWritten': '资产状态已写入',
+    'dashboard.noAssetStatusWrite': '未写资产状态',
+    'dashboard.rowsAffectedUnknown': '影响行数未知',
+    'dashboard.ensureDemoData': '准备 Demo 数据',
+    'dashboard.recordDemoSnapshot': '记录 Demo 快照',
+    'dashboard.status': '状态',
+    'dashboard.demoProof': 'Demo 证明',
+    'dashboard.evidence': '证据',
+    'dashboard.demoPlan': 'Demo 方案',
+    'dashboard.next': '下一步',
+    'dashboard.env': '环境',
+    'dashboard.proof': '证明',
+    'dashboard.multiRemotePath': '多远端路径',
+    'dashboard.graph': '图谱',
+    'dashboard.seedWritten': '种子已写入',
+    'dashboard.noSeedWrite': '未写种子',
+    'dashboard.graphWritten': '图谱已写入',
+    'dashboard.noGraphWrite': '未写图谱',
+    'dashboard.result': '结果',
+    'dashboard.snapshotReview': '快照审查',
+    'dashboard.snapshotBlocked': '快照阻塞',
+    'dashboard.snapshotWrite': '快照写入',
+    'dashboard.noSnapshotWrite': '未写快照',
+    'readiness.projectLabel': '创建或导入项目资产',
+    'readiness.projectNext': '创建项目，或运行 Demo 种子数据。',
+    'readiness.repositoriesLabel': '关联源仓库和镜像仓库',
+    'readiness.repositoriesNext': '补充仓库元数据，并至少添加两个 Git 远端。',
+    'readiness.repoSyncLabel': '定义 RepoSyncAsset',
+    'readiness.repoSyncNext': '在源远端和镜像远端之间创建 RepoSyncAsset。',
+    'readiness.syncTriggerLabel': '通过手动和 Webhook 触发同步',
+    'readiness.syncTriggerNext': '执行一次手动同步，并接收或重放一次 Gitea Webhook 事件。',
+    'readiness.githubActionsLabel': '查看 GitHub 标签和 Actions 状态',
+    'readiness.githubActionsNext': '为镜像远端创建仓库标签并同步 GitHub Actions，或接收 workflow_run Webhook。',
+    'readiness.sshLabel': '登记 SSH 主机和审计命令',
+    'readiness.sshNext': '先验证 SSH 主机，再执行需要审批的命令。',
+    'readiness.argoLabel': '同步 Argo 应用到部署目标',
+    'readiness.argoNext': '创建 Argo 连接，同步应用，并检查部署目标。',
+    'readiness.operationsLabel': '查看操作历史和日志',
+    'readiness.operationsNext': '执行任意受控操作，并检查它的日志。',
+    'readiness.approvalLabel': '对高风险操作启用审批',
+    'readiness.approvalNext': '发起一个会创建审批请求的高风险操作。',
+    'readiness.contextLabel': '从图谱生成 AI 可读上下文',
+    'readiness.contextNext': '同步规范资产账本后，创建 Agent 任务或 AI 运行时。',
     'option.code': '代码',
     'option.service': '服务',
     'option.github': 'GitHub',
@@ -3305,7 +3435,13 @@ function demoDataResultRecordingPlan(status: string, evidenceCounts: AnyRow = {}
   };
 }
 
-function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] = [], approvalSummary: AnyRow = {}, graph: AnyRow = {}) {
+function firstVersionReadinessRows(
+  assets: AnyRow[] = [],
+  operations: AnyRow[] = [],
+  approvalSummary: AnyRow = {},
+  graph: AnyRow = {},
+  t: (key: string) => string = createTranslator('en')
+) {
   const assetCounts = countByField(assets, 'asset_type');
   const operationCounts = countByField(operations, 'operation_type');
   const syncTriggered = (operationCounts['repo.sync'] || 0) + (operationCounts['repo.sync_remote'] || 0);
@@ -3379,64 +3515,64 @@ function firstVersionReadinessRows(assets: AnyRow[] = [], operations: AnyRow[] =
   return [
     {
       key: 'project',
-      label: 'Create/import project asset',
-      next: 'Create a project or run the demo seed.',
+      label: t('readiness.projectLabel'),
+      next: t('readiness.projectNext'),
       ...projectState,
       demo_data_rehearsal_plan: demoDataRehearsalPlan(projectState.status, { project_assets: assetCounts.project || 0, project_graph_nodes: projectGraphNodes, project_asset_nodes: projectAssetGraphNodes }, ['project_asset', 'project_asset_node'])
     },
     {
       key: 'repositories',
-      label: 'Attach source and mirror repositories',
-      next: 'Add repository metadata and at least two Git remotes.',
+      label: t('readiness.repositoriesLabel'),
+      next: t('readiness.repositoriesNext'),
       ...repositoryState,
       demo_data_rehearsal_plan: demoDataRehearsalPlan(repositoryState.status, { repository_assets: assetCounts.repository || 0, git_remote_assets: assetCounts.git_remote || 0, complete_repository_paths: repositoryGraphLinks.completeRepoAssets, project_repository_links: repositoryGraphLinks.projectRepository, repository_remote_links: repositoryGraphLinks.repositoryRemotes }, ['repository_asset', 'two_git_remote_assets', 'project_to_repository_graph_link', 'repository_to_two_remotes_graph_path'])
     },
     {
       key: 'repo_sync',
-      label: 'Define RepoSyncAsset',
-      next: 'Create a RepoSyncAsset between source and mirror remotes.',
+      label: t('readiness.repoSyncLabel'),
+      next: t('readiness.repoSyncNext'),
       ...readinessState((assetCounts.repo_sync || 0) > 0 && repoSyncGraphLinks.completeSyncAssets > 0, `${assetCounts.repo_sync || 0} repo syncs / ${repoSyncGraphLinks.completeSyncs} graph-complete syncs / ${repoSyncGraphLinks.completeSyncAssets} sync asset paths / ${repoSyncGraphLinks.repositorySync} repository links / ${repoSyncGraphLinks.sourceRemotes} source links / ${repoSyncGraphLinks.targetRemotes} target links`, (assetCounts.repo_sync || 0) > 0 || repoSyncGraphLinks.repositorySync > 0 || repoSyncGraphLinks.sourceRemotes > 0 || repoSyncGraphLinks.targetRemotes > 0 || repoSyncGraphLinks.completeSyncAssets > 0)
     },
     {
       key: 'sync_trigger',
-      label: 'Trigger sync manually and from webhook',
-      next: 'Run a manual sync and receive or replay a Gitea webhook event.',
+      label: t('readiness.syncTriggerLabel'),
+      next: t('readiness.syncTriggerNext'),
       ...readinessState(syncTriggered > 0 && giteaWebhooks > 0 && giteaWebhookEvents > 0 && webhookSyncGraphLinks.completeChainAssets > 0, syncTriggerEvidenceText, syncTriggered > 0 || giteaWebhooks > 0 || giteaWebhookEvents > 0 || webhookSyncGraphLinks.connectionEvents > 0 || webhookSyncGraphLinks.eventRepoSyncs > 0 || webhookSyncGraphLinks.eventOperations > 0 || webhookSyncGraphLinks.completeChainAssets > 0)
     },
     {
       key: 'github_actions',
-      label: 'See GitHub tags and Actions state',
-      next: 'Create a repository tag and sync GitHub Actions for the mirror remote or receive workflow_run webhooks.',
+      label: t('readiness.githubActionsLabel'),
+      next: t('readiness.githubActionsNext'),
       ...readinessState((assetCounts.pipeline_run || 0) > 0 && githubActionLinks.completeActionAssets > 0 && repoTagRuns > 0 && githubActionLinks.completeTaggedRemoteAssets > 0 && githubActionLinks.linkedTagRunAssets > 0, `${assetCounts.pipeline_run || 0} pipeline runs / ${githubActionLinks.completeActionRuns} complete action chains / ${githubActionLinks.completeActionAssets} action asset chains / ${repoTagRuns} tag ops / ${githubActionLinks.completeTaggedRemotes} complete tag links / ${githubActionLinks.completeTaggedRemoteAssets} tag asset links / ${githubActionLinks.linkedTagRuns} linked tag runs / ${githubActionLinks.linkedTagRunAssets} linked tag assets / ${githubActionLinks.projectRepositories} project links / ${githubActionLinks.repositoryRemotes} remote links / ${githubActionLinks.remoteActionRuns} action links / ${githubActionLinks.taggedRemotes} tag links / ${githubActionLinks.tagActionRunLinks} tag-action links`, (assetCounts.pipeline_run || 0) > 0 || repoTagRuns > 0 || githubActionLinks.projectRepositories > 0 || githubActionLinks.repositoryRemotes > 0 || githubActionLinks.remoteActionRuns > 0 || githubActionLinks.taggedRemotes > 0 || githubActionLinks.tagActionRunLinks > 0 || githubActionLinks.completeActionAssets > 0 || githubActionLinks.completeTaggedRemoteAssets > 0 || githubActionLinks.linkedTagRunAssets > 0)
     },
     {
       key: 'ssh',
-      label: 'Register SSH machines and audited commands',
-      next: 'Verify an SSH machine, then run an approval-gated command.',
+      label: t('readiness.sshLabel'),
+      next: t('readiness.sshNext'),
       ...readinessState(sshMachineAssets > 0 && sshVerifyRuns > 0 && sshCommandRuns > 0 && sshGraphLinks.completeVerifyCommandAssets > 0 && sshGraphLinks.completeRunCommandAssets > 0, `${sshMachineAssets} machines / ${sshVerifyRuns} verify ops / ${sshCommandRuns} command ops / ${assetCounts.ssh_command_run || 0} command assets / ${sshGraphLinks.completeCommands} complete audit chains / ${sshGraphLinks.completeCommandAssets} command asset chains / ${sshGraphLinks.completeVerifyCommandAssets} verify chains / ${sshGraphLinks.completeRunCommandAssets} run chains`, sshMachineAssets > 0 || sshVerifyRuns > 0 || sshCommandRuns > 0 || (assetCounts.ssh_command_run || 0) > 0 || sshGraphLinks.operationCommands > 0 || sshGraphLinks.commandMachines > 0 || sshGraphLinks.completeCommandAssets > 0)
     },
     {
       key: 'argo',
-      label: 'Sync Argo apps to deployment targets',
-      next: 'Create an Argo connection, sync apps, and inspect deployment targets.',
+      label: t('readiness.argoLabel'),
+      next: t('readiness.argoNext'),
       ...readinessState((assetCounts.argo_connection || 0) > 0 && (assetCounts.argo_app || 0) > 0 && (assetCounts.deployment_target || 0) > 0 && (operationCounts['argo.apps.sync'] || 0) > 0 && argoGraphLinks.completeAppAssets > 0, argoEvidenceText, argoEvidence > 0)
     },
     {
       key: 'operations',
-      label: 'View operation history and logs',
-      next: 'Run any controlled operation and inspect its logs.',
+      label: t('readiness.operationsLabel'),
+      next: t('readiness.operationsNext'),
       ...readinessState(operationAssets > 0 && operationLogs > 0, `${operationAssets} operation assets / ${listedOperationRuns} listed runs / ${operationLogs} with logs`, operationAssets > 0 || listedOperationRuns > 0 || operationLogs > 0)
     },
     {
       key: 'approval',
-      label: 'Enforce approval for high-risk operations',
-      next: 'Queue a high-risk action that creates an approval request.',
+      label: t('readiness.approvalLabel'),
+      next: t('readiness.approvalNext'),
       ...readinessState(approvalAssets > 0 && pendingApprovalOps > 0 && activeApprovalRules > 0 && approvalGraphLinks.completeApprovalAssetChains > 0, `${approvalEvidence} approvals / ${approvalAssets} approval assets / ${pendingApprovalOps} pending ops / ${activeApprovalRules} active rules / ${approvalGraphLinks.ruleApprovals} governed approvals / ${approvalGraphLinks.approvalOperations} gated ops / ${approvalGraphLinks.completeApprovalChains} complete approval chains / ${approvalGraphLinks.completeApprovalAssetChains} approval asset chains`, approvalEvidence > 0 || approvalAssets > 0 || pendingApprovalOps > 0 || activeApprovalRules > 0 || approvalGraphLinks.ruleApprovals > 0 || approvalGraphLinks.approvalOperations > 0 || approvalGraphLinks.completeApprovalAssetChains > 0)
     },
     {
       key: 'context',
-      label: 'Generate AI-readable context from graph',
-      next: 'Create an agent task or AI runtime after syncing the canonical asset ledger.',
+      label: t('readiness.contextLabel'),
+      next: t('readiness.contextNext'),
       ...readinessState(contextEvidence > 0 && contextGenerations > 0 && graphEvidence > 0 && contextGraphLinks.completeContextTaskAssets > 0, `${contextEvidence} context assets / ${contextGenerations} context generations / ${contextGraphLinks.completeContextTasks} complete context tasks / ${contextGraphLinks.completeContextTaskAssets} context asset tasks / ${contextGraphLinks.taskRuntimes} runtime links / ${contextGraphLinks.taskContextToolCalls} context tool links / ${graphNodes} graph nodes / ${graphEdges} graph edges`, contextEvidence > 0 || contextGenerations > 0 || graphEvidence > 0 || contextGraphLinks.taskRuntimes > 0 || contextGraphLinks.taskContextToolCalls > 0 || contextGraphLinks.completeContextTaskAssets > 0)
     }
   ];
@@ -3711,13 +3847,14 @@ function graphNodeColor(type: string) {
 }
 
 function Dashboard() {
+  const { t } = useI18n();
   const ops = useLoad(() => api('/api/operations'), []);
   const assets = useLoad(() => api('/api/assets'), []);
   const graph = useLoad(() => api('/api/assets/graph'), []);
   const approvalSummary = useLoad(() => api('/api/operation-approvals/summary'), []);
-  const readinessRows = firstVersionReadinessRows(assets.data?.items || [], ops.data?.items || [], approvalSummary.data || {}, graph.data || {});
+  const readinessRows = firstVersionReadinessRows(assets.data?.items || [], ops.data?.items || [], approvalSummary.data || {}, graph.data || {}, t);
   const readinessCounts = countByField(readinessRows, 'status');
-  const graphWarning = graph.error ? `Asset graph unavailable: ${graph.error}` : graph.data && !graphPayloadAvailable(graph.data) ? 'Asset graph response missing nodes or edges' : '';
+  const graphWarning = graph.error ? t('dashboard.graphUnavailable').replace('{error}', graph.error) : graph.data && !graphPayloadAvailable(graph.data) ? t('dashboard.graphMissing') : '';
   const [demoDataLoading, setDemoDataLoading] = useState(false);
   const [demoDataResult, setDemoDataResult] = useState<AnyRow>();
   const [demoSnapshotLoading, setDemoSnapshotLoading] = useState(false);
@@ -3730,11 +3867,11 @@ function Dashboard() {
       if (result.readiness_snapshot_written) {
         setDemoSnapshotResult(result.readiness_snapshot);
       }
-      message.success(result.project_created || result.repository_created || result.git_remote_created ? 'Demo readiness data prepared' : 'Demo readiness data already prepared');
+      message.success(result.project_created || result.repository_created || result.git_remote_created ? t('dashboard.demoDataPrepared') : t('dashboard.demoDataCurrent'));
       assets.reload();
       graph.reload();
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setDemoDataLoading(false);
     }
@@ -3744,35 +3881,35 @@ function Dashboard() {
     try {
       const result = await api('/api/demo-readiness-snapshot', { method: 'POST', body: '{}' });
       setDemoSnapshotResult(result);
-      message.success(result.readiness_snapshot_written ? 'Demo readiness snapshot recorded' : result.rows_affected_unknown ? 'Demo readiness snapshot recorded with unverified row count' : 'Demo readiness snapshot already current');
+      message.success(result.readiness_snapshot_written ? t('dashboard.demoSnapshotRecorded') : result.rows_affected_unknown ? t('dashboard.demoSnapshotUnverified') : t('dashboard.demoSnapshotCurrent'));
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setDemoSnapshotLoading(false);
     }
   }
   return (
     <Space direction="vertical" size={16} className="full">
-      <Typography.Title level={2}>Dashboard</Typography.Title>
+      <Typography.Title level={2}>{t('title.dashboard')}</Typography.Title>
       <div className="metricGrid">
-        <Card><Typography.Text type="secondary">Gateway</Typography.Text><Typography.Title level={3}>Online</Typography.Title></Card>
-        <Card><Typography.Text type="secondary">Recent operations</Typography.Text><Typography.Title level={3}>{ops.data?.items?.length || 0}</Typography.Title></Card>
-        <Card><Typography.Text type="secondary">Ready checks</Typography.Text><Typography.Title level={3}>{readinessCounts.ready || 0}/{readinessRows.length}</Typography.Title></Card>
-        <Card><Typography.Text type="secondary">Needs evidence</Typography.Text><Typography.Title level={3}>{(readinessCounts.partial || 0) + (readinessCounts.missing || 0)}</Typography.Title></Card>
+        <Card><Typography.Text type="secondary">{t('dashboard.gateway')}</Typography.Text><Typography.Title level={3}>{t('dashboard.online')}</Typography.Title></Card>
+        <Card><Typography.Text type="secondary">{t('dashboard.recentOperations')}</Typography.Text><Typography.Title level={3}>{ops.data?.items?.length || 0}</Typography.Title></Card>
+        <Card><Typography.Text type="secondary">{t('dashboard.readyChecks')}</Typography.Text><Typography.Title level={3}>{readinessCounts.ready || 0}/{readinessRows.length}</Typography.Title></Card>
+        <Card><Typography.Text type="secondary">{t('dashboard.needsEvidence')}</Typography.Text><Typography.Title level={3}>{(readinessCounts.partial || 0) + (readinessCounts.missing || 0)}</Typography.Title></Card>
       </div>
-      {graphWarning ? <Alert showIcon closable type="warning" message={graphWarning} action={<Button size="small" onClick={graph.reload}>Retry</Button>} /> : null}
+      {graphWarning ? <Alert showIcon closable type="warning" message={graphWarning} action={<Button size="small" onClick={graph.reload}>{t('dashboard.retry')}</Button>} /> : null}
       <Card
-        title="First-Version Readiness"
+        title={t('dashboard.firstVersionReadiness')}
         extra={<Space size={8} wrap>
-          {demoDataResult ? <Tag color={demoDataResult.asset_graph_written ? 'green' : 'default'}>demo data {demoDataResult.recording_state || 'unknown'}</Tag> : null}
-          {demoDataResult ? <Tag>{demoDataResult.git_remote_count || 0} remotes</Tag> : null}
-          {demoDataResult ? <Tag>{demoDataResult.git_remote_url_written ? 'remote URL written' : 'no remote URL'}</Tag> : null}
-          {demoDataResult ? <Tag>{demoDataResult.provider_api_called ? 'provider called' : 'no provider call'}</Tag> : null}
-          {demoSnapshotResult ? <Tag color={demoSnapshotResult.readiness_snapshot_written ? 'green' : demoSnapshotResult.recording_state === 'blocked' ? 'red' : 'default'}>snapshot {demoSnapshotResult.recording_state || 'unknown'}</Tag> : null}
-          {demoSnapshotResult ? <Tag>{demoSnapshotResult.asset_graph_snapshot_written ? 'asset status written' : 'no asset status write'}</Tag> : null}
-          {demoSnapshotResult?.rows_affected_unknown ? <Tag color="gold">rows affected unknown</Tag> : null}
-          <Button size="small" onClick={ensureDemoReadinessData} loading={demoDataLoading}>Ensure demo data</Button>
-          <Button size="small" onClick={recordDemoReadinessSnapshot} loading={demoSnapshotLoading}>Record demo snapshot</Button>
+          {demoDataResult ? <Tag color={demoDataResult.asset_graph_written ? 'green' : 'default'}>{t('dashboard.demoData')} {translatedValue(demoDataResult.recording_state || 'unknown', t)}</Tag> : null}
+          {demoDataResult ? <Tag>{demoDataResult.git_remote_count || 0} {t('dashboard.remotes')}</Tag> : null}
+          {demoDataResult ? <Tag>{demoDataResult.git_remote_url_written ? t('dashboard.remoteUrlWritten') : t('dashboard.noRemoteUrl')}</Tag> : null}
+          {demoDataResult ? <Tag>{demoDataResult.provider_api_called ? t('dashboard.providerCalled') : t('dashboard.noProviderCall')}</Tag> : null}
+          {demoSnapshotResult ? <Tag color={demoSnapshotResult.readiness_snapshot_written ? 'green' : demoSnapshotResult.recording_state === 'blocked' ? 'red' : 'default'}>{t('dashboard.snapshot')} {translatedValue(demoSnapshotResult.recording_state || 'unknown', t)}</Tag> : null}
+          {demoSnapshotResult ? <Tag>{demoSnapshotResult.asset_graph_snapshot_written ? t('dashboard.assetStatusWritten') : t('dashboard.noAssetStatusWrite')}</Tag> : null}
+          {demoSnapshotResult?.rows_affected_unknown ? <Tag color="gold">{t('dashboard.rowsAffectedUnknown')}</Tag> : null}
+          <Button size="small" onClick={ensureDemoReadinessData} loading={demoDataLoading}>{t('dashboard.ensureDemoData')}</Button>
+          <Button size="small" onClick={recordDemoReadinessSnapshot} loading={demoSnapshotLoading}>{t('dashboard.recordDemoSnapshot')}</Button>
         </Space>}
       >
         <Table<AnyRow>
@@ -3781,28 +3918,28 @@ function Dashboard() {
           pagination={false}
           size="small"
           columns={[
-            { title: 'Status', render: (_, row) => <Tag color={row.color}>{row.status}</Tag> },
-            { title: 'Demo proof', dataIndex: 'label' },
-            { title: 'Evidence', render: (_, row) => <Typography.Text>{String(row.evidence)}</Typography.Text> },
-            { title: 'Demo plan', render: (_, row) => {
+            { title: t('dashboard.status'), render: (_, row) => <Tag color={row.color}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('dashboard.demoProof'), dataIndex: 'label' },
+            { title: t('dashboard.evidence'), render: (_, row) => <Typography.Text>{String(row.evidence)}</Typography.Text> },
+            { title: t('dashboard.demoPlan'), render: (_, row) => {
               const plan = row.demo_data_rehearsal_plan;
               if (!plan) return null;
               const environmentProof = plan.environment_demo_proof || {};
               const resultPreflight = plan.result_recording_plan?.result_recording_preflight || {};
               return <Space size={4} wrap>
-                <Tag color={demoPlanStateColor(plan.plan_state)}>{plan.plan_state}</Tag>
-                {plan.environment_evidence_plan ? <Tag color={demoPlanStateColor(plan.environment_evidence_plan.evidence_state)}>env {plan.environment_evidence_plan.evidence_state || 'blocked'}</Tag> : null}
-                {environmentProof.proof_state ? <Tag color={demoPlanStateColor(environmentProof.proof_state)}>proof {environmentProof.proof_state}</Tag> : null}
-                {environmentProof.complete_repository_multi_remote_path_observed ? <Tag color="green">multi-remote path</Tag> : null}
-                {plan.graph_proof_plan ? <Tag color={demoPlanStateColor(plan.graph_proof_plan.proof_state)}>graph {plan.graph_proof_plan.proof_state || 'blocked'}</Tag> : null}
-                <Tag>{plan.demo_seed_written ? 'seed written' : 'no seed write'}</Tag>
-                <Tag>{plan.asset_graph_written ? 'graph written' : 'no graph write'}</Tag>
-                {plan.result_recording_plan ? <Tag color={demoPlanStateColor(plan.result_recording_plan.result_recording_state)}>{plan.result_recording_plan.result_recording_state || 'blocked'} result</Tag> : null}
-                {resultPreflight.mode ? <Tag color={resultPreflight.snapshot_contract_ready ? 'green' : 'gold'}>{resultPreflight.snapshot_contract_ready ? 'snapshot review' : 'snapshot blocked'}</Tag> : null}
-                {resultPreflight.mode ? <Tag>{resultPreflight.snapshot_write_enabled ? 'snapshot write' : 'no snapshot write'}</Tag> : null}
+                <Tag color={demoPlanStateColor(plan.plan_state)}>{translatedValue(plan.plan_state, t)}</Tag>
+                {plan.environment_evidence_plan ? <Tag color={demoPlanStateColor(plan.environment_evidence_plan.evidence_state)}>{t('dashboard.env')} {translatedValue(plan.environment_evidence_plan.evidence_state || 'blocked', t)}</Tag> : null}
+                {environmentProof.proof_state ? <Tag color={demoPlanStateColor(environmentProof.proof_state)}>{t('dashboard.proof')} {translatedValue(environmentProof.proof_state, t)}</Tag> : null}
+                {environmentProof.complete_repository_multi_remote_path_observed ? <Tag color="green">{t('dashboard.multiRemotePath')}</Tag> : null}
+                {plan.graph_proof_plan ? <Tag color={demoPlanStateColor(plan.graph_proof_plan.proof_state)}>{t('dashboard.graph')} {translatedValue(plan.graph_proof_plan.proof_state || 'blocked', t)}</Tag> : null}
+                <Tag>{plan.demo_seed_written ? t('dashboard.seedWritten') : t('dashboard.noSeedWrite')}</Tag>
+                <Tag>{plan.asset_graph_written ? t('dashboard.graphWritten') : t('dashboard.noGraphWrite')}</Tag>
+                {plan.result_recording_plan ? <Tag color={demoPlanStateColor(plan.result_recording_plan.result_recording_state)}>{translatedValue(plan.result_recording_plan.result_recording_state || 'blocked', t)} {t('dashboard.result')}</Tag> : null}
+                {resultPreflight.mode ? <Tag color={resultPreflight.snapshot_contract_ready ? 'green' : 'gold'}>{resultPreflight.snapshot_contract_ready ? t('dashboard.snapshotReview') : t('dashboard.snapshotBlocked')}</Tag> : null}
+                {resultPreflight.mode ? <Tag>{resultPreflight.snapshot_write_enabled ? t('dashboard.snapshotWrite') : t('dashboard.noSnapshotWrite')}</Tag> : null}
               </Space>;
             } },
-            { title: 'Next', dataIndex: 'next' }
+            { title: t('dashboard.next'), dataIndex: 'next' }
           ]}
         />
       </Card>
