@@ -86,6 +86,16 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.secretRef': 'Secret ref',
     'common.metadata': 'Metadata',
     'common.server': 'Server',
+    'common.key': 'Key',
+    'common.role': 'Role',
+    'common.primary': 'Primary',
+    'common.url': 'URL',
+    'common.source': 'Source',
+    'common.delivery': 'Delivery',
+    'common.health': 'Health',
+    'common.event': 'Event',
+    'common.received': 'Received',
+    'common.ref': 'Ref',
     'common.sync': 'Sync',
     'common.never': 'never',
     'common.unknown': 'unknown',
@@ -95,11 +105,24 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.unbound': 'unbound',
     'common.yes': 'yes',
     'common.no': 'no',
+    'common.view': 'View',
+    'common.run': 'Run',
+    'common.restore': 'Restore',
+    'common.archive': 'Archive',
+    'common.edit': 'Edit',
+    'common.enable': 'Enable',
+    'common.disable': 'Disable',
     'title.sshMachines': 'SSH Machines',
     'title.argoConnections': 'Argo Connections',
     'title.argoSsh': 'Argo / SSH',
     'title.sshRehearsal': 'SSH rehearsal',
     'title.argoApps': 'Argo Apps',
+    'title.gitRemotes': 'Git Remotes',
+    'title.syncAssets': 'Sync assets',
+    'title.webhooks': 'Webhooks',
+    'title.syncRuns': 'Sync runs',
+    'title.tagRuns': 'Tag runs',
+    'title.githubActions': 'GitHub Actions',
     'form.createProject': 'Create project',
     'form.createRepository': 'Create repository',
     'form.createAIRuntime': 'Create AI runtime',
@@ -133,6 +156,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.tag_name': 'Tag name',
     'field.target_sha': 'Target SHA',
     'field.branch': 'Branch',
+    'field.branches': 'Branches',
+    'field.tags': 'Tags',
     'field.tag_message': 'Tag message',
     'field.trigger_mode': 'Trigger mode',
     'field.sync_mode': 'Sync mode',
@@ -248,6 +273,50 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'pod.preview': 'Preview',
     'pod.requestAudit': 'Request audit',
     'pod.recordSnapshot': 'Record audit snapshot',
+    'git.sourceRemote': 'Source remote',
+    'git.targetRemote': 'Target remote',
+    'git.syncSelectedRemotes': 'Sync selected remotes',
+    'git.saveSyncAsset': 'Save sync asset',
+    'git.createWebhook': 'Create webhook',
+    'git.createTag': 'Create tag',
+    'git.syncGitHubActions': 'Sync GitHub Actions',
+    'git.allTags': 'All tags',
+    'git.createRepositoryFirst': 'Create a project repository before adding remotes.',
+    'git.showArchived': 'Show archived',
+    'git.risk': 'Risk',
+    'git.runs': 'Runs',
+    'git.success': 'Success',
+    'git.failures': 'Failures',
+    'git.active': 'Active',
+    'git.successRate': 'Success rate',
+    'git.avgDuration': 'Avg duration',
+    'git.lastFailure': 'Last failure',
+    'git.rehearsal': 'Rehearsal',
+    'git.targetSha': 'Target SHA',
+    'git.runLookup': 'Run lookup',
+    'git.recordResultSnapshot': 'Record result snapshot',
+    'git.refreshActions': 'Refresh Actions',
+    'git.recordActionsSnapshot': 'Record actions snapshot',
+    'git.workflow': 'Workflow',
+    'git.sha': 'SHA',
+    'git.artifacts': 'Artifacts',
+    'git.artifactSize': 'Artifact size',
+    'git.activeArtifacts': 'active artifacts',
+    'git.expiredArtifacts': 'expired',
+    'git.artifactDescription': 'Artifact names, sizes, expiry, and sync timestamps are shown from the local read model. Download URLs and provider tokens are not exposed.',
+    'git.rotateSecret': 'Rotate secret',
+    'git.recordCallbackSnapshot': 'Record callback snapshot',
+    'git.recordThresholdAudit': 'Record threshold audit',
+    'git.auditRecorded': 'Audit recorded',
+    'git.applyThresholdConfig': 'Apply threshold config',
+    'git.configApplied': 'Config applied',
+    'git.replay': 'Replay',
+    'git.capacitySignals': 'Capacity signals',
+    'git.trend14d': '14-day trend',
+    'git.signal': 'Signal',
+    'git.severity': 'Severity',
+    'git.threshold': 'Threshold',
+    'git.detail': 'Detail',
     'config.verify': 'Verify',
     'config.runCommand': 'Run command',
     'config.refreshRuns': 'Refresh runs',
@@ -312,6 +381,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.key': 'SSH key',
     'value.password': 'password',
     'value.token': 'token',
+    'value.primary': 'primary',
+    'value.archived': 'archived',
+    'value.default': 'default',
+    'value.ok': 'ok',
     'menu.dashboard': 'Dashboard',
     'menu.assets': 'Assets',
     'menu.projects': 'Projects',
@@ -365,6 +438,16 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.secretRef': '密钥引用',
     'common.metadata': '元数据',
     'common.server': '服务地址',
+    'common.key': '键',
+    'common.role': '角色',
+    'common.primary': '主远端',
+    'common.url': 'URL',
+    'common.source': '来源',
+    'common.delivery': '投递',
+    'common.health': '健康',
+    'common.event': '事件',
+    'common.received': '接收时间',
+    'common.ref': 'Ref',
     'common.sync': '同步',
     'common.never': '从未',
     'common.unknown': '未知',
@@ -374,11 +457,24 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.unbound': '未绑定',
     'common.yes': '是',
     'common.no': '否',
+    'common.view': '查看',
+    'common.run': '运行',
+    'common.restore': '恢复',
+    'common.archive': '归档',
+    'common.edit': '编辑',
+    'common.enable': '启用',
+    'common.disable': '禁用',
     'title.sshMachines': 'SSH 主机',
     'title.argoConnections': 'Argo 连接',
     'title.argoSsh': 'Argo / SSH',
     'title.sshRehearsal': 'SSH 演练',
     'title.argoApps': 'Argo 应用',
+    'title.gitRemotes': 'Git 远端',
+    'title.syncAssets': '同步资产',
+    'title.webhooks': 'Webhooks',
+    'title.syncRuns': '同步记录',
+    'title.tagRuns': '标签记录',
+    'title.githubActions': 'GitHub Actions',
     'form.createProject': '创建项目',
     'form.createRepository': '创建代码仓库',
     'form.createAIRuntime': '创建 AI 运行时',
@@ -412,6 +508,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.tag_name': '标签名',
     'field.target_sha': '目标 SHA',
     'field.branch': '分支',
+    'field.branches': '分支',
+    'field.tags': '标签',
     'field.tag_message': '标签说明',
     'field.trigger_mode': '触发方式',
     'field.sync_mode': '同步范围',
@@ -527,6 +625,50 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'pod.preview': '预览',
     'pod.requestAudit': '请求审计',
     'pod.recordSnapshot': '记录审计快照',
+    'git.sourceRemote': '源远端',
+    'git.targetRemote': '目标远端',
+    'git.syncSelectedRemotes': '同步所选远端',
+    'git.saveSyncAsset': '保存同步资产',
+    'git.createWebhook': '创建 Webhook',
+    'git.createTag': '创建标签',
+    'git.syncGitHubActions': '同步 GitHub Actions',
+    'git.allTags': '全部标签',
+    'git.createRepositoryFirst': '请先创建项目代码仓库，再添加远端。',
+    'git.showArchived': '显示已归档',
+    'git.risk': '风险',
+    'git.runs': '运行次数',
+    'git.success': '成功',
+    'git.failures': '失败',
+    'git.active': '活跃',
+    'git.successRate': '成功率',
+    'git.avgDuration': '平均耗时',
+    'git.lastFailure': '最近失败',
+    'git.rehearsal': '演练',
+    'git.targetSha': '目标 SHA',
+    'git.runLookup': '执行查询',
+    'git.recordResultSnapshot': '记录结果快照',
+    'git.refreshActions': '刷新 Actions',
+    'git.recordActionsSnapshot': '记录 Actions 快照',
+    'git.workflow': '工作流',
+    'git.sha': 'SHA',
+    'git.artifacts': '制品',
+    'git.artifactSize': '制品大小',
+    'git.activeArtifacts': '活跃制品',
+    'git.expiredArtifacts': '已过期',
+    'git.artifactDescription': '制品名称、大小、过期时间和同步时间来自本地只读模型；不会暴露下载 URL 或提供方 token。',
+    'git.rotateSecret': '轮换密钥',
+    'git.recordCallbackSnapshot': '记录回调快照',
+    'git.recordThresholdAudit': '记录阈值审计',
+    'git.auditRecorded': '审计已记录',
+    'git.applyThresholdConfig': '应用阈值配置',
+    'git.configApplied': '配置已应用',
+    'git.replay': '重放',
+    'git.capacitySignals': '容量信号',
+    'git.trend14d': '14 天趋势',
+    'git.signal': '信号',
+    'git.severity': '严重度',
+    'git.threshold': '阈值',
+    'git.detail': '详情',
     'config.verify': '验证',
     'config.runCommand': '执行命令',
     'config.refreshRuns': '刷新记录',
@@ -591,6 +733,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.key': 'SSH Key',
     'value.password': '密码',
     'value.token': 'Token',
+    'value.primary': '主远端',
+    'value.archived': '已归档',
+    'value.default': '默认',
+    'value.ok': '正常',
     'menu.dashboard': '仪表盘',
     'menu.assets': '资产',
     'menu.projects': '项目',
@@ -5054,6 +5200,7 @@ function VersionManifestModal({ open, setOpen, repos, remotes, onSubmit }: { ope
 }
 
 function GitRemotes() {
+  const { t } = useI18n();
   const projects = useLoad(() => api('/api/projects'), []);
   const projectRows = projects.data?.items || [];
   const projectPick = useSelectedRow(projectRows);
@@ -5401,70 +5548,70 @@ function GitRemotes() {
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="Git Remotes" onCreate={() => setOpen(true)} disabled={!repo} />
       <div className="selectorRow">
-        <EntitySelect label="Project" rows={projectRows} value={projectPick.selectedID} onChange={projectPick.setSelectedID} />
-        <EntitySelect label="Repository" rows={repoRows} value={repoPick.selectedID} onChange={repoPick.setSelectedID} />
-        <EntitySelect label="Source remote" rows={remoteRows} value={sourcePick.selectedID} onChange={sourcePick.setSelectedID} />
-        <EntitySelect label="Target remote" rows={remoteRows.filter((row: AnyRow) => row.id !== sourcePick.selectedID)} value={targetPick.selectedID} onChange={targetPick.setSelectedID} />
+        <EntitySelect label={t('common.project')} rows={projectRows} value={projectPick.selectedID} onChange={projectPick.setSelectedID} />
+        <EntitySelect label={t('common.repository')} rows={repoRows} value={repoPick.selectedID} onChange={repoPick.setSelectedID} />
+        <EntitySelect label={t('git.sourceRemote')} rows={remoteRows} value={sourcePick.selectedID} onChange={sourcePick.setSelectedID} />
+        <EntitySelect label={t('git.targetRemote')} rows={remoteRows.filter((row: AnyRow) => row.id !== sourcePick.selectedID)} value={targetPick.selectedID} onChange={targetPick.setSelectedID} />
       </div>
       <Space>
-        <Button type="primary" onClick={runSync} disabled={!repo || !sourcePick.selectedID || !targetPick.selectedID}>Sync selected remotes</Button>
-        <Button onClick={() => setSyncAssetOpen(true)} disabled={!repo || !sourcePick.selectedID || !targetPick.selectedID}>Save sync asset</Button>
-        <Button onClick={() => setWebhookOpen(true)} disabled={!project || !sourcePick.selectedID}>Create webhook</Button>
-        <Button onClick={() => setTagOpen(true)} disabled={!repo || !targetPick.selectedID}>Create tag</Button>
-        <Button onClick={syncGitHubActions} disabled={!sourcePick.selectedID}>Sync GitHub Actions</Button>
+        <Button type="primary" onClick={runSync} disabled={!repo || !sourcePick.selectedID || !targetPick.selectedID}>{t('git.syncSelectedRemotes')}</Button>
+        <Button onClick={() => setSyncAssetOpen(true)} disabled={!repo || !sourcePick.selectedID || !targetPick.selectedID}>{t('git.saveSyncAsset')}</Button>
+        <Button onClick={() => setWebhookOpen(true)} disabled={!project || !sourcePick.selectedID}>{t('git.createWebhook')}</Button>
+        <Button onClick={() => setTagOpen(true)} disabled={!repo || !targetPick.selectedID}>{t('git.createTag')}</Button>
+        <Button onClick={syncGitHubActions} disabled={!sourcePick.selectedID}>{t('git.syncGitHubActions')}</Button>
       </Space>
       <div className="refsRow">
         <Space direction="vertical" size={4} className="selector">
-          <Typography.Text type="secondary">Branches</Typography.Text>
+          <Typography.Text type="secondary">{t('field.branches')}</Typography.Text>
           <Select mode="tags" value={branchRefs} onChange={setBranchRefs} tokenSeparators={[',']} placeholder="main" />
         </Space>
         <Space direction="vertical" size={4} className="selector">
-          <Typography.Text type="secondary">Tags</Typography.Text>
+          <Typography.Text type="secondary">{t('field.tags')}</Typography.Text>
           <Select mode="tags" value={tagRefs} onChange={setTagRefs} tokenSeparators={[',']} placeholder="v1.0.0" disabled={allTags} />
         </Space>
-        <Checkbox checked={allTags} onChange={(event) => setAllTags(event.target.checked)}>All tags</Checkbox>
+        <Checkbox checked={allTags} onChange={(event) => setAllTags(event.target.checked)}>{t('git.allTags')}</Checkbox>
       </div>
       <Table<AnyRow> rowKey="id" dataSource={remotes.data?.items || []} pagination={false} columns={[
-        { title: 'Name', dataIndex: 'name' },
-        { title: 'Key', dataIndex: 'remote_key' },
-        { title: 'Provider', render: (_, row) => row.provider_type || row.kind },
-        { title: 'Role', dataIndex: 'remote_role' },
-        { title: 'Primary', render: (_, row) => row.is_primary ? <Tag color="green">primary</Tag> : null },
-        { title: 'Sync', render: (_, row) => <Tag>{row.last_sync_status || 'never'}</Tag> },
-        { title: 'URL', render: (_, row) => urlsText(row) }
+        { title: t('common.name'), dataIndex: 'name' },
+        { title: t('common.key'), dataIndex: 'remote_key' },
+        { title: t('common.provider'), render: (_, row) => translatedValue(row.provider_type || row.kind, t) },
+        { title: t('common.role'), render: (_, row) => translatedValue(row.remote_role, t) },
+        { title: t('common.primary'), render: (_, row) => row.is_primary ? <Tag color="green">{t('value.primary')}</Tag> : null },
+        { title: t('common.sync'), render: (_, row) => <Tag>{row.last_sync_status ? translatedValue(row.last_sync_status, t) : t('common.never')}</Tag> },
+        { title: t('common.url'), render: (_, row) => urlsText(row) }
       ]} />
-      {!repo && <Alert type="info" showIcon message="Create a project repository before adding remotes." />}
-      <CreateModal title="Create remote" open={open} setOpen={setOpen} fields={['name', 'remote_key', 'provider_type', 'remote_url', 'web_url', 'remote_role', 'urls', 'default_branch']} onSubmit={createRemote} />
-      <CreateModal title="Create tag" open={tagOpen} setOpen={setTagOpen} fields={['tag_name', 'target_sha', 'branch', 'tag_message']} onSubmit={createTag} />
-      <CreateModal title="Save repo sync asset" open={syncAssetOpen} setOpen={setSyncAssetOpen} fields={['name', 'trigger_mode', 'sync_mode', 'transport', 'driver']} onSubmit={createRepoSyncAsset} />
+      {!repo && <Alert type="info" showIcon message={t('git.createRepositoryFirst')} />}
+      <CreateModal title="Create remote" open={open} setOpen={setOpen} fields={['name', 'remote_key', 'provider_type', 'remote_url', 'web_url', 'remote_role', 'urls', 'default_branch']} initialValues={{ provider_type: 'github', remote_role: 'mirror', default_branch: 'main' }} onSubmit={createRemote} />
+      <CreateModal title="Create tag" open={tagOpen} setOpen={setTagOpen} fields={['tag_name', 'target_sha', 'branch', 'tag_message']} initialValues={{ branch: repo?.default_branch || sourceRemote?.default_branch || 'main' }} onSubmit={createTag} />
+      <CreateModal title="Save repo sync asset" open={syncAssetOpen} setOpen={setSyncAssetOpen} fields={['name', 'trigger_mode', 'sync_mode', 'transport', 'driver']} initialValues={{ trigger_mode: 'manual_or_webhook', sync_mode: 'selected_refs', transport: 'ssh', driver: 'projectops_worker_git_ssh' }} onSubmit={createRepoSyncAsset} />
       <CreateModal title="Edit repo sync asset" open={syncAssetEditOpen} setOpen={setSyncAssetEditOpen} fields={['name', 'trigger_mode', 'sync_mode', 'transport', 'driver', 'enabled']} onSubmit={updateRepoSyncAsset} />
-      <CreateModal title="Create webhook" open={webhookOpen} setOpen={setWebhookOpen} fields={['name', 'provider', 'secret_token']} onSubmit={createWebhookConnection} />
+      <CreateModal title="Create webhook" open={webhookOpen} setOpen={setWebhookOpen} fields={['name', 'provider', 'secret_token']} initialValues={{ provider: 'gitea' }} onSubmit={createWebhookConnection} />
       <Tabs items={[
-        { key: 'assets', label: 'Sync assets', children: <Space direction="vertical" size={12} className="full">
-          <Checkbox checked={includeArchivedSyncAssets} onChange={(event) => setIncludeArchivedSyncAssets(event.target.checked)}>Show archived</Checkbox>
+        { key: 'assets', label: t('title.syncAssets'), children: <Space direction="vertical" size={12} className="full">
+          <Checkbox checked={includeArchivedSyncAssets} onChange={(event) => setIncludeArchivedSyncAssets(event.target.checked)}>{t('git.showArchived')}</Checkbox>
           <Table<AnyRow> rowKey="id" dataSource={syncAssets.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-            { title: 'Name', dataIndex: 'name' },
-            { title: 'Source', dataIndex: 'source_remote_name' },
-            { title: 'Target', dataIndex: 'target_remote_name' },
-            { title: 'Trigger', dataIndex: 'trigger_mode' },
-            { title: 'Status', render: (_, row) => <Space><Tag color={row.last_sync_status === 'completed' ? 'green' : row.last_sync_status === 'failed' ? 'red' : row.last_sync_status === 'running' ? 'blue' : 'default'}>{row.last_sync_status || 'never'}</Tag>{row.archived_at ? <Tag>archived</Tag> : null}</Space> },
-            { title: 'Risk', render: (_, row) => <Space size={4} wrap><Tag color={signalSeverityColor(row.risk_severity)}>{row.risk_severity || 'ok'}</Tag><Typography.Text>{shortText(row.risk_summary, 48)}</Typography.Text></Space> },
-            { title: 'Runs', render: (_, row) => <Tag>{row.total_runs || 0}</Tag> },
-            { title: 'Success', render: (_, row) => `${row.success_rate ?? 0}%` },
-            { title: 'Avg', render: (_, row) => secondsText(row.avg_duration_seconds) },
-            { title: 'Last failure', render: (_, row) => shortText(row.last_failure_message || row.last_failure_at, 56) },
-            { title: 'Action', render: (_, row) => <Space><Button size="small" onClick={() => setSyncAssetID(row.id)}>View</Button><Button size="small" onClick={() => runRepoSyncAsset(row.id)} disabled={!row.enabled || Boolean(row.archived_at)}>Run</Button>{row.archived_at ? <Button size="small" onClick={() => restoreRepoSyncAsset(row.id)}>Restore</Button> : null}</Space> }
+            { title: t('common.name'), dataIndex: 'name' },
+            { title: t('common.source'), dataIndex: 'source_remote_name' },
+            { title: t('common.target'), dataIndex: 'target_remote_name' },
+            { title: t('field.trigger_mode'), render: (_, row) => translatedValue(row.trigger_mode, t) },
+            { title: t('common.status'), render: (_, row) => <Space><Tag color={row.last_sync_status === 'completed' ? 'green' : row.last_sync_status === 'failed' ? 'red' : row.last_sync_status === 'running' ? 'blue' : 'default'}>{row.last_sync_status ? translatedValue(row.last_sync_status, t) : t('common.never')}</Tag>{row.archived_at ? <Tag>{t('value.archived')}</Tag> : null}</Space> },
+            { title: t('git.risk'), render: (_, row) => <Space size={4} wrap><Tag color={signalSeverityColor(row.risk_severity)}>{translatedValue(row.risk_severity || 'ok', t)}</Tag><Typography.Text>{shortText(row.risk_summary, 48)}</Typography.Text></Space> },
+            { title: t('git.runs'), render: (_, row) => <Tag>{row.total_runs || 0}</Tag> },
+            { title: t('git.success'), render: (_, row) => `${row.success_rate ?? 0}%` },
+            { title: t('git.avgDuration'), render: (_, row) => secondsText(row.avg_duration_seconds) },
+            { title: t('git.lastFailure'), render: (_, row) => shortText(row.last_failure_message || row.last_failure_at, 56) },
+            { title: t('common.action'), render: (_, row) => <Space><Button size="small" onClick={() => setSyncAssetID(row.id)}>{t('common.view')}</Button><Button size="small" onClick={() => runRepoSyncAsset(row.id)} disabled={!row.enabled || Boolean(row.archived_at)}>{t('common.run')}</Button>{row.archived_at ? <Button size="small" onClick={() => restoreRepoSyncAsset(row.id)}>{t('common.restore')}</Button> : null}</Space> }
           ]} />
         </Space> },
-        { key: 'webhooks', label: 'Webhooks', children: <Space direction="vertical" size={16} className="full">
+        { key: 'webhooks', label: t('title.webhooks'), children: <Space direction="vertical" size={16} className="full">
           <Table<AnyRow> rowKey="id" dataSource={webhookConnections.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-            { title: 'Name', dataIndex: 'name' },
-            { title: 'Provider', dataIndex: 'provider' },
-            { title: 'Source', dataIndex: 'source_remote_name' },
-            { title: 'URL', render: (_, row) => <Typography.Text copyable>{row.webhook_url || row.webhook_path}</Typography.Text> },
-            { title: 'Delivery', render: (_, row) => <Tag color={row.last_delivery_status === 'queued' ? 'green' : row.last_delivery_status === 'failed' || row.last_delivery_status === 'rejected' ? 'red' : 'default'}>{row.last_delivery_status || 'never'}</Tag> },
-            { title: 'Health', render: (_, row) => <Space size={4} wrap><Tag color={signalSeverityColor(row.webhook_health)}>{row.webhook_health || 'unknown'}</Tag><Typography.Text>{shortText(row.webhook_summary, 48)}</Typography.Text></Space> },
-            { title: 'Rehearsal', render: (_, row) => {
+            { title: t('common.name'), dataIndex: 'name' },
+            { title: t('common.provider'), render: (_, row) => translatedValue(row.provider, t) },
+            { title: t('common.source'), dataIndex: 'source_remote_name' },
+            { title: t('common.url'), render: (_, row) => <Typography.Text copyable>{row.webhook_url || row.webhook_path}</Typography.Text> },
+            { title: t('common.delivery'), render: (_, row) => <Tag color={row.last_delivery_status === 'queued' ? 'green' : row.last_delivery_status === 'failed' || row.last_delivery_status === 'rejected' ? 'red' : 'default'}>{row.last_delivery_status ? translatedValue(row.last_delivery_status, t) : t('common.never')}</Tag> },
+            { title: t('common.health'), render: (_, row) => <Space size={4} wrap><Tag color={signalSeverityColor(row.webhook_health)}>{translatedValue(row.webhook_health || 'unknown', t)}</Tag><Typography.Text>{shortText(row.webhook_summary, 48)}</Typography.Text></Space> },
+            { title: t('git.rehearsal'), render: (_, row) => {
               const readiness = row.callback_rehearsal || {};
               const providerPlan = readiness.provider_rehearsal_plan || {};
               const publicEndpointPlan = providerPlan.public_endpoint_plan || {};
@@ -5480,7 +5627,7 @@ function GitRemotes() {
               const replayProof = callbackEvidence.operator_replay_proof || providerPlan.operator_replay_proof || {};
               const status = readiness.status || 'unknown';
               return <Space size={4} wrap>
-                <Tag color={status === 'ready' ? 'green' : status === 'blocked' ? 'red' : 'default'}>{status}</Tag>
+                <Tag color={status === 'ready' ? 'green' : status === 'blocked' ? 'red' : 'default'}>{translatedValue(status, t)}</Tag>
                 <Tag color={providerPlan.plan_state === 'planned' ? 'gold' : 'red'}>{providerPlan.plan_state || 'blocked'}</Tag>
                 <Tag color={publicEndpointPlan.public_origin_ready ? 'green' : 'red'}>{publicEndpointPlan.public_origin_ready ? 'public origin' : 'no public origin'}</Tag>
                 <Tag color={deliveryPlan.delivery_state === 'planned' ? 'gold' : 'red'}>{deliveryPlan.provider_test_delivery_sent ? 'test delivered' : 'no test delivery'}</Tag>
@@ -5505,20 +5652,20 @@ function GitRemotes() {
                 <Typography.Text>{shortText(readiness.message, 56)}</Typography.Text>
               </Space>;
             } },
-            { title: 'Action', render: (_, row) => {
+            { title: t('common.action'), render: (_, row) => {
               const thresholdPlan = row.callback_rehearsal?.provider_rehearsal_plan?.threshold_tuning_plan || {};
               const thresholdConfig = thresholdPlan.threshold_configuration_plan || {};
               const thresholdAudit = thresholdConfig.threshold_decision_audit_plan || {};
               const resultPlan = row.callback_rehearsal?.provider_rehearsal_plan?.result_recording_plan || {};
               return <Space size={4} wrap>
-                <Button size="small" onClick={() => rotateWebhookSecret(row.id)}>Rotate secret</Button>
+                <Button size="small" onClick={() => rotateWebhookSecret(row.id)}>{t('git.rotateSecret')}</Button>
                 <Button
                   size="small"
                   onClick={() => recordWebhookProviderCallbackRehearsalSnapshot(row.id)}
                   disabled={!resultPlan.result_recording_ready}
                   loading={recordingCallbackSnapshotID === row.id}
                 >
-                  Record callback snapshot
+                  {t('git.recordCallbackSnapshot')}
                 </Button>
                 <Button
                   size="small"
@@ -5526,7 +5673,7 @@ function GitRemotes() {
                   disabled={!thresholdAudit.decision_ready_for_review || Boolean(thresholdAudit.threshold_decision_audit_count)}
                   loading={recordingThresholdAuditID === row.id}
                 >
-                  {thresholdAudit.threshold_decision_audit_count ? 'Audit recorded' : 'Record threshold audit'}
+                  {thresholdAudit.threshold_decision_audit_count ? t('git.auditRecorded') : t('git.recordThresholdAudit')}
                 </Button>
                 <Button
                   size="small"
@@ -5534,32 +5681,32 @@ function GitRemotes() {
                   disabled={!thresholdConfig.configuration_write_enabled || Boolean(thresholdConfig.threshold_configuration_written)}
                   loading={applyingThresholdConfigID === row.id}
                 >
-                  {thresholdConfig.threshold_configuration_written ? 'Config applied' : 'Apply threshold config'}
+                  {thresholdConfig.threshold_configuration_written ? t('git.configApplied') : t('git.applyThresholdConfig')}
                 </Button>
               </Space>;
             } }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={webhookEvents.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-            { title: 'Status', render: (_, row) => <Tag color={row.status === 'queued' ? 'green' : row.status === 'failed' || row.status === 'rejected' ? 'red' : 'default'}>{row.status}</Tag> },
-            { title: 'Event', dataIndex: 'event_type' },
-            { title: 'Delivery', dataIndex: 'delivery_id' },
-            { title: 'Received', dataIndex: 'received_at' },
-            { title: 'Action', render: (_, row) => row.event_type === 'push' ? <Button size="small" onClick={() => replayWebhookEvent(row.id)}>Replay</Button> : null }
+            { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'queued' ? 'green' : row.status === 'failed' || row.status === 'rejected' ? 'red' : 'default'}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('common.event'), dataIndex: 'event_type' },
+            { title: t('common.delivery'), dataIndex: 'delivery_id' },
+            { title: t('common.received'), dataIndex: 'received_at' },
+            { title: t('common.action'), render: (_, row) => row.event_type === 'push' ? <Button size="small" onClick={() => replayWebhookEvent(row.id)}>{t('git.replay')}</Button> : null }
           ]} />
         </Space> },
-        { key: 'runs', label: 'Sync runs', children: <Space direction="vertical" size={12} className="full">
-          <Select allowClear value={runStatusFilter || undefined} placeholder="Status" style={{ width: 180 }} onChange={(value) => setRunStatusFilter(value || '')} options={['queued', 'running', 'completed', 'failed'].map((value) => ({ value, label: value }))} />
+        { key: 'runs', label: t('title.syncRuns'), children: <Space direction="vertical" size={12} className="full">
+          <Select allowClear value={runStatusFilter || undefined} placeholder={t('common.status')} style={{ width: 180 }} onChange={(value) => setRunStatusFilter(value || '')} options={['queued', 'running', 'completed', 'failed'].map((value) => ({ value, label: translatedValue(value, t) }))} />
           <Table<AnyRow> rowKey="id" dataSource={runs.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-            { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{row.status}</Tag> },
-            { title: 'Ref', dataIndex: 'ref' },
-            { title: 'Source', dataIndex: 'source_remote_id' },
-            { title: 'Target', dataIndex: 'target_remote_id' },
-            { title: 'Created', dataIndex: 'created_at' }
+            { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('common.ref'), dataIndex: 'ref' },
+            { title: t('common.source'), dataIndex: 'source_remote_id' },
+            { title: t('common.target'), dataIndex: 'target_remote_id' },
+            { title: t('common.created'), dataIndex: 'created_at' }
           ]} />
         </Space> },
-        { key: 'tags', label: 'Tag runs', children: <Table<AnyRow> rowKey="id" dataSource={tagRuns.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-          { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{row.status}</Tag> },
-          { title: 'Rehearsal', render: (_, row) => {
+        { key: 'tags', label: t('title.tagRuns'), children: <Table<AnyRow> rowKey="id" dataSource={tagRuns.data?.items || []} pagination={{ pageSize: 6 }} columns={[
+          { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{translatedValue(row.status, t)}</Tag> },
+          { title: t('git.rehearsal'), render: (_, row) => {
             const plan = row.remote_rehearsal_plan || {};
             const liveResultPlan = plan.live_result_plan || {};
             const actionsRefreshPlan = plan.actions_refresh_plan || {};
@@ -5587,11 +5734,11 @@ function GitRemotes() {
               {tagResultEvidence.live_remote_tag_failed_observed ? <Tag color="red">tag failure observed</Tag> : null}
             </Space>;
           } },
-          { title: 'Tag', dataIndex: 'tag_name' },
-          { title: 'Target SHA', dataIndex: 'target_sha' },
-          { title: 'Target', dataIndex: 'target_remote_id' },
-          { title: 'Created', dataIndex: 'created_at' },
-          { title: 'Action', render: (_, row) => {
+          { title: t('field.tag_name'), dataIndex: 'tag_name' },
+          { title: t('git.targetSha'), dataIndex: 'target_sha' },
+          { title: t('common.target'), dataIndex: 'target_remote_id' },
+          { title: t('common.created'), dataIndex: 'created_at' },
+          { title: t('common.action'), render: (_, row) => {
             const resultPlan = row.remote_rehearsal_plan?.result_recording_plan || {};
             const lookupPreflight = row.remote_rehearsal_plan?.live_remote_lookup_preflight || {};
             return <Space size={6} wrap>
@@ -5601,7 +5748,7 @@ function GitRemotes() {
                 disabled={lookupPreflight.lookup_state === 'running' || !lookupPreflight.lookup_ready_for_review}
                 loading={runningTagLookupID === row.id}
               >
-                Run lookup
+                {t('git.runLookup')}
               </Button>
               <Button
                 size="small"
@@ -5609,11 +5756,11 @@ function GitRemotes() {
                 disabled={!resultPlan.result_recording_ready}
                 loading={recordingTagSnapshotID === row.id}
               >
-                Record result snapshot
+                {t('git.recordResultSnapshot')}
               </Button>
             </Space>;
           } },
-          { title: 'Actions', render: (_, row) => {
+          { title: t('common.actions'), render: (_, row) => {
             const plan = row.remote_rehearsal_plan || {};
             const actionsPlan = plan.actions_refresh_plan || {};
             return <Space size={6} wrap>
@@ -5623,7 +5770,7 @@ function GitRemotes() {
                 disabled={!actionsPlan.github_actions_sync_enabled || actionsPlan.refresh_state === 'running'}
                 loading={refreshingTagActionsID === row.id}
               >
-                Refresh Actions
+                {t('git.refreshActions')}
               </Button>
               <Button
                 size="small"
@@ -5631,12 +5778,12 @@ function GitRemotes() {
                 disabled={plan.rehearsal_state !== 'observed' || actionsPlan.refresh_state === 'failed'}
                 loading={recordingTagActionsSnapshotID === row.id}
               >
-                Record actions snapshot
+                {t('git.recordActionsSnapshot')}
               </Button>
             </Space>;
           } }
         ]} /> },
-        { key: 'actions', label: 'GitHub Actions', children: <Space direction="vertical" size={12} className="full">
+        { key: 'actions', label: t('title.githubActions'), children: <Space direction="vertical" size={12} className="full">
           <Alert
             showIcon
             type={actionsSummary.failures > 0 ? 'warning' : actionsSummary.total > 0 ? 'success' : 'info'}
@@ -5644,27 +5791,27 @@ function GitRemotes() {
             description={githubActionRemoteDescription(sourceRemote, repo, project, actionsSummary)}
           />
           <div className="metricGrid">
-            <Card><Typography.Text type="secondary">Runs</Typography.Text><Typography.Title level={4}>{actionsSummary.total}</Typography.Title></Card>
-            <Card><Typography.Text type="secondary">Success</Typography.Text><Typography.Title level={4}>{actionsSummary.successes}</Typography.Title></Card>
-            <Card><Typography.Text type="secondary">Failures</Typography.Text><Typography.Title level={4}>{actionsSummary.failures}</Typography.Title></Card>
-            <Card><Typography.Text type="secondary">Active</Typography.Text><Typography.Title level={4}>{actionsSummary.active}</Typography.Title></Card>
-            <Card><Typography.Text type="secondary">Artifacts</Typography.Text><Typography.Title level={4}>{artifactsSummary.total}</Typography.Title></Card>
-            <Card><Typography.Text type="secondary">Artifact size</Typography.Text><Typography.Title level={4}>{bytesText(artifactsSummary.bytes)}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.runs')}</Typography.Text><Typography.Title level={4}>{actionsSummary.total}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.success')}</Typography.Text><Typography.Title level={4}>{actionsSummary.successes}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.failures')}</Typography.Text><Typography.Title level={4}>{actionsSummary.failures}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.active')}</Typography.Text><Typography.Title level={4}>{actionsSummary.active}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.artifacts')}</Typography.Text><Typography.Title level={4}>{artifactsSummary.total}</Typography.Title></Card>
+            <Card><Typography.Text type="secondary">{t('git.artifactSize')}</Typography.Text><Typography.Title level={4}>{bytesText(artifactsSummary.bytes)}</Typography.Title></Card>
           </div>
           {artifactsSummary.total > 0 ? (
             <Alert
               showIcon
               type={artifactsSummary.expired > 0 ? 'warning' : 'info'}
-              message={`${artifactsSummary.active} active artifacts / ${artifactsSummary.expired} expired`}
-              description="Artifact names, sizes, expiry, and sync timestamps are shown from the local read model. Download URLs and provider tokens are not exposed."
+              message={`${artifactsSummary.active} ${t('git.activeArtifacts')} / ${artifactsSummary.expired} ${t('git.expiredArtifacts')}`}
+              description={t('git.artifactDescription')}
             />
           ) : null}
           <Table<AnyRow> rowKey="id" dataSource={actions.data?.items || []} pagination={{ pageSize: 6 }} columns={[
-            { title: 'Workflow', dataIndex: 'workflow_name' },
-            { title: 'Branch', dataIndex: 'branch' },
-            { title: 'Status', render: (_, row) => <Tag color={githubActionStatusColor(row)}>{row.conclusion || row.status}</Tag> },
-            { title: 'SHA', dataIndex: 'commit_sha' },
-            { title: 'Artifacts', render: (_, row) => {
+            { title: t('git.workflow'), dataIndex: 'workflow_name' },
+            { title: t('field.branch'), dataIndex: 'branch' },
+            { title: t('common.status'), render: (_, row) => <Tag color={githubActionStatusColor(row)}>{translatedValue(row.conclusion || row.status, t)}</Tag> },
+            { title: t('git.sha'), dataIndex: 'commit_sha' },
+            { title: t('git.artifacts'), render: (_, row) => {
               const artifacts = Array.isArray(row.artifacts) ? row.artifacts : [];
               if (!artifacts.length) return <Typography.Text type="secondary">-</Typography.Text>;
               return <Space size={4} wrap>{artifacts.slice(0, 3).map((artifact: AnyRow) => (
@@ -5675,7 +5822,7 @@ function GitRemotes() {
                 </Tooltip>
               ))}{artifacts.length > 3 ? <Tag>+{artifacts.length - 3}</Tag> : null}</Space>;
             } },
-            { title: 'Synced', dataIndex: 'synced_at' }
+            { title: t('common.synced'), dataIndex: 'synced_at' }
           ]} />
         </Space> }
       ]} />
@@ -8420,6 +8567,7 @@ function Toolbar({ title, onCreate, disabled = false }: { title: string; onCreat
 }
 
 const titleKeys: Record<string, string> = {
+  'Git Remotes': 'title.gitRemotes',
   'SSH Machines': 'title.sshMachines',
   'Argo Connections': 'title.argoConnections',
   'Create project': 'form.createProject',
