@@ -85,9 +85,11 @@ func providerReviewAttemptLiveExecutionLaunchPlanPayload(attempt, preflight map[
 	liveAdapterPlan := providerReviewAttemptLiveAdapterPlan(providerType, operationName, endpointKey)
 	contractPlan := mapFromAny(liveAdapterPlan["contract_plan"])
 	preflightPayload := mapFromAny(preflight["preflight"])
+	ledgerAdapterPlan := reviewBranchAttemptLedgerAdapterPlanFromAttempt(attempt, preflight)
 	preflightMetadataReady := boolOnlyFromAny(preflightPayload["live_execution_preflight_metadata_ready"])
 	adapterPlanObserved := providerReviewAttemptPlanMatchesOperation(liveAdapterPlan, "redacted_attempt_live_adapter_plan", operationName, endpointKey)
 	contractPlanObserved := providerReviewAttemptPlanMatchesOperation(contractPlan, "redacted_attempt_live_adapter_contract_plan", operationName, endpointKey)
+	ledgerAdapterPlanObserved := reviewBranchAttemptLedgerAdapterPlanMatchesAttempt(ledgerAdapterPlan, operationName, endpointKey)
 	return map[string]any{
 		"mode":                                    "redacted_provider_review_live_execution_launch_plan",
 		"provider_review_attempt_id":              cleanOptionalID(fmt.Sprint(attempt["id"])),
@@ -101,6 +103,8 @@ func providerReviewAttemptLiveExecutionLaunchPlanPayload(attempt, preflight map[
 		"preflight_metadata_ready":                preflightMetadataReady,
 		"live_adapter_plan_observed":              adapterPlanObserved,
 		"live_adapter_contract_plan_observed":     contractPlanObserved,
+		"review_branch_ledger_adapter_plan":       ledgerAdapterPlan,
+		"review_branch_ledger_adapter_observed":   ledgerAdapterPlanObserved,
 		"adapter_name":                            cleanOptionalText(stringFromMap(liveAdapterPlan, "adapter_name")),
 		"adapter_interface_registered":            boolOnlyFromAny(liveAdapterPlan["adapter_interface_registered"]),
 		"live_adapter_registered":                 boolOnlyFromAny(liveAdapterPlan["live_adapter_registered"]),

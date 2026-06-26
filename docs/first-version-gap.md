@@ -228,7 +228,7 @@ Dispatch now also carries an attempt-level redacted request envelope plan that c
 
 Recommended next slice:
 
-- Wire the standalone GitHub review-branch executor into the provider-review attempt ledger only after the execution lock spans the API call, each provider step records sanitized progress, and a cleanup path exists for branches left behind after partial failure. The executor already proves the low-level API shape for base-ref lookup, `assops/review/...` branch creation, staged file commits, and pull-request creation without returning token or file content, but it is intentionally not reachable from UI/API live execution yet.
+- Wire the redacted review-branch ledger adapter plan into a real provider-review execution recorder only after the database no-call constraints are explicitly migrated, the execution lock spans the provider API call, each provider step records sanitized progress, and cleanup state is captured for branches left behind after partial failure. The executor already proves the low-level GitHub API shape, and live launch plans now show the dry-run mapping from the atomic executor into the stepwise attempt ledger (`create_branch_ref`, `commit_starter_files`, `open_review_request`) without returning token, token env name, branch name, repository ref, provider URL, request/response body, headers, or file content, but it is intentionally not reachable from UI/API live execution yet.
 - Add Gitea support after the GitHub executor is connected to the ledger; the API shape is similar, but error/status normalization and PR/MR URL handling should be tested separately.
 
 ### 5. Deployment Is Still Read-Model Only
