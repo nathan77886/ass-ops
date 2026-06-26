@@ -80,11 +80,16 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.editRepoSyncAsset': 'Edit repo sync asset',
     'form.createWebhook': 'Create webhook',
     'form.createArgoConnection': 'Create Argo connection',
+    'form.addKubernetesEnvironment': 'Add Kubernetes environment',
     'form.createSSHMachine': 'Create SSH machine',
     'form.runSSHCommand': 'Run SSH command',
+    'form.podLogQuery': 'Pod log query',
     'field.name': 'Name',
     'field.slug': 'Slug',
     'field.description': 'Description',
+    'field.environment': 'Environment',
+    'field.cluster_name': 'Cluster',
+    'field.namespace': 'Namespace',
     'field.repo_key': 'Repository key',
     'field.display_name': 'Display name',
     'field.repo_role': 'Repository role',
@@ -110,6 +115,15 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.auth_type': 'Auth type',
     'field.token': 'Token',
     'field.insecure_skip_verify': 'Skip TLS verification',
+    'field.kubeconfig_secret_ref': 'Kubeconfig secret ref',
+    'field.service_account': 'Service account',
+    'field.token_subject_review_status': 'Token subject review',
+    'field.rbac_read_logs_status': 'RBAC read logs',
+    'field.pod_name': 'Pod name',
+    'field.container_name': 'Container',
+    'field.tail_lines': 'Tail lines',
+    'field.since_seconds': 'Since seconds',
+    'field.status': 'Status',
     'field.host': 'Host',
     'field.port': 'Port',
     'field.username': 'Username',
@@ -138,6 +152,18 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.auth_type': 'Credential type the worker should use. Argo uses token; SSH uses key or password.',
     'help.token': 'Argo bearer token. It is sent to the gateway and should be scoped for the target environment.',
     'help.insecure_skip_verify': 'Only use for test clusters with self-signed TLS. Do not enable in production.',
+    'help.environment': 'Environment key used to bind Argo deployment targets and Kubernetes access metadata, such as test or prod.',
+    'help.cluster_name': 'Cluster name observed from Argo deployment targets. It must match the target row for pod log audits.',
+    'help.namespace': 'Kubernetes namespace for this environment. Use a namespace-scoped read-only kubeconfig.',
+    'help.kubeconfig_secret_ref': 'Required relative file reference under ASSOPS_KUBECONFIG_SECRET_DIR. Do not paste kubeconfig content here.',
+    'help.service_account': 'Reviewed Kubernetes service account identity expected in the kubeconfig.',
+    'help.token_subject_review_status': 'Manual operator sign-off that the kubeconfig token subject was reviewed before live pod-log audits; this is not an automatic TokenReview.',
+    'help.rbac_read_logs_status': 'Manual operator sign-off that the service account RBAC was reviewed for pod/log read access; this is not an automatic permission probe.',
+    'help.status': 'Use ready only after the kubeconfig reference, token subject, and RBAC review are complete.',
+    'help.pod_name': 'Exact pod name to audit. ASSOPS does not discover pods from this preview.',
+    'help.container_name': 'Optional container name. Leave empty to use the Kubernetes default container.',
+    'help.tail_lines': 'Maximum log lines kubectl may read for metadata counting; capped by the gateway.',
+    'help.since_seconds': 'Optional time window in seconds; capped at 86400.',
     'help.host': 'SSH host name or IP reachable from the worker environment.',
     'help.port': 'SSH TCP port. Default is 22.',
     'help.username': 'Remote SSH user used by the worker.',
@@ -170,6 +196,22 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.token': 'Token',
     'option.key': 'SSH key',
     'option.password': 'Password',
+    'option.not_reviewed': 'Not reviewed',
+    'option.reviewed': 'Reviewed',
+    'option.failed': 'Failed',
+    'option.waived': 'Waived',
+    'option.metadata_only': 'Metadata only',
+    'option.ready': 'Ready',
+    'option.disabled': 'Disabled',
+    'k8s.modalDescription': 'Stores a relative kubeconfig reference and review metadata. When ASSOPS_KUBERNETES_LOGS_ENABLED is true, approved worker jobs can call kubectl logs for sanitized metadata only; kubeconfig content and log bodies are never returned.',
+    'k8s.backendReady': 'live backend ready',
+    'k8s.backendBlocked': 'live backend blocked',
+    'k8s.backendOff': 'live backend off',
+    'k8s.backendHintReady': 'Approved audits can invoke kubectl logs; only sanitized metadata is recorded.',
+    'k8s.backendHintBlocked': 'Set ASSOPS_KUBERNETES_LOGS_ENABLED=true, provide a relative kubeconfig ref under ASSOPS_KUBECONFIG_SECRET_DIR, complete reviews, and make kubectl available to the worker.',
+    'pod.preview': 'Preview',
+    'pod.requestAudit': 'Request audit',
+    'pod.recordSnapshot': 'Record audit snapshot',
     'menu.dashboard': 'Dashboard',
     'menu.assets': 'Assets',
     'menu.projects': 'Projects',
@@ -217,11 +259,16 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.editRepoSyncAsset': '编辑同步资产',
     'form.createWebhook': '创建 Webhook',
     'form.createArgoConnection': '创建 Argo 连接',
+    'form.addKubernetesEnvironment': '添加 Kubernetes 环境',
     'form.createSSHMachine': '创建 SSH 主机',
     'form.runSSHCommand': '执行 SSH 命令',
+    'form.podLogQuery': 'Pod 日志查询',
     'field.name': '名称',
     'field.slug': '标识',
     'field.description': '描述',
+    'field.environment': '环境',
+    'field.cluster_name': '集群',
+    'field.namespace': '命名空间',
     'field.repo_key': '仓库键',
     'field.display_name': '显示名称',
     'field.repo_role': '仓库角色',
@@ -247,6 +294,15 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.auth_type': '认证类型',
     'field.token': '令牌',
     'field.insecure_skip_verify': '跳过 TLS 校验',
+    'field.kubeconfig_secret_ref': 'Kubeconfig 密钥引用',
+    'field.service_account': '服务账号',
+    'field.token_subject_review_status': 'Token 主体审查',
+    'field.rbac_read_logs_status': '日志 RBAC 审查',
+    'field.pod_name': 'Pod 名称',
+    'field.container_name': '容器',
+    'field.tail_lines': '日志行数',
+    'field.since_seconds': '最近秒数',
+    'field.status': '状态',
     'field.host': '主机',
     'field.port': '端口',
     'field.username': '用户名',
@@ -275,6 +331,18 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.auth_type': 'Worker 使用的凭证类型。Argo 使用 token，SSH 使用 key 或 password。',
     'help.token': 'Argo bearer token，会提交给 gateway，应限制在目标环境权限内。',
     'help.insecure_skip_verify': '仅用于自签 TLS 的测试集群；生产环境不要启用。',
+    'help.environment': '用于绑定 Argo 部署目标和 Kubernetes 访问元数据的环境键，例如 test 或 prod。',
+    'help.cluster_name': 'Argo 部署目标中观测到的集群名，必须和目标记录一致才能审计 Pod 日志。',
+    'help.namespace': '该环境对应的 Kubernetes 命名空间，请使用命名空间级只读 kubeconfig。',
+    'help.kubeconfig_secret_ref': 'ASSOPS_KUBECONFIG_SECRET_DIR 下必填的相对文件引用。不要在这里粘贴 kubeconfig 内容。',
+    'help.service_account': '该 kubeconfig 预期使用的 Kubernetes 服务账号身份。',
+    'help.token_subject_review_status': '人工签核项，表示操作者已审查 kubeconfig token 主体；这不是自动 TokenReview。',
+    'help.rbac_read_logs_status': '人工签核项，表示操作者已审查服务账号具备该命名空间 pod/log 读取权限；这不是自动权限探测。',
+    'help.status': '仅在 kubeconfig 引用、token 主体、RBAC 审查都完成后选择 ready。',
+    'help.pod_name': '要审计的精确 Pod 名称。该预览不会自动发现 Pod。',
+    'help.container_name': '可选容器名。留空表示使用 Kubernetes 默认容器。',
+    'help.tail_lines': 'kubectl 可读取用于元数据计数的最大日志行数，网关会强制上限。',
+    'help.since_seconds': '可选时间窗口，单位秒，最大 86400。',
     'help.host': 'Worker 环境可以访问的 SSH 主机名或 IP。',
     'help.port': 'SSH TCP 端口，默认 22。',
     'help.username': 'Worker 登录远端主机使用的 SSH 用户。',
@@ -307,6 +375,22 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.token': 'Token',
     'option.key': 'SSH Key',
     'option.password': '密码',
+    'option.not_reviewed': '未审查',
+    'option.reviewed': '已审查',
+    'option.failed': '失败',
+    'option.waived': '豁免',
+    'option.metadata_only': '仅元数据',
+    'option.ready': '就绪',
+    'option.disabled': '已禁用',
+    'k8s.modalDescription': '这里只保存相对 kubeconfig 引用和审查元数据。启用 ASSOPS_KUBERNETES_LOGS_ENABLED 后，审批通过的 worker 任务可以调用 kubectl logs 并仅记录脱敏元数据；不会返回 kubeconfig 内容或日志正文。',
+    'k8s.backendReady': 'live 后端就绪',
+    'k8s.backendBlocked': 'live 后端受阻',
+    'k8s.backendOff': 'live 后端关闭',
+    'k8s.backendHintReady': '审批后的审计任务可以调用 kubectl logs；只记录脱敏元数据。',
+    'k8s.backendHintBlocked': '需要设置 ASSOPS_KUBERNETES_LOGS_ENABLED=true，在 ASSOPS_KUBECONFIG_SECRET_DIR 下提供相对 kubeconfig 引用，完成审查，并确保 worker 可执行 kubectl。',
+    'pod.preview': '预览',
+    'pod.requestAudit': '请求审计',
+    'pod.recordSnapshot': '记录审计快照',
     'menu.dashboard': '仪表盘',
     'menu.assets': '资产',
     'menu.projects': '项目',
@@ -7418,6 +7502,7 @@ function deploymentStatusUnhealthy(status: any) {
 }
 
 function ConfigPage() {
+  const { t } = useI18n();
   const projects = useLoad(() => api('/api/projects'), []);
   const projectRows = projects.data?.items || [];
   const projectPick = useSelectedRow(projectRows);
@@ -7816,11 +7901,11 @@ function ConfigPage() {
   return (
     <Space direction="vertical" size={16} className="full">
       <Typography.Title level={2}>Argo / SSH</Typography.Title>
-      <EntitySelect label="Project" rows={projectRows} value={projectPick.selectedID} onChange={projectPick.setSelectedID} />
+      <EntitySelect label={t('common.project')} rows={projectRows} value={projectPick.selectedID} onChange={projectPick.setSelectedID} />
       <Tabs items={[
         { key: 'ssh', label: 'SSH Machines', children: <Space direction="vertical" size={16} className="full">
           <Toolbar title="SSH Machines" onCreate={() => setSSHOpen(true)} disabled={!project} />
-          <EntitySelect label="Machine" rows={sshRows} value={sshPick.selectedID} onChange={sshPick.setSelectedID} />
+          <EntitySelect label={t('title.sshMachines')} rows={sshRows} value={sshPick.selectedID} onChange={sshPick.setSelectedID} />
           <Space>
             <Button onClick={verifySSHMachine} disabled={!sshPick.selectedID}>Verify</Button>
             <Button type="primary" onClick={() => setCommandOpen(true)} disabled={!sshPick.selectedID}>Run command</Button>
@@ -7908,11 +7993,11 @@ function ConfigPage() {
         </Space> },
         { key: 'argo', label: 'Argo Apps', children: <Space direction="vertical" size={16} className="full">
           <Toolbar title="Argo Connections" onCreate={() => setArgoOpen(true)} disabled={!project} />
-          <EntitySelect label="Connection" rows={argoRows} value={argoPick.selectedID} onChange={argoPick.setSelectedID} />
+          <EntitySelect label={t('title.argoConnections')} rows={argoRows} value={argoPick.selectedID} onChange={argoPick.setSelectedID} />
           <Space>
             <Button type="primary" loading={Boolean(argoSyncOpID)} onClick={syncArgoApps} disabled={!argoPick.selectedID || Boolean(argoSyncOpID)}>Sync apps</Button>
-            <Button onClick={() => setKubernetesEnvironmentOpen(true)} disabled={!project}>Add Kubernetes env</Button>
-            <Button onClick={() => { argoConnections.reload(); argoApps.reload(); kubernetesEnvironments.reload(); deploymentTargets.reload(); deploymentRecords.reload(); rollbackPoints.reload(); }} disabled={!project}>Refresh</Button>
+            <Button onClick={() => setKubernetesEnvironmentOpen(true)} disabled={!project}>{t('form.addKubernetesEnvironment')}</Button>
+            <Button onClick={() => { argoConnections.reload(); argoApps.reload(); kubernetesEnvironments.reload(); deploymentTargets.reload(); deploymentRecords.reload(); rollbackPoints.reload(); }} disabled={!project}>{t('common.refresh')}</Button>
           </Space>
           <div className="metricGrid">
             <Card><Typography.Text type="secondary">Targets</Typography.Text><Typography.Title level={3}>{deploymentPosture.targets}</Typography.Title></Card>
@@ -7923,25 +8008,25 @@ function ConfigPage() {
           {deploymentPosture.summary !== 'No deployment targets yet' && <Alert showIcon type={deploymentPosture.unhealthy > 0 ? 'warning' : 'success'} message={deploymentPosture.summary} />}
           {deploymentExecutionGuardrail && <Alert showIcon type={deploymentExecutionGuardrail.type} message={deploymentExecutionGuardrail.message} description={deploymentExecutionGuardrail.description} />}
           {rollbackGuardrail && <Alert showIcon type={rollbackGuardrail.type} message={rollbackGuardrail.message} description={rollbackGuardrail.description} />}
-          <Card title="Pod log query">
+          <Card title={t('form.podLogQuery')}>
             <Space direction="vertical" size={12} className="full">
               <Form layout="inline" onFinish={previewPodLogs} initialValues={{ tail_lines: 200, since_seconds: 0 }}>
                 <Form.Item name="deployment_target_id" rules={[{ required: true, message: 'target is required' }]}>
                   <Select placeholder="Target" style={{ width: 220 }} options={(deploymentTargets.data?.items || []).map((target: AnyRow) => ({ value: target.id, label: `${target.name || target.namespace} (${target.environment || 'env'})` }))} />
                 </Form.Item>
-                <Form.Item name="pod_name" rules={[{ required: true, message: 'pod is required' }]}>
-                  <Input placeholder="pod name" style={{ width: 180 }} />
+                <Form.Item name="pod_name" rules={[{ required: true, message: t('common.required') }]}>
+                  <Input placeholder={t('field.pod_name')} style={{ width: 180 }} suffix={<Tooltip title={t('help.pod_name')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
                 </Form.Item>
                 <Form.Item name="container_name">
-                  <Input placeholder="container" style={{ width: 150 }} />
+                  <Input placeholder={t('field.container_name')} style={{ width: 150 }} suffix={<Tooltip title={t('help.container_name')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
                 </Form.Item>
                 <Form.Item name="tail_lines">
-                  <Input type="number" min={1} max={1000} placeholder="tail" style={{ width: 90 }} />
+                  <Input type="number" min={1} max={1000} placeholder={t('field.tail_lines')} style={{ width: 110 }} suffix={<Tooltip title={t('help.tail_lines')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
                 </Form.Item>
                 <Form.Item name="since_seconds">
-                  <Input type="number" min={0} max={86400} placeholder="since sec" style={{ width: 110 }} />
+                  <Input type="number" min={0} max={86400} placeholder={t('field.since_seconds')} style={{ width: 130 }} suffix={<Tooltip title={t('help.since_seconds')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
                 </Form.Item>
-                <Button htmlType="submit" loading={podLogLoading} disabled={!project || !(deploymentTargets.data?.items || []).length}>Preview</Button>
+                <Button htmlType="submit" loading={podLogLoading} disabled={!project || !(deploymentTargets.data?.items || []).length}>{t('pod.preview')}</Button>
               </Form>
               {podLogPreview && (
                 <Space direction="vertical" size={8} className="full">
@@ -7964,7 +8049,7 @@ function ConfigPage() {
                     {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.readiness_ready ? 'gold' : 'red'}>kube readiness {podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.readiness_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.namespace_scoped_kubeconfig_bound ? 'namespace kubeconfig bound' : 'no namespace kubeconfig'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.log_access_metadata_ready ? 'log metadata reviewed' : 'log metadata pending'}</Tag> : null}
-                    {podLogPreview.retrieval_plan?.execution_plan?.live_backend_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.live_backend_plan.ready ? 'green' : podLogPreview.retrieval_plan.execution_plan.live_backend_plan.enabled ? 'gold' : 'default'}>{podLogPreview.retrieval_plan.execution_plan.live_backend_plan.ready ? 'live backend ready' : podLogPreview.retrieval_plan.execution_plan.live_backend_plan.enabled ? 'live backend blocked' : 'live backend off'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.live_backend_plan ? <Tooltip title={podLogPreview.retrieval_plan.execution_plan.live_backend_plan.ready ? t('k8s.backendHintReady') : t('k8s.backendHintBlocked')}><Tag color={podLogPreview.retrieval_plan.execution_plan.live_backend_plan.ready ? 'green' : podLogPreview.retrieval_plan.execution_plan.live_backend_plan.enabled ? 'gold' : 'default'}>{podLogPreview.retrieval_plan.execution_plan.live_backend_plan.ready ? t('k8s.backendReady') : podLogPreview.retrieval_plan.execution_plan.live_backend_plan.enabled ? t('k8s.backendBlocked') : t('k8s.backendOff')}</Tag></Tooltip> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.pod_scope_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state === 'planned' ? 'gold' : 'red'}>scope {podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.log_capture_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state === 'planned' ? 'gold' : 'red'}>capture {podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.live_log_stream_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.stream_ready_for_review ? 'green' : podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.metadata_ready ? 'gold' : 'red'}>live stream {podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.stream_state || 'blocked'}</Tag> : null}
@@ -7981,8 +8066,8 @@ function ConfigPage() {
                     {podLogPreview.retrieval_plan?.execution_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.disabled_backends?.length || 0} disabled backends</Tag> : null}
                   </Space>
                   <Space>
-                    <Button type="primary" onClick={requestPodLogAudit} loading={podLogRunLoading} disabled={!podLogPreview.operation_request_enabled || !podLogPreview.retrieval_plan?.execution_plan?.audit_worker_job_enabled}>Request audit</Button>
-                    <Button onClick={recordPodLogAuditSnapshot} loading={podLogSnapshotLoading} disabled={podLogPreview.audit_evidence?.evidence_state !== 'recorded'}>Record audit snapshot</Button>
+                    <Button type="primary" onClick={requestPodLogAudit} loading={podLogRunLoading} disabled={!podLogPreview.operation_request_enabled || !podLogPreview.retrieval_plan?.execution_plan?.audit_worker_job_enabled}>{t('pod.requestAudit')}</Button>
+                    <Button onClick={recordPodLogAuditSnapshot} loading={podLogSnapshotLoading} disabled={podLogPreview.audit_evidence?.evidence_state !== 'recorded'}>{t('pod.recordSnapshot')}</Button>
                     {podLogRunResult ? <Tag color={podLogRunResult.approval ? 'gold' : 'blue'}>{podLogRunResult.approval ? 'approval requested' : 'operation queued'}</Tag> : null}
                     {podLogRunResult?.worker_job_created ? <Tag>worker job created</Tag> : null}
                     {podLogRunResult ? <Tag>{podLogRunResult.log_body_included ? 'log body included' : 'no log body'}</Tag> : null}
@@ -8057,18 +8142,14 @@ function ConfigPage() {
         </Space> }
       ]} />
       <CreateModal title="Create Argo connection" open={argoOpen} setOpen={setArgoOpen} fields={['name', 'server_url', 'auth_type', 'token', 'insecure_skip_verify']} onSubmit={createArgoConnection} />
-      <Modal title="Add Kubernetes environment" open={kubernetesEnvironmentOpen} onCancel={() => setKubernetesEnvironmentOpen(false)} onOk={() => kubernetesEnvironmentForm.submit()} destroyOnHidden>
+      <Modal title={t('form.addKubernetesEnvironment')} open={kubernetesEnvironmentOpen} onCancel={() => setKubernetesEnvironmentOpen(false)} onOk={() => kubernetesEnvironmentForm.submit()} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
         <Form form={kubernetesEnvironmentForm} layout="vertical" onFinish={createKubernetesEnvironment} initialValues={{ token_subject_review_status: 'not_reviewed', rbac_read_logs_status: 'not_reviewed', status: 'metadata_only' }}>
-          <Typography.Paragraph type="secondary">Records namespace-scoped metadata references only. It does not read kubeconfig data, create a Kubernetes client, or open pod log streams.</Typography.Paragraph>
-          <Form.Item name="name" label="Name" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="environment" label="Environment" rules={[{ required: true }]}><Input placeholder="test" /></Form.Item>
-          <Form.Item name="cluster_name" label="Cluster" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="namespace" label="Namespace" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="kubeconfig_secret_ref" label="Kubeconfig secret ref"><Input placeholder="assops/test/namespace-reader" /></Form.Item>
-          <Form.Item name="service_account" label="Service account"><Input placeholder="system:serviceaccount:ns:assops-reader" /></Form.Item>
-          <Form.Item name="token_subject_review_status" label="Token subject review"><Select options={[{ value: 'not_reviewed', label: 'Not reviewed' }, { value: 'reviewed', label: 'Reviewed' }, { value: 'failed', label: 'Failed' }, { value: 'waived', label: 'Waived' }]} /></Form.Item>
-          <Form.Item name="rbac_read_logs_status" label="RBAC read logs"><Select options={[{ value: 'not_reviewed', label: 'Not reviewed' }, { value: 'reviewed', label: 'Reviewed' }, { value: 'failed', label: 'Failed' }, { value: 'waived', label: 'Waived' }]} /></Form.Item>
-          <Form.Item name="status" label="Status"><Select options={[{ value: 'metadata_only', label: 'Metadata only' }, { value: 'ready', label: 'Ready' }, { value: 'disabled', label: 'Disabled' }]} /></Form.Item>
+          <Typography.Paragraph type="secondary">{t('k8s.modalDescription')}</Typography.Paragraph>
+          {['name', 'environment', 'cluster_name', 'namespace', 'kubeconfig_secret_ref', 'service_account', 'token_subject_review_status', 'rbac_read_logs_status', 'status'].map((field) => (
+            <Form.Item key={field} name={field} label={fieldLabel(field, t)} rules={fieldRules(field, t)} valuePropName={fieldValuePropName(field)}>
+              {fieldInput(field, t)}
+            </Form.Item>
+          ))}
         </Form>
       </Modal>
       <CreateModal title="Create SSH machine" open={sshOpen} setOpen={setSSHOpen} fields={['name', 'host', 'port', 'username', 'auth_type']} onSubmit={(v) => project ? api(`/api/projects/${project.id}/ssh-machines`, { method: 'POST', body: JSON.stringify({ ...v, port: Number(v.port || 22) }) }).then(ssh.reload) : Promise.resolve()} />
@@ -8117,6 +8198,9 @@ const fieldMeta: Record<string, FieldMeta> = {
   name: { required: true },
   title: { required: true },
   slug: { helpKey: 'help.slug' },
+  environment: { required: true, helpKey: 'help.environment', placeholder: 'test' },
+  cluster_name: { required: true, helpKey: 'help.cluster_name' },
+  namespace: { required: true, helpKey: 'help.namespace' },
   repo_key: { required: true, helpKey: 'help.repo_key', placeholder: 'service' },
   display_name: {},
   repo_role: { input: 'select', options: ['code', 'service', 'config'], helpKey: 'help.repo_role' },
@@ -8143,6 +8227,15 @@ const fieldMeta: Record<string, FieldMeta> = {
   auth_type: { input: 'select', options: ['token', 'key', 'password'], helpKey: 'help.auth_type' },
   token: { input: 'password', helpKey: 'help.token' },
   insecure_skip_verify: { input: 'checkbox', helpKey: 'help.insecure_skip_verify' },
+  kubeconfig_secret_ref: { required: true, helpKey: 'help.kubeconfig_secret_ref', placeholder: 'assops/test/namespace-reader' },
+  service_account: { helpKey: 'help.service_account', placeholder: 'system:serviceaccount:ns:assops-reader' },
+  token_subject_review_status: { input: 'select', options: ['not_reviewed', 'reviewed', 'failed', 'waived'], helpKey: 'help.token_subject_review_status' },
+  rbac_read_logs_status: { input: 'select', options: ['not_reviewed', 'reviewed', 'failed', 'waived'], helpKey: 'help.rbac_read_logs_status' },
+  status: { input: 'select', options: ['metadata_only', 'ready', 'disabled'], helpKey: 'help.status' },
+  pod_name: { required: true, helpKey: 'help.pod_name' },
+  container_name: { helpKey: 'help.container_name' },
+  tail_lines: { input: 'number', helpKey: 'help.tail_lines', placeholder: '200' },
+  since_seconds: { input: 'number', helpKey: 'help.since_seconds', placeholder: '0' },
   host: { required: true, helpKey: 'help.host' },
   port: { input: 'number', helpKey: 'help.port', placeholder: '22' },
   username: { required: true, helpKey: 'help.username' },

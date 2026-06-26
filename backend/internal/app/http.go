@@ -24521,7 +24521,12 @@ func argoPodLogQueryPreviewWithConfig(cfg Config, podName, containerName string,
 	if status == "<nil>" {
 		status = ""
 	}
-	blockedReasons := []string{"pod_log_backend_disabled", "kubernetes_client_not_bound"}
+	liveBackendPlan := kubernetesPodLogBackendPlan(cfg, target)
+	liveBackendReady := boolOnlyFromAny(liveBackendPlan["ready"])
+	blockedReasons := []string{}
+	if !liveBackendReady {
+		blockedReasons = append(blockedReasons, "pod_log_backend_disabled", "kubernetes_client_not_bound")
+	}
 	if namespace == "" {
 		blockedReasons = append(blockedReasons, "namespace_missing")
 	}
@@ -24562,8 +24567,6 @@ func argoPodLogQueryPreviewWithConfig(cfg Config, podName, containerName string,
 		auditEvidenceRows = auditRows[0]
 	}
 	auditEvidence := argoPodLogAuditEvidenceSummary(auditEvidenceRows)
-	liveBackendPlan := kubernetesPodLogBackendPlan(cfg, target)
-	liveBackendReady := boolOnlyFromAny(liveBackendPlan["ready"])
 	if !boolOnlyFromAny(liveBackendPlan["ready"]) {
 		for _, reason := range stringSliceFromAny(liveBackendPlan["blocked_reasons"]) {
 			if !stringListContains(blockedReasons, reason) {
@@ -24593,7 +24596,7 @@ func argoPodLogQueryPreviewWithConfig(cfg Config, podName, containerName string,
 		"suppressed_fields":         []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret"},
 		"blocked_reasons":           blockedReasons,
 		"live_backend_plan":         liveBackendPlan,
-		"next_step":                 "Request an approval-gated pod log audit job; kubeconfig binding and live log bodies remain disabled until a reviewed backend is added.",
+		"next_step":                 argoPodLogNextStep(liveBackendReady),
 	}
 }
 
@@ -24602,6 +24605,17 @@ func argoPodLogRetrievalPlan(query, target map[string]any, blockedReasons []stri
 	approvalStatus := "blocked"
 	if metadataReady {
 		approvalStatus = "planned"
+	}
+	var liveBackendPlan map[string]any
+	if len(liveBackendPlans) > 0 {
+		liveBackendPlan = liveBackendPlans[0]
+	}
+	liveBackendReady := boolOnlyFromAny(liveBackendPlan["ready"])
+	liveLogStreamStatus := "blocked"
+	liveLogStreamMessage := "Kubernetes/Argo pod log backends are not ready for this target"
+	if liveBackendReady {
+		liveLogStreamStatus = "planned"
+		liveLogStreamMessage = "approved audit jobs can invoke kubectl logs and record sanitized metadata without storing log bodies"
 	}
 	steps := []map[string]any{
 		{
@@ -24631,8 +24645,8 @@ func argoPodLogRetrievalPlan(query, target map[string]any, blockedReasons []stri
 		},
 		{
 			"kind":    "live_log_stream",
-			"status":  "blocked",
-			"message": "Kubernetes/Argo pod log backends are disabled in the first-version preview",
+			"status":  liveLogStreamStatus,
+			"message": liveLogStreamMessage,
 		},
 	}
 	planned, blocked := 0, 0
@@ -24644,10 +24658,6 @@ func argoPodLogRetrievalPlan(query, target map[string]any, blockedReasons []stri
 		} else {
 			blocked++
 		}
-	}
-	var liveBackendPlan map[string]any
-	if len(liveBackendPlans) > 0 {
-		liveBackendPlan = liveBackendPlans[0]
 	}
 	executionPlan := argoPodLogExecutionPlan(query, target, steps, blockedReasons, auditEvidence, liveBackendPlan)
 	planState := "blocked"
@@ -24675,7 +24685,7 @@ func argoPodLogRetrievalPlan(query, target map[string]any, blockedReasons []stri
 		"required_live_controls":       []string{"operation_approval", "environment_review", "kubeconfig_binding", "namespace_confirmation", "pod_name_confirmation", "operator_confirmation"},
 		"disabled_backends":            argoPodLogDisabledBackends(boolOnlyFromAny(liveBackendPlan["ready"])),
 		"suppressed_fields":            []string{"kubeconfig", "cluster_token", "authorization_header", "log_body", "pod_env", "secret_env", "volume_secret"},
-		"required_operator_action":     "Review the target and pod identity, then request an approval-gated audit job; live log backend remains disabled.",
+		"required_operator_action":     argoPodLogOperatorAction(liveBackendReady),
 		"future_execution_result_type": "sanitized_live_log_metadata",
 	}
 }
@@ -24692,6 +24702,27 @@ func argoPodLogExecutionDisabledBackends(liveBackendReady bool) []string {
 		return []string{"kubernetes_pod_log_api", "argocd_pod_logs", "raw_log_body_recording"}
 	}
 	return []string{"kubeconfig_binding", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "raw_log_body_recording"}
+}
+
+func argoPodLogNextStep(liveBackendReady bool) string {
+	if liveBackendReady {
+		return "Request an approval-gated pod log audit job; the worker can invoke kubectl logs and will record sanitized metadata without storing log bodies."
+	}
+	return "Configure the namespace-scoped Kubernetes environment and enable the opt-in pod log backend, then request an approval-gated audit job."
+}
+
+func argoPodLogOperatorAction(liveBackendReady bool) string {
+	if liveBackendReady {
+		return "Review the target and pod identity, then request an approval-gated audit job; log bodies and kubeconfig data remain suppressed."
+	}
+	return "Review the target and pod identity, configure the live backend, then request an approval-gated audit job."
+}
+
+func argoPodLogLiveStreamMessage(liveBackendReady bool) string {
+	if liveBackendReady {
+		return "Approved worker jobs can invoke kubectl logs for sanitized metadata only; this preview does not read kubeconfig, open a stream, or return log bodies."
+	}
+	return "Live pod-log stream review is metadata-only until the opt-in backend and reviewed namespace kubeconfig are ready."
 }
 
 func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]any, blockedReasons []string, auditEvidence map[string]any, liveBackendPlan map[string]any) map[string]any {
@@ -24724,9 +24755,13 @@ func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]an
 	kubeconfigBindingPlan := argoPodLogKubeconfigBindingPlan(prerequisiteState, namespaceReady, clusterReady)
 	kubeconfigReadinessPlan := argoPodLogNamespaceKubeconfigReadinessPlan(query, target, prerequisiteState, auditEvidence)
 	podScopePlan := argoPodLogPodScopePlan(query, target, prerequisiteState)
-	logCapturePlan := argoPodLogCapturePlan(prerequisiteState)
+	logCapturePlan := argoPodLogCapturePlan(prerequisiteState, liveBackendReady)
 	resultRecordingPlan := argoPodLogResultRecordingPlan(auditReady, auditEvidence, query, target, prerequisiteState)
-	liveLogStreamPlan := argoPodLogLiveLogStreamReviewPlan(query, target, prerequisiteState, auditEvidence, kubeconfigReadinessPlan, podScopePlan, logCapturePlan, resultRecordingPlan)
+	liveLogStreamPlan := argoPodLogLiveLogStreamReviewPlan(query, target, prerequisiteState, auditEvidence, kubeconfigReadinessPlan, podScopePlan, logCapturePlan, resultRecordingPlan, liveBackendPlan)
+	message := "Pod log preview does not call Kubernetes; metadata-ready requests can create an approval-gated audit job with sanitized result only."
+	if liveBackendReady {
+		message = "Pod log backend is ready for approved audit jobs; kubectl logs can be invoked by the worker, while log bodies and kubeconfig data stay suppressed."
+	}
 	return map[string]any{
 		"mode":                          "pod_log_execution_plan_preview",
 		"execution_state":               executionState,
@@ -24769,15 +24804,16 @@ func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]an
 		"log_capture_plan":              logCapturePlan,
 		"live_log_stream_plan":          liveLogStreamPlan,
 		"result_recording_plan":         resultRecordingPlan,
-		"message":                       "Pod log live execution remains disabled; metadata-ready requests can create an approval-gated audit job with sanitized result only.",
+		"message":                       message,
 	}
 }
 
-func argoPodLogLiveLogStreamReviewPlan(query, target map[string]any, prerequisiteState string, auditEvidence, kubeconfigReadinessPlan, podScopePlan, logCapturePlan, resultRecordingPlan map[string]any) map[string]any {
+func argoPodLogLiveLogStreamReviewPlan(query, target map[string]any, prerequisiteState string, auditEvidence, kubeconfigReadinessPlan, podScopePlan, logCapturePlan, resultRecordingPlan, liveBackendPlan map[string]any) map[string]any {
 	evidenceState := cleanPreviewString(auditEvidence["evidence_state"])
 	if evidenceState == "" {
 		evidenceState = "not_requested"
 	}
+	liveBackendReady := boolOnlyFromAny(liveBackendPlan["ready"])
 	streamState := "metadata_blocked"
 	if prerequisiteState == "metadata_available" {
 		streamState = "ready_for_approval"
@@ -24799,7 +24835,10 @@ func argoPodLogLiveLogStreamReviewPlan(query, target map[string]any, prerequisit
 		podScopePlan["scope_state"] == "planned" &&
 		logCapturePlan["capture_state"] == "planned" &&
 		boolOnlyFromAny(resultRecordingPlan["result_written"])
-	blockedReasons := []string{"live_log_backend_disabled", "namespace_scoped_kubeconfig_not_bound", "live_log_stream_not_opened"}
+	blockedReasons := []string{"namespace_scoped_kubeconfig_not_bound", "live_log_stream_not_opened"}
+	if !liveBackendReady {
+		blockedReasons = append([]string{"live_log_backend_disabled"}, blockedReasons...)
+	}
 	if prerequisiteState != "metadata_available" {
 		blockedReasons = append(blockedReasons, "metadata_incomplete")
 	}
@@ -24824,6 +24863,14 @@ func argoPodLogLiveLogStreamReviewPlan(query, target map[string]any, prerequisit
 	if evidenceState == "recorded" && intFromAny(auditEvidence["operation_log_count"], 0) == 0 {
 		blockedReasons = append(blockedReasons, "sanitized_result_operation_log_missing")
 	}
+	disabledBackends := []string{"kubeconfig_secret_binding", "kubernetes_client_create", "kubernetes_pod_log_api", "argocd_pod_logs", "live_log_stream_open", "log_body_storage", "redacted_log_body_storage"}
+	if !liveBackendReady {
+		disabledBackends = append(disabledBackends, "kubectl_logs")
+	}
+	executionBlockers := []string{"namespace_scoped_kubeconfig_not_bound", "pod_scope_not_verified", "result_redaction_review_not_approved"}
+	if !liveBackendReady {
+		executionBlockers = append([]string{"live_log_backend_disabled"}, executionBlockers...)
+	}
 	return map[string]any{
 		"mode":                              "pod_log_live_log_stream_review_plan",
 		"stream_state":                      streamState,
@@ -24837,6 +24884,8 @@ func argoPodLogLiveLogStreamReviewPlan(query, target map[string]any, prerequisit
 		"pod_scope_review_ready":            podScopePlan["scope_state"] == "planned",
 		"log_capture_review_ready":          logCapturePlan["capture_state"] == "planned",
 		"result_recording_observed":         boolOnlyFromAny(resultRecordingPlan["result_written"]),
+		"live_backend_ready":                liveBackendReady,
+		"live_backend_plan":                 liveBackendPlan,
 		"namespace_scoped_kubeconfig_bound": false,
 		"kubeconfig_secret_read":            false,
 		"kubeconfig_bound":                  false,
@@ -24861,12 +24910,12 @@ func argoPodLogLiveLogStreamReviewPlan(query, target map[string]any, prerequisit
 		"contains_raw_kubernetes_response":  false,
 		"required_review_fields":            []string{"operation_run_id", "approval_request_id", "deployment_target_id", "cluster_name", "namespace", "pod_name", "container_name", "tail_lines", "since_seconds", "kubeconfig_binding_status", "pod_scope_status", "log_redaction_status", "operator_review_status"},
 		"required_controls":                 []string{"operation_approval", "namespace_scoped_kubeconfig_secret", "token_subject_review", "rbac_read_logs_review", "namespace_confirmation", "pod_identity_confirmation", "container_scope_confirmation", "log_line_redaction", "result_redaction_review"},
-		"disabled_backends":                 []string{"kubeconfig_secret_binding", "kubernetes_client_create", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "live_log_stream_open", "log_body_storage", "redacted_log_body_storage"},
+		"disabled_backends":                 disabledBackends,
 		"suppressed_fields":                 []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "log_body", "redacted_log_body", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret", "pod_annotations"},
 		"blocked_reasons":                   blockedReasons,
-		"execution_blockers":                []string{"live_log_backend_disabled", "namespace_scoped_kubeconfig_not_bound", "pod_scope_not_verified", "result_redaction_review_not_approved"},
+		"execution_blockers":                executionBlockers,
 		"target_ref":                        map[string]any{"deployment_target_id": target["id"], "cluster_name": target["cluster_name"], "namespace": target["namespace"], "pod_name": query["pod_name"], "container_name": query["container_name"], "tail_lines": query["tail_lines"], "since_seconds": query["since_seconds"]},
-		"message":                           "Live pod-log stream review is metadata-only; no kubeconfig, Kubernetes client, log stream, raw body, redacted body, or result row is produced here.",
+		"message":                           argoPodLogLiveStreamMessage(liveBackendReady),
 	}
 }
 
@@ -24945,10 +24994,22 @@ func argoPodLogPodScopePlan(query, target map[string]any, prerequisiteState stri
 	}
 }
 
-func argoPodLogCapturePlan(prerequisiteState string) map[string]any {
+func argoPodLogCapturePlan(prerequisiteState string, liveBackendReady bool) map[string]any {
 	captureState := "blocked"
 	if prerequisiteState == "metadata_available" {
 		captureState = "planned"
+	}
+	disabledBackends := []string{"kubernetes_pod_log_api", "argocd_pod_logs", "log_stream_result_write"}
+	if !liveBackendReady {
+		disabledBackends = append(disabledBackends, "kubectl_logs")
+	}
+	executionBlockers := []string{"log_stream_result_write_disabled"}
+	if !liveBackendReady {
+		executionBlockers = append([]string{"pod_log_backend_disabled"}, executionBlockers...)
+	}
+	message := "Pod log capture is planned only; no log stream, raw body, redacted body, Kubernetes response, or result row is produced."
+	if liveBackendReady {
+		message = "Pod log capture is planned for approved worker jobs; kubectl logs may be invoked for sanitized metadata only, with no raw body, redacted body, Kubernetes response, or result row produced by this preview."
 	}
 	return map[string]any{
 		"mode":                       "pod_log_capture_plan",
@@ -24967,11 +25028,11 @@ func argoPodLogCapturePlan(prerequisiteState string) map[string]any {
 		"contains_redacted_log_body": false,
 		"contains_raw_response":      false,
 		"required_controls":          []string{"operation_approval", "log_line_redaction", "tail_limit_enforcement", "result_redaction_review"},
-		"disabled_backends":          []string{"kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "log_stream_result_write"},
+		"disabled_backends":          disabledBackends,
 		"suppressed_fields":          []string{"log_body", "redacted_log_body", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret"},
 		"blocked_reasons":            []string{"pod_log_execution_not_performed", "log_stream_not_opened", "sanitized_log_result_not_recorded"},
-		"execution_blockers":         []string{"pod_log_backend_disabled", "log_stream_result_write_disabled"},
-		"message":                    "Pod log capture is planned only; no log stream, raw body, redacted body, Kubernetes response, or result row is produced.",
+		"execution_blockers":         executionBlockers,
+		"message":                    message,
 	}
 }
 
