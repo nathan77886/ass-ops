@@ -123,6 +123,22 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.completed': 'Completed',
     'common.failed': 'Failed',
     'common.avg': 'Avg',
+    'common.count': 'Count',
+    'common.binary': 'Binary',
+    'common.summary': 'Summary',
+    'common.input': 'Input',
+    'common.output': 'Output',
+    'common.decision': 'Decision',
+    'common.audit': 'Audit',
+    'common.logs': 'Logs',
+    'common.live': 'Live',
+    'common.close': 'Close',
+    'common.open': 'Open',
+    'common.generate': 'Generate',
+    'common.approve': 'Approve',
+    'common.reject': 'Reject',
+    'common.pending': 'Pending',
+    'common.fields': 'Fields',
     'title.sshMachines': 'SSH Machines',
     'title.argoConnections': 'Argo Connections',
     'title.argoSsh': 'Argo / SSH',
@@ -139,6 +155,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.versions': 'Versions',
     'title.versionValidation': 'Version validation',
     'title.providerAccounts': 'Provider Accounts',
+    'title.operations': 'Operations',
+    'title.workerNodes': 'Worker Nodes',
+    'title.aiRuntime': 'AI Runtime',
+    'title.agentTasks': 'Agent Tasks',
     'form.createProject': 'Create project',
     'form.createRepository': 'Create repository',
     'form.createAIRuntime': 'Create AI runtime',
@@ -371,6 +391,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.codex_binary': 'Binary name or path the worker can execute.',
     'help.model': 'Optional model override for the runtime.',
     'help.prompt': 'Task prompt sent to the selected agent runtime.',
+    'help.agent_task_title': 'Short task title shown in the queue and audit views.',
     'help.name': 'Human-readable name shown in ASSOPS lists.',
     'help.argo_connection_name': 'Short name for this Argo CD connection, for example test-argo or prod-argo.',
     'help.ssh_machine_name': 'Short name for this SSH target, for example test-worker or jump-host.',
@@ -432,6 +453,50 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'provider.autoBlocked': 'auto-blocked',
     'provider.notNeeded': 'not needed',
     'provider.tokenEnvRequired': 'token env is required',
+    'worker.registrationHint': 'Node workers register through /api/worker-nodes/register. Start one with go run ./backend/cmd/node-worker.',
+    'worker.queueNeedsAttention': 'Worker queue needs attention',
+    'worker.queueRiskDescription': '{staleNodes} stale nodes, {agedQueuedJobs} aged queued jobs, {staleRunningJobs} stale running jobs, {failed24h} failures in 24h.',
+    'worker.queueBackend': 'Queue backend',
+    'worker.onlineNodes': 'Online nodes',
+    'worker.queuedJobs': 'Queued jobs',
+    'worker.runningJobs': 'Running jobs',
+    'worker.outcome24h': '24h outcome',
+    'worker.olderThan15m': '{count} older than 15m',
+    'worker.completedFailed': 'completed / failed',
+    'worker.echoJobQueued': 'Echo job queued',
+    'worker.queueEchoJob': 'Queue echo job',
+    'worker.queue': 'Queue',
+    'worker.nodeKinds': 'Node kinds',
+    'worker.recentFailures': 'Recent failures',
+    'worker.kind': 'Kind',
+    'worker.tool': 'Tool',
+    'worker.queued': 'Queued',
+    'ai.verify': 'Verify',
+    'ai.runtimeDescription': 'Registers the local AI runtime the worker can verify before agent tasks are generated or executed.',
+    'agent.selectProjectFirst': 'Select a project first',
+    'agent.taskCreated': 'Task created',
+    'agent.planGenerated': 'Plan generated',
+    'agent.planApproved': 'Plan approved',
+    'agent.approvalRequested': 'Approval requested',
+    'agent.executionQueued': 'Agent execution queued',
+    'agent.guardrailHint': 'Agent plans are read-only context summaries first. Execution goes through approval and records tool-call audit rows before any future mutation path.',
+    'agent.latestPlan': 'Latest plan',
+    'agent.generatePlan': 'Generate plan',
+    'agent.approveLatest': 'Approve latest',
+    'agent.recordAuditSnapshot': 'Record audit snapshot',
+    'agent.recordArmingSnapshot': 'Record arming snapshot',
+    'agent.recordCodeAuditSnapshot': 'Record code audit snapshot',
+    'agent.auditSnapshotNotReady': 'Agent audit snapshot is not ready yet',
+    'agent.auditSnapshotRecorded': 'Agent audit snapshot recorded',
+    'agent.auditSnapshotCurrent': 'Agent audit snapshot already current',
+    'agent.toolArmingSnapshotNotReady': 'Agent tool arming snapshot is not ready yet',
+    'agent.toolArmingSnapshotRecorded': 'Agent tool arming snapshot recorded',
+    'agent.toolArmingSnapshotCurrent': 'Agent tool arming snapshot already current',
+    'agent.codeAuditSnapshotNotReady': 'Agent code audit snapshot is not ready yet',
+    'agent.codeAuditSnapshotRecorded': 'Agent code audit snapshot recorded',
+    'agent.codeAuditSnapshotCurrent': 'Agent code audit snapshot already current',
+    'agent.agentTask': 'Agent task',
+    'agent.toolCallAudit': 'Tool-call audit',
     'option.code': 'Code',
     'option.service': 'Service',
     'option.github': 'GitHub',
@@ -956,6 +1021,22 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.completed': '已完成',
     'common.failed': '失败',
     'common.avg': '平均',
+    'common.count': '数量',
+    'common.binary': '可执行文件',
+    'common.summary': '摘要',
+    'common.input': '输入',
+    'common.output': '输出',
+    'common.decision': '决策',
+    'common.audit': '审计',
+    'common.logs': '日志',
+    'common.live': '实时',
+    'common.close': '关闭',
+    'common.open': '打开',
+    'common.generate': '生成',
+    'common.approve': '通过',
+    'common.reject': '拒绝',
+    'common.pending': '待处理',
+    'common.fields': '字段',
     'title.sshMachines': 'SSH 主机',
     'title.argoConnections': 'Argo 连接',
     'title.argoSsh': 'Argo / SSH',
@@ -972,6 +1053,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.versions': '版本',
     'title.versionValidation': '版本校验',
     'title.providerAccounts': '提供方账号',
+    'title.operations': '操作记录',
+    'title.workerNodes': 'Worker 节点',
+    'title.aiRuntime': 'AI 运行时',
+    'title.agentTasks': 'Agent 任务',
     'form.createProject': '创建项目',
     'form.createRepository': '创建代码仓库',
     'form.createAIRuntime': '创建 AI 运行时',
@@ -1204,6 +1289,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.codex_binary': 'Worker 可以执行的二进制名称或路径。',
     'help.model': '可选的运行时模型覆盖值。',
     'help.prompt': '发送给选定 Agent 运行时的任务提示词。',
+    'help.agent_task_title': '任务列表和审计视图中展示的简短任务标题。',
     'help.name': 'ASSOPS 列表中展示的人类可读名称。',
     'help.argo_connection_name': '该 Argo CD 连接的短名称，例如 test-argo 或 prod-argo。',
     'help.api_base_url': 'Gateway/Worker 集成使用的提供方 API 基础地址，例如 https://api.github.com。',
@@ -1265,6 +1351,50 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'provider.autoBlocked': '自动轮换受阻',
     'provider.notNeeded': '无需轮换',
     'provider.tokenEnvRequired': 'Token 环境变量必填',
+    'worker.registrationHint': 'Node Worker 通过 /api/worker-nodes/register 注册。可用 go run ./backend/cmd/node-worker 启动一个。',
+    'worker.queueNeedsAttention': 'Worker 队列需要关注',
+    'worker.queueRiskDescription': '{staleNodes} 个失联节点，{agedQueuedJobs} 个排队过久任务，{staleRunningJobs} 个运行过久任务，24 小时内 {failed24h} 个失败。',
+    'worker.queueBackend': '队列后端',
+    'worker.onlineNodes': '在线节点',
+    'worker.queuedJobs': '排队任务',
+    'worker.runningJobs': '运行中任务',
+    'worker.outcome24h': '24 小时结果',
+    'worker.olderThan15m': '{count} 个超过 15 分钟',
+    'worker.completedFailed': '完成 / 失败',
+    'worker.echoJobQueued': 'Echo 任务已入队',
+    'worker.queueEchoJob': '入队 Echo 任务',
+    'worker.queue': '队列',
+    'worker.nodeKinds': '节点类型',
+    'worker.recentFailures': '最近失败',
+    'worker.kind': '类型',
+    'worker.tool': '工具',
+    'worker.queued': '排队数',
+    'ai.verify': '验证',
+    'ai.runtimeDescription': '登记 Worker 可验证的本地 AI 运行时，供 Agent 任务生成或执行前检查。',
+    'agent.selectProjectFirst': '请先选择项目',
+    'agent.taskCreated': '任务已创建',
+    'agent.planGenerated': '方案已生成',
+    'agent.planApproved': '方案已批准',
+    'agent.approvalRequested': '已发起审批',
+    'agent.executionQueued': 'Agent 执行已入队',
+    'agent.guardrailHint': 'Agent 方案首先是只读上下文摘要；执行需要经过审批，并记录工具调用审计后，未来才允许进入变更路径。',
+    'agent.latestPlan': '最新方案',
+    'agent.generatePlan': '生成方案',
+    'agent.approveLatest': '批准最新方案',
+    'agent.recordAuditSnapshot': '记录审计快照',
+    'agent.recordArmingSnapshot': '记录启用快照',
+    'agent.recordCodeAuditSnapshot': '记录代码审计快照',
+    'agent.auditSnapshotNotReady': 'Agent 审计快照尚未就绪',
+    'agent.auditSnapshotRecorded': 'Agent 审计快照已记录',
+    'agent.auditSnapshotCurrent': 'Agent 审计快照已是最新',
+    'agent.toolArmingSnapshotNotReady': 'Agent 工具启用快照尚未就绪',
+    'agent.toolArmingSnapshotRecorded': 'Agent 工具启用快照已记录',
+    'agent.toolArmingSnapshotCurrent': 'Agent 工具启用快照已是最新',
+    'agent.codeAuditSnapshotNotReady': 'Agent 代码审计快照尚未就绪',
+    'agent.codeAuditSnapshotRecorded': 'Agent 代码审计快照已记录',
+    'agent.codeAuditSnapshotCurrent': 'Agent 代码审计快照已是最新',
+    'agent.agentTask': 'Agent 任务',
+    'agent.toolCallAudit': '工具调用审计',
     'option.code': '代码',
     'option.service': '服务',
     'option.github': 'GitHub',
@@ -8304,21 +8434,28 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
 }
 
 function WorkerNodes() {
+  const { t } = useI18n();
   const summary = useLoad(() => api('/api/worker-queue/summary'), []);
   const data = summary.data || {};
   const backend = data.backend_summary || {};
   const hasQueueRisk = (data.stale_nodes || 0) > 0 || (data.aged_queued_jobs || 0) > 0 || (data.stale_running_jobs || 0) > 0 || (data.failed_24h || 0) > 0;
+  const queueRiskDescription = t('worker.queueRiskDescription')
+    .replace('{staleNodes}', String(data.stale_nodes || 0))
+    .replace('{agedQueuedJobs}', String(data.aged_queued_jobs || 0))
+    .replace('{staleRunningJobs}', String(data.stale_running_jobs || 0))
+    .replace('{failed24h}', String(data.failed_24h || 0));
+  const olderThan15m = (count: any) => t('worker.olderThan15m').replace('{count}', String(count || 0));
   return (
     <Space direction="vertical" size={16} className="full">
-      <Typography.Title level={2}>Worker Nodes</Typography.Title>
-      <Alert showIcon message="Node workers register through /api/worker-nodes/register. Start one with go run ./backend/cmd/node-worker." />
+      <Typography.Title level={2}>{t('title.workerNodes')}</Typography.Title>
+      <Alert showIcon message={t('worker.registrationHint')} />
       {summary.error && <Alert showIcon type="error" message={summary.error} />}
-      {hasQueueRisk && <Alert showIcon type="warning" message="Worker queue needs attention" description={`${data.stale_nodes || 0} stale nodes, ${data.aged_queued_jobs || 0} aged queued jobs, ${data.stale_running_jobs || 0} stale running jobs, ${data.failed_24h || 0} failures in 24h.`} />}
+      {hasQueueRisk && <Alert showIcon type="warning" message={t('worker.queueNeedsAttention')} description={queueRiskDescription} />}
       {backend.message && (
         <Alert
           showIcon
           type="info"
-          message="Queue backend"
+          message={t('worker.queueBackend')}
           description={
             <Space direction="vertical" size={8}>
               <Typography.Text>{backend.message}</Typography.Text>
@@ -8334,42 +8471,42 @@ function WorkerNodes() {
         />
       )}
       <div className="metricGrid">
-        <Card loading={summary.loading}><Typography.Text type="secondary">Online nodes</Typography.Text><Typography.Title level={4}>{data.online_nodes || 0}/{data.total_nodes || 0}</Typography.Title></Card>
-        <Card loading={summary.loading}><Typography.Text type="secondary">Queued jobs</Typography.Text><Typography.Title level={4}>{data.queued_jobs || 0}</Typography.Title><Typography.Text type="secondary">{data.aged_queued_jobs || 0} older than 15m</Typography.Text></Card>
-        <Card loading={summary.loading}><Typography.Text type="secondary">Running jobs</Typography.Text><Typography.Title level={4}>{data.running_jobs || 0}</Typography.Title><Typography.Text type="secondary">{data.stale_running_jobs || 0} older than 15m</Typography.Text></Card>
-        <Card loading={summary.loading}><Typography.Text type="secondary">24h outcome</Typography.Text><Typography.Title level={4}>{data.completed_24h || 0}/{data.failed_24h || 0}</Typography.Title><Typography.Text type="secondary">completed / failed</Typography.Text></Card>
+        <Card loading={summary.loading}><Typography.Text type="secondary">{t('worker.onlineNodes')}</Typography.Text><Typography.Title level={4}>{data.online_nodes || 0}/{data.total_nodes || 0}</Typography.Title></Card>
+        <Card loading={summary.loading}><Typography.Text type="secondary">{t('worker.queuedJobs')}</Typography.Text><Typography.Title level={4}>{data.queued_jobs || 0}</Typography.Title><Typography.Text type="secondary">{olderThan15m(data.aged_queued_jobs)}</Typography.Text></Card>
+        <Card loading={summary.loading}><Typography.Text type="secondary">{t('worker.runningJobs')}</Typography.Text><Typography.Title level={4}>{data.running_jobs || 0}</Typography.Title><Typography.Text type="secondary">{olderThan15m(data.stale_running_jobs)}</Typography.Text></Card>
+        <Card loading={summary.loading}><Typography.Text type="secondary">{t('worker.outcome24h')}</Typography.Text><Typography.Title level={4}>{data.completed_24h || 0}/{data.failed_24h || 0}</Typography.Title><Typography.Text type="secondary">{t('worker.completedFailed')}</Typography.Text></Card>
       </div>
-      <Button type="primary" onClick={() => api('/api/worker-nodes/test-job', { method: 'POST', body: JSON.stringify({ message: 'hello node-worker' }) }).then(() => { message.success('Echo job queued'); summary.reload(); })}>Queue echo job</Button>
+      <Button type="primary" onClick={() => api('/api/worker-nodes/test-job', { method: 'POST', body: JSON.stringify({ message: 'hello node-worker' }) }).then(() => { message.success(t('worker.echoJobQueued')); summary.reload(); })}>{t('worker.queueEchoJob')}</Button>
       <Tabs
         items={[
           {
             key: 'queue',
-            label: 'Queue',
+            label: t('worker.queue'),
             children: (
               <Table<AnyRow> rowKey="tool_name" size="small" dataSource={data.queue_by_tool || []} pagination={false} columns={[
-                { title: 'Tool', dataIndex: 'tool_name' },
-                { title: 'Queued', dataIndex: 'queued' }
+                { title: t('worker.tool'), dataIndex: 'tool_name' },
+                { title: t('worker.queued'), dataIndex: 'queued' }
               ]} />
             )
           },
           {
             key: 'nodes',
-            label: 'Node kinds',
+            label: t('worker.nodeKinds'),
             children: (
               <Table<AnyRow> rowKey="kind" size="small" dataSource={data.nodes_by_kind || []} pagination={false} columns={[
-                { title: 'Kind', dataIndex: 'kind' },
-                { title: 'Count', dataIndex: 'count' }
+                { title: t('worker.kind'), dataIndex: 'kind' },
+                { title: t('common.count'), dataIndex: 'count' }
               ]} />
             )
           },
           {
             key: 'failures',
-            label: 'Recent failures',
+            label: t('worker.recentFailures'),
             children: (
               <Table<AnyRow> rowKey="id" size="small" dataSource={data.recent_failures || []} pagination={false} columns={[
-                { title: 'Tool', dataIndex: 'tool_name' },
-                { title: 'Error', render: (_, row) => shortText(row.error || '-') },
-                { title: 'Updated', dataIndex: 'updated_at' }
+                { title: t('worker.tool'), dataIndex: 'tool_name' },
+                { title: t('common.error'), render: (_, row) => shortText(row.error || '-') },
+                { title: t('common.updated'), dataIndex: 'updated_at' }
               ]} />
             )
           }
@@ -8381,24 +8518,26 @@ function WorkerNodes() {
 }
 
 function AIRuntime() {
+  const { t } = useI18n();
   const runtimes = useLoad(() => api('/api/ai-runtimes'), []);
   const [open, setOpen] = useState(false);
   return (
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="AI Runtime" onCreate={() => setOpen(true)} />
       <Table<AnyRow> rowKey="id" dataSource={runtimes.data?.items || []} pagination={false} columns={[
-        { title: 'Name', dataIndex: 'name' },
-        { title: 'Type', dataIndex: 'runtime_type' },
-        { title: 'Binary', dataIndex: 'codex_binary' },
-        { title: 'Status', dataIndex: 'status' },
-        { title: 'Action', render: (_, row) => <Button size="small" onClick={() => api(`/api/ai-runtimes/${row.id}/verify`, { method: 'POST' }).then(runtimes.reload)}>Verify</Button> }
+        { title: t('common.name'), dataIndex: 'name' },
+        { title: t('common.type'), render: (_, row) => translatedValue(row.runtime_type, t) },
+        { title: t('common.binary'), dataIndex: 'codex_binary' },
+        { title: t('common.status'), render: (_, row) => <Tag>{translatedValue(row.status, t)}</Tag> },
+        { title: t('common.action'), render: (_, row) => <Button size="small" onClick={() => api(`/api/ai-runtimes/${row.id}/verify`, { method: 'POST' }).then(runtimes.reload)}>{t('ai.verify')}</Button> }
       ]} />
-      <CreateModal title="Create AI runtime" open={open} setOpen={setOpen} fields={['name', 'runtime_type', 'codex_binary', 'model']} onSubmit={(v) => api('/api/ai-runtimes', { method: 'POST', body: JSON.stringify(v) }).then(runtimes.reload)} />
+      <CreateModal title="Create AI runtime" open={open} setOpen={setOpen} descriptionKey="ai.runtimeDescription" fields={['name', 'runtime_type', 'codex_binary', 'model']} initialValues={{ runtime_type: 'codex-cli', codex_binary: 'codex' }} onSubmit={(v) => api('/api/ai-runtimes', { method: 'POST', body: JSON.stringify(v) }).then(runtimes.reload)} />
     </Space>
   );
 }
 
 function AgentTasks() {
+  const { t } = useI18n();
   const projects = useLoad(() => api('/api/projects'), []);
   const projectRows = projects.data?.items || [];
   const projectPick = useSelectedRow(projectRows);
@@ -8420,28 +8559,28 @@ function AgentTasks() {
   }, [taskID]);
   async function createTask(values: AnyRow) {
     if (!project) {
-      message.error('Select a project first');
+      message.error(t('agent.selectProjectFirst'));
       return;
     }
     await api(`/api/projects/${project.id}/agent/tasks`, { method: 'POST', body: JSON.stringify(values) });
-    message.success('Task created');
+    message.success(t('agent.taskCreated'));
     tasks.reload();
   }
   async function generateAgentPlan(id: string) {
     await api(`/api/agent/tasks/${id}/generate-plan`, { method: 'POST', body: '{}' });
-    message.success('Plan generated');
+    message.success(t('agent.planGenerated'));
     tasks.reload();
     taskDetail.reload();
   }
   async function approveAgentPlan(id: string) {
     await api(`/api/agent/tasks/${id}/approve-plan`, { method: 'POST', body: '{}' });
-    message.success('Plan approved');
+    message.success(t('agent.planApproved'));
     tasks.reload();
     taskDetail.reload();
   }
   async function executeAgentTask(id: string) {
     const result = await api(`/api/agent/tasks/${id}/execute`, { method: 'POST', body: '{}' });
-    message.success(result.approval ? 'Approval requested' : 'Agent execution queued');
+    message.success(result.approval ? t('agent.approvalRequested') : t('agent.executionQueued'));
     tasks.reload();
     taskDetail.reload();
   }
@@ -8452,13 +8591,13 @@ function AgentTasks() {
       setToolAuditSnapshotResult(result);
       taskDetail.reload();
       if (result.recording_ready === false) {
-        message.warning(result.message || 'Agent audit snapshot is not ready yet');
+        message.warning(result.message || t('agent.auditSnapshotNotReady'));
       } else {
-        message.success(result.agent_tool_audit_snapshot_written ? 'Agent audit snapshot recorded' : 'Agent audit snapshot already current');
+        message.success(result.agent_tool_audit_snapshot_written ? t('agent.auditSnapshotRecorded') : t('agent.auditSnapshotCurrent'));
       }
     } catch (error: any) {
       setToolAuditSnapshotResult(undefined);
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setToolAuditSnapshotLoading(false);
     }
@@ -8470,13 +8609,13 @@ function AgentTasks() {
       setToolArmingSnapshotResult(result);
       taskDetail.reload();
       if (result.recording_ready === false) {
-        message.warning(result.message || 'Agent tool arming snapshot is not ready yet');
+        message.warning(result.message || t('agent.toolArmingSnapshotNotReady'));
       } else {
-        message.success(result.agent_tool_arming_snapshot_written ? 'Agent tool arming snapshot recorded' : 'Agent tool arming snapshot already current');
+        message.success(result.agent_tool_arming_snapshot_written ? t('agent.toolArmingSnapshotRecorded') : t('agent.toolArmingSnapshotCurrent'));
       }
     } catch (error: any) {
       setToolArmingSnapshotResult(undefined);
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setToolArmingSnapshotLoading(false);
     }
@@ -8488,13 +8627,13 @@ function AgentTasks() {
       setCodeAuditSnapshotResult(result);
       taskDetail.reload();
       if (result.recording_ready === false) {
-        message.warning(result.message || 'Agent code audit snapshot is not ready yet');
+        message.warning(result.message || t('agent.codeAuditSnapshotNotReady'));
       } else {
-        message.success(result.agent_code_audit_snapshot_written ? 'Agent code audit snapshot recorded' : 'Agent code audit snapshot already current');
+        message.success(result.agent_code_audit_snapshot_written ? t('agent.codeAuditSnapshotRecorded') : t('agent.codeAuditSnapshotCurrent'));
       }
     } catch (error: any) {
       setCodeAuditSnapshotResult(undefined);
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setCodeAuditSnapshotLoading(false);
     }
@@ -8600,29 +8739,29 @@ function AgentTasks() {
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="Agent Tasks" onCreate={() => setOpen(true)} />
       <Select value={project?.id} style={{ width: 280 }} onChange={projectPick.setSelectedID} options={projectRows.map((row: AnyRow) => ({ value: row.id, label: row.name }))} />
-      <Alert showIcon message="Agent plans are read-only context summaries first. Execution goes through approval and records tool-call audit rows before any future mutation path." />
+      <Alert showIcon message={t('agent.guardrailHint')} />
       <Table<AnyRow> rowKey="id" dataSource={tasks.data?.items || []} pagination={{ pageSize: 8 }} columns={[
-        { title: 'Title', dataIndex: 'title' },
-        { title: 'Status', render: (_, row) => <Tag>{row.status}</Tag> },
-        { title: 'Latest plan', render: (_, row) => row.latest_plan_status ? <Tag color={row.latest_plan_status === 'approved' ? 'green' : 'blue'}>{row.latest_plan_status}</Tag> : '-' },
-        { title: 'Created', dataIndex: 'created_at' },
-        { title: 'Action', render: (_, row) => <Space><Button size="small" onClick={() => setTaskID(row.id)}>View</Button><Button size="small" onClick={() => generateAgentPlan(row.id)}>Generate</Button><Button size="small" onClick={() => executeAgentTask(row.id)} disabled={!latestPlanApproved(row)}>Execute</Button></Space> }
+        { title: fieldLabel('title', t), dataIndex: 'title' },
+        { title: t('common.status'), render: (_, row) => <Tag>{translatedValue(row.status, t)}</Tag> },
+        { title: t('agent.latestPlan'), render: (_, row) => row.latest_plan_status ? <Tag color={row.latest_plan_status === 'approved' ? 'green' : 'blue'}>{translatedValue(row.latest_plan_status, t)}</Tag> : '-' },
+        { title: t('common.created'), dataIndex: 'created_at' },
+        { title: t('common.action'), render: (_, row) => <Space><Button size="small" onClick={() => setTaskID(row.id)}>{t('common.view')}</Button><Button size="small" onClick={() => generateAgentPlan(row.id)}>{t('common.generate')}</Button><Button size="small" onClick={() => executeAgentTask(row.id)} disabled={!latestPlanApproved(row)}>{t('value.execute')}</Button></Space> }
       ]} />
       <CreateModal title="Create agent task" open={open} setOpen={setOpen} fields={['title', 'prompt']} onSubmit={createTask} />
-      <Modal title={taskDetail.data?.title || 'Agent task'} open={Boolean(taskID)} onCancel={() => setTaskID(undefined)} footer={null} width={980} destroyOnHidden>
+      <Modal title={taskDetail.data?.title || t('agent.agentTask')} open={Boolean(taskID)} onCancel={() => setTaskID(undefined)} footer={null} width={980} destroyOnHidden>
         {taskDetail.data && <Space direction="vertical" size={16} className="full">
           <Typography.Paragraph>{taskDetail.data.prompt}</Typography.Paragraph>
           <Space wrap>
-            <Button size="small" type="primary" onClick={() => generateAgentPlan(taskDetail.data.id)}>Generate plan</Button>
-            <Button size="small" onClick={() => approveAgentPlan(taskDetail.data.id)} disabled={!taskDetail.data.plans?.length}>Approve latest</Button>
-            <Button size="small" onClick={() => executeAgentTask(taskDetail.data.id)} disabled={!latestPlanApproved(taskDetail.data)}>Execute</Button>
+            <Button size="small" type="primary" onClick={() => generateAgentPlan(taskDetail.data.id)}>{t('agent.generatePlan')}</Button>
+            <Button size="small" onClick={() => approveAgentPlan(taskDetail.data.id)} disabled={!taskDetail.data.plans?.length}>{t('agent.approveLatest')}</Button>
+            <Button size="small" onClick={() => executeAgentTask(taskDetail.data.id)} disabled={!latestPlanApproved(taskDetail.data)}>{t('value.execute')}</Button>
             <Button
               size="small"
               onClick={() => recordToolAuditSnapshot(taskDetail.data.id)}
               loading={toolAuditSnapshotLoading}
               disabled={!taskDetail.data.tool_call_audit_evidence?.sanitized_result_recorded}
             >
-              Record audit snapshot
+              {t('agent.recordAuditSnapshot')}
             </Button>
             <Button
               size="small"
@@ -8630,7 +8769,7 @@ function AgentTasks() {
               loading={toolArmingSnapshotLoading}
               disabled={!taskDetail.data.tool_call_audit_evidence?.sanitized_result_recorded}
             >
-              Record arming snapshot
+              {t('agent.recordArmingSnapshot')}
             </Button>
             <Button
               size="small"
@@ -8645,15 +8784,15 @@ function AgentTasks() {
                 Boolean(taskDetail.data.code_modification_evidence?.active_tool_call_count)
               }
             >
-              Record code audit snapshot
+              {t('agent.recordCodeAuditSnapshot')}
             </Button>
           </Space>
           <Table<AnyRow> rowKey="id" size="small" dataSource={taskDetail.data.plans || []} pagination={{ pageSize: 4 }} columns={[
-            { title: 'Status', render: (_, row) => <Tag color={row.status === 'approved' ? 'green' : 'blue'}>{row.status}</Tag> },
-            { title: 'Created', dataIndex: 'created_at' },
-            { title: 'Plan', render: (_, row) => <Typography.Paragraph className="mono-pre">{row.content}</Typography.Paragraph> }
+            { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'approved' ? 'green' : 'blue'}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('common.created'), dataIndex: 'created_at' },
+            { title: t('value.plan'), render: (_, row) => <Typography.Paragraph className="mono-pre">{row.content}</Typography.Paragraph> }
           ]} />
-          <Typography.Title level={5}>Tool-call audit</Typography.Title>
+          <Typography.Title level={5}>{t('agent.toolCallAudit')}</Typography.Title>
           {taskDetail.data.tool_call_audit_evidence?.tool_call_count ? (
             <Space wrap>
               <Tag color={agentAuditEvidenceColor(taskDetail.data.tool_call_audit_evidence.evidence_state)}>audit {taskDetail.data.tool_call_audit_evidence.evidence_state || 'not_recorded'}</Tag>
@@ -8706,14 +8845,14 @@ function AgentTasks() {
             </Space>
           ) : null}
           <Table<AnyRow> rowKey="id" size="small" dataSource={taskDetail.data.tool_calls || []} pagination={{ pageSize: 5 }} columns={[
-            { title: 'Tool', dataIndex: 'tool_name' },
-            { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{row.status}</Tag> },
-            { title: 'Summary', render: (_, row) => toolCallSummary(row) },
-            { title: 'Operation', dataIndex: 'operation_run_id', render: (value) => value || '-' },
-            { title: 'Error', dataIndex: 'error_message', render: (value) => value || '-' },
-            { title: 'Input', render: (_, row) => <JSONBlock value={row.input} /> },
-            { title: 'Output', render: (_, row) => <JSONBlock value={row.output} /> },
-            { title: 'Created', dataIndex: 'created_at' }
+            { title: t('worker.tool'), dataIndex: 'tool_name' },
+            { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{translatedValue(row.status, t)}</Tag> },
+            { title: t('common.summary'), render: (_, row) => toolCallSummary(row) },
+            { title: t('value.operation'), dataIndex: 'operation_run_id', render: (value) => value || '-' },
+            { title: t('common.error'), dataIndex: 'error_message', render: (value) => value || '-' },
+            { title: t('common.input'), render: (_, row) => <JSONBlock value={row.input} /> },
+            { title: t('common.output'), render: (_, row) => <JSONBlock value={row.output} /> },
+            { title: t('common.created'), dataIndex: 'created_at' }
           ]} />
         </Space>}
       </Modal>
@@ -9736,6 +9875,8 @@ const titleKeys: Record<string, string> = {
   'SSH Machines': 'title.sshMachines',
   'Argo Connections': 'title.argoConnections',
   'Versions': 'title.versions',
+  'AI Runtime': 'title.aiRuntime',
+  'Agent Tasks': 'title.agentTasks',
   'Create project': 'form.createProject',
   'Create repository': 'form.createRepository',
   'Create AI runtime': 'form.createAIRuntime',
@@ -9786,7 +9927,7 @@ function resolveModalField(field: ModalField) {
 
 const fieldMeta: Record<string, FieldMeta> = {
   name: { required: true, helpKey: 'help.name' },
-  title: { required: true },
+  title: { required: true, helpKey: 'help.agent_task_title' },
   slug: { helpKey: 'help.slug' },
   environment: { required: true, helpKey: 'help.environment', placeholder: 'test' },
   cluster_name: { required: true, helpKey: 'help.cluster_name' },
