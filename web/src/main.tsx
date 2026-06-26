@@ -147,6 +147,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.createSSHMachine': 'Create SSH machine',
     'form.runSSHCommand': 'Run SSH command',
     'form.podLogQuery': 'Pod log query',
+    'argo.connectionModalDescription': 'Adds the Argo CD API endpoint ASSOPS will poll for applications, deployment targets, rollout state, pod log metadata, and guarded restart requests.',
+    'ssh.machineModalDescription': 'Registers a worker-reachable SSH host. The first deployable version records auth mode and target metadata, then runs verification or approved commands through worker jobs.',
+    'ssh.commandModalDescription': 'Queues an approved SSH command for the selected machine. Keep commands non-destructive and avoid printing secrets.',
     'config.repoInitialized': 'Config repository initialized',
     'config.workflowApprovalRequested': 'Config workflow approval requested',
     'config.workflowAuditQueued': 'Config workflow audit queued',
@@ -342,6 +345,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.codex_binary': 'Binary name or path the worker can execute.',
     'help.model': 'Optional model override for the runtime.',
     'help.prompt': 'Task prompt sent to the selected agent runtime.',
+    'help.name': 'Human-readable name shown in ASSOPS lists.',
+    'help.argo_connection_name': 'Short name for this Argo CD connection, for example test-argo or prod-argo.',
+    'help.ssh_machine_name': 'Short name for this SSH target, for example test-worker or jump-host.',
     'option.code': 'Code',
     'option.service': 'Service',
     'option.github': 'GitHub',
@@ -810,6 +816,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.createSSHMachine': '创建 SSH 主机',
     'form.runSSHCommand': '执行 SSH 命令',
     'form.podLogQuery': 'Pod 日志查询',
+    'argo.connectionModalDescription': '添加 Argo CD API 端点，ASSOPS 会用它同步应用、部署目标、运行状态、Pod 日志元数据，以及受保护的重启请求。',
+    'ssh.machineModalDescription': '登记 Worker 可访问的 SSH 主机。首个可部署版本会记录认证方式和目标元数据，再通过 Worker Job 执行验证或已审批命令。',
+    'ssh.commandModalDescription': '向当前 SSH 主机下发需审批的命令。请保持命令非破坏性，并避免输出密钥。',
     'config.repoInitialized': '配置仓库已初始化',
     'config.workflowApprovalRequested': '配置工作流审批已发起',
     'config.workflowAuditQueued': '配置工作流审计已入队',
@@ -1005,6 +1014,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.codex_binary': 'Worker 可以执行的二进制名称或路径。',
     'help.model': '可选的运行时模型覆盖值。',
     'help.prompt': '发送给选定 Agent 运行时的任务提示词。',
+    'help.name': 'ASSOPS 列表中展示的人类可读名称。',
+    'help.argo_connection_name': '该 Argo CD 连接的短名称，例如 test-argo 或 prod-argo。',
+    'help.ssh_machine_name': '该 SSH 目标的短名称，例如 test-worker 或 jump-host。',
     'option.code': '代码',
     'option.service': '服务',
     'option.github': 'GitHub',
@@ -9353,7 +9365,8 @@ function ConfigPage() {
         title="Create Argo connection"
         open={argoOpen}
         setOpen={setArgoOpen}
-        fields={['name', 'server_url', { name: 'auth_type', metaKey: 'argo_auth_type' }, 'token', 'insecure_skip_verify']}
+        descriptionKey="argo.connectionModalDescription"
+        fields={[{ name: 'name', helpKey: 'help.argo_connection_name' }, 'server_url', { name: 'auth_type', metaKey: 'argo_auth_type' }, 'token', 'insecure_skip_verify']}
         initialValues={{ auth_type: 'token', insecure_skip_verify: false }}
         onSubmit={createArgoConnection}
       />
@@ -9371,11 +9384,12 @@ function ConfigPage() {
         title="Create SSH machine"
         open={sshOpen}
         setOpen={setSSHOpen}
-        fields={['name', 'host', 'port', 'username', { name: 'auth_type', metaKey: 'ssh_auth_type' }]}
+        descriptionKey="ssh.machineModalDescription"
+        fields={[{ name: 'name', helpKey: 'help.ssh_machine_name' }, 'host', 'port', 'username', { name: 'auth_type', metaKey: 'ssh_auth_type' }]}
         initialValues={{ port: 22, auth_type: 'key' }}
         onSubmit={(v) => project ? api(`/api/projects/${project.id}/ssh-machines`, { method: 'POST', body: JSON.stringify({ ...v, port: Number(v.port || 22) }) }).then(ssh.reload) : Promise.resolve()}
       />
-      <CreateModal title="Run SSH command" open={commandOpen} setOpen={setCommandOpen} fields={['command', 'timeout_seconds']} initialValues={{ timeout_seconds: 60 }} onSubmit={runSSHCommand} />
+      <CreateModal title="Run SSH command" open={commandOpen} setOpen={setCommandOpen} descriptionKey="ssh.commandModalDescription" fields={['command', 'timeout_seconds']} initialValues={{ timeout_seconds: 60 }} onSubmit={runSSHCommand} />
     </Space>
   );
 }
@@ -9436,7 +9450,7 @@ function resolveModalField(field: ModalField) {
 }
 
 const fieldMeta: Record<string, FieldMeta> = {
-  name: { required: true },
+  name: { required: true, helpKey: 'help.name' },
   title: { required: true },
   slug: { helpKey: 'help.slug' },
   environment: { required: true, helpKey: 'help.environment', placeholder: 'test' },
@@ -9535,7 +9549,7 @@ function fieldInput(field: string, t: (key: string) => string, metaOverride?: Fi
   return <Input placeholder={placeholder} />;
 }
 
-function CreateModal({ title, open, setOpen, fields, onSubmit, initialValues }: { title: string; open: boolean; setOpen: (v: boolean) => void; fields: ModalField[]; onSubmit: (values: AnyRow) => Promise<any>; initialValues?: AnyRow }) {
+function CreateModal({ title, open, setOpen, fields, onSubmit, initialValues, descriptionKey }: { title: string; open: boolean; setOpen: (v: boolean) => void; fields: ModalField[]; onSubmit: (values: AnyRow) => Promise<any>; initialValues?: AnyRow; descriptionKey?: string }) {
   const { t } = useI18n();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
@@ -9554,6 +9568,7 @@ function CreateModal({ title, open, setOpen, fields, onSubmit, initialValues }: 
   return (
     <Modal title={translateTitle(title, t)} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={submitting} okButtonProps={{ disabled: submitting }} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
       <Form form={form} layout="vertical" onFinish={submit} initialValues={initialValues}>
+        {descriptionKey ? <Typography.Paragraph type="secondary">{t(descriptionKey)}</Typography.Paragraph> : null}
         {fields.map((field) => {
           const resolved = resolveModalField(field);
           return (
