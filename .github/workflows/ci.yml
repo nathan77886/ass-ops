@@ -241,6 +241,15 @@ jobs:
       - name: Render chart defaults
         run: helm template assops deploy/helm/assops >/tmp/assops-rendered.yaml
 
+      - name: Lint test values example
+        run: helm lint deploy/helm/assops -f deploy/helm/assops/values.test.example.yaml
+
+      - name: Render test values example
+        run: |
+          helm template assops deploy/helm/assops \
+            -f deploy/helm/assops/values.test.example.yaml \
+            >/tmp/assops-test-rendered.yaml
+
       - name: Lint production values example
         run: helm lint deploy/helm/assops -f deploy/helm/assops/values.production.example.yaml
 
