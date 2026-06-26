@@ -47,7 +47,7 @@ Run the local first-deployable gate before attempting a test-cluster install:
 make first-deployable-check
 ```
 
-This checks Go tests, the web multilingual build gate, the Helm test readiness plan, and Helm rendering with the checked-in test values. It does not contact a Kubernetes cluster.
+This checks Go tests, the web multilingual build gate, the gateway API smoke self-test, the Helm test readiness plan, and Helm rendering with the checked-in test values. It does not contact a Kubernetes cluster.
 
 Generate a local no-call readiness plan for the checked-in test values before touching a cluster:
 

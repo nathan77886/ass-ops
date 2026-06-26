@@ -131,7 +131,7 @@ make release-promotion-plan REPO=nathan77886/ass-ops GHCR_OWNER=nathan77886 VERS
 make release-backup-schedule-plan REPO=nathan77886/ass-ops ENV=production RUNNER=ubuntu-latest CRON='17 3 * * 1' BACKUP_SOURCE=artifact:retained-assops-backup RETENTION_DAYS=14 OUTPUT=.assops/release-notes/backup-schedule-plan.md
 ```
 
-`make first-deployable-check` is the local pre-test-deploy gate. It requires `go`, `pnpm`, and `helm`, then runs backend tests, the web i18n/build gate, the checked-in Helm test readiness plan, Helm lint, and Helm rendering with `values.test.example.yaml`.
+`make first-deployable-check` is the local pre-test-deploy gate. It requires `go`, `pnpm`, `helm`, `curl`, and `python3`, then runs backend tests, the web i18n/build gate, the gateway API smoke self-test, the checked-in Helm test readiness plan, Helm lint, and Helm rendering with `values.test.example.yaml`.
 
 ## Runtime Integrations
 

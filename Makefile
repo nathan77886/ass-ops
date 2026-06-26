@@ -63,12 +63,13 @@ api-smoke-self-test:
 
 first-deployable-check:
 	@set -e; \
-	for bin in go pnpm helm; do \
+	for bin in go pnpm helm curl python3; do \
 		command -v "$$bin" >/dev/null || { echo "$$bin is required for first-deployable-check"; exit 1; }; \
 	done; \
 	go test ./...; \
 	pnpm -C web run i18n:check; \
 	pnpm -C web build; \
+	bash scripts/api-smoke-self-test.sh; \
 	go run ./backend/cmd/assops-tool release helm-test-readiness-plan \
 		deploy/helm/assops/values.test.example.yaml \
 		/tmp/assops-helm-test-readiness-plan.md; \
