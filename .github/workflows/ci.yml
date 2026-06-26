@@ -230,6 +230,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Set up Helm
         uses: azure/setup-helm@v4
         with:
@@ -249,6 +255,12 @@ jobs:
           helm template assops deploy/helm/assops \
             -f deploy/helm/assops/values.test.example.yaml \
             >/tmp/assops-test-rendered.yaml
+
+      - name: Generate test readiness plan
+        run: |
+          go run ./backend/cmd/assops-tool release helm-test-readiness-plan \
+            deploy/helm/assops/values.test.example.yaml \
+            /tmp/assops-helm-test-readiness-plan.md
 
       - name: Lint production values example
         run: helm lint deploy/helm/assops -f deploy/helm/assops/values.production.example.yaml
