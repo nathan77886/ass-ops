@@ -24547,7 +24547,7 @@ func loadArgoPodLogTarget(ctx context.Context, db sqlx.ExtContext, projectID, de
 
 func queryArgoPodLogAuditOperations(ctx context.Context, db sqlx.ExtContext, projectID, deploymentTargetID, podName, containerName string) ([]map[string]any, error) {
 	return queryMaps(ctx, db, `
-		SELECT op.id, op.status, op.created_at, op.updated_at, op.finished_at,
+		SELECT op.id, op.status, op.result, op.created_at, op.updated_at, op.finished_at,
 			COUNT(ol.id)::int AS operation_log_count
 		FROM operation_runs op
 		LEFT JOIN operation_logs ol ON ol.operation_run_id=op.id
@@ -25396,6 +25396,10 @@ func argoPodLogApprovalRequestPlan(query, target map[string]any, prerequisiteSta
 
 func argoPodLogAuditEvidenceSummary(rows []map[string]any) map[string]any {
 	queued, running, completed, failed, canceled, unknown, logCount := 0, 0, 0, 0, 0, 0, 0
+	latestPreview := ""
+	latestPreviewLineCount := 0
+	latestPreviewTruncated := false
+	latestPreviewOperationID := ""
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		status := cleanPreviewString(row["status"])
@@ -25418,18 +25422,28 @@ func argoPodLogAuditEvidenceSummary(rows []map[string]any) map[string]any {
 		}
 		rowLogCount := intFromAny(row["operation_log_count"], 0)
 		logCount += rowLogCount
+		preview, previewLineCount, previewTruncated := safePodLogPreviewFromOperationResult(row["result"])
+		if latestPreview == "" && status == "completed" && preview != "" {
+			latestPreview = preview
+			latestPreviewLineCount = previewLineCount
+			latestPreviewTruncated = previewTruncated
+			latestPreviewOperationID = cleanOptionalID(fmt.Sprint(row["id"]))
+		}
 		items = append(items, map[string]any{
-			"operation_run_id":      row["id"],
-			"status":                status,
-			"created_at":            row["created_at"],
-			"updated_at":            row["updated_at"],
-			"finished_at":           row["finished_at"],
-			"operation_log_count":   rowLogCount,
-			"raw_input_included":    false,
-			"log_body_included":     false,
-			"kubeconfig_included":   false,
-			"raw_response_included": false,
-			"secret_included":       false,
+			"operation_run_id":           row["id"],
+			"status":                     status,
+			"created_at":                 row["created_at"],
+			"updated_at":                 row["updated_at"],
+			"finished_at":                row["finished_at"],
+			"operation_log_count":        rowLogCount,
+			"redacted_preview_available": preview != "",
+			"preview_line_count":         previewLineCount,
+			"preview_truncated":          previewTruncated,
+			"raw_input_included":         false,
+			"log_body_included":          false,
+			"kubeconfig_included":        false,
+			"raw_response_included":      false,
+			"secret_included":            false,
 		})
 	}
 	operationCount := len(rows)
@@ -25467,6 +25481,11 @@ func argoPodLogAuditEvidenceSummary(rows []map[string]any) map[string]any {
 		"has_failures":               failed > 0,
 		"has_cancellations":          canceled > 0,
 		"has_unknown_status":         unknown > 0,
+		"redacted_preview_available": latestPreview != "",
+		"redacted_log_preview":       latestPreview,
+		"preview_line_count":         latestPreviewLineCount,
+		"preview_truncated":          latestPreviewTruncated,
+		"preview_operation_run_id":   latestPreviewOperationID,
 		"items":                      items,
 		"external_call_made":         false,
 		"kubernetes_api_call":        false,
@@ -25478,6 +25497,32 @@ func argoPodLogAuditEvidenceSummary(rows []map[string]any) map[string]any {
 		"secret_included":            false,
 		"suppressed_fields":          []string{"operation_input", "kubeconfig", "cluster_token", "authorization_header", "log_body", "redacted_log_body", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret"},
 	}
+}
+
+func safePodLogPreviewFromOperationResult(value any) (string, int, bool) {
+	result := mapFromAny(value)
+	if !boolOnlyFromAny(result["redacted_log_body_included"]) ||
+		boolOnlyFromAny(result["log_body_included"]) ||
+		boolOnlyFromAny(result["raw_response_included"]) ||
+		boolOnlyFromAny(result["secret_included"]) {
+		return "", 0, false
+	}
+	preview := cleanOptionalText(fmt.Sprint(result["redacted_log_preview"]))
+	if preview == "" || strings.Contains(preview, "\x00") {
+		return "", 0, false
+	}
+	preview, truncated := sanitizedKubernetesLogPreview(preview, kubernetesLogPreviewMaxBytes)
+	if preview == "" {
+		return "", 0, false
+	}
+	if boolOnlyFromAny(result["preview_truncated"]) {
+		truncated = true
+	}
+	lineCount := intFromAny(result["preview_line_count"], 0)
+	if lineCount <= 0 {
+		lineCount = countNonEmptyLines(preview)
+	}
+	return preview, lineCount, truncated
 }
 
 func argoPodLogResultRecordingPlan(auditReady bool, evidence, query, target map[string]any, prerequisiteState string) map[string]any {

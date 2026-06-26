@@ -156,6 +156,7 @@ ASSOPS_APPROVAL_WEBHOOK_URL='optional HTTP endpoint for approval pending/expired
 ASSOPS_APPROVAL_WEBHOOK_TOKEN='optional bearer token for approval notifications'
 ASSOPS_ARGO_READ_TOKEN='optional Argo token; only used by connections created with use_env_token=true'
 ASSOPS_KUBERNETES_LOGS_ENABLED='false'
+ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED='false'
 ASSOPS_KUBERNETES_RESTARTS_ENABLED='false'
 ASSOPS_KUBECONFIG_SECRET_DIR='/etc/assops/kubeconfigs'
 ASSOPS_KUBECTL_PATH='kubectl'
@@ -178,7 +179,7 @@ Security defaults:
 - SSH key paths and known_hosts paths must live inside the configured ASSOPS SSH directories.
 - Argo server URLs must resolve to public HTTP(S) addresses; private, loopback, link-local, localhost, and DNS failures are rejected.
 - Argo `insecure_skip_verify` and `use_env_token` can only be set by `admin` or `owner` users.
-- Kubernetes pod-log metadata audits are disabled by default. Enable `ASSOPS_KUBERNETES_LOGS_ENABLED=true` only after gateway/worker can read a namespace-scoped kubeconfig from `ASSOPS_KUBECONFIG_SECRET_DIR` and the Kubernetes environment row has reviewed token-subject/RBAC metadata. The Argo/Kubernetes UI can then refresh deployment-target pod metadata with `kubectl get pods` and use those pod/container names for approval-gated log audits. ASSOPS stores only sanitized pod/log metadata, not kubeconfig content, raw Kubernetes responses, stdout/stderr, or log bodies.
+- Kubernetes pod-log metadata audits are disabled by default. Enable `ASSOPS_KUBERNETES_LOGS_ENABLED=true` only after gateway/worker can read a namespace-scoped kubeconfig from `ASSOPS_KUBECONFIG_SECRET_DIR` and the Kubernetes environment row has reviewed token-subject/RBAC metadata. The Argo/Kubernetes UI can then refresh deployment-target pod metadata with `kubectl get pods` and use those pod/container names for approval-gated log audits. `ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED=true` is a separate private-test overlay switch that caps `kubectl logs --tail` at 200 lines and stores a 64 KiB best-effort redacted preview in `operation_runs.result`; it never stores raw stdout/stderr, kubeconfig content, raw Kubernetes responses, or preview text in operation logs/status snapshots.
 - Kubernetes rollout restarts are disabled separately by default. Enable `ASSOPS_KUBERNETES_RESTARTS_ENABLED=true` only for a namespace-scoped kubeconfig reviewed for Deployment restart access; the Kubernetes environment row must have `rbac_restart_pods_status=reviewed`, and the worker still runs `kubectl auth can-i patch deployment/<name>` plus a server dry-run before `kubectl rollout restart deployment/<name>`. Results store sanitized metadata only.
 - SSH command output is sanitized before it is stored.
 - Project template `local_bare` repository provisioning is limited to paths under `ASSOPS_LOCAL_BARE_BASE_DIRS`.

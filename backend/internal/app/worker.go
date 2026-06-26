@@ -1590,16 +1590,56 @@ func (w *ControlWorker) executeArgoPodLogAudit(ctx context.Context, opID string,
 		}
 	}
 	liveResult, err := runKubernetesPodLogs(ctx, w.cfg, req)
-	for key, value := range liveResult {
-		result[key] = value
-	}
+	copySafeArgoPodLogLiveResult(result, liveResult)
 	result["kubernetes_client_created"] = false
 	result["argocd_api_call"] = false
 	result["log_body_included"] = false
-	result["redacted_log_body_included"] = false
+	result["redacted_log_body_included"] = boolOnlyFromAny(liveResult["redacted_log_body_included"])
 	result["raw_response_included"] = false
 	result["secret_included"] = false
 	return result, err
+}
+
+func copySafeArgoPodLogLiveResult(result, liveResult map[string]any) {
+	for _, key := range []string{
+		"deployment_target_id",
+		"environment",
+		"cluster_name",
+		"namespace",
+		"pod_name",
+		"container_name",
+		"tail_lines",
+		"since_seconds",
+		"kubeconfig_secret_ref_present",
+		"kubeconfig_secret_read",
+		"kubeconfig_bound",
+		"backend_state",
+		"live_log_backend",
+		"live_backend_ready",
+		"kubernetes_api_call",
+		"kubectl_command_invoked",
+		"log_stream_opened",
+		"result_scope",
+		"line_count",
+		"truncated",
+		"preview_line_count",
+		"preview_truncated",
+		"redaction_performed",
+		"redacted_log_preview",
+		"redacted_log_body_included",
+		"started_at",
+		"finished_at",
+		"message",
+		"prerequisite_state",
+		"missing_evidence",
+		"blockers",
+		"disabled_backends",
+		"suppressed_fields",
+	} {
+		if value, ok := liveResult[key]; ok {
+			result[key] = value
+		}
+	}
 }
 
 func (w *ControlWorker) executeArgoPodRestart(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {

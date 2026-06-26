@@ -79,7 +79,7 @@ helm template assops deploy/helm/assops \
   -f /path/to/private-test-values.yaml
 ```
 
-With the test example, gateway and worker mount `assops-kubeconfigs` read-only at `/etc/assops/kubeconfigs`, `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, `ASSOPS_KUBERNETES_RESTARTS_ENABLED=false`, and pod-log audit results remain sanitized metadata only. Enable rollout restarts only in a private test overlay after reviewing namespace RBAC for Deployment patch/restart access.
+With the test example, gateway and worker mount `assops-kubeconfigs` read-only at `/etc/assops/kubeconfigs`, `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, `ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED=false`, `ASSOPS_KUBERNETES_RESTARTS_ENABLED=false`, and pod-log audit results remain sanitized metadata only by default. Enable redacted pod-log previews or rollout restarts only in a private test overlay after reviewing namespace RBAC.
 
 Set `env.version`, `env.commit`, and `env.buildTime` in the private overlay when deploying a tagged test build. The gateway, control worker, and node worker expose these values from `/healthz`, and the chart web service proxies `/healthz` to the gateway so the running build can be checked without opening worker ports.
 
@@ -184,9 +184,12 @@ Kubernetes pod-log audit settings are non-secret chart values under `env`:
 ```yaml
 env:
   kubernetesLogsEnabled: "true"
+  kubernetesLogPreviewEnabled: "false"
   kubeconfigSecretDir: /etc/assops/kubeconfigs
   kubectlPath: kubectl
 ```
+
+`kubernetesLogPreviewEnabled` should stay `false` by default. In a private test overlay, setting it to `"true"` lets approved pod-log audit operations return a short best-effort redacted preview from `operation_runs.result`; the worker caps `kubectl logs --tail` at 200 lines and the stored preview at 64 KiB. Raw logs, kubeconfig content, Kubernetes responses, and preview text are still excluded from operation logs and asset status snapshots.
 
 For test or shared environments, prefer mounting reviewed namespace-scoped kubeconfig files from an existing Kubernetes Secret instead of preloading the chart PVC. Each Secret key is exposed as a file below `env.kubeconfigSecretDir`, so the UI `kubeconfig_secret_ref` should match the key or a relative path in that mounted Secret.
 

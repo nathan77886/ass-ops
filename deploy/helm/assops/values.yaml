@@ -41,6 +41,7 @@ env:
   localBareBaseDirs: /var/lib/assops/bare-repos
   configGitLocalBareWritesEnabled: "false"
   kubernetesLogsEnabled: "false"
+  kubernetesLogPreviewEnabled: "false"
   kubernetesRestartsEnabled: "false"
   kubeconfigSecretDir: /etc/assops/kubeconfigs
   kubectlPath: kubectl

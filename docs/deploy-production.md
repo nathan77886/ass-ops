@@ -56,6 +56,7 @@ ASSOPS_APPROVAL_WEBHOOK_TOKEN=''
 ASSOPS_GITHUB_ACTIONS_READ_TOKEN=''
 ASSOPS_ARGO_READ_TOKEN=''
 ASSOPS_KUBERNETES_LOGS_ENABLED='false'
+ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED='false'
 ASSOPS_KUBERNETES_RESTARTS_ENABLED='false'
 ASSOPS_KUBECTL_PATH='kubectl'
 ASSOPS_WORKER_INTERVAL_SECONDS='3'
@@ -419,7 +420,7 @@ assops-tool release pod-log-rehearsal-plan \
 
 The plan validates the project slug, public staging HTTPS origin, environment identifier, and Kubernetes namespace shape, then lists the namespace-scoped kubeconfig review, token subject/RBAC review, approval request, sanitized result metadata, and pod-log audit snapshot evidence to collect. Localhost, private IP, `.local`, path, query, fragment, and userinfo origins are rejected. It does not read kubeconfig, call Kubernetes or Argo, open log streams, create approvals, enqueue workers, record snapshots, store log bodies, or expose cluster tokens, authorization headers, client keys, pod env, secret mounts, raw provider responses, raw log bodies, or redacted log bodies.
 
-The first live pod-log backend is opt-in and read-only. Set `ASSOPS_KUBERNETES_LOGS_ENABLED=true` only after the target namespace has a reviewed `kubernetes_environment` row and the worker can read a namespace-scoped kubeconfig from `ASSOPS_KUBECONFIG_SECRET_DIR` (default `/etc/assops/kubeconfigs`). The `kubeconfig_secret_ref` stored in ASSOPS is a relative file reference under that directory, never kubeconfig content. The worker rejects absolute paths, `..`, secret-shaped refs, directories, group/world-writable files, files over 1 MiB, and files that do not look like kubeconfig documents.
+The first live pod-log backend is opt-in and read-only. Set `ASSOPS_KUBERNETES_LOGS_ENABLED=true` only after the target namespace has a reviewed `kubernetes_environment` row and the worker can read a namespace-scoped kubeconfig from `ASSOPS_KUBECONFIG_SECRET_DIR` (default `/etc/assops/kubeconfigs`). The `kubeconfig_secret_ref` stored in ASSOPS is a relative file reference under that directory, never kubeconfig content. The worker rejects absolute paths, `..`, secret-shaped refs, directories, group/world-writable files, files over 1 MiB, and files that do not look like kubeconfig documents. Keep `ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED=false` outside private test environments; when enabled, the worker caps `kubectl logs --tail` at 200 lines and stores a 64 KiB best-effort redacted log preview in `operation_runs.result` only, not in operation logs or asset status snapshots.
 
 Operational contract for kubeconfig files:
 
@@ -429,7 +430,7 @@ Operational contract for kubeconfig files:
 - Rotate by writing a new file and atomically renaming it within the same directory, rather than overwriting in place.
 - The Argo/Kubernetes UI can use the same reviewed binding to run `kubectl get pods -o json` and show only sanitized pod metadata for selection: pod name, phase, container names, ready container count, restart count, and creation time.
 - `kubectl logs` is invoked without a shell and with a 30 second timeout. Failures are recorded as failed operations without automatic retry.
-- Operation results store only sanitized metadata such as backend state, pod identity, line count, truncation flag, and timestamps. They do not store stdout, stderr, raw Kubernetes responses, kubeconfig content, tokens, authorization headers, or log bodies.
+- Operation results store sanitized metadata such as backend state, pod identity, line count, truncation flag, and timestamps. With `ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED=true`, operation results can also store a capped best-effort redacted preview so operators can inspect the latest approved audit from the UI. The latest preview is associated with `preview_operation_run_id`; status snapshots retain only preview metadata, not the preview text. They do not store stdout, stderr, raw Kubernetes responses, kubeconfig content, tokens, authorization headers, or raw log bodies; preview redaction is not a substitute for namespace/RBAC scoping.
 - Deployment rollout restart is a separate opt-in write path. Set `ASSOPS_KUBERNETES_RESTARTS_ENABLED=true` only after the namespace kubeconfig is reviewed for Deployment patch/restart access and the Kubernetes environment row has `rbac_restart_pods_status=reviewed`; the worker performs `kubectl auth can-i patch deployment/<name>` and `kubectl rollout restart --dry-run=server` before the real rollout restart, and stores only sanitized metadata.
 
 ## First Deployable Test Checklist
@@ -441,8 +442,8 @@ For a first private test environment using Compose:
 3. Confirm `web`, `gateway`, `worker`, and `node-worker` are healthy with `docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml ps`.
 4. Log in through the web UI and create a project.
 5. Add an Argo connection, sync apps, and confirm deployment targets appear.
-6. For pod-log metadata audit, provide a namespace-scoped kubeconfig file through either `persistence.kubeconfigs.existingSecretName` or the `assops_kubeconfigs` volume, set `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, restart gateway/worker, then create a Kubernetes environment row whose environment, cluster, namespace, and relative kubeconfig ref match the deployment target.
-7. In the Argo Pod log query card, refresh pods for the deployment target, select a pod/container from the sanitized metadata list, then run the query preview. Only request an audit after the live backend tag is ready; the result records sanitized metadata only.
+6. For pod-log metadata audit, provide a namespace-scoped kubeconfig file through either `persistence.kubeconfigs.existingSecretName` or the `assops_kubeconfigs` volume, set `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, optionally set `ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED=true` only for private test preview, restart gateway/worker, then create a Kubernetes environment row whose environment, cluster, namespace, and relative kubeconfig ref match the deployment target.
+7. In the Argo Pod log query card, refresh pods for the deployment target, select a pod/container from the sanitized metadata list, then run the query preview. Only request an audit after the live backend tag is ready; the result records sanitized metadata and, when explicitly enabled, a capped best-effort redacted preview.
 8. Add Git remotes for the project repository, sync GitHub Actions, and verify action runs/artifact summaries appear from the local read model.
 9. Create or sync a tag run, refresh GitHub Actions for the tag target, and record the local sanitized snapshots when the UI marks them ready.
 

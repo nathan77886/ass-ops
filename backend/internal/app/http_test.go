@@ -1343,10 +1343,10 @@ func TestRecordArgoPodLogAuditSnapshotHandlerBlockedByReadiness(t *testing.T) {
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
 	expectArgoPodLogTargetQuery(mock, "billing")
-	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.result, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
 		WithArgs("project-1", "target-1", "api-7d9f", "web").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
-			AddRow("op-pod-logs", "running", nil, nil, nil, int64(1)))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "result", "created_at", "updated_at", "finished_at", "operation_log_count"}).
+			AddRow("op-pod-logs", "running", nil, nil, nil, nil, int64(1)))
 	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='deployment_target'`).
 		WithArgs("target-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-target-1"))
@@ -1391,10 +1391,10 @@ func TestRecordArgoPodLogAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
 	expectArgoPodLogTargetQuery(mock, "billing")
-	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.result, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
 		WithArgs("project-1", "target-1", "api-7d9f", "web").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
-			AddRow("op-pod-logs", "completed", nil, nil, nil, int64(2)))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "result", "created_at", "updated_at", "finished_at", "operation_log_count"}).
+			AddRow("op-pod-logs", "completed", nil, nil, nil, nil, int64(2)))
 	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='deployment_target'`).
 		WithArgs("target-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-target-1"))
@@ -1524,10 +1524,10 @@ func expectDeploymentTargetKubernetesAccessQuery(mock sqlmock.Sqlmock, namespace
 
 func expectArgoPodLogSnapshotEvidenceQueries(mock sqlmock.Sqlmock, status string, assetFound bool) {
 	expectArgoPodLogTargetQuery(mock, "billing")
-	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.result, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
 		WithArgs("project-1", "target-1", "api-7d9f", "web").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
-			AddRow("op-pod-logs", status, nil, nil, nil, int64(2)))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "result", "created_at", "updated_at", "finished_at", "operation_log_count"}).
+			AddRow("op-pod-logs", status, nil, nil, nil, nil, int64(2)))
 	assetQuery := mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='deployment_target'`).
 		WithArgs("target-1")
 	if assetFound {
@@ -1721,10 +1721,10 @@ func TestRecordArgoPodLogAuditSnapshotHandlerCompletedWithoutAuditLogDoesNotWrit
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
 	expectArgoPodLogTargetQuery(mock, "billing")
-	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.result, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
 		WithArgs("project-1", "target-1", "api-7d9f", "web").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
-			AddRow("op-pod-logs", "completed", nil, nil, nil, int64(0)))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "result", "created_at", "updated_at", "finished_at", "operation_log_count"}).
+			AddRow("op-pod-logs", "completed", nil, nil, nil, nil, int64(0)))
 	mock.ExpectQuery(`(?s)SELECT id::text AS id\s+FROM assets\s+WHERE asset_type='deployment_target'`).
 		WithArgs("target-1").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("asset-target-1"))
@@ -1765,10 +1765,10 @@ func TestPreviewArgoPodLogQueryLoadsSanitizedAuditEvidence(t *testing.T) {
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
 	expectArgoPodLogTargetQuery(mock, "billing")
-	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
+	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.result, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
 		WithArgs("project-1", "target-1", "api-7d9f", "web").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
-			AddRow("op-pod-logs", "completed", nil, nil, nil, int64(2)))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "result", "created_at", "updated_at", "finished_at", "operation_log_count"}).
+			AddRow("op-pod-logs", "completed", nil, nil, nil, nil, int64(2)))
 
 	body := strings.NewReader(`{"deployment_target_id":"target-1","pod_name":"api-7d9f","container_name":"web","tail_lines":500,"since_seconds":30}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/argo/pod-logs/preview", body)

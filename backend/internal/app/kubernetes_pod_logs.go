@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var (
@@ -19,7 +20,10 @@ var (
 	kubernetesPodPattern       = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
 	kubernetesContainerPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 	kubeconfigRefPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,252}$`)
+	kubernetesLogSecretPattern = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*)(?:(?:bearer|basic)\s+)?[^\s'",;]+|(set-cookie\s*:\s*)[^\r\n]+|((?:bearer|basic)\s+)[A-Za-z0-9._~+/=-]+|(["']?(?:password|passwd|pwd|token|secret|cookie|api[_-]?key|x[_-]?api[_-]?key|x[_-]?auth[_-]?token|private[_-]?key|client[_-]?secret|access[_-]?(?:key|token)|secret[_-]?key|auth[_-]?token|client[_-]?key[_-]?data|client[_-]?certificate[_-]?data|certificate[_-]?authority[_-]?data)["']?\s*[:=]\s*["']?)[^"',;\s}]+`)
 )
+
+const kubernetesLogPreviewMaxBytes = 64 * 1024
 
 type kubernetesPodLogRequest struct {
 	ProjectID          string
@@ -291,7 +295,10 @@ func runKubernetesPodLogs(ctx context.Context, cfg Config, req kubernetesPodLogR
 		"raw_response_included":         false,
 		"secret_included":               false,
 		"line_count":                    0,
+		"preview_line_count":            0,
 		"truncated":                     false,
+		"preview_truncated":             false,
+		"redaction_performed":           false,
 		"started_at":                    started.Format(time.RFC3339),
 	}
 	if !cfg.KubernetesPodLogsEnabled {
@@ -330,9 +337,23 @@ func runKubernetesPodLogs(ctx context.Context, cfg Config, req kubernetesPodLogR
 	}
 	result["backend_state"] = "completed"
 	result["line_count"] = countNonEmptyLines(stdout.String())
-	result["truncated"] = false
+	if cfg.KubernetesLogPreviewEnabled {
+		preview, truncated := sanitizedKubernetesLogPreview(stdout.String(), kubernetesLogPreviewMaxBytes)
+		result["redacted_log_preview"] = preview
+		result["redacted_log_body_included"] = preview != ""
+		result["preview_line_count"] = countNonEmptyLines(preview)
+		result["preview_truncated"] = truncated
+		result["redaction_performed"] = true
+		result["result_scope"] = "redacted_live_log_preview"
+	} else {
+		result["redacted_log_body_included"] = false
+	}
+	result["truncated"] = boolOnlyFromAny(result["preview_truncated"])
 	result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
 	result["message"] = "pod log audit completed with live Kubernetes metadata; log body was not stored"
+	if cfg.KubernetesLogPreviewEnabled {
+		result["message"] = "pod log audit completed with a redacted preview; raw log body was not stored"
+	}
 	_ = stderr
 	return result, nil
 }
@@ -455,8 +476,8 @@ func kubectlLogsArgs(kubeconfigPath string, req kubernetesPodLogRequest) []strin
 	if tailLines <= 0 {
 		tailLines = 200
 	}
-	if tailLines > 1000 {
-		tailLines = 1000
+	if tailLines > 200 {
+		tailLines = 200
 	}
 	args = append(args, "--tail", fmt.Sprint(tailLines))
 	if req.SinceSeconds > 0 {
@@ -467,6 +488,55 @@ func kubectlLogsArgs(kubeconfigPath string, req kubernetesPodLogRequest) []strin
 		args = append(args, "--since", fmt.Sprintf("%ds", since))
 	}
 	return args
+}
+
+func sanitizedKubernetesLogPreview(output string, maxBytes int) (string, bool) {
+	if maxBytes <= 0 {
+		maxBytes = kubernetesLogPreviewMaxBytes
+	}
+	output = strings.ReplaceAll(output, "\r\n", "\n")
+	output = strings.ReplaceAll(output, "\r", "\n")
+	lines := strings.Split(output, "\n")
+	var builder strings.Builder
+	truncated := false
+	for index, line := range lines {
+		if strings.Contains(strings.ToUpper(line), "BEGIN ") && strings.Contains(strings.ToUpper(line), "PRIVATE KEY") {
+			line = "<redacted-private-key>"
+		} else {
+			line = kubernetesLogSecretPattern.ReplaceAllString(line, "${1}${2}${3}${4}<redacted>")
+		}
+		if builder.Len() > 0 || index > 0 {
+			if builder.Len()+1 > maxBytes {
+				truncated = true
+				break
+			}
+			builder.WriteByte('\n')
+		}
+		if builder.Len()+len(line) > maxBytes {
+			remaining := maxBytes - builder.Len()
+			if remaining > 0 {
+				builder.WriteString(validUTF8Prefix(line, remaining))
+			}
+			truncated = true
+			break
+		}
+		builder.WriteString(line)
+	}
+	return builder.String(), truncated
+}
+
+func validUTF8Prefix(value string, maxBytes int) string {
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		if maxBytes <= 0 {
+			return ""
+		}
+		return value
+	}
+	end := maxBytes
+	for end > 0 && !utf8.ValidString(value[:end]) {
+		end--
+	}
+	return value[:end]
 }
 
 func validateKubernetesPodRestartRequest(req kubernetesPodRestartRequest) error {

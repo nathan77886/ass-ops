@@ -191,6 +191,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.deployment_name': 'Deployment name',
     'field.container_name': 'Container',
     'field.tail_lines': 'Tail lines',
+    'field.preview_lines': 'Preview lines',
     'field.since_seconds': 'Since seconds',
     'field.status': 'Status',
     'field.deployment_target_id': 'Target',
@@ -237,7 +238,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.pod_name': 'Exact pod name to audit. ASSOPS does not discover pods from this preview.',
     'help.deployment_name': 'Kubernetes Deployment to restart with kubectl rollout restart after approval and RBAC checks.',
     'help.container_name': 'Optional container name. Leave empty to use the Kubernetes default container.',
-    'help.tail_lines': 'Maximum log lines kubectl may read for metadata counting; capped by the gateway.',
+    'help.tail_lines': 'Maximum log lines kubectl may read for metadata counting and optional preview; capped at 200 by the gateway.',
     'help.since_seconds': 'Optional time window in seconds; capped at 86400.',
     'help.host': 'SSH host name or IP reachable from the worker environment.',
     'help.port': 'SSH TCP port. Default is 22.',
@@ -278,12 +279,14 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.metadata_only': 'Metadata only',
     'option.ready': 'Ready',
     'option.disabled': 'Disabled',
-    'k8s.modalDescription': 'Stores a relative kubeconfig reference and review metadata. When ASSOPS_KUBERNETES_LOGS_ENABLED is true, approved worker jobs can call kubectl logs for sanitized metadata only; kubeconfig content and log bodies are never returned.',
+    'k8s.modalDescription': 'Stores a relative kubeconfig reference and review metadata. When ASSOPS_KUBERNETES_LOGS_ENABLED is true, approved worker jobs can call kubectl logs for sanitized metadata. Redacted log preview is returned only when ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED is explicitly enabled.',
     'k8s.backendReady': 'live backend ready',
     'k8s.backendBlocked': 'live backend blocked',
     'k8s.backendOff': 'live backend off',
-    'k8s.backendHintReady': 'Approved audits can invoke kubectl logs; only sanitized metadata is recorded.',
+    'k8s.backendHintReady': 'Approved audits can invoke kubectl logs; metadata is recorded, and redacted preview is returned only when enabled.',
     'k8s.backendHintBlocked': 'Set ASSOPS_KUBERNETES_LOGS_ENABLED=true, provide a relative kubeconfig ref under ASSOPS_KUBECONFIG_SECRET_DIR, complete reviews, and make kubectl available to the worker.',
+    'pod.redactedPreview': 'Redacted log preview',
+    'pod.redactedPreviewDescription': 'Short tail preview from the latest completed audit. Raw logs, kubeconfig content, and Kubernetes responses are not stored.',
     'pod.preview': 'Preview',
     'pod.refreshPods': 'Refresh pods',
     'pod.requestAudit': 'Request audit',
@@ -448,6 +451,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.sanitized_result_recorded': 'sanitized result recorded',
     'value.no_sanitized_result': 'no sanitized result',
     'value.no_key_material': 'no key material',
+    'value.no_kubeconfig': 'no kubeconfig',
     'value.key_included': 'key included',
     'value.no_command_output': 'no command output',
     'value.output_included': 'output included',
@@ -551,6 +555,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.sanitized_result_observed': 'sanitized result observed',
     'value.kubeconfig_recorded': 'kubeconfig recorded',
     'value.no_kubeconfig_record': 'no kubeconfig record',
+    'value.truncated': 'truncated',
     'value.scope_recorded': 'scope recorded',
     'value.no_scope_record': 'no scope record',
     'value.capture_recorded': 'capture recorded',
@@ -756,6 +761,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.deployment_name': 'Deployment 名称',
     'field.container_name': '容器',
     'field.tail_lines': '日志行数',
+    'field.preview_lines': '预览行数',
     'field.since_seconds': '最近秒数',
     'field.status': '状态',
     'field.deployment_target_id': '目标',
@@ -802,7 +808,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.pod_name': '要审计的精确 Pod 名称。该预览不会自动发现 Pod。',
     'help.deployment_name': '审批和 RBAC 检查通过后，通过 kubectl rollout restart 重启的 Kubernetes Deployment。',
     'help.container_name': '可选容器名。留空表示使用 Kubernetes 默认容器。',
-    'help.tail_lines': 'kubectl 可读取用于元数据计数的最大日志行数，网关会强制上限。',
+    'help.tail_lines': 'kubectl 可读取用于元数据计数和可选预览的最大日志行数，网关强制上限为 200。',
     'help.since_seconds': '可选时间窗口，单位秒，最大 86400。',
     'help.host': 'Worker 环境可以访问的 SSH 主机名或 IP。',
     'help.port': 'SSH TCP 端口，默认 22。',
@@ -843,12 +849,14 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.metadata_only': '仅元数据',
     'option.ready': '就绪',
     'option.disabled': '已禁用',
-    'k8s.modalDescription': '这里只保存相对 kubeconfig 引用和审查元数据。启用 ASSOPS_KUBERNETES_LOGS_ENABLED 后，审批通过的 worker 任务可以调用 kubectl logs 并仅记录脱敏元数据；不会返回 kubeconfig 内容或日志正文。',
+    'k8s.modalDescription': '这里只保存相对 kubeconfig 引用和审查元数据。启用 ASSOPS_KUBERNETES_LOGS_ENABLED 后，审批通过的 worker 任务可以调用 kubectl logs 并记录脱敏元数据；仅在显式启用 ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED 后返回脱敏日志预览。',
     'k8s.backendReady': 'live 后端就绪',
     'k8s.backendBlocked': 'live 后端受阻',
     'k8s.backendOff': 'live 后端关闭',
-    'k8s.backendHintReady': '审批后的审计任务可以调用 kubectl logs；只记录脱敏元数据。',
+    'k8s.backendHintReady': '审批后的审计任务可以调用 kubectl logs；记录元数据，并且仅在启用后返回脱敏预览。',
     'k8s.backendHintBlocked': '需要设置 ASSOPS_KUBERNETES_LOGS_ENABLED=true，在 ASSOPS_KUBECONFIG_SECRET_DIR 下提供相对 kubeconfig 引用，完成审查，并确保 worker 可执行 kubectl。',
+    'pod.redactedPreview': '脱敏日志预览',
+    'pod.redactedPreviewDescription': '来自最近一次完成审计的短尾预览。原始日志、kubeconfig 内容和 Kubernetes 响应不会被存储。',
     'pod.preview': '预览',
     'pod.refreshPods': '刷新 Pod',
     'pod.requestAudit': '请求审计',
@@ -1013,6 +1021,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.sanitized_result_recorded': '已记录脱敏结果',
     'value.no_sanitized_result': '无脱敏结果',
     'value.no_key_material': '无密钥材料',
+    'value.no_kubeconfig': '无 kubeconfig',
     'value.key_included': '包含密钥',
     'value.no_command_output': '无命令输出',
     'value.output_included': '包含输出',
@@ -1116,6 +1125,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.sanitized_result_observed': '已观测脱敏结果',
     'value.kubeconfig_recorded': 'kubeconfig 已记录',
     'value.no_kubeconfig_record': '无 kubeconfig 记录',
+    'value.truncated': '已截断',
     'value.scope_recorded': '范围已记录',
     'value.no_scope_record': '范围未记录',
     'value.capture_recorded': '采集已记录',
@@ -9005,7 +9015,7 @@ function ConfigPage() {
                   <Input placeholder={t('field.deployment_name')} style={{ width: 190 }} />
                 </Form.Item>
                 <Form.Item name="tail_lines">
-                  <Input type="number" min={1} max={1000} placeholder={t('field.tail_lines')} style={{ width: 110 }} suffix={<Tooltip title={t('help.tail_lines')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
+                  <Input type="number" min={1} max={200} placeholder={t('field.tail_lines')} style={{ width: 110 }} suffix={<Tooltip title={t('help.tail_lines')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
                 </Form.Item>
                 <Form.Item name="since_seconds">
                   <Input type="number" min={0} max={86400} placeholder={t('field.since_seconds')} style={{ width: 130 }} suffix={<Tooltip title={t('help.since_seconds')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
@@ -9072,6 +9082,20 @@ function ConfigPage() {
                     {podLogSnapshotResult ? <Tag>{podLogSnapshotResult.asset_status_snapshot_written ? t('value.asset_status_written') : t('value.no_asset_status_write')}</Tag> : null}
                     {podLogSnapshotResult ? <Tag>{podLogSnapshotResult.log_body_included ? t('value.log_body_included') : t('value.no_log_body')}</Tag> : null}
                   </Space>
+                  {podLogPreview.audit_evidence?.redacted_log_preview ? (
+                    <Card size="small" title={t('pod.redactedPreview')}>
+                      <Space direction="vertical" size={8} className="full">
+                        <Space wrap>
+                          <Tag color="green">{podLogPreview.audit_evidence.preview_line_count || 0} {t('field.preview_lines')}</Tag>
+                          {podLogPreview.audit_evidence.preview_truncated ? <Tag color="gold">{translatedValue('truncated', t)}</Tag> : null}
+                          <Tag>{t('value.no_secrets')}</Tag>
+                          <Tag>{t('value.no_kubeconfig')}</Tag>
+                        </Space>
+                        <Typography.Text type="secondary">{t('pod.redactedPreviewDescription')}</Typography.Text>
+                        <pre className="logPreview">{podLogPreview.audit_evidence.redacted_log_preview}</pre>
+                      </Space>
+                    </Card>
+                  ) : null}
                   {podLogRunResult ? <JSONBlock value={podLogRunResult} /> : null}
                   {podLogSnapshotResult ? <JSONBlock value={podLogSnapshotResult} /> : null}
                   <JSONBlock value={podLogPreview} />

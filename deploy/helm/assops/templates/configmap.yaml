@@ -20,6 +20,7 @@ data:
   ASSOPS_SSH_KEY_DIR: /etc/assops/ssh/keys
   ASSOPS_SSH_KNOWN_HOSTS_DIR: /etc/assops/ssh/known_hosts
   ASSOPS_KUBERNETES_LOGS_ENABLED: {{ .Values.env.kubernetesLogsEnabled | quote }}
+  ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED: {{ .Values.env.kubernetesLogPreviewEnabled | quote }}
   ASSOPS_KUBERNETES_RESTARTS_ENABLED: {{ .Values.env.kubernetesRestartsEnabled | quote }}
   ASSOPS_KUBECONFIG_SECRET_DIR: {{ .Values.env.kubeconfigSecretDir | quote }}
   ASSOPS_KUBECTL_PATH: {{ .Values.env.kubectlPath | quote }}
