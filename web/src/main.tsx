@@ -139,6 +139,12 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.reject': 'Reject',
     'common.pending': 'Pending',
     'common.fields': 'Fields',
+    'common.depth': 'Depth',
+    'common.from': 'From',
+    'common.to': 'To',
+    'common.path': 'Path',
+    'common.collected': 'Collected',
+    'common.externalId': 'External ID',
     'title.sshMachines': 'SSH Machines',
     'title.argoConnections': 'Argo Connections',
     'title.argoSsh': 'Argo / SSH',
@@ -159,6 +165,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.workerNodes': 'Worker Nodes',
     'title.aiRuntime': 'AI Runtime',
     'title.agentTasks': 'Agent Tasks',
+    'title.assets': 'Assets',
     'form.createProject': 'Create project',
     'form.createRepository': 'Create repository',
     'form.createAIRuntime': 'Create AI runtime',
@@ -497,6 +504,45 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'agent.codeAuditSnapshotCurrent': 'Agent code audit snapshot already current',
     'agent.agentTask': 'Agent task',
     'agent.toolCallAudit': 'Tool-call audit',
+    'asset.savedGraphView': 'Saved graph view',
+    'asset.viewName': 'View name',
+    'asset.saveView': 'Save view',
+    'asset.updateView': 'Update view',
+    'asset.deleteView': 'Delete view',
+    'asset.assetType': 'Asset type',
+    'asset.allAssets': 'All assets',
+    'asset.search': 'Search',
+    'asset.searchPlaceholder': 'Name, source, external id',
+    'asset.searchGraph': 'Search graph',
+    'asset.graphTruncated': 'Graph results are truncated. Select a project, asset type, or search term to narrow the view.',
+    'asset.pathTruncated': 'Results are truncated. Select a project or reduce depth to narrow the path search.',
+    'asset.rankedNodes': '{count} ranked nodes',
+    'asset.rankedNodesTruncated': '{count} ranked nodes (truncated)',
+    'asset.visibleEdges': '{count} visible edges',
+    'asset.links': '{count} links',
+    'asset.noRankedAssets': 'No ranked assets',
+    'asset.relations': 'Relations',
+    'asset.fromAsset': 'From asset',
+    'asset.toAsset': 'To asset',
+    'asset.relationType': 'Relation type',
+    'asset.saveRelation': 'Save relation',
+    'asset.statusHistory': 'Status history',
+    'asset.selectedGraph': 'Selected asset graph',
+    'asset.paths': 'Paths',
+    'asset.downstream': 'Downstream',
+    'asset.upstream': 'Upstream',
+    'asset.selectAsset': 'Select an asset',
+    'asset.graphAria': 'Asset relation graph',
+    'asset.viewNameRequired': 'View name is required',
+    'asset.viewSaved': 'Asset view saved',
+    'asset.viewUpdated': 'Asset view updated',
+    'asset.viewDeleted': 'Asset view deleted',
+    'asset.viewSaveFailed': 'Could not save asset view',
+    'asset.viewUpdateFailed': 'Could not update asset view',
+    'asset.deleteViewConfirm': 'Delete asset view?',
+    'asset.relationSaved': 'Asset relation saved',
+    'asset.relationDeleted': 'Asset relation deleted',
+    'asset.deleteRelationConfirm': 'Delete manual relation?',
     'option.code': 'Code',
     'option.service': 'Service',
     'option.github': 'GitHub',
@@ -932,6 +978,23 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.actions_snapshot': 'actions snapshot',
     'value.tag_worker_pending': 'tag worker pending',
     'value.tag_failure_observed': 'tag failure observed',
+    'value.project': 'project',
+    'value.project_template': 'project template',
+    'value.template_file': 'template file',
+    'value.repository': 'repository',
+    'value.git_remote': 'git remote',
+    'value.repo_sync': 'repo sync',
+    'value.webhook_connection': 'webhook connection',
+    'value.pipeline_run': 'pipeline run',
+    'value.host': 'host',
+    'value.argo_connection': 'argo connection',
+    'value.deployment_target': 'deployment target',
+    'value.deployment_record': 'deployment record',
+    'value.rollback_point': 'rollback point',
+    'value.argo_app': 'argo app',
+    'value.ai_runtime': 'AI runtime',
+    'value.node_agent': 'node agent',
+    'value.system': 'system',
     'menu.dashboard': 'Dashboard',
     'menu.assets': 'Assets',
     'menu.projects': 'Projects',
@@ -1037,6 +1100,12 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.reject': '拒绝',
     'common.pending': '待处理',
     'common.fields': '字段',
+    'common.depth': '深度',
+    'common.from': '来源',
+    'common.to': '目标',
+    'common.path': '路径',
+    'common.collected': '采集时间',
+    'common.externalId': '外部 ID',
     'title.sshMachines': 'SSH 主机',
     'title.argoConnections': 'Argo 连接',
     'title.argoSsh': 'Argo / SSH',
@@ -1057,6 +1126,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.workerNodes': 'Worker 节点',
     'title.aiRuntime': 'AI 运行时',
     'title.agentTasks': 'Agent 任务',
+    'title.assets': '资产中心',
     'form.createProject': '创建项目',
     'form.createRepository': '创建代码仓库',
     'form.createAIRuntime': '创建 AI 运行时',
@@ -1395,6 +1465,45 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'agent.codeAuditSnapshotCurrent': 'Agent 代码审计快照已是最新',
     'agent.agentTask': 'Agent 任务',
     'agent.toolCallAudit': '工具调用审计',
+    'asset.savedGraphView': '已保存图视图',
+    'asset.viewName': '视图名称',
+    'asset.saveView': '保存视图',
+    'asset.updateView': '更新视图',
+    'asset.deleteView': '删除视图',
+    'asset.assetType': '资产类型',
+    'asset.allAssets': '全部资产',
+    'asset.search': '搜索',
+    'asset.searchPlaceholder': '名称、来源、外部 ID',
+    'asset.searchGraph': '搜索图谱',
+    'asset.graphTruncated': '图谱结果已截断。请选择项目、资产类型或搜索词缩小范围。',
+    'asset.pathTruncated': '路径结果已截断。请选择项目或降低深度来缩小路径搜索范围。',
+    'asset.rankedNodes': '{count} 个排序节点',
+    'asset.rankedNodesTruncated': '{count} 个排序节点（已截断）',
+    'asset.visibleEdges': '{count} 条可见边',
+    'asset.links': '{count} 条关系',
+    'asset.noRankedAssets': '暂无排序资产',
+    'asset.relations': '关系',
+    'asset.fromAsset': '来源资产',
+    'asset.toAsset': '目标资产',
+    'asset.relationType': '关系类型',
+    'asset.saveRelation': '保存关系',
+    'asset.statusHistory': '状态历史',
+    'asset.selectedGraph': '选中资产图谱',
+    'asset.paths': '路径',
+    'asset.downstream': '下游',
+    'asset.upstream': '上游',
+    'asset.selectAsset': '请选择资产',
+    'asset.graphAria': '资产关系图',
+    'asset.viewNameRequired': '视图名称必填',
+    'asset.viewSaved': '资产视图已保存',
+    'asset.viewUpdated': '资产视图已更新',
+    'asset.viewDeleted': '资产视图已删除',
+    'asset.viewSaveFailed': '无法保存资产视图',
+    'asset.viewUpdateFailed': '无法更新资产视图',
+    'asset.deleteViewConfirm': '删除资产视图？',
+    'asset.relationSaved': '资产关系已保存',
+    'asset.relationDeleted': '资产关系已删除',
+    'asset.deleteRelationConfirm': '删除手动关系？',
     'option.code': '代码',
     'option.service': '服务',
     'option.github': 'GitHub',
@@ -1830,6 +1939,23 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.actions_snapshot': 'Actions 快照',
     'value.tag_worker_pending': '标签 Worker 待处理',
     'value.tag_failure_observed': '已观测标签失败',
+    'value.project': '项目',
+    'value.project_template': '项目模板',
+    'value.template_file': '模板文件',
+    'value.repository': '代码仓库',
+    'value.git_remote': 'Git 远端',
+    'value.repo_sync': '仓库同步',
+    'value.webhook_connection': 'Webhook 连接',
+    'value.pipeline_run': '流水线运行',
+    'value.host': '主机',
+    'value.argo_connection': 'Argo 连接',
+    'value.deployment_target': '部署目标',
+    'value.deployment_record': '部署记录',
+    'value.rollback_point': '回滚点',
+    'value.argo_app': 'Argo 应用',
+    'value.ai_runtime': 'AI 运行时',
+    'value.node_agent': '节点 Agent',
+    'value.system': '系统',
     'menu.dashboard': '仪表盘',
     'menu.assets': '资产',
     'menu.projects': '项目',
@@ -3544,16 +3670,17 @@ function buildAssetSearchGraph(nodes: AnyRow[] = [], relations: AnyRow[] = []) {
   return { nodes: laidOut, edges, height };
 }
 
-function assetGraphRankingSummary(nodes: AnyRow[] = [], edges: AnyRow[] = [], truncated = false) {
+function assetGraphRankingSummary(nodes: AnyRow[] = [], edges: AnyRow[] = [], truncated = false, t: (key: string) => string = createTranslator('en')) {
   const ranked = [...nodes].sort((a, b) =>
     Number(b.graph_rank || 0) - Number(a.graph_rank || 0)
       || Number(b.relation_count || 0) - Number(a.relation_count || 0)
   );
   const top = ranked[0];
+  const nodesLabelKey = truncated ? 'asset.rankedNodesTruncated' : 'asset.rankedNodes';
   return {
-    nodesLabel: `${nodes.length} ranked nodes${truncated ? ' (truncated)' : ''}`,
-    edges: edges.length,
-    topLabel: top ? `${top.display_name || top.name || top.id} (${top.relation_count || 0} links)` : 'No ranked assets'
+    nodesLabel: t(nodesLabelKey).replace('{count}', String(nodes.length)),
+    edgesLabel: t('asset.visibleEdges').replace('{count}', String(edges.length)),
+    topLabel: top ? `${top.display_name || top.name || top.id} (${t('asset.links').replace('{count}', String(top.relation_count || 0))})` : t('asset.noRankedAssets')
   };
 }
 
@@ -5364,6 +5491,7 @@ function ProviderAccounts() {
 	}
 
 function AssetCenter() {
+	const { t } = useI18n();
 	const projects = useLoad(() => api('/api/projects'), []);
 	const projectRows = projects.data?.items || [];
 	const projectPick = useSelectedRow(projectRows);
@@ -5394,19 +5522,19 @@ function AssetCenter() {
 	const upstream = useLoad(() => assetPick.selectedID ? api(assetDependencyPath(assetPick.selectedID, 'upstream', project?.id)) : Promise.resolve({ items: [] }), [assetPick.selectedID, project?.id]);
 	const selectedGraph = buildAssetGraph(assetPick.selected, assetRows, relations.data?.items || []);
 	const searchGraph = buildAssetSearchGraph(searchGraphResult.data?.nodes || [], searchGraphResult.data?.edges || []);
-	const searchGraphSummary = assetGraphRankingSummary(searchGraphResult.data?.nodes || [], searchGraphResult.data?.edges || [], Boolean(searchGraphResult.data?.truncated));
+	const searchGraphSummary = assetGraphRankingSummary(searchGraphResult.data?.nodes || [], searchGraphResult.data?.edges || [], Boolean(searchGraphResult.data?.truncated), t);
 	const dependencyColumns = [
-		{ title: 'Depth', dataIndex: 'depth' },
-		{ title: 'From', dataIndex: 'from_asset_id' },
-		{ title: 'Relation', render: (_: unknown, row: AnyRow) => <Tag color="geekblue">{row.relation_type}</Tag> },
-		{ title: 'To', dataIndex: 'to_asset_id' },
-		{ title: 'Path', render: (_: unknown, row: AnyRow) => <Typography.Paragraph className="mono-pre">{row.path_text}</Typography.Paragraph> }
+		{ title: t('common.depth'), dataIndex: 'depth' },
+		{ title: t('common.from'), dataIndex: 'from_asset_id' },
+		{ title: t('asset.relationType'), render: (_: unknown, row: AnyRow) => <Tag color="geekblue">{row.relation_type}</Tag> },
+		{ title: t('common.to'), dataIndex: 'to_asset_id' },
+		{ title: t('common.path'), render: (_: unknown, row: AnyRow) => <Typography.Paragraph className="mono-pre">{row.path_text}</Typography.Paragraph> }
 	];
 	const dependencyRowKey = (row: AnyRow) => `${row.id}:${row.depth}:${row.current_asset_id}:${String(row.path_text || '').length}`;
 	const dependencyAlert = (result: { data: AnyRow | null; error: string }) => (
 		<>
 			{result.error && <Alert showIcon type="error" message={result.error} />}
-			{result.data?.truncated && <Alert showIcon type="warning" message="Results are truncated. Select a project or reduce depth to narrow the path search." />}
+			{result.data?.truncated && <Alert showIcon type="warning" message={t('asset.pathTruncated')} />}
 		</>
 	);
 	function currentAssetViewFilters() {
@@ -5435,16 +5563,16 @@ function AssetCenter() {
 	async function saveAssetView() {
 		const name = assetViewName.trim();
 		if (!name) {
-			message.warning('View name is required');
+			message.warning(t('asset.viewNameRequired'));
 			return;
 		}
 		try {
 			const view = await api('/api/asset-graph-views', { method: 'POST', body: JSON.stringify({ name, filters: currentAssetViewFilters() }) });
-			message.success('Asset view saved');
+			message.success(t('asset.viewSaved'));
 			setAssetViewID(view.id);
 			assetViews.reload();
 		} catch (err: any) {
-			message.error(err.message || 'Could not save asset view');
+			message.error(err.message || t('asset.viewSaveFailed'));
 		}
 	}
 	async function updateAssetView() {
@@ -5452,22 +5580,23 @@ function AssetCenter() {
 		const name = assetViewName.trim();
 		try {
 			const view = await api(`/api/asset-graph-views/${assetViewID}`, { method: 'PATCH', body: JSON.stringify({ name, filters: currentAssetViewFilters() }) });
-			message.success('Asset view updated');
+			message.success(t('asset.viewUpdated'));
 			setAssetViewName(view.name || name);
 			assetViews.reload();
 		} catch (err: any) {
-			message.error(err.message || 'Could not update asset view');
+			message.error(err.message || t('asset.viewUpdateFailed'));
 		}
 	}
 	function deleteAssetView() {
 		if (!assetViewID) return;
 		Modal.confirm({
-			title: 'Delete asset view?',
-			okText: 'Delete',
+			title: t('asset.deleteViewConfirm'),
+			okText: t('common.remove'),
+			cancelText: t('common.cancel'),
 			okButtonProps: { danger: true },
 			onOk: async () => {
 				await api(`/api/asset-graph-views/${assetViewID}`, { method: 'DELETE' });
-				message.success('Asset view deleted');
+				message.success(t('asset.viewDeleted'));
 				setAssetViewID(undefined);
 				setAssetViewName('');
 				assetViews.reload();
@@ -5476,7 +5605,7 @@ function AssetCenter() {
 	}
 	async function createAssetRelation(values: AnyRow) {
 		await api('/api/asset-relations', { method: 'POST', body: JSON.stringify(values) });
-		message.success('Asset relation saved');
+		message.success(t('asset.relationSaved'));
 		relationForm.resetFields();
 		relations.reload();
 		downstream.reload();
@@ -5484,12 +5613,13 @@ function AssetCenter() {
 	}
 	function deleteAssetRelation(row: AnyRow) {
 		Modal.confirm({
-			title: 'Delete manual relation?',
-			okText: 'Delete',
+			title: t('asset.deleteRelationConfirm'),
+			okText: t('common.remove'),
+			cancelText: t('common.cancel'),
 			okButtonProps: { danger: true },
 			onOk: async () => {
 				await api(`/api/asset-relations/${row.id}`, { method: 'DELETE' });
-				message.success('Asset relation deleted');
+				message.success(t('asset.relationDeleted'));
 				relations.reload();
 				downstream.reload();
 				upstream.reload();
@@ -5513,85 +5643,85 @@ function AssetCenter() {
 		'argo_app',
 		'ai_runtime',
 		'node_agent'
-	].map((value) => ({ value, label: value.replaceAll('_', ' ') }));
+	].map((value) => ({ value, label: translatedValue(value, t) }));
 	return (
 		<Space direction="vertical" size={16} className="full">
-			<Typography.Title level={2}>Assets</Typography.Title>
+			<Typography.Title level={2}>{t('title.assets')}</Typography.Title>
 			<Space wrap>
-				<Select allowClear value={assetViewID} placeholder="Saved graph view" style={{ width: 220 }} onChange={(value) => applyAssetView(value)} options={(assetViews.data?.items || []).map((row: AnyRow) => ({ value: row.id, label: row.name }))} />
-				<Input placeholder="View name" value={assetViewName} onChange={(event) => setAssetViewName(event.target.value)} style={{ width: 180 }} />
-				<Button onClick={saveAssetView}>Save view</Button>
-				<Button disabled={!assetViewID} onClick={updateAssetView}>Update view</Button>
-				<Button danger disabled={!assetViewID} onClick={deleteAssetView}>Delete view</Button>
+				<Select allowClear value={assetViewID} placeholder={t('asset.savedGraphView')} style={{ width: 220 }} onChange={(value) => applyAssetView(value)} options={(assetViews.data?.items || []).map((row: AnyRow) => ({ value: row.id, label: row.name }))} />
+				<Input placeholder={t('asset.viewName')} value={assetViewName} onChange={(event) => setAssetViewName(event.target.value)} style={{ width: 180 }} />
+				<Button onClick={saveAssetView}>{t('asset.saveView')}</Button>
+				<Button disabled={!assetViewID} onClick={updateAssetView}>{t('asset.updateView')}</Button>
+				<Button danger disabled={!assetViewID} onClick={deleteAssetView}>{t('asset.deleteView')}</Button>
 			</Space>
 			<div className="selectorRow">
-				<EntitySelect label="Project" rows={projectRows} value={projectPick.selectedID} onChange={projectPick.setSelectedID} />
+				<EntitySelect label={t('common.project')} rows={projectRows} value={projectPick.selectedID} onChange={projectPick.setSelectedID} />
 				<Space direction="vertical" size={4} className="selector">
-					<Typography.Text type="secondary">Asset type</Typography.Text>
-					<Select allowClear value={assetType} onChange={setAssetType} options={typeOptions} placeholder="All assets" />
+					<Typography.Text type="secondary">{t('asset.assetType')}</Typography.Text>
+					<Select allowClear value={assetType} onChange={setAssetType} options={typeOptions} placeholder={t('asset.allAssets')} />
 				</Space>
 				<Space direction="vertical" size={4} className="selector">
-					<Typography.Text type="secondary">Search</Typography.Text>
-					<Input allowClear value={assetSearch} onChange={(event) => setAssetSearch(event.target.value)} placeholder="Name, source, external id" />
+					<Typography.Text type="secondary">{t('asset.search')}</Typography.Text>
+					<Input allowClear value={assetSearch} onChange={(event) => setAssetSearch(event.target.value)} placeholder={t('asset.searchPlaceholder')} />
 				</Space>
 			</div>
 			<Table<AnyRow> rowKey="id" dataSource={assetRows} pagination={{ pageSize: 10 }} onRow={(row) => ({ onClick: () => assetPick.setSelectedID(row.id) })} rowClassName={(row) => row.id === assetPick.selectedID ? 'selectedRow' : ''} columns={[
-				{ title: 'Name', dataIndex: 'name' },
-				{ title: 'Type', render: (_, row) => <Tag>{String(row.asset_type || '').replaceAll('_', ' ')}</Tag> },
-				{ title: 'Status', render: (_, row) => <Tag color={row.status === 'failed' || row.status === 'OutOfSync' ? 'red' : row.status === 'completed' || row.status === 'Synced' || row.status === 'active' ? 'green' : 'blue'}>{row.status || 'unknown'}</Tag> },
-				{ title: 'Source', dataIndex: 'source' },
-				{ title: 'External ID', dataIndex: 'external_id' },
-				{ title: 'Updated', dataIndex: 'updated_at' }
+				{ title: t('common.name'), dataIndex: 'name' },
+				{ title: t('common.type'), render: (_, row) => <Tag>{translatedValue(row.asset_type, t)}</Tag> },
+				{ title: t('common.status'), render: (_, row) => <Tag color={row.status === 'failed' || row.status === 'OutOfSync' ? 'red' : row.status === 'completed' || row.status === 'Synced' || row.status === 'active' ? 'green' : 'blue'}>{translatedValue(row.status || 'unknown', t)}</Tag> },
+				{ title: t('common.source'), dataIndex: 'source' },
+				{ title: t('common.externalId'), dataIndex: 'external_id' },
+				{ title: t('common.updated'), dataIndex: 'updated_at' }
 			]} />
-			<Typography.Title level={3}>Search graph</Typography.Title>
+			<Typography.Title level={3}>{t('asset.searchGraph')}</Typography.Title>
 			{searchGraphResult.error && <Alert showIcon type="error" message={searchGraphResult.error} />}
-			{searchGraphResult.data?.truncated && <Alert showIcon type="warning" message="Graph results are truncated. Select a project, asset type, or search term to narrow the view." />}
+			{searchGraphResult.data?.truncated && <Alert showIcon type="warning" message={t('asset.graphTruncated')} />}
 			<Space wrap>
 				<Tag>{searchGraphSummary.nodesLabel}</Tag>
-				<Tag>{searchGraphSummary.edges} visible edges</Tag>
+				<Tag>{searchGraphSummary.edgesLabel}</Tag>
 				<Tag color="geekblue">{searchGraphSummary.topLabel}</Tag>
 			</Space>
 			<AssetRelationGraph graph={searchGraph} />
-			<Typography.Title level={3}>Relations</Typography.Title>
+			<Typography.Title level={3}>{t('asset.relations')}</Typography.Title>
 			<Form form={relationForm} layout="inline" onFinish={createAssetRelation}>
-				<Form.Item name="from_asset_id" rules={[{ required: true, message: 'from asset is required' }]}>
-					<Select showSearch placeholder="From asset" style={{ width: 260 }} optionFilterProp="label" options={rowOptions(assetRows, 'name')} />
+				<Form.Item name="from_asset_id" rules={[{ required: true, message: t('common.required') }]}>
+					<Select showSearch placeholder={t('asset.fromAsset')} style={{ width: 260 }} optionFilterProp="label" options={rowOptions(assetRows, 'name')} />
 				</Form.Item>
-				<Form.Item name="relation_type" rules={[{ required: true, message: 'relation type is required' }]}>
-					<Input placeholder="relation type" style={{ width: 180 }} />
+				<Form.Item name="relation_type" rules={[{ required: true, message: t('common.required') }]}>
+					<Input placeholder={t('asset.relationType')} style={{ width: 180 }} />
 				</Form.Item>
-				<Form.Item name="to_asset_id" rules={[{ required: true, message: 'to asset is required' }]}>
-					<Select showSearch placeholder="To asset" style={{ width: 260 }} optionFilterProp="label" options={rowOptions(assetRows, 'name')} />
+				<Form.Item name="to_asset_id" rules={[{ required: true, message: t('common.required') }]}>
+					<Select showSearch placeholder={t('asset.toAsset')} style={{ width: 260 }} optionFilterProp="label" options={rowOptions(assetRows, 'name')} />
 				</Form.Item>
-				<Button htmlType="submit" type="primary">Save relation</Button>
+				<Button htmlType="submit" type="primary">{t('asset.saveRelation')}</Button>
 			</Form>
 				<Table<AnyRow> rowKey="id" dataSource={relations.data?.items || []} pagination={{ pageSize: 8 }} columns={[
-				{ title: 'From', dataIndex: 'from_asset_id' },
-				{ title: 'Relation', render: (_, row) => <Tag color="geekblue">{row.relation_type}</Tag> },
-				{ title: 'To', dataIndex: 'to_asset_id' },
-				{ title: 'Source', render: (_, row) => row.metadata?.source || row.source || 'system' },
-				{ title: 'Created', dataIndex: 'created_at' },
-				{ title: 'Action', render: (_, row) => row.metadata?.source === 'manual' ? <Button size="small" danger onClick={() => deleteAssetRelation(row)}>Delete</Button> : null }
+				{ title: t('common.from'), dataIndex: 'from_asset_id' },
+				{ title: t('asset.relationType'), render: (_, row) => <Tag color="geekblue">{row.relation_type}</Tag> },
+				{ title: t('common.to'), dataIndex: 'to_asset_id' },
+				{ title: t('common.source'), render: (_, row) => translatedValue(row.metadata?.source || row.source || 'system', t) },
+				{ title: t('common.created'), dataIndex: 'created_at' },
+				{ title: t('common.action'), render: (_, row) => row.metadata?.source === 'manual' ? <Button size="small" danger onClick={() => deleteAssetRelation(row)}>{t('common.remove')}</Button> : null }
 			]} />
-			<Typography.Title level={3}>Status history</Typography.Title>
+			<Typography.Title level={3}>{t('asset.statusHistory')}</Typography.Title>
 			<Table<AnyRow> rowKey="id" loading={statusSnapshots.loading} dataSource={statusSnapshots.data?.items || []} pagination={{ pageSize: 5 }} columns={[
-				{ title: 'Status', render: (_, row) => <Tag color={row.status === 'failed' || row.status === 'OutOfSync' ? 'red' : row.status === 'completed' || row.status === 'Synced' || row.status === 'active' ? 'green' : 'blue'}>{row.status || 'unknown'}</Tag> },
-				{ title: 'Health', render: (_, row) => <Tag>{row.health || '-'}</Tag> },
-				{ title: 'Summary', render: (_, row) => shortText(row.summary, 90) },
-				{ title: 'Collected', dataIndex: 'collected_at' }
+				{ title: t('common.status'), render: (_, row) => <Tag color={row.status === 'failed' || row.status === 'OutOfSync' ? 'red' : row.status === 'completed' || row.status === 'Synced' || row.status === 'active' ? 'green' : 'blue'}>{translatedValue(row.status || 'unknown', t)}</Tag> },
+				{ title: t('common.health'), render: (_, row) => <Tag>{translatedValue(row.health, t)}</Tag> },
+				{ title: t('common.summary'), render: (_, row) => shortText(row.summary, 90) },
+				{ title: t('common.collected'), dataIndex: 'collected_at' }
 			]} />
-			<Typography.Title level={3}>Selected asset graph</Typography.Title>
+			<Typography.Title level={3}>{t('asset.selectedGraph')}</Typography.Title>
 			<AssetRelationGraph graph={selectedGraph} />
-			<Typography.Title level={3}>Paths</Typography.Title>
+			<Typography.Title level={3}>{t('asset.paths')}</Typography.Title>
 			<Tabs items={[
 				{
 					key: 'downstream',
-					label: 'Downstream',
+					label: t('asset.downstream'),
 					children: <Space direction="vertical" size={12} className="full">{dependencyAlert(downstream)}<Table<AnyRow> rowKey={dependencyRowKey} loading={downstream.loading} dataSource={downstream.data?.items || []} pagination={{ pageSize: 6 }} columns={dependencyColumns} /></Space>
 				},
 				{
 					key: 'upstream',
-					label: 'Upstream',
+					label: t('asset.upstream'),
 					children: <Space direction="vertical" size={12} className="full">{dependencyAlert(upstream)}<Table<AnyRow> rowKey={dependencyRowKey} loading={upstream.loading} dataSource={upstream.data?.items || []} pagination={{ pageSize: 6 }} columns={dependencyColumns} /></Space>
 				}
 			]} />
@@ -5600,15 +5730,16 @@ function AssetCenter() {
 }
 
 function AssetRelationGraph({ graph }: { graph: AnyRow }) {
+  const { t } = useI18n();
   const nodes: AnyRow[] = graph.nodes || [];
   const edges: AnyRow[] = graph.edges || [];
   const byID = new Map(nodes.map((node) => [node.id, node]));
   if (!nodes.length) {
-    return <div className="assetGraphEmpty"><Typography.Text type="secondary">Select an asset</Typography.Text></div>;
+    return <div className="assetGraphEmpty"><Typography.Text type="secondary">{t('asset.selectAsset')}</Typography.Text></div>;
   }
   return (
     <div className="assetGraph">
-      <svg viewBox={`0 0 800 ${graph.height || 260}`} role="img" aria-label="Asset relation graph">
+      <svg viewBox={`0 0 800 ${graph.height || 260}`} role="img" aria-label={t('asset.graphAria')}>
         <defs>
           <marker id="assetArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" />
