@@ -1,5 +1,5 @@
 {
-    "name": "ASSOPS main required checks",
+    "name": "ASSOPS default branch required checks",
     "target": "branch",
     "enforcement": "active",
     "bypass_actors": [],

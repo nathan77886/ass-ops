@@ -3149,7 +3149,7 @@ func TestReleaseBranchProtectionPlan(t *testing.T) {
 		"# ASSOPS Branch Protection Plan",
 		"Repository: `nathan77886/ass-ops`",
 		"Ruleset template: `../../../.github/rulesets/main-required-checks.json`",
-		"Ruleset name: `ASSOPS main required checks`",
+		"Ruleset name: `ASSOPS default branch required checks`",
 		"Enforcement: `active`",
 		"Ruleset targets `~DEFAULT_BRANCH`",
 		"Branch deletion and non-fast-forward pushes are blocked",
@@ -3167,7 +3167,7 @@ func TestReleaseBranchProtectionPlan(t *testing.T) {
 		"gh api",
 		"/repos/nathan77886/ass-ops/rulesets",
 		"--input \"../../../.github/rulesets/main-required-checks.json\"",
-		"/repos/nathan77886/ass-ops/rules/branches/main",
+		"/repos/nathan77886/ass-ops/rules/branches/<default-branch>",
 	} {
 		if !strings.Contains(plan, want) {
 			t.Fatalf("branch protection plan missing %q in:\n%s", want, plan)
@@ -3190,7 +3190,7 @@ func TestReleaseBranchProtectionPlanRejectsMissingRequiredCheck(t *testing.T) {
 	rulesetPath := filepath.Join(dir, "ruleset.json")
 	codeownersPath := filepath.Join(dir, "CODEOWNERS")
 	ruleset := `{
-		"name": "ASSOPS main required checks",
+		"name": "ASSOPS default branch required checks",
 		"target": "branch",
 		"enforcement": "active",
 		"conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},

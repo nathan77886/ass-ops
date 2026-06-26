@@ -84,7 +84,7 @@ The production retained backup artifact workflow is protected-environment scoped
 The production backup restore rehearsal workflow is protected-environment scoped, supports manual dispatch, and includes a weekly schedule that is disabled unless `ASSOPS_PRODUCTION_RESTORE_REHEARSAL_ENABLED=true` is configured. It restores an existing retained `assops-*.dump` backup from either the latest unexpired named repository artifact or a self-hosted runner path into an explicitly configured disposable database secret, then uploads the private rehearsal report for release notes. Artifact sources must contain exactly one dump and no `.env`, kubeconfig, log, key, or PEM-like files. `assops-tool release backup-schedule-plan` can generate an offline readiness plan for choosing the retained backup source, retained-backup publication contract, runner, secrets, and artifact retention before enabling the scheduled path.
 Dependabot is configured for weekly Go, web npm, GitHub Actions, and Docker image update PRs.
 The release candidate workflow builds Linux amd64 binaries, the web bundle, a packaged Helm chart, checksums, and Docker image smoke builds for `v*` tags or manual runs. It also creates GitHub artifact attestations for release files. Tagged `v*` runs publish gateway, worker, node-worker, and web images to GHCR with version and commit-SHA tags, then attach registry-backed image attestations.
-Apply the repository ruleset in `docs/github-branch-protection.md` before treating `main` as the protected release branch.
+Apply the repository ruleset in `docs/github-branch-protection.md` before treating the repository default branch as the protected release branch.
 
 ## Context Files
 

@@ -967,7 +967,7 @@ func releaseBranchProtectionPlan(repo, rulesetPath, codeownersPath string) (stri
 	fmt.Fprintf(&b, "gh api \\\n")
 	fmt.Fprintf(&b, "  -H \"Accept: application/vnd.github+json\" \\\n")
 	fmt.Fprintf(&b, "  -H \"X-GitHub-Api-Version: 2026-03-10\" \\\n")
-	fmt.Fprintf(&b, "  /repos/%s/rules/branches/main\n", repo)
+	fmt.Fprintf(&b, "  /repos/%s/rules/branches/<default-branch>\n", repo)
 	fmt.Fprintf(&b, "```\n\n")
 	fmt.Fprintf(&b, "## Update Existing Ruleset\n\n")
 	fmt.Fprintf(&b, "If the repository already has this ruleset, replace it only after comparing the active ruleset ID from the verification output:\n\n```bash\n")
