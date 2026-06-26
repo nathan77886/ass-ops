@@ -508,6 +508,35 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.applyThresholdConfig': 'Apply threshold config',
     'git.configApplied': 'Config applied',
     'git.replay': 'Replay',
+    'git.selectBranchOrTag': 'Select at least one branch or tag',
+    'git.syncQueued': 'Sync queued',
+    'git.selectRepoSourceTarget': 'Select a repository, source remote, and target remote first',
+    'git.syncAssetSaved': 'Repo sync asset saved',
+    'git.selectProjectSource': 'Select a project and source remote first',
+    'git.webhookSecret': 'Webhook secret',
+    'git.webhookSecretRotatedTitle': 'Webhook secret rotated',
+    'git.webhookConnectionCreated': 'Webhook connection created',
+    'git.rotateWebhookSecretConfirm': 'Rotate webhook secret?',
+    'git.webhookSecretRotated': 'Webhook secret rotated',
+    'git.webhookReplayQueued': 'Webhook replay queued',
+    'git.thresholdDecisionAuditRecorded': 'Threshold decision audit recorded',
+    'git.thresholdAuditReviewed': 'Threshold audit reviewed',
+    'git.thresholdConfigAppliedAndSignals': 'Threshold configuration applied and capacity signals recomputed',
+    'git.thresholdConfigApplied': 'Threshold configuration applied',
+    'git.thresholdConfigReviewed': 'Threshold configuration reviewed',
+    'git.callbackAssetMissing': 'Callback asset missing; run db sync-assets before recording',
+    'git.callbackSnapshotRecorded': 'Callback rehearsal snapshot recorded',
+    'git.callbackSnapshotCurrent': 'Callback rehearsal snapshot already current',
+    'git.callbackSnapshotNotReady': 'Callback rehearsal snapshot not ready',
+    'git.syncAssetQueued': 'Repo sync asset queued',
+    'git.syncAssetUpdated': 'Repo sync asset updated',
+    'git.syncAssetEnabled': 'Repo sync asset enabled',
+    'git.syncAssetDisabled': 'Repo sync asset disabled',
+    'git.archiveSyncAssetConfirm': 'Archive sync asset?',
+    'git.syncAssetArchived': 'Repo sync asset archived',
+    'git.syncAssetRestored': 'Repo sync asset restored',
+    'git.syncRerunQueued': 'Repo sync rerun queued',
+    'git.selectRepositoryFirst': 'Select a repository first',
     'git.capacitySignals': 'Capacity signals',
     'git.trend14d': '14-day trend',
     'git.signal': 'Signal',
@@ -742,6 +771,54 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.proof_not_written': 'proof not written',
     'value.host_asset_observed': 'host asset observed',
     'value.host_asset_missing': 'host asset missing',
+    'value.public_origin': 'public origin',
+    'value.no_public_origin': 'no public origin',
+    'value.test_delivered': 'test delivered',
+    'value.no_test_delivery': 'no test delivery',
+    'value.thresholds_tuned': 'thresholds tuned',
+    'value.thresholds_pending': 'thresholds pending',
+    'value.volume': 'volume',
+    'value.volume_pending': 'volume pending',
+    'value.metrics': 'metrics',
+    'value.provider_metrics': 'provider metrics',
+    'value.no_provider_metrics': 'no provider metrics',
+    'value.config_review_ready': 'config review ready',
+    'value.config': 'config',
+    'value.configs': 'configs',
+    'value.capacity_recomputed': 'capacity recomputed',
+    'value.threshold_audit': 'threshold audit',
+    'value.audit_write_enabled': 'audit write enabled',
+    'value.no_audit_write': 'no audit write',
+    'value.audit_rows': 'audit rows',
+    'value.provider_call': 'provider call',
+    'value.no_provider_call': 'no provider call',
+    'value.result_recorded': 'result recorded',
+    'value.no_result_record': 'no result record',
+    'value.replay_proof': 'replay proof',
+    'value.replay_proof_pending': 'replay proof pending',
+    'value.callback': 'callback',
+    'value.deliveries': 'deliveries',
+    'value.repo_sync_observed': 'repo sync observed',
+    'value.failed_callbacks': 'failed callbacks',
+    'value.remote_success': 'remote success',
+    'value.no_remote_success': 'no remote success',
+    'value.lookup': 'lookup',
+    'value.remote_lookup': 'remote lookup',
+    'value.no_remote_lookup': 'no remote lookup',
+    'value.operation': 'operation',
+    'value.found': 'found',
+    'value.not_found': 'not found',
+    'value.tag_result_saved': 'tag result saved',
+    'value.tag_result_failed': 'tag result failed',
+    'value.tag_result_pending': 'tag result pending',
+    'value.actions_refreshed': 'actions refreshed',
+    'value.actions_refresh_failed': 'actions refresh failed',
+    'value.actions_refresh_pending': 'actions refresh pending',
+    'value.actions_operation': 'actions op',
+    'value.action_runs': 'action runs',
+    'value.actions_snapshot': 'actions snapshot',
+    'value.tag_worker_pending': 'tag worker pending',
+    'value.tag_failure_observed': 'tag failure observed',
     'menu.dashboard': 'Dashboard',
     'menu.assets': 'Assets',
     'menu.projects': 'Projects',
@@ -1216,6 +1293,35 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'git.applyThresholdConfig': '应用阈值配置',
     'git.configApplied': '配置已应用',
     'git.replay': '重放',
+    'git.selectBranchOrTag': '请至少选择一个分支或标签',
+    'git.syncQueued': '同步已入队',
+    'git.selectRepoSourceTarget': '请先选择代码仓库、源远端和目标远端',
+    'git.syncAssetSaved': '同步资产已保存',
+    'git.selectProjectSource': '请先选择项目和源远端',
+    'git.webhookSecret': 'Webhook 密钥',
+    'git.webhookSecretRotatedTitle': 'Webhook 密钥已轮换',
+    'git.webhookConnectionCreated': 'Webhook 连接已创建',
+    'git.rotateWebhookSecretConfirm': '确认轮换 Webhook 密钥？',
+    'git.webhookSecretRotated': 'Webhook 密钥已轮换',
+    'git.webhookReplayQueued': 'Webhook 重放已入队',
+    'git.thresholdDecisionAuditRecorded': '阈值决策审计已记录',
+    'git.thresholdAuditReviewed': '阈值审计已检查',
+    'git.thresholdConfigAppliedAndSignals': '阈值配置已应用，容量信号已重新计算',
+    'git.thresholdConfigApplied': '阈值配置已应用',
+    'git.thresholdConfigReviewed': '阈值配置已检查',
+    'git.callbackAssetMissing': '回调资产缺失，请先运行 db sync-assets 后再记录',
+    'git.callbackSnapshotRecorded': '回调演练快照已记录',
+    'git.callbackSnapshotCurrent': '回调演练快照已是最新',
+    'git.callbackSnapshotNotReady': '回调演练快照尚未就绪',
+    'git.syncAssetQueued': '同步资产已入队',
+    'git.syncAssetUpdated': '同步资产已更新',
+    'git.syncAssetEnabled': '同步资产已启用',
+    'git.syncAssetDisabled': '同步资产已禁用',
+    'git.archiveSyncAssetConfirm': '确认归档同步资产？',
+    'git.syncAssetArchived': '同步资产已归档',
+    'git.syncAssetRestored': '同步资产已恢复',
+    'git.syncRerunQueued': '同步重跑已入队',
+    'git.selectRepositoryFirst': '请先选择代码仓库',
     'git.capacitySignals': '容量信号',
     'git.trend14d': '14 天趋势',
     'git.signal': '信号',
@@ -1450,6 +1556,54 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.proof_not_written': '证明未写入',
     'value.host_asset_observed': '主机资产已观测',
     'value.host_asset_missing': '主机资产缺失',
+    'value.public_origin': '公网入口',
+    'value.no_public_origin': '无公网入口',
+    'value.test_delivered': '测试投递已完成',
+    'value.no_test_delivery': '无测试投递',
+    'value.thresholds_tuned': '阈值已调优',
+    'value.thresholds_pending': '阈值待处理',
+    'value.volume': '流量',
+    'value.volume_pending': '流量待观测',
+    'value.metrics': '指标',
+    'value.provider_metrics': '提供方指标',
+    'value.no_provider_metrics': '无提供方指标',
+    'value.config_review_ready': '配置可审查',
+    'value.config': '配置',
+    'value.configs': '条配置',
+    'value.capacity_recomputed': '容量已重算',
+    'value.threshold_audit': '阈值审计',
+    'value.audit_write_enabled': '审计写入已启用',
+    'value.no_audit_write': '未启用审计写入',
+    'value.audit_rows': '条审计记录',
+    'value.provider_call': '提供方调用',
+    'value.no_provider_call': '无提供方调用',
+    'value.result_recorded': '结果已记录',
+    'value.no_result_record': '结果未记录',
+    'value.replay_proof': '重放证明',
+    'value.replay_proof_pending': '重放证明待补充',
+    'value.callback': '回调',
+    'value.deliveries': '次投递',
+    'value.repo_sync_observed': '已观测仓库同步',
+    'value.failed_callbacks': '次失败回调',
+    'value.remote_success': '远端成功',
+    'value.no_remote_success': '无远端成功',
+    'value.lookup': '查询',
+    'value.remote_lookup': '远端查询',
+    'value.no_remote_lookup': '无远端查询',
+    'value.operation': '操作',
+    'value.found': '找到',
+    'value.not_found': '未找到',
+    'value.tag_result_saved': '标签结果已保存',
+    'value.tag_result_failed': '标签结果失败',
+    'value.tag_result_pending': '标签结果待处理',
+    'value.actions_refreshed': 'Actions 已刷新',
+    'value.actions_refresh_failed': 'Actions 刷新失败',
+    'value.actions_refresh_pending': 'Actions 刷新待处理',
+    'value.actions_operation': 'Actions 操作',
+    'value.action_runs': '条 Actions 运行',
+    'value.actions_snapshot': 'Actions 快照',
+    'value.tag_worker_pending': '标签 Worker 待处理',
+    'value.tag_failure_observed': '已观测标签失败',
     'menu.dashboard': '仪表盘',
     'menu.assets': '资产',
     'menu.projects': '项目',
@@ -6005,25 +6159,25 @@ function GitRemotes() {
     if (!repo || !sourcePick.selectedID || !targetPick.selectedID) return;
     const { branches, tags } = selectedRefs();
     if (!branches.length && !tags.length) {
-      message.error('Select at least one branch or tag');
+      message.error(t('git.selectBranchOrTag'));
       return;
     }
     await api(`/api/git-repositories/${repo.id}/sync`, {
       method: 'POST',
       body: JSON.stringify({ source_remote_id: sourcePick.selectedID, target_remote_ids: [targetPick.selectedID], refs: { branches, tags } })
     });
-    message.success('Sync queued');
+    message.success(t('git.syncQueued'));
     runs.reload();
     remotes.reload();
   }
   async function createRepoSyncAsset(values: AnyRow) {
     if (!repo || !sourcePick.selectedID || !targetPick.selectedID) {
-      message.error('Select a repository, source remote, and target remote first');
+      message.error(t('git.selectRepoSourceTarget'));
       return;
     }
     const { branches, tags } = selectedRefs();
     if (!branches.length && !tags.length) {
-      message.error('Select at least one branch or tag');
+      message.error(t('git.selectBranchOrTag'));
       return;
     }
     await api(`/api/git-repositories/${repo.id}/repo-sync-assets`, {
@@ -6039,12 +6193,12 @@ function GitRemotes() {
         refs: { branches, tags }
       })
     });
-    message.success('Repo sync asset saved');
+    message.success(t('git.syncAssetSaved'));
     syncAssets.reload();
   }
   async function createWebhookConnection(values: AnyRow) {
     if (!project || !sourcePick.selectedID) {
-      message.error('Select a project and source remote first');
+      message.error(t('git.selectProjectSource'));
       return;
     }
     const created = await api(`/api/projects/${project.id}/webhook-connections`, {
@@ -6058,29 +6212,29 @@ function GitRemotes() {
     });
     webhookConnections.reload();
     if (created.secret_token_once) {
-      Modal.info({ title: 'Webhook secret', content: <Typography.Text copyable>{created.secret_token_once}</Typography.Text> });
+      Modal.info({ title: t('git.webhookSecret'), content: <Typography.Text copyable>{created.secret_token_once}</Typography.Text> });
     } else {
-      message.success('Webhook connection created');
+      message.success(t('git.webhookConnectionCreated'));
     }
   }
   async function rotateWebhookSecret(id: string) {
     Modal.confirm({
-      title: 'Rotate webhook secret?',
-      okText: 'Rotate',
+      title: t('git.rotateWebhookSecretConfirm'),
+      okText: t('git.rotateSecret'),
       onOk: async () => {
         const updated = await api(`/api/webhook-connections/${id}/rotate-secret`, { method: 'POST', body: '{}' });
         webhookConnections.reload();
         if (updated.secret_token_once) {
-          Modal.info({ title: 'Webhook secret rotated', content: <Typography.Text copyable>{updated.secret_token_once}</Typography.Text> });
+          Modal.info({ title: t('git.webhookSecretRotatedTitle'), content: <Typography.Text copyable>{updated.secret_token_once}</Typography.Text> });
         } else {
-          message.success('Webhook secret rotated');
+          message.success(t('git.webhookSecretRotated'));
         }
       }
     });
   }
   async function replayWebhookEvent(id: string) {
     await api(`/api/webhook-events/${id}/replay`, { method: 'POST', body: '{}' });
-    message.success('Webhook replay queued');
+    message.success(t('git.webhookReplayQueued'));
     runs.reload();
     syncAssets.reload();
     webhookConnections.reload();
@@ -6092,7 +6246,7 @@ function GitRemotes() {
     try {
       const result = await api(`/api/webhook-connections/${id}/threshold-decision-audit`, { method: 'POST', body: '{}' });
       const audit = result.audit || {};
-      message.success(audit.id ? 'Threshold decision audit recorded' : 'Threshold audit reviewed');
+      message.success(audit.id ? t('git.thresholdDecisionAuditRecorded') : t('git.thresholdAuditReviewed'));
       webhookConnections.reload();
     } finally {
       setRecordingThresholdAuditID(undefined);
@@ -6102,7 +6256,7 @@ function GitRemotes() {
     setApplyingThresholdConfigID(id);
     try {
       const result = await api(`/api/webhook-connections/${id}/threshold-configuration`, { method: 'POST', body: '{}' });
-      message.success(result.capacity_signals_recomputed ? 'Threshold configuration applied and capacity signals recomputed' : result.threshold_configuration_written ? 'Threshold configuration applied' : 'Threshold configuration reviewed');
+      message.success(result.capacity_signals_recomputed ? t('git.thresholdConfigAppliedAndSignals') : result.threshold_configuration_written ? t('git.thresholdConfigApplied') : t('git.thresholdConfigReviewed'));
       webhookConnections.reload();
       syncAssetDetail.reload();
     } finally {
@@ -6118,20 +6272,20 @@ function GitRemotes() {
       });
       setCallbackSnapshotResults((current) => ({ ...current, [id]: result }));
       if (result.recording_state === 'asset_missing') {
-        message.warning('Callback asset missing; run db sync-assets before recording');
+        message.warning(t('git.callbackAssetMissing'));
       } else {
-        message.success(result.provider_callback_rehearsal_snapshot_written ? 'Callback rehearsal snapshot recorded' : result.recording_ready ? 'Callback rehearsal snapshot already current' : 'Callback rehearsal snapshot not ready');
+        message.success(result.provider_callback_rehearsal_snapshot_written ? t('git.callbackSnapshotRecorded') : result.recording_ready ? t('git.callbackSnapshotCurrent') : t('git.callbackSnapshotNotReady'));
       }
       webhookConnections.reload();
     } catch (error: any) {
-      message.error(error.message || 'Request failed');
+      message.error(error.message || t('common.requestFailed'));
     } finally {
       setRecordingCallbackSnapshotID(undefined);
     }
   }
   async function runRepoSyncAsset(id: string) {
     await api(`/api/repo-sync-assets/${id}/run`, { method: 'POST', body: '{}' });
-    message.success('Repo sync asset queued');
+    message.success(t('git.syncAssetQueued'));
     runs.reload();
     remotes.reload();
     syncAssets.reload();
@@ -6147,24 +6301,24 @@ function GitRemotes() {
       body.enabled = ['true', '1', 'yes', 'enabled'].includes(String(values.enabled).trim().toLowerCase());
     }
     await api(`/api/repo-sync-assets/${syncAssetID}`, { method: 'PATCH', body: JSON.stringify(body) });
-    message.success('Repo sync asset updated');
+    message.success(t('git.syncAssetUpdated'));
     syncAssets.reload();
     syncAssetDetail.reload();
   }
   async function toggleRepoSyncAsset(id: string, enabled: boolean) {
     await api(`/api/repo-sync-assets/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
-    message.success(enabled ? 'Repo sync asset enabled' : 'Repo sync asset disabled');
+    message.success(enabled ? t('git.syncAssetEnabled') : t('git.syncAssetDisabled'));
     syncAssets.reload();
     syncAssetDetail.reload();
   }
   async function archiveRepoSyncAsset(id: string) {
     Modal.confirm({
-      title: 'Archive sync asset?',
-      okText: 'Archive',
+      title: t('git.archiveSyncAssetConfirm'),
+      okText: t('common.archive'),
       okButtonProps: { danger: true },
       onOk: async () => {
         await api(`/api/repo-sync-assets/${id}/archive`, { method: 'POST', body: '{}' });
-        message.success('Repo sync asset archived');
+        message.success(t('git.syncAssetArchived'));
         setSyncAssetID(undefined);
         syncAssets.reload();
       }
@@ -6172,20 +6326,20 @@ function GitRemotes() {
   }
   async function restoreRepoSyncAsset(id: string) {
     await api(`/api/repo-sync-assets/${id}/restore`, { method: 'POST', body: '{}' });
-    message.success('Repo sync asset restored');
+    message.success(t('git.syncAssetRestored'));
     syncAssets.reload();
     syncAssetDetail.reload();
   }
   async function rerunRepoSyncRun(id: string) {
     await api(`/api/repo-sync-runs/${id}/rerun`, { method: 'POST', body: '{}' });
-    message.success('Repo sync rerun queued');
+    message.success(t('git.syncRerunQueued'));
     runs.reload();
     syncAssets.reload();
     syncAssetDetail.reload();
   }
   async function createRemote(values: AnyRow) {
     if (!repo) {
-      message.error('Select a repository first');
+      message.error(t('git.selectRepositoryFirst'));
       return;
     }
     await api(`/api/git-repositories/${repo.id}/remotes`, {
@@ -6379,27 +6533,27 @@ function GitRemotes() {
               const status = readiness.status || 'unknown';
               return <Space size={4} wrap>
                 <Tag color={status === 'ready' ? 'green' : status === 'blocked' ? 'red' : 'default'}>{translatedValue(status, t)}</Tag>
-                <Tag color={providerPlan.plan_state === 'planned' ? 'gold' : 'red'}>{providerPlan.plan_state || 'blocked'}</Tag>
-                <Tag color={publicEndpointPlan.public_origin_ready ? 'green' : 'red'}>{publicEndpointPlan.public_origin_ready ? 'public origin' : 'no public origin'}</Tag>
-                <Tag color={deliveryPlan.delivery_state === 'planned' ? 'gold' : 'red'}>{deliveryPlan.provider_test_delivery_sent ? 'test delivered' : 'no test delivery'}</Tag>
-                <Tag color={thresholdPlan.threshold_state === 'planned' ? 'gold' : 'red'}>{thresholdPlan.provider_pair_thresholds_tuned ? 'thresholds tuned' : 'thresholds pending'}</Tag>
-                <Tag color={thresholdVolumeColor(thresholdPlan, thresholdVolume)}>{thresholdVolume.local_volume_observed ? `volume ${thresholdPlan.threshold_review_state || 'observed'}` : 'volume pending'}</Tag>
-                {metricsComparison.mode ? <Tag color={metricsComparison.comparison_ready_for_review ? 'gold' : metricsComparison.comparison_state === 'needs_failure_review' ? 'red' : 'default'}>metrics {metricsComparison.comparison_state || 'blocked'}</Tag> : null}
-                {metricsComparison.mode ? <Tag>{metricsComparison.provider_metrics_fetched ? 'provider metrics' : 'no provider metrics'}</Tag> : null}
-                {thresholdConfig.mode ? <Tag color={thresholdConfig.configuration_review_ready === true ? 'gold' : 'default'}>{thresholdConfig.configuration_review_ready === true ? 'config review ready' : `config ${thresholdConfig.configuration_state || 'blocked'}`}</Tag> : null}
-                {thresholdConfig.threshold_configuration_written ? <Tag color="green">{thresholdConfig.threshold_configuration_count || 0} configs</Tag> : null}
-                {thresholdConfig.capacity_signals_recomputed ? <Tag color="green">capacity recomputed</Tag> : null}
-                {thresholdAudit.mode ? <Tag color={thresholdAudit.decision_ready_for_review ? 'gold' : thresholdAudit.decision_state === 'needs_failure_review' ? 'red' : 'default'}>threshold audit {thresholdAudit.decision_state || 'blocked'}</Tag> : null}
-                {thresholdAudit.mode ? <Tag>{thresholdAudit.audit_insert_enabled ? 'audit write enabled' : 'no audit write'}</Tag> : null}
-                {thresholdAudit.threshold_decision_audit_count ? <Tag color="green">{thresholdAudit.threshold_decision_audit_count} audit rows</Tag> : null}
-                <Tag>{providerPlan.external_call_made ? 'provider call' : 'no provider call'}</Tag>
-                <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
-                {snapshotResult ? <Tag color={snapshotResult.provider_callback_rehearsal_snapshot_written ? 'green' : snapshotResult.recording_state === 'asset_missing' ? 'red' : snapshotResult.recording_ready ? 'gold' : 'default'}>snapshot {snapshotResult.recording_state || 'unknown'}</Tag> : null}
-                <Tag color={replayProof.proof_state === 'recorded' ? 'green' : replayProof.proof_state === 'failed' ? 'red' : replayProof.operator_replay_observed ? 'gold' : 'default'}>{replayProof.operator_replay_observed ? `replay proof ${replayProof.proof_state || 'observed'}` : 'replay proof pending'}</Tag>
-                {callbackEvidence.delivery_count_7d ? <Tag color={callbackEvidenceColor(callbackEvidence.evidence_state)}>callback {callbackEvidence.evidence_state || 'observed'}</Tag> : null}
-                {callbackEvidence.delivery_count_7d ? <Tag>{callbackEvidence.delivery_count_7d} deliveries</Tag> : null}
-                {callbackEvidence.repo_sync_enqueue_observed ? <Tag color="green">repo sync observed</Tag> : null}
-                {callbackEvidence.failed_count_7d ? <Tag color="red">{callbackEvidence.failed_count_7d} failed callbacks</Tag> : null}
+                <Tag color={providerPlan.plan_state === 'planned' ? 'gold' : 'red'}>{translatedValue(providerPlan.plan_state || 'blocked', t)}</Tag>
+                <Tag color={publicEndpointPlan.public_origin_ready ? 'green' : 'red'}>{t(publicEndpointPlan.public_origin_ready ? 'value.public_origin' : 'value.no_public_origin')}</Tag>
+                <Tag color={deliveryPlan.delivery_state === 'planned' ? 'gold' : 'red'}>{t(deliveryPlan.provider_test_delivery_sent ? 'value.test_delivered' : 'value.no_test_delivery')}</Tag>
+                <Tag color={thresholdPlan.threshold_state === 'planned' ? 'gold' : 'red'}>{t(thresholdPlan.provider_pair_thresholds_tuned ? 'value.thresholds_tuned' : 'value.thresholds_pending')}</Tag>
+                <Tag color={thresholdVolumeColor(thresholdPlan, thresholdVolume)}>{thresholdVolume.local_volume_observed ? `${t('value.volume')} ${translatedValue(thresholdPlan.threshold_review_state || 'observed', t)}` : t('value.volume_pending')}</Tag>
+                {metricsComparison.mode ? <Tag color={metricsComparison.comparison_ready_for_review ? 'gold' : metricsComparison.comparison_state === 'needs_failure_review' ? 'red' : 'default'}>{t('value.metrics')} {translatedValue(metricsComparison.comparison_state || 'blocked', t)}</Tag> : null}
+                {metricsComparison.mode ? <Tag>{t(metricsComparison.provider_metrics_fetched ? 'value.provider_metrics' : 'value.no_provider_metrics')}</Tag> : null}
+                {thresholdConfig.mode ? <Tag color={thresholdConfig.configuration_review_ready === true ? 'gold' : 'default'}>{thresholdConfig.configuration_review_ready === true ? t('value.config_review_ready') : `${t('value.config')} ${translatedValue(thresholdConfig.configuration_state || 'blocked', t)}`}</Tag> : null}
+                {thresholdConfig.threshold_configuration_written ? <Tag color="green">{thresholdConfig.threshold_configuration_count || 0} {t('value.configs')}</Tag> : null}
+                {thresholdConfig.capacity_signals_recomputed ? <Tag color="green">{t('value.capacity_recomputed')}</Tag> : null}
+                {thresholdAudit.mode ? <Tag color={thresholdAudit.decision_ready_for_review ? 'gold' : thresholdAudit.decision_state === 'needs_failure_review' ? 'red' : 'default'}>{t('value.threshold_audit')} {translatedValue(thresholdAudit.decision_state || 'blocked', t)}</Tag> : null}
+                {thresholdAudit.mode ? <Tag>{t(thresholdAudit.audit_insert_enabled ? 'value.audit_write_enabled' : 'value.no_audit_write')}</Tag> : null}
+                {thresholdAudit.threshold_decision_audit_count ? <Tag color="green">{thresholdAudit.threshold_decision_audit_count} {t('value.audit_rows')}</Tag> : null}
+                <Tag>{t(providerPlan.external_call_made ? 'value.provider_call' : 'value.no_provider_call')}</Tag>
+                <Tag>{t(resultPlan.result_written ? 'value.result_recorded' : 'value.no_result_record')}</Tag>
+                {snapshotResult ? <Tag color={snapshotResult.provider_callback_rehearsal_snapshot_written ? 'green' : snapshotResult.recording_state === 'asset_missing' ? 'red' : snapshotResult.recording_ready ? 'gold' : 'default'}>{t('value.snapshot')} {translatedValue(snapshotResult.recording_state || 'unknown', t)}</Tag> : null}
+                <Tag color={replayProof.proof_state === 'recorded' ? 'green' : replayProof.proof_state === 'failed' ? 'red' : replayProof.operator_replay_observed ? 'gold' : 'default'}>{replayProof.operator_replay_observed ? `${t('value.replay_proof')} ${translatedValue(replayProof.proof_state || 'observed', t)}` : t('value.replay_proof_pending')}</Tag>
+                {callbackEvidence.delivery_count_7d ? <Tag color={callbackEvidenceColor(callbackEvidence.evidence_state)}>{t('value.callback')} {translatedValue(callbackEvidence.evidence_state || 'observed', t)}</Tag> : null}
+                {callbackEvidence.delivery_count_7d ? <Tag>{callbackEvidence.delivery_count_7d} {t('value.deliveries')}</Tag> : null}
+                {callbackEvidence.repo_sync_enqueue_observed ? <Tag color="green">{t('value.repo_sync_observed')}</Tag> : null}
+                {callbackEvidence.failed_count_7d ? <Tag color="red">{callbackEvidence.failed_count_7d} {t('value.failed_callbacks')}</Tag> : null}
                 <Typography.Text>{shortText(readiness.message, 56)}</Typography.Text>
               </Space>;
             } },
@@ -6467,22 +6621,22 @@ function GitRemotes() {
             const snapshotResult = tagSnapshotResults[row.id];
             const actionsSnapshotResult = tagActionsSnapshotResults[row.id];
             return <Space size={4} wrap>
-              <Tag color={plan.rehearsal_state === 'observed' ? 'green' : plan.rehearsal_state === 'blocked' || plan.rehearsal_state === 'failed' ? 'red' : 'gold'}>{plan.rehearsal_state || 'planned'}</Tag>
-              <Tag>{plan.live_remote_tag_success_observed ? 'remote success' : 'no remote success'}</Tag>
-              {lookupPreflight.mode ? <Tag color={lookupPreflight.lookup_state === 'observed' ? 'green' : lookupPreflight.lookup_state === 'failed' || lookupPreflight.lookup_state === 'blocked' ? 'red' : 'gold'}>lookup {lookupPreflight.lookup_state || 'blocked'}</Tag> : null}
-              {lookupPreflight.mode ? <Tag>{lookupPreflight.remote_tag_lookup_performed ? 'remote lookup' : 'no remote lookup'}</Tag> : null}
-              {row.lookup_operation_status ? <Tag color={row.lookup_operation_status === 'completed' ? 'green' : row.lookup_operation_status === 'failed' ? 'red' : 'blue'}>op {row.lookup_operation_status}</Tag> : null}
-              {lookupPreflight.remote_tag_found !== undefined ? <Tag color={lookupPreflight.remote_tag_found ? 'green' : 'default'}>{lookupPreflight.remote_tag_found ? `found ${lookupPreflight.matched_count || 0}` : 'not found'}</Tag> : null}
-              <Tag color={liveResultPlan.live_result_state === 'planned' ? 'gold' : 'red'}>{liveResultPlan.repo_tag_run_result_written ? 'tag result saved' : liveResultPlan.live_result_state === 'failed' ? 'tag result failed' : 'tag result pending'}</Tag>
-              <Tag color={actionsRefreshPlan.refresh_state === 'planned' ? 'gold' : 'red'}>{actionsRefreshPlan.github_actions_refresh_performed ? 'actions refreshed' : actionsRefreshPlan.refresh_state === 'failed' ? 'actions refresh failed' : 'actions refresh pending'}</Tag>
-              {actionsRefreshPlan.refresh_operation_status ? <Tag color={actionsRefreshPlan.refresh_operation_status === 'completed' ? 'green' : actionsRefreshPlan.refresh_operation_status === 'failed' ? 'red' : 'blue'}>actions op {actionsRefreshPlan.refresh_operation_status}</Tag> : null}
-              {actionsRefreshPlan.github_action_runs_synced ? <Tag color="green">{actionsRefreshPlan.github_action_runs_synced_count || 0} action runs</Tag> : null}
-              <Tag>{resultPlan.result_written ? 'result recorded' : 'no result record'}</Tag>
-              {resultPlan.result_recording_state ? <Tag color={tagResultEvidenceColor(resultPlan.result_recording_state)}>recording {resultPlan.result_recording_state}</Tag> : null}
-              {snapshotResult ? <Tag color={snapshotResult.tag_result_snapshot_written ? 'green' : snapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>snapshot {snapshotResult.recording_state || 'unknown'}</Tag> : null}
-              {actionsSnapshotResult ? <Tag color={actionsSnapshotResult.actions_refresh_snapshot_written ? 'green' : actionsSnapshotResult.recording_state === 'asset_missing' ? 'red' : actionsSnapshotResult.recording_ready ? 'gold' : 'default'}>actions snapshot {actionsSnapshotResult.recording_state || 'unknown'}</Tag> : null}
-              {tagResultEvidence.waiting_for_worker ? <Tag color="blue">tag worker pending</Tag> : null}
-              {tagResultEvidence.live_remote_tag_failed_observed ? <Tag color="red">tag failure observed</Tag> : null}
+              <Tag color={plan.rehearsal_state === 'observed' ? 'green' : plan.rehearsal_state === 'blocked' || plan.rehearsal_state === 'failed' ? 'red' : 'gold'}>{translatedValue(plan.rehearsal_state || 'planned', t)}</Tag>
+              <Tag>{t(plan.live_remote_tag_success_observed ? 'value.remote_success' : 'value.no_remote_success')}</Tag>
+              {lookupPreflight.mode ? <Tag color={lookupPreflight.lookup_state === 'observed' ? 'green' : lookupPreflight.lookup_state === 'failed' || lookupPreflight.lookup_state === 'blocked' ? 'red' : 'gold'}>{t('value.lookup')} {translatedValue(lookupPreflight.lookup_state || 'blocked', t)}</Tag> : null}
+              {lookupPreflight.mode ? <Tag>{t(lookupPreflight.remote_tag_lookup_performed ? 'value.remote_lookup' : 'value.no_remote_lookup')}</Tag> : null}
+              {row.lookup_operation_status ? <Tag color={row.lookup_operation_status === 'completed' ? 'green' : row.lookup_operation_status === 'failed' ? 'red' : 'blue'}>{t('value.operation')} {translatedValue(row.lookup_operation_status, t)}</Tag> : null}
+              {lookupPreflight.remote_tag_found !== undefined ? <Tag color={lookupPreflight.remote_tag_found ? 'green' : 'default'}>{lookupPreflight.remote_tag_found ? `${t('value.found')} ${lookupPreflight.matched_count || 0}` : t('value.not_found')}</Tag> : null}
+              <Tag color={liveResultPlan.live_result_state === 'planned' ? 'gold' : 'red'}>{liveResultPlan.repo_tag_run_result_written ? t('value.tag_result_saved') : liveResultPlan.live_result_state === 'failed' ? t('value.tag_result_failed') : t('value.tag_result_pending')}</Tag>
+              <Tag color={actionsRefreshPlan.refresh_state === 'planned' ? 'gold' : 'red'}>{actionsRefreshPlan.github_actions_refresh_performed ? t('value.actions_refreshed') : actionsRefreshPlan.refresh_state === 'failed' ? t('value.actions_refresh_failed') : t('value.actions_refresh_pending')}</Tag>
+              {actionsRefreshPlan.refresh_operation_status ? <Tag color={actionsRefreshPlan.refresh_operation_status === 'completed' ? 'green' : actionsRefreshPlan.refresh_operation_status === 'failed' ? 'red' : 'blue'}>{t('value.actions_operation')} {translatedValue(actionsRefreshPlan.refresh_operation_status, t)}</Tag> : null}
+              {actionsRefreshPlan.github_action_runs_synced ? <Tag color="green">{actionsRefreshPlan.github_action_runs_synced_count || 0} {t('value.action_runs')}</Tag> : null}
+              <Tag>{t(resultPlan.result_written ? 'value.result_recorded' : 'value.no_result_record')}</Tag>
+              {resultPlan.result_recording_state ? <Tag color={tagResultEvidenceColor(resultPlan.result_recording_state)}>{t('value.recording')} {translatedValue(resultPlan.result_recording_state, t)}</Tag> : null}
+              {snapshotResult ? <Tag color={snapshotResult.tag_result_snapshot_written ? 'green' : snapshotResult.recording_state === 'asset_missing' ? 'red' : 'default'}>{t('value.snapshot')} {translatedValue(snapshotResult.recording_state || 'unknown', t)}</Tag> : null}
+              {actionsSnapshotResult ? <Tag color={actionsSnapshotResult.actions_refresh_snapshot_written ? 'green' : actionsSnapshotResult.recording_state === 'asset_missing' ? 'red' : actionsSnapshotResult.recording_ready ? 'gold' : 'default'}>{t('value.actions_snapshot')} {translatedValue(actionsSnapshotResult.recording_state || 'unknown', t)}</Tag> : null}
+              {tagResultEvidence.waiting_for_worker ? <Tag color="blue">{t('value.tag_worker_pending')}</Tag> : null}
+              {tagResultEvidence.live_remote_tag_failed_observed ? <Tag color="red">{t('value.tag_failure_observed')}</Tag> : null}
             </Space>;
           } },
           { title: t('field.tag_name'), dataIndex: 'tag_name' },
@@ -6648,7 +6802,7 @@ function GitRemotes() {
             { title: t('common.action'), render: (_, row) => row.status === 'failed' ? <Button size="small" onClick={() => rerunRepoSyncRun(row.id)}>{t('git.rerun')}</Button> : null }
           ]} />
           <Table<AnyRow> rowKey="id" size="small" dataSource={syncAssetDetail.data.webhook_events || []} pagination={{ pageSize: 5 }} columns={[
-            { title: 'Webhook', dataIndex: 'delivery_id' },
+            { title: t('title.webhooks'), dataIndex: 'delivery_id' },
             { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'queued' ? 'green' : row.status === 'failed' || row.status === 'rejected' ? 'red' : 'default'}>{translatedValue(row.status, t)}</Tag> },
             { title: t('common.event'), dataIndex: 'event_type' },
             { title: t('common.error'), dataIndex: 'error_message' },
