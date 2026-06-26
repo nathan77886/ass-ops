@@ -1480,6 +1480,44 @@ func expectArgoPodLogTargetQuery(mock sqlmock.Sqlmock, namespace string) {
 		))
 }
 
+func expectDeploymentTargetKubernetesAccessQuery(mock sqlmock.Sqlmock, namespace, kubeconfigRef string) {
+	mock.ExpectQuery(`(?s)SELECT dt\.id, dt\.project_id, dt\.name, dt\.environment, dt\.cluster_name, dt\.namespace, dt\.status,\s+ke\.id AS kubernetes_environment_id,\s+ke\.name AS kubernetes_environment_name,\s+\(ke\.kubeconfig_secret_ref <> ''\) AS kubeconfig_secret_ref_present,\s+ke\.kubeconfig_secret_ref,\s+\(ke\.service_account <> ''\) AS service_account_present,\s+ke\.token_subject_review_status,\s+ke\.rbac_read_logs_status,\s+ke\.status AS kubernetes_environment_status\s+FROM deployment_targets dt\s+LEFT JOIN kubernetes_environments ke`).
+		WithArgs("target-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"project_id",
+			"name",
+			"environment",
+			"cluster_name",
+			"namespace",
+			"status",
+			"kubernetes_environment_id",
+			"kubernetes_environment_name",
+			"kubeconfig_secret_ref_present",
+			"kubeconfig_secret_ref",
+			"service_account_present",
+			"token_subject_review_status",
+			"rbac_read_logs_status",
+			"kubernetes_environment_status",
+		}).AddRow(
+			"target-1",
+			"project-1",
+			"prod",
+			"prod",
+			"prod-cluster",
+			namespace,
+			"Healthy",
+			"kube-env-1",
+			"billing",
+			kubeconfigRef != "",
+			kubeconfigRef,
+			true,
+			"reviewed",
+			"reviewed",
+			"ready",
+		))
+}
+
 func expectArgoPodLogSnapshotEvidenceQueries(mock sqlmock.Sqlmock, status string, assetFound bool) {
 	expectArgoPodLogTargetQuery(mock, "billing")
 	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
@@ -1753,6 +1791,50 @@ func TestPreviewArgoPodLogQueryLoadsSanitizedAuditEvidence(t *testing.T) {
 	for _, forbidden := range []string{"secret kubeconfig", "actual log line", "apiVersion:", "Bearer secret"} {
 		if strings.Contains(encoded, forbidden) {
 			t.Fatalf("pod log preview handler leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestListDeploymentTargetPodsBlockedResponseIsRedacted(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
+	expectDeploymentTargetKubernetesAccessQuery(mock, "billing", "billing-reader")
+	req := httptest.NewRequest(http.MethodPost, "/api/deployment-targets/target-1/pods", strings.NewReader(`{}`))
+	req = withRouteParam(req, "id", "target-1")
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, &User{ID: "admin-1", Role: "admin"}))
+	rr := httptest.NewRecorder()
+
+	server.listDeploymentTargetPods(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	var result map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result["backend_state"] != "blocked" ||
+		result["kubernetes_api_call"] != false ||
+		result["raw_response_included"] != false ||
+		result["log_body_included"] != false ||
+		intFromAny(result["item_count"], -1) != 0 {
+		t.Fatalf("blocked pod list result = %#v", result)
+	}
+	plan := mapFromAny(result["backend_plan"])
+	if !stringListContains(stringSliceFromAny(plan["blocked_reasons"]), "kubernetes_logs_backend_disabled") {
+		t.Fatalf("backend plan did not expose disabled blocker: %#v", plan)
+	}
+	encoded := rr.Body.String()
+	for _, forbidden := range []string{"billing-reader", "apiVersion:", "clusters:", "Bearer secret", "raw pod response"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("pod list handler leaked %q: %s", forbidden, encoded)
 		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

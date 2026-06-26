@@ -15,6 +15,7 @@ import {
 } from '@ant-design/icons';
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
   Checkbox,
@@ -279,8 +280,12 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'k8s.backendHintReady': 'Approved audits can invoke kubectl logs; only sanitized metadata is recorded.',
     'k8s.backendHintBlocked': 'Set ASSOPS_KUBERNETES_LOGS_ENABLED=true, provide a relative kubeconfig ref under ASSOPS_KUBECONFIG_SECRET_DIR, complete reviews, and make kubectl available to the worker.',
     'pod.preview': 'Preview',
+    'pod.refreshPods': 'Refresh pods',
     'pod.requestAudit': 'Request audit',
     'pod.recordSnapshot': 'Record audit snapshot',
+    'pod.listReady': 'Pod metadata loaded',
+    'pod.listBlocked': 'Pod metadata listing is blocked',
+    'pod.listFailed': 'Pod metadata listing failed',
     'git.sourceRemote': 'Source remote',
     'git.targetRemote': 'Target remote',
     'git.syncSelectedRemotes': 'Sync selected remotes',
@@ -398,6 +403,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.podLogSnapshotNotReady': 'Pod log audit snapshot is not ready yet',
     'config.podLogSnapshotRecorded': 'Pod log audit snapshot recorded',
     'config.podLogSnapshotCurrent': 'Pod log audit snapshot already current',
+    'config.selectDeploymentTarget': 'Select a deployment target first',
     'config.approvalRequested': 'Approval requested',
     'config.sshCommandQueued': 'SSH command queued',
     'config.sshVerifyQueued': 'SSH verify queued',
@@ -514,6 +520,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.kube_readiness': 'kube readiness',
     'value.namespace_kubeconfig_bound': 'namespace kubeconfig bound',
     'value.no_namespace_kubeconfig': 'no namespace kubeconfig',
+    'value.pod_metadata': 'pod metadata',
     'value.log_metadata_reviewed': 'log metadata reviewed',
     'value.log_metadata_pending': 'log metadata pending',
     'value.scope': 'scope',
@@ -825,8 +832,12 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'k8s.backendHintReady': '审批后的审计任务可以调用 kubectl logs；只记录脱敏元数据。',
     'k8s.backendHintBlocked': '需要设置 ASSOPS_KUBERNETES_LOGS_ENABLED=true，在 ASSOPS_KUBECONFIG_SECRET_DIR 下提供相对 kubeconfig 引用，完成审查，并确保 worker 可执行 kubectl。',
     'pod.preview': '预览',
+    'pod.refreshPods': '刷新 Pod',
     'pod.requestAudit': '请求审计',
     'pod.recordSnapshot': '记录审计快照',
+    'pod.listReady': 'Pod 元数据已加载',
+    'pod.listBlocked': 'Pod 元数据列表受阻',
+    'pod.listFailed': 'Pod 元数据列表失败',
     'git.sourceRemote': '源远端',
     'git.targetRemote': '目标远端',
     'git.syncSelectedRemotes': '同步所选远端',
@@ -944,6 +955,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.podLogSnapshotNotReady': 'Pod 日志审计快照尚未就绪',
     'config.podLogSnapshotRecorded': 'Pod 日志审计快照已记录',
     'config.podLogSnapshotCurrent': 'Pod 日志审计快照已是最新',
+    'config.selectDeploymentTarget': '请先选择部署目标',
     'config.approvalRequested': '已请求审批',
     'config.sshCommandQueued': 'SSH 命令已入队',
     'config.sshVerifyQueued': 'SSH 验证已入队',
@@ -1060,6 +1072,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'value.kube_readiness': 'Kube 就绪度',
     'value.namespace_kubeconfig_bound': '已绑定命名空间 kubeconfig',
     'value.no_namespace_kubeconfig': '无命名空间 kubeconfig',
+    'value.pod_metadata': 'Pod 元数据',
     'value.log_metadata_reviewed': '日志元数据已审查',
     'value.log_metadata_pending': '日志元数据待审查',
     'value.scope': '范围',
@@ -8288,12 +8301,16 @@ function ConfigPage() {
   const project = projectPick.selected;
   const [argoOpen, setArgoOpen] = useState(false);
   const [argoSyncOpID, setArgoSyncOpID] = useState<string>();
+  const [podLogForm] = Form.useForm();
   const [podLogPreview, setPodLogPreview] = useState<AnyRow>();
   const [podLogLoading, setPodLogLoading] = useState(false);
+  const [podListLoading, setPodListLoading] = useState(false);
+  const [podListResult, setPodListResult] = useState<AnyRow>();
   const [podLogRunLoading, setPodLogRunLoading] = useState(false);
   const [podLogRunResult, setPodLogRunResult] = useState<AnyRow>();
   const [podLogSnapshotLoading, setPodLogSnapshotLoading] = useState(false);
   const [podLogSnapshotResult, setPodLogSnapshotResult] = useState<AnyRow>();
+  const selectedPodName = Form.useWatch('pod_name', podLogForm);
   const [kubernetesEnvironmentOpen, setKubernetesEnvironmentOpen] = useState(false);
   const [kubernetesEnvironmentForm] = Form.useForm();
   const [deploymentExecutionGateLoadingID, setDeploymentExecutionGateLoadingID] = useState('');
@@ -8369,6 +8386,14 @@ function ConfigPage() {
     rollbackPoints.data?.items || [],
     t
   );
+  const podListItems = Array.isArray(podListResult?.items) ? podListResult.items : [];
+  const podOptions = podListItems.map((pod: AnyRow) => ({
+    value: pod.name,
+    label: `${pod.name} · ${translatedValue(pod.phase || 'unknown', t)} · ${pod.ready_containers || 0}/${pod.container_count || 0}`
+  }));
+  const selectedPodMetadata = podListItems.find((pod: AnyRow) => pod.name === selectedPodName);
+  const containerOptions = (Array.isArray(selectedPodMetadata?.containers) ? selectedPodMetadata.containers : [])
+    .map((container: string) => ({ value: container, label: container }));
   const rollbackGuardrail = buildRollbackGuardrail(rollbackPoints.data?.items || [], t);
   const deploymentExecutionGuardrail = buildDeploymentExecutionGuardrail(deploymentTargets.data?.items || [], t);
   useEffect(() => {
@@ -8506,6 +8531,38 @@ function ConfigPage() {
       message.error(error.message || t('config.rollbackGateFailed'));
     } finally {
       setRollbackExecutionGateLoadingID('');
+    }
+  }
+  async function refreshPodList(targetID?: string) {
+    const selectedTargetID = targetID || podLogForm.getFieldValue('deployment_target_id');
+    if (!selectedTargetID) {
+      message.error(t('config.selectDeploymentTarget'));
+      return;
+    }
+    setPodListLoading(true);
+    try {
+      const result = await api(`/api/deployment-targets/${selectedTargetID}/pods`, { method: 'POST', body: '{}' });
+      setPodListResult(result);
+      const items = Array.isArray(result.items) ? result.items : [];
+      if (items.length > 0) {
+        const currentPodName = podLogForm.getFieldValue('pod_name');
+        const selectedPod = items.find((item: AnyRow) => item.name === currentPodName) || items[0];
+        const firstContainer = Array.isArray(selectedPod.containers) ? selectedPod.containers[0] : undefined;
+        podLogForm.setFieldsValue({
+          pod_name: selectedPod.name,
+          container_name: podLogForm.getFieldValue('container_name') || firstContainer
+        });
+        message.success(t('pod.listReady'));
+      } else if (result.backend_state === 'blocked' || result.backend_state === 'disabled') {
+        message.warning(result.message || t('pod.listBlocked'));
+      } else {
+        message.warning(result.message || t('pod.listFailed'));
+      }
+    } catch (error: any) {
+      setPodListResult(undefined);
+      message.error(error.message || t('pod.listFailed'));
+    } finally {
+      setPodListLoading(false);
     }
   }
   async function previewPodLogs(values: AnyRow) {
@@ -8790,15 +8847,44 @@ function ConfigPage() {
           {rollbackGuardrail && <Alert showIcon type={rollbackGuardrail.type} message={rollbackGuardrail.message} description={rollbackGuardrail.description} />}
           <Card title={t('form.podLogQuery')}>
             <Space direction="vertical" size={12} className="full">
-              <Form layout="inline" onFinish={previewPodLogs} initialValues={{ tail_lines: 200, since_seconds: 0 }}>
+              <Form
+                form={podLogForm}
+                layout="inline"
+                onFinish={previewPodLogs}
+                initialValues={{ tail_lines: 200, since_seconds: 0 }}
+                onValuesChange={(changed) => {
+                  if (changed.deployment_target_id) {
+                    setPodListResult(undefined);
+                    setPodLogPreview(undefined);
+                    setPodLogRunResult(undefined);
+                    setPodLogSnapshotResult(undefined);
+                    podLogForm.setFieldsValue({ pod_name: undefined, container_name: undefined });
+                  }
+                }}
+              >
                 <Form.Item name="deployment_target_id" label={fieldLabel('deployment_target_id', t)} rules={[{ required: true, message: t('common.required') }]}>
                   <Select placeholder={t('common.target')} style={{ width: 220 }} options={(deploymentTargets.data?.items || []).map((target: AnyRow) => ({ value: target.id, label: `${target.name || target.namespace} (${target.environment || 'env'})` }))} />
                 </Form.Item>
-                <Form.Item name="pod_name" rules={[{ required: true, message: t('common.required') }]}>
-                  <Input placeholder={t('field.pod_name')} style={{ width: 180 }} suffix={<Tooltip title={t('help.pod_name')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
+                <Form.Item name="pod_name" label={<Space size={4}>{fieldLabel('pod_name', t)}<Tooltip title={t('help.pod_name')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip></Space>} rules={[{ required: true, message: t('common.required') }]}>
+                  <AutoComplete
+                    placeholder={t('field.pod_name')}
+                    style={{ width: 220 }}
+                    options={podOptions}
+                    filterOption={(inputValue, option) => String(option?.value || '').toLowerCase().includes(inputValue.toLowerCase())}
+                    onSelect={(value) => {
+                      const selected = podListItems.find((pod: AnyRow) => pod.name === value);
+                      const firstContainer = Array.isArray(selected?.containers) ? selected.containers[0] : undefined;
+                      podLogForm.setFieldsValue({ container_name: firstContainer });
+                    }}
+                  />
                 </Form.Item>
-                <Form.Item name="container_name">
-                  <Input placeholder={t('field.container_name')} style={{ width: 150 }} suffix={<Tooltip title={t('help.container_name')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
+                <Form.Item name="container_name" label={<Space size={4}>{fieldLabel('container_name', t)}<Tooltip title={t('help.container_name')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip></Space>}>
+                  <AutoComplete
+                    placeholder={t('field.container_name')}
+                    style={{ width: 170 }}
+                    options={containerOptions}
+                    filterOption={(inputValue, option) => String(option?.value || '').toLowerCase().includes(inputValue.toLowerCase())}
+                  />
                 </Form.Item>
                 <Form.Item name="tail_lines">
                   <Input type="number" min={1} max={1000} placeholder={t('field.tail_lines')} style={{ width: 110 }} suffix={<Tooltip title={t('help.tail_lines')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
@@ -8806,8 +8892,19 @@ function ConfigPage() {
                 <Form.Item name="since_seconds">
                   <Input type="number" min={0} max={86400} placeholder={t('field.since_seconds')} style={{ width: 130 }} suffix={<Tooltip title={t('help.since_seconds')}><QuestionCircleOutlined className="fieldHelpIcon" /></Tooltip>} />
                 </Form.Item>
+                <Button htmlType="button" onClick={() => refreshPodList()} loading={podListLoading} disabled={!project || !(deploymentTargets.data?.items || []).length}>{t('pod.refreshPods')}</Button>
                 <Button htmlType="submit" loading={podLogLoading} disabled={!project || !(deploymentTargets.data?.items || []).length}>{t('pod.preview')}</Button>
               </Form>
+              <Space wrap>
+                <Tooltip title={podListResult?.backend_plan?.ready ? t('k8s.backendHintReady') : t('k8s.backendHintBlocked')}>
+                  <Tag color={podListResult?.backend_state === 'completed' ? 'green' : podListResult?.backend_state === 'blocked' || podListResult?.backend_state === 'disabled' ? 'gold' : podListResult?.backend_state === 'failed' ? 'red' : 'default'}>
+                    {t('value.pod_metadata')} {translatedValue(podListResult?.backend_state || 'unknown', t)}
+                  </Tag>
+                </Tooltip>
+                {podListResult ? <Tag>{podListResult.item_count || 0} {t('value.pod_metadata')}</Tag> : null}
+                {podListResult ? <Tag>{podListResult.kubernetes_api_call ? t('value.k8s_called') : t('value.no_k8s_call')}</Tag> : null}
+                {podListResult ? <Tag>{podListResult.raw_response_included || podListResult.log_body_included ? t('value.sensitive_material_present') : t('value.no_secrets_kubeconfig')}</Tag> : null}
+              </Space>
               {podLogPreview && (
                 <Space direction="vertical" size={8} className="full">
                   <Space wrap>

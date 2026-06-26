@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -30,6 +31,14 @@ type kubernetesPodLogRequest struct {
 	ContainerName      string
 	TailLines          int
 	SinceSeconds       int
+	KubeconfigRef      string
+}
+
+type kubernetesPodListRequest struct {
+	DeploymentTargetID string
+	Environment        string
+	ClusterName        string
+	Namespace          string
 	KubeconfigRef      string
 }
 
@@ -97,6 +106,151 @@ func kubernetesPodLogBackendPlan(cfg Config, target map[string]any) map[string]a
 		"blocked_reasons":                blockers,
 		"suppressed_fields":              []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "log_body", "redacted_log_body", "raw_kubernetes_response"},
 	}
+}
+
+func runKubernetesPodList(ctx context.Context, cfg Config, req kubernetesPodListRequest) (map[string]any, error) {
+	started := time.Now().UTC()
+	result := map[string]any{
+		"backend":                       "kubectl_get_pods",
+		"backend_state":                 "blocked",
+		"result_scope":                  "sanitized_pod_metadata",
+		"deployment_target_id":          req.DeploymentTargetID,
+		"environment":                   req.Environment,
+		"cluster_name":                  req.ClusterName,
+		"namespace":                     req.Namespace,
+		"kubeconfig_bound":              false,
+		"kubeconfig_secret_ref_present": req.KubeconfigRef != "",
+		"kubeconfig_secret_read":        false,
+		"kubernetes_client_created":     false,
+		"kubernetes_api_call":           false,
+		"kubectl_command_invoked":       false,
+		"raw_response_included":         false,
+		"secret_included":               false,
+		"log_body_included":             false,
+		"items":                         []map[string]any{},
+		"item_count":                    0,
+		"started_at":                    started.Format(time.RFC3339),
+		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret"},
+	}
+	if !cfg.KubernetesPodLogsEnabled {
+		result["backend_state"] = "disabled"
+		result["message"] = "pod metadata listing is disabled"
+		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
+		return result, nil
+	}
+	if !kubernetesNamespacePattern.MatchString(req.Namespace) || len(req.Namespace) > 63 {
+		result["backend_state"] = "blocked"
+		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
+		return result, fmt.Errorf("invalid Kubernetes namespace")
+	}
+	if req.KubeconfigRef == "" {
+		result["backend_state"] = "blocked"
+		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
+		return result, fmt.Errorf("kubeconfig secret ref is required")
+	}
+	kubeconfigPath, err := resolveKubeconfigRef(cfg, req.KubeconfigRef)
+	if err != nil {
+		result["backend_state"] = "blocked"
+		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
+		return result, err
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	args := []string{"--kubeconfig", kubeconfigPath, "-n", req.Namespace, "get", "pods", "-o", "json"}
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(runCtx, kubectlBinary(cfg), args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	result["kubeconfig_bound"] = true
+	result["kubectl_command_invoked"] = true
+	result["kubernetes_client_created"] = true
+	result["kubernetes_api_call"] = true
+	if err := cmd.Run(); err != nil {
+		result["backend_state"] = "failed"
+		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
+		_ = stderr
+		return result, fmt.Errorf("kubectl get pods failed")
+	}
+	items, err := sanitizeKubernetesPodList(stdout.Bytes())
+	if err != nil {
+		result["backend_state"] = "failed"
+		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
+		return result, err
+	}
+	result["backend_state"] = "completed"
+	result["items"] = items
+	result["item_count"] = len(items)
+	result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
+	result["message"] = "pod metadata listed; raw Kubernetes response and log bodies were not stored"
+	return result, nil
+}
+
+func sanitizeKubernetesPodList(data []byte) ([]map[string]any, error) {
+	var payload struct {
+		Items []struct {
+			Metadata struct {
+				Name              string `json:"name"`
+				CreationTimestamp string `json:"creationTimestamp"`
+			} `json:"metadata"`
+			Spec struct {
+				Containers []struct {
+					Name string `json:"name"`
+				} `json:"containers"`
+			} `json:"spec"`
+			Status struct {
+				Phase             string `json:"phase"`
+				ContainerStatuses []struct {
+					Name         string `json:"name"`
+					Ready        bool   `json:"ready"`
+					RestartCount int    `json:"restartCount"`
+				} `json:"containerStatuses"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("invalid Kubernetes pod list response")
+	}
+	items := make([]map[string]any, 0, len(payload.Items))
+	for _, pod := range payload.Items {
+		name := strings.TrimSpace(pod.Metadata.Name)
+		if name == "" || !kubernetesPodPattern.MatchString(name) || len(name) > 253 {
+			continue
+		}
+		containers := make([]string, 0, len(pod.Spec.Containers))
+		seenContainers := map[string]bool{}
+		for _, container := range pod.Spec.Containers {
+			containerName := strings.TrimSpace(container.Name)
+			if containerName == "" || !kubernetesContainerPattern.MatchString(containerName) || len(containerName) > 63 || seenContainers[containerName] {
+				continue
+			}
+			seenContainers[containerName] = true
+			containers = append(containers, containerName)
+		}
+		readyContainers := 0
+		restartCount := 0
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.Ready {
+				readyContainers++
+			}
+			if status.RestartCount > 0 {
+				restartCount += status.RestartCount
+			}
+		}
+		phase := cleanOptionalText(pod.Status.Phase)
+		if phase == "" {
+			phase = "unknown"
+		}
+		items = append(items, map[string]any{
+			"name":             name,
+			"phase":            phase,
+			"containers":       containers,
+			"container_count":  len(containers),
+			"ready_containers": readyContainers,
+			"restart_count":    restartCount,
+			"created_at":       cleanOptionalText(pod.Metadata.CreationTimestamp),
+		})
+	}
+	return items, nil
 }
 
 func runKubernetesPodLogs(ctx context.Context, cfg Config, req kubernetesPodLogRequest) (map[string]any, error) {

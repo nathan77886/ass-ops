@@ -425,6 +425,7 @@ Operational contract for kubeconfig files:
 - Keep files namespace-scoped and least-privileged for pod log reads only.
 - Use permissions such as `0400` or `0600`; avoid group/world writable modes.
 - Rotate by writing a new file and atomically renaming it within the same directory, rather than overwriting in place.
+- The Argo/Kubernetes UI can use the same reviewed binding to run `kubectl get pods -o json` and show only sanitized pod metadata for selection: pod name, phase, container names, ready container count, restart count, and creation time.
 - `kubectl logs` is invoked without a shell and with a 30 second timeout. Failures are recorded as failed operations without automatic retry.
 - Operation results store only sanitized metadata such as backend state, pod identity, line count, truncation flag, and timestamps. They do not store stdout, stderr, raw Kubernetes responses, kubeconfig content, tokens, authorization headers, or log bodies.
 
@@ -438,7 +439,7 @@ For a first private test environment using Compose:
 4. Log in through the web UI and create a project.
 5. Add an Argo connection, sync apps, and confirm deployment targets appear.
 6. For pod-log metadata audit, provide a namespace-scoped kubeconfig file through either `persistence.kubeconfigs.existingSecretName` or the `assops_kubeconfigs` volume, set `ASSOPS_KUBERNETES_LOGS_ENABLED=true`, restart gateway/worker, then create a Kubernetes environment row whose environment, cluster, namespace, and relative kubeconfig ref match the deployment target.
-7. Use the Argo Pod log query preview first. Only request an audit after the live backend tag is ready; the result records sanitized metadata only.
+7. In the Argo Pod log query card, refresh pods for the deployment target, select a pod/container from the sanitized metadata list, then run the query preview. Only request an audit after the live backend tag is ready; the result records sanitized metadata only.
 8. Add Git remotes for the project repository, sync GitHub Actions, and verify action runs/artifact summaries appear from the local read model.
 9. Create or sync a tag run, refresh GitHub Actions for the tag target, and record the local sanitized snapshots when the UI marks them ready.
 

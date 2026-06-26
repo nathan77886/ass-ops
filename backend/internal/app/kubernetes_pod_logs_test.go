@@ -112,6 +112,76 @@ func TestRunKubernetesPodLogsRecordsMetadataOnly(t *testing.T) {
 	}
 }
 
+func TestRunKubernetesPodListRecordsMetadataOnly(t *testing.T) {
+	dir := t.TempDir()
+	kubeconfigPath := filepath.Join(dir, "billing-reader")
+	writeKubeconfig(t, kubeconfigPath, 0o600)
+	kubectlPath := filepath.Join(dir, "kubectl")
+	podsJSON := `{"items":[{"metadata":{"name":"api-7d9f","creationTimestamp":"2026-06-26T05:00:00Z","labels":{"secret":"do-not-return"}},"spec":{"containers":[{"name":"web"},{"name":"sidecar"}]},"status":{"phase":"Running","containerStatuses":[{"name":"web","ready":true,"restartCount":1},{"name":"sidecar","ready":false,"restartCount":2}]}}]}`
+	if err := os.WriteFile(kubectlPath, []byte("#!/bin/sh\ncat <<'JSON'\n"+podsJSON+"\nJSON\n"), 0o700); err != nil {
+		t.Fatalf("write fake kubectl: %v", err)
+	}
+	result, err := runKubernetesPodList(context.Background(), Config{
+		KubernetesPodLogsEnabled: true,
+		KubeconfigSecretDir:      dir,
+		KubectlPath:              kubectlPath,
+	}, kubernetesPodListRequest{
+		DeploymentTargetID: "target-1",
+		Environment:        "test",
+		ClusterName:        "test-cluster",
+		Namespace:          "billing",
+		KubeconfigRef:      "billing-reader",
+	})
+	if err != nil {
+		t.Fatalf("runKubernetesPodList: %v", err)
+	}
+	if result["backend_state"] != "completed" ||
+		result["result_scope"] != "sanitized_pod_metadata" ||
+		result["kubeconfig_bound"] != true ||
+		result["kubectl_command_invoked"] != true ||
+		result["kubernetes_api_call"] != true ||
+		result["log_body_included"] != false ||
+		result["raw_response_included"] != false ||
+		result["secret_included"] != false ||
+		result["item_count"] != 1 {
+		t.Fatalf("pod list metadata result = %#v", result)
+	}
+	items := mapSliceFromAny(result["items"])
+	if len(items) != 1 ||
+		items[0]["name"] != "api-7d9f" ||
+		items[0]["phase"] != "Running" ||
+		items[0]["ready_containers"] != 1 ||
+		items[0]["restart_count"] != 3 {
+		t.Fatalf("pod list items = %#v", items)
+	}
+	containers := stringSliceFromAny(items[0]["containers"])
+	if len(containers) != 2 || containers[0] != "web" || containers[1] != "sidecar" {
+		t.Fatalf("containers = %#v", containers)
+	}
+	encoded, _ := json.Marshal(result)
+	for _, forbidden := range []string{"do-not-return", kubeconfigPath, "billing-reader", "apiVersion:", "clusters:"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("pod list metadata leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestRunKubernetesPodListDisabledDoesNotInvokeKubectl(t *testing.T) {
+	result, err := runKubernetesPodList(context.Background(), Config{}, kubernetesPodListRequest{
+		Namespace:     "billing",
+		KubeconfigRef: "missing",
+	})
+	if err != nil {
+		t.Fatalf("disabled pod list should not fail: %v", err)
+	}
+	if result["backend_state"] != "disabled" ||
+		result["kubectl_command_invoked"] != false ||
+		result["kubernetes_api_call"] != false ||
+		result["log_body_included"] != false {
+		t.Fatalf("disabled pod list result = %#v", result)
+	}
+}
+
 func TestKubernetesPodLogBackendPlanReportsReadyWithoutReadingLogs(t *testing.T) {
 	dir := t.TempDir()
 	writeKubeconfig(t, filepath.Join(dir, "billing-reader"), 0o600)

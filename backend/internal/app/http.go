@@ -226,6 +226,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/projects/{id}/kubernetes/environments", s.listKubernetesEnvironments)
 		r.Get("/api/projects/{id}/deployment-targets", s.listDeploymentTargets)
 		r.Post("/api/deployment-targets/{id}/execution-gate", s.deploymentTargetExecutionGate)
+		r.Post("/api/deployment-targets/{id}/pods", s.listDeploymentTargetPods)
 		r.Get("/api/projects/{id}/deployment-records", s.listDeploymentRecords)
 		r.Get("/api/projects/{id}/rollback-points", s.listRollbackPoints)
 		r.Post("/api/rollback-points/{id}/execution-gate", s.rollbackPointExecutionGate)
@@ -24068,6 +24069,75 @@ func (s *Server) deploymentTargetExecutionGate(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, deploymentTargetExecutionGatePayload(target))
 }
 
+func (s *Server) listDeploymentTargetPods(w http.ResponseWriter, r *http.Request) {
+	targetID := cleanOptionalID(chi.URLParam(r, "id"))
+	if targetID == "" {
+		writeError(w, http.StatusBadRequest, "deployment target id is required")
+		return
+	}
+	target, err := loadDeploymentTargetForKubernetesAccess(r.Context(), s.store.DB, targetID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "deployment target not found")
+			return
+		}
+		writeQueryOne(w, nil, err)
+		return
+	}
+	projectID := cleanOptionalID(fmt.Sprint(target["project_id"]))
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "deployment_target", ID: targetID, ProjectID: projectID}, "read") {
+		return
+	}
+	plan := kubernetesPodLogBackendPlan(s.cfg, target)
+	if !boolOnlyFromAny(plan["ready"]) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"mode":                  "deployment_target_pod_metadata",
+			"backend":               "kubectl_get_pods",
+			"backend_state":         "blocked",
+			"result_scope":          "sanitized_pod_metadata",
+			"deployment_target":     sanitizedDeploymentTargetForPodMetadata(target),
+			"backend_plan":          plan,
+			"items":                 []map[string]any{},
+			"item_count":            0,
+			"kubernetes_api_call":   false,
+			"raw_response_included": false,
+			"secret_included":       false,
+			"log_body_included":     false,
+			"message":               "Pod metadata listing is blocked until the Kubernetes log backend and reviewed namespace kubeconfig are ready.",
+		})
+		return
+	}
+	result, err := runKubernetesPodList(r.Context(), s.cfg, kubernetesPodListRequest{
+		DeploymentTargetID: targetID,
+		Environment:        cleanOptionalText(fmt.Sprint(target["environment"])),
+		ClusterName:        cleanOptionalText(fmt.Sprint(target["cluster_name"])),
+		Namespace:          cleanOptionalText(fmt.Sprint(target["namespace"])),
+		KubeconfigRef:      cleanOptionalText(fmt.Sprint(target["kubeconfig_secret_ref"])),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"mode":                  "deployment_target_pod_metadata",
+			"backend":               "kubectl_get_pods",
+			"backend_state":         cleanPreviewString(result["backend_state"]),
+			"result_scope":          "sanitized_pod_metadata",
+			"deployment_target":     sanitizedDeploymentTargetForPodMetadata(target),
+			"backend_plan":          plan,
+			"items":                 []map[string]any{},
+			"item_count":            0,
+			"kubernetes_api_call":   boolOnlyFromAny(result["kubernetes_api_call"]),
+			"raw_response_included": false,
+			"secret_included":       false,
+			"log_body_included":     false,
+			"message":               err.Error(),
+		})
+		return
+	}
+	result["mode"] = "deployment_target_pod_metadata"
+	result["deployment_target"] = sanitizedDeploymentTargetForPodMetadata(target)
+	result["backend_plan"] = plan
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) listDeploymentRecords(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "deployment_record", ProjectID: projectID}, "read") {
@@ -24082,6 +24152,26 @@ func (s *Server) listDeploymentRecords(w http.ResponseWriter, r *http.Request) {
 		ORDER BY dr.observed_at DESC
 		LIMIT 500`, projectID)
 	writeQueryResult(w, items, err)
+}
+
+func loadDeploymentTargetForKubernetesAccess(ctx context.Context, db sqlx.ExtContext, deploymentTargetID string) (map[string]any, error) {
+	return queryOne(ctx, db, `
+		SELECT dt.id, dt.project_id, dt.name, dt.environment, dt.cluster_name, dt.namespace, dt.status,
+			ke.id AS kubernetes_environment_id,
+			ke.name AS kubernetes_environment_name,
+			(ke.kubeconfig_secret_ref <> '') AS kubeconfig_secret_ref_present,
+			ke.kubeconfig_secret_ref,
+			(ke.service_account <> '') AS service_account_present,
+			ke.token_subject_review_status,
+			ke.rbac_read_logs_status,
+			ke.status AS kubernetes_environment_status
+		FROM deployment_targets dt
+		LEFT JOIN kubernetes_environments ke
+			ON ke.project_id=dt.project_id
+			AND ke.environment=dt.environment
+			AND ke.cluster_name=dt.cluster_name
+			AND ke.namespace=dt.namespace
+		WHERE dt.id=$1`, deploymentTargetID)
 }
 
 func loadDeploymentTargetForExecutionGate(ctx context.Context, db sqlx.ExtContext, deploymentTargetID string) (map[string]any, error) {
@@ -24102,6 +24192,25 @@ func loadDeploymentTargetForExecutionGate(ctx context.Context, db sqlx.ExtContex
 		LEFT JOIN argo_apps aa ON aa.deployment_target_id=dt.id
 		WHERE dt.id=$1
 		GROUP BY dt.id, ac.name`, deploymentTargetID)
+}
+
+func sanitizedDeploymentTargetForPodMetadata(target map[string]any) map[string]any {
+	return map[string]any{
+		"id":                            cleanOptionalID(fmt.Sprint(target["id"])),
+		"project_id":                    cleanOptionalID(fmt.Sprint(target["project_id"])),
+		"name":                          cleanOptionalText(fmt.Sprint(target["name"])),
+		"environment":                   cleanOptionalText(fmt.Sprint(target["environment"])),
+		"cluster_name":                  cleanOptionalText(fmt.Sprint(target["cluster_name"])),
+		"namespace":                     cleanOptionalText(fmt.Sprint(target["namespace"])),
+		"status":                        cleanOptionalText(fmt.Sprint(target["status"])),
+		"kubernetes_environment_id":     cleanOptionalID(fmt.Sprint(target["kubernetes_environment_id"])),
+		"kubernetes_environment_name":   cleanOptionalText(fmt.Sprint(target["kubernetes_environment_name"])),
+		"kubeconfig_secret_ref_present": boolOnlyFromAny(target["kubeconfig_secret_ref_present"]),
+		"service_account_present":       boolOnlyFromAny(target["service_account_present"]),
+		"token_subject_review_status":   cleanPreviewString(target["token_subject_review_status"]),
+		"rbac_read_logs_status":         cleanPreviewString(target["rbac_read_logs_status"]),
+		"kubernetes_environment_status": cleanPreviewString(target["kubernetes_environment_status"]),
+	}
 }
 
 func loadRollbackPointForExecutionGate(ctx context.Context, db sqlx.ExtContext, rollbackPointID string) (map[string]any, error) {
