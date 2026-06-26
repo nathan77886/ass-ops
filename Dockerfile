@@ -14,7 +14,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 FROM alpine:3.21 AS go-runtime
 WORKDIR /app
-RUN apk add --no-cache ca-certificates git openssh-client postgresql-client
+RUN apk add --no-cache ca-certificates git openssh-client postgresql-client kubectl
 COPY backend/migrations ./backend/migrations
 COPY --from=go-builder /out/assops-tool /usr/local/bin/assops-tool
 
