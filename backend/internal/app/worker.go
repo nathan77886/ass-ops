@@ -745,19 +745,19 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 	}
 	switch tool {
 	case "repo.sync", "repo.sync_remote":
-		execution, err := NewGitExecutor("").Sync(ctx, w.store.DB, opID)
+		execution, err := w.newGitExecutor("").Sync(ctx, w.store.DB, opID)
 		mergeGitExecutionResult(result, execution)
 		return result, err
 	case "git.refs.refresh":
-		execution, err := NewGitExecutor("").RefreshRemoteRefs(ctx, w.store.DB, opID)
+		execution, err := w.newGitExecutor("").RefreshRemoteRefs(ctx, w.store.DB, opID)
 		mergeGitExecutionResult(result, execution)
 		return result, err
 	case "repo.tag", "repo.create_tag":
-		execution, err := NewGitExecutor("").Tag(ctx, w.store.DB, opID)
+		execution, err := w.newGitExecutor("").Tag(ctx, w.store.DB, opID)
 		mergeGitExecutionResult(result, execution)
 		return result, err
 	case "repo.tag.lookup":
-		execution, err := NewGitExecutor("").LookupTag(ctx, w.store.DB, opID)
+		execution, err := w.newGitExecutor("").LookupTag(ctx, w.store.DB, opID)
 		mergeRepoTagLookupExecutionResult(result, execution)
 		return result, err
 	case "github.actions.sync":
@@ -3112,6 +3112,12 @@ func mergeGitExecutionResult(result map[string]any, execution *gitExecutionResul
 	result["stderr"] = execution.Stderr
 	result["after_sha"] = execution.AfterSHA
 	result["details"] = execution.Details
+}
+
+func (w *ControlWorker) newGitExecutor(workDir string) *GitExecutor {
+	executor := NewGitExecutor(workDir)
+	executor.LocalBareBaseDirs = w.cfg.LocalBareBaseDirs
+	return executor
 }
 
 func mergeRepoTagLookupExecutionResult(result map[string]any, execution *gitExecutionResult) {

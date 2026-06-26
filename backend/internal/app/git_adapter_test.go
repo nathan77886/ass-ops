@@ -34,6 +34,29 @@ func (r *fakeGitCommandRunner) Run(ctx context.Context, dir, name string, args .
 	return r.stdout, r.stderr, r.err
 }
 
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	runGitOutput(t, dir, "git", args...)
+}
+
+func runGitOutput(t *testing.T, dir, name string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_AUTHOR_NAME=ASSOPS",
+		"GIT_AUTHOR_EMAIL=assops@local",
+		"GIT_COMMITTER_NAME=ASSOPS",
+		"GIT_COMMITTER_EMAIL=assops@local",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s failed: %v: %s", name, strings.Join(args, " "), err, out)
+	}
+	return out
+}
+
 func TestGitExecutorLookupTagStripsUserinfoAndSuppressesOutput(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -168,6 +191,238 @@ func TestSafeResolvedLocalBareRemotePathRejectsSymlinkEscape(t *testing.T) {
 	}
 	if !safeResolvedLocalBareRemotePath(filepath.Join(base, "repos", "repo.git"), []string{base}) {
 		t.Fatal("resolved path inside base should be accepted")
+	}
+}
+
+func TestGitExecutorSyncRejectsLocalBareOutsideAllowedBase(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	input, _ := json.Marshal(map[string]any{"branches": []string{"main"}})
+	allowedBase := filepath.Join(t.TempDir(), "allowed")
+	outsidePath := filepath.Join(t.TempDir(), "outside.git")
+
+	mock.ExpectQuery("SELECT rsr\\.\\*, opr\\.input").
+		WithArgs("op-sync").
+		WillReturnRows(sqlmock.NewRows([]string{"operation_run_id", "source_remote_id", "target_remote_id", "input"}).
+			AddRow("op-sync", "source-1", "target-1", input))
+	mock.ExpectQuery("SELECT \\* FROM git_remotes WHERE id=\\$1").
+		WithArgs("source-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "provider_type", "remote_url", "default_branch"}).
+			AddRow("source-1", "local_bare", outsidePath, "main"))
+	mock.ExpectQuery("SELECT \\* FROM git_remotes WHERE id=\\$1").
+		WithArgs("target-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "provider_type", "remote_url", "default_branch"}).
+			AddRow("target-1", "local_bare", filepath.Join(allowedBase, "target.git"), "main"))
+
+	executor := &GitExecutor{WorkDir: filepath.Join(t.TempDir(), "work"), LocalBareBaseDirs: []string{allowedBase}}
+	result, err := executor.Sync(context.Background(), sqlxDB, "op-sync")
+	if err == nil {
+		t.Fatal("Sync should reject local_bare path outside allowed base")
+	}
+	if result == nil || result.Details["source_local_bare_remote"] != true {
+		t.Fatalf("expected sanitized local_bare details, got %#v", result)
+	}
+	if !strings.Contains(err.Error(), "source local_bare remote_url must be under an allowed absolute base directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestGitExecutorSyncAllowsLocalBareInsideAllowedBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary is required for local_bare repo sync test")
+	}
+	root := t.TempDir()
+	base := filepath.Join(root, "repos")
+	sourcePath := filepath.Join(base, "source.git")
+	targetPath := filepath.Join(base, "target.git")
+	workTree := filepath.Join(root, "source-work")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, "", "init", "--bare", sourcePath)
+	runGit(t, "", "init", "--bare", targetPath)
+	runGit(t, "", "init", workTree)
+	runGit(t, workTree, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(workTree, "README.md"), []byte("# Billing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, workTree, "add", "README.md")
+	runGit(t, workTree, "-c", "user.name=ASSOPS", "-c", "user.email=assops@local", "commit", "-m", "seed")
+	runGit(t, workTree, "remote", "add", "origin", sourcePath)
+	runGit(t, workTree, "push", "origin", "HEAD:refs/heads/main")
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	input, _ := json.Marshal(map[string]any{"branches": []string{"main"}})
+	mock.ExpectQuery("SELECT rsr\\.\\*, opr\\.input").
+		WithArgs("op-sync").
+		WillReturnRows(sqlmock.NewRows([]string{"operation_run_id", "source_remote_id", "target_remote_id", "input"}).
+			AddRow("op-sync", "source-1", "target-1", input))
+	mock.ExpectQuery("SELECT \\* FROM git_remotes WHERE id=\\$1").
+		WithArgs("source-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "provider_type", "remote_url", "default_branch"}).
+			AddRow("source-1", "local_bare", sourcePath, "main"))
+	mock.ExpectQuery("SELECT \\* FROM git_remotes WHERE id=\\$1").
+		WithArgs("target-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "provider_type", "remote_url", "default_branch"}).
+			AddRow("target-1", "local_bare", targetPath, "main"))
+
+	executor := &GitExecutor{WorkDir: filepath.Join(root, "work"), LocalBareBaseDirs: []string{base}}
+	result, err := executor.Sync(context.Background(), sqlxDB, "op-sync")
+	if err != nil {
+		t.Fatalf("Sync: %v\nstdout=%s\nstderr=%s", err, result.Stdout, result.Stderr)
+	}
+	if result.AfterSHA == "" {
+		t.Fatal("AfterSHA should be populated")
+	}
+	if result.Details["source_local_bare_path_allowed"] != true || result.Details["target_local_bare_path_allowed"] != true {
+		t.Fatalf("expected local_bare guard details, got %#v", result.Details)
+	}
+	sourceSHA := strings.TrimSpace(string(runGitOutput(t, "", "git", "--git-dir", sourcePath, "rev-parse", "refs/heads/main")))
+	targetSHA := strings.TrimSpace(string(runGitOutput(t, "", "git", "--git-dir", targetPath, "rev-parse", "refs/heads/main")))
+	if targetSHA == "" || targetSHA != sourceSHA || result.AfterSHA != sourceSHA {
+		t.Fatalf("synced SHA mismatch: source=%q target=%q result=%q", sourceSHA, targetSHA, result.AfterSHA)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestGitExecutorRefreshRemoteRefsRejectsLocalBareOutsideAllowedBase(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	allowedBase := filepath.Join(t.TempDir(), "allowed")
+	outsidePath := filepath.Join(t.TempDir(), "outside.git")
+	input, _ := json.Marshal(map[string]any{"branch": "main"})
+	mock.ExpectQuery("SELECT git_remote_id, input FROM operation_runs").
+		WithArgs("op-refresh").
+		WillReturnRows(sqlmock.NewRows([]string{"git_remote_id", "input"}).AddRow("remote-1", input))
+	mock.ExpectQuery("SELECT \\* FROM git_remotes WHERE id=\\$1").
+		WithArgs("remote-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "provider_type", "remote_url", "default_branch"}).
+			AddRow("remote-1", "local_bare", outsidePath, "main"))
+
+	executor := &GitExecutor{WorkDir: filepath.Join(t.TempDir(), "work"), LocalBareBaseDirs: []string{allowedBase}}
+	result, err := executor.RefreshRemoteRefs(context.Background(), sqlxDB, "op-refresh")
+	if err == nil {
+		t.Fatal("RefreshRemoteRefs should reject local_bare path outside allowed base")
+	}
+	if result == nil || result.Details["remote_local_bare_remote"] != true {
+		t.Fatalf("expected sanitized local_bare details, got %#v", result)
+	}
+	if !strings.Contains(err.Error(), "remote local_bare remote_url must be under an allowed absolute base directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestGitExecutorTagRejectsLocalBareOutsideAllowedBase(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	allowedBase := filepath.Join(t.TempDir(), "allowed")
+	outsidePath := filepath.Join(t.TempDir(), "outside.git")
+	input, _ := json.Marshal(map[string]any{"branch": "main"})
+	mock.ExpectQuery("SELECT rtr\\.\\*, opr\\.input, gr\\.default_branch").
+		WithArgs("op-tag").
+		WillReturnRows(sqlmock.NewRows([]string{"operation_run_id", "target_remote_id", "tag_name", "target_sha", "tag_message", "input", "default_branch"}).
+			AddRow("op-tag", "remote-1", "v1.0.0", nil, nil, input, "main"))
+	mock.ExpectQuery("SELECT \\* FROM git_remotes WHERE id=\\$1").
+		WithArgs("remote-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "provider_type", "remote_url", "default_branch"}).
+			AddRow("remote-1", "local_bare", outsidePath, "main"))
+
+	executor := &GitExecutor{WorkDir: filepath.Join(t.TempDir(), "work"), LocalBareBaseDirs: []string{allowedBase}}
+	result, err := executor.Tag(context.Background(), sqlxDB, "op-tag")
+	if err == nil {
+		t.Fatal("Tag should reject local_bare path outside allowed base")
+	}
+	if result == nil || result.Details["target_local_bare_remote"] != true {
+		t.Fatalf("expected sanitized local_bare details, got %#v", result)
+	}
+	if !strings.Contains(err.Error(), "target local_bare remote_url must be under an allowed absolute base directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestGitExecutorLookupTagRejectsLocalBareOutsideAllowedBase(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	runID := "11111111-1111-1111-1111-111111111111"
+	remoteID := "22222222-2222-2222-2222-222222222222"
+	allowedBase := filepath.Join(t.TempDir(), "allowed")
+	outsidePath := filepath.Join(t.TempDir(), "outside.git")
+	input, _ := json.Marshal(map[string]any{"repo_tag_run_id": runID, "target_remote_id": remoteID, "tag_name": "v1.0.0"})
+	mock.ExpectQuery("SELECT input FROM operation_runs").
+		WithArgs("op-lookup").
+		WillReturnRows(sqlmock.NewRows([]string{"input"}).AddRow(input))
+	mock.ExpectQuery("SELECT id, target_remote_id, git_remote_id, tag_name").
+		WithArgs(runID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "target_remote_id", "git_remote_id", "tag_name"}).AddRow(runID, remoteID, nil, "v1.0.0"))
+	mock.ExpectQuery("SELECT \\* FROM git_remotes").
+		WithArgs(remoteID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "provider_type", "remote_url", "default_branch"}).
+			AddRow(remoteID, "local_bare", outsidePath, "main"))
+
+	executor := &GitExecutor{WorkDir: filepath.Join(t.TempDir(), "work"), LocalBareBaseDirs: []string{allowedBase}}
+	result, err := executor.LookupTag(context.Background(), sqlxDB, "op-lookup")
+	if err == nil {
+		t.Fatal("LookupTag should reject local_bare path outside allowed base")
+	}
+	if result == nil || result.Details["target_local_bare_remote"] != true {
+		t.Fatalf("expected sanitized local_bare details, got %#v", result)
+	}
+	if !strings.Contains(err.Error(), "target local_bare remote_url must be under an allowed absolute base directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestEnsureBareRepositoryHandlesNilResultAndSanitizesLocalPath(t *testing.T) {
+	gitDir := filepath.Join(t.TempDir(), "repos", "repo.git")
+	runner := &fakeGitCommandRunner{
+		stdout: "true\n",
+		stderr: "checking " + gitDir + "\n",
+	}
+	executor := &GitExecutor{Runner: runner}
+	if err := executor.ensureBareRepository(context.Background(), nil, gitDir); err != nil {
+		t.Fatalf("ensureBareRepository nil result: %v", err)
+	}
+	result := &gitExecutionResult{}
+	if err := executor.ensureBareRepository(context.Background(), result, gitDir); err != nil {
+		t.Fatalf("ensureBareRepository: %v", err)
+	}
+	if strings.Contains(result.Stderr, gitDir) || !strings.Contains(result.Stderr, "<local_bare>") {
+		t.Fatalf("local path should be sanitized, stderr=%q", result.Stderr)
 	}
 }
 

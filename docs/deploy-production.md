@@ -486,6 +486,7 @@ The health response includes `component`, `version`, `commit`, and `build_time`;
   The plan validates the public callback origin shape and lists the Gitea/GitHub test-delivery, replay-proof, threshold-audit, threshold-configuration, provider-metrics comparison, and sanitized snapshot evidence to collect without calling providers or storing payloads, headers, tokens, provider responses, or operator notes.
 - Keep `ASSOPS_WEBHOOK_SECRET_KEY` stable. Rotated webhook secrets are encrypted with it.
 - Keep `ASSOPS_LOCAL_BARE_BASE_DIRS` pointed at a dedicated ASSOPS-owned directory; project template `local_bare` remotes outside that path are rejected.
+- Repo sync, ref refresh, tag creation, and tag lookup operations that use `local_bare` remotes are limited to existing bare repositories under `ASSOPS_LOCAL_BARE_BASE_DIRS`.
 - Keep `ASSOPS_CONFIG_GIT_LOCAL_BARE_WRITES_ENABLED=false` outside private test environments. When enabled, config scaffold Git writes require exactly one `local_bare` config remote under `ASSOPS_LOCAL_BARE_BASE_DIRS` and persist only sanitized result metadata plus local synced-state.
 - Do not mount writable SSH directories into the web service.
 - Before rehearsing SSH verify/exec against a real authorized machine, generate the no-call SSH rehearsal plan:

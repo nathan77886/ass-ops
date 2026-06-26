@@ -46,6 +46,7 @@ This makes the current gap measurable: a first-version demo is ready only when t
 The latest Notion MVP execution page narrows the first version to nine concrete acceptance scenarios around Project -> ProjectGitRepository -> GitRemote. Current code covers the backbone of that model, but several scenario-level acceptance items remain incomplete:
 
 Config repository live execution now has a deliberately narrow first deployable slice: `config.git_commit` can create/update the fixed scaffold files and push them to a single `local_bare` config remote when `ASSOPS_CONFIG_GIT_LOCAL_BARE_WRITES_ENABLED=true` and the target path is under `ASSOPS_LOCAL_BARE_BASE_DIRS`. This is intended for private test deployments only; GitHub/Gitea provider review, ProjectVersion pin writes, and provider-reviewed live validation remain separate gaps.
+Repo sync, ref refresh, tag creation, and tag lookup operations now share the same `local_bare` path guardrail for first-deployable test environments: local bare remotes must already exist as bare repositories under `ASSOPS_LOCAL_BARE_BASE_DIRS`, and worker Git operations receive that configured base-directory allowlist.
 
 | Notion acceptance scenario | Current code evidence | First-version gap |
 | --- | --- | --- |

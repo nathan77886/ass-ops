@@ -95,6 +95,13 @@ func (e *GitExecutor) Sync(ctx context.Context, db sqlx.ExtContext, opID string)
 	if sourceURL == "" || targetURL == "" {
 		return nil, fmt.Errorf("source and target remotes must have remote_url or urls")
 	}
+	result := &gitExecutionResult{Details: map[string]any{"source_remote_id": run["source_remote_id"], "target_remote_id": run["target_remote_id"]}}
+	if err := e.validateExistingLocalBareRemote(ctx, result, source, sourceURL, "source"); err != nil {
+		return result, err
+	}
+	if err := e.validateExistingLocalBareRemote(ctx, result, target, targetURL, "target"); err != nil {
+		return result, err
+	}
 	defaultBranch := defaultBranchFromRow(source)
 	refs := gitRefsFromInput(run["input"], defaultBranch)
 	if len(refs.Branches) == 0 && len(refs.Tags) == 0 {
@@ -108,7 +115,6 @@ func (e *GitExecutor) Sync(ctx context.Context, db sqlx.ExtContext, opID string)
 	defer cleanup()
 
 	branchSHAs := map[string]string{}
-	result := &gitExecutionResult{Details: map[string]any{"source_remote_id": run["source_remote_id"], "target_remote_id": run["target_remote_id"]}}
 	if err := e.run(ctx, result, repoDir, "git", "init", "--bare", "repo.git"); err != nil {
 		return result, err
 	}
@@ -200,6 +206,10 @@ func (e *GitExecutor) RefreshRemoteRefs(ctx context.Context, db sqlx.ExtContext,
 	if tagName != "" && !isSafeGitRefPart(tagName) {
 		return nil, fmt.Errorf("unsafe tag ref %q", tagName)
 	}
+	result := &gitExecutionResult{Details: map[string]any{"remote_id": remoteID, "branch": defaultBranch, "tag": tagName}}
+	if err := e.validateExistingLocalBareRemote(ctx, result, remote, remoteURL, "remote"); err != nil {
+		return result, err
+	}
 
 	repoDir, cleanup, err := e.newWorkDir("assops-ref-refresh-*")
 	if err != nil {
@@ -207,7 +217,6 @@ func (e *GitExecutor) RefreshRemoteRefs(ctx context.Context, db sqlx.ExtContext,
 	}
 	defer cleanup()
 
-	result := &gitExecutionResult{Details: map[string]any{"remote_id": remoteID, "branch": defaultBranch, "tag": tagName}}
 	if err := e.run(ctx, result, repoDir, "git", "init", "--bare", "repo.git"); err != nil {
 		return result, err
 	}
@@ -272,6 +281,10 @@ func (e *GitExecutor) Tag(ctx context.Context, db sqlx.ExtContext, opID string) 
 	if !isSafeGitRefPart(branch) {
 		return nil, fmt.Errorf("unsafe branch ref %q", branch)
 	}
+	result := &gitExecutionResult{Details: map[string]any{"target_remote_id": run["target_remote_id"], "tag_name": tagName}}
+	if err := e.validateExistingLocalBareRemote(ctx, result, target, targetURL, "target"); err != nil {
+		return result, err
+	}
 
 	repoDir, cleanup, err := e.newWorkDir("assops-tag-*")
 	if err != nil {
@@ -279,7 +292,6 @@ func (e *GitExecutor) Tag(ctx context.Context, db sqlx.ExtContext, opID string) 
 	}
 	defer cleanup()
 
-	result := &gitExecutionResult{Details: map[string]any{"target_remote_id": run["target_remote_id"], "tag_name": tagName}}
 	if err := e.run(ctx, result, repoDir, "git", "init", "repo"); err != nil {
 		return result, err
 	}
@@ -363,16 +375,6 @@ func (e *GitExecutor) LookupTag(ctx context.Context, db sqlx.ExtContext, opID st
 	if remoteURL == "" {
 		return nil, fmt.Errorf("target remote must have remote_url or urls")
 	}
-	safeRemoteURL, stripped := stripGitRemoteURLUserinfo(remoteURL)
-	if safeRemoteURL == "" {
-		return nil, fmt.Errorf("target remote URL is invalid")
-	}
-
-	runner := e.Runner
-	if runner == nil {
-		runner = execCommandRunner{}
-	}
-	stdout, _, err := runner.Run(ctx, "", "git", "ls-remote", "--tags", safeRemoteURL, "refs/tags/"+tagName)
 	result := &gitExecutionResult{Details: map[string]any{
 		"mode":                         "repo_tag_live_remote_lookup",
 		"repo_tag_run_id":              runID,
@@ -384,8 +386,22 @@ func (e *GitExecutor) LookupTag(ctx context.Context, db sqlx.ExtContext, opID st
 		"remote_url_recorded":          false,
 		"credentials_recorded":         false,
 		"contains_token":               false,
-		"credential_userinfo_stripped": stripped,
+		"credential_userinfo_stripped": false,
 	}}
+	if err := e.validateExistingLocalBareRemote(ctx, result, remote, remoteURL, "target"); err != nil {
+		return result, err
+	}
+	safeRemoteURL, stripped := stripGitRemoteURLUserinfo(remoteURL)
+	if safeRemoteURL == "" {
+		return result, fmt.Errorf("target remote URL is invalid")
+	}
+	result.Details["credential_userinfo_stripped"] = stripped
+
+	runner := e.Runner
+	if runner == nil {
+		runner = execCommandRunner{}
+	}
+	stdout, _, err := runner.Run(ctx, "", "git", "ls-remote", "--tags", safeRemoteURL, "refs/tags/"+tagName)
 	if err != nil {
 		return result, fmt.Errorf("git ls-remote failed: %s", sanitizeLookupError(err))
 	}
@@ -2585,8 +2601,7 @@ func (e *GitExecutor) ensureBareRepository(ctx context.Context, result *gitExecu
 		runner = execCommandRunner{}
 	}
 	stdout, stderr, err := runner.Run(ctx, "", "git", "--git-dir", gitDir, "rev-parse", "--is-bare-repository")
-	result.Stdout += sanitizeGitOutput(stdout)
-	result.Stderr += sanitizeGitOutput(stderr)
+	appendGitExecutionOutput(result, sanitizeGitOutputForLocalPath(stdout, gitDir), sanitizeGitOutputForLocalPath(stderr, gitDir))
 	if err != nil {
 		return fmt.Errorf("checking bare repository failed: %w", err)
 	}
@@ -2603,8 +2618,7 @@ func (e *GitExecutor) bareBranchSHA(ctx context.Context, result *gitExecutionRes
 	}
 	ref := "refs/heads/" + branch
 	stdout, stderr, err := runner.Run(ctx, "", "git", "--git-dir", gitDir, "rev-parse", "--verify", ref)
-	result.Stdout += sanitizeGitOutput(stdout)
-	result.Stderr += sanitizeGitOutput(stderr)
+	appendGitExecutionOutput(result, sanitizeGitOutputForLocalPath(stdout, gitDir), sanitizeGitOutputForLocalPath(stderr, gitDir))
 	if err != nil {
 		return "", false, nil
 	}
@@ -2617,10 +2631,37 @@ func (e *GitExecutor) bareBranchSHA(ctx context.Context, result *gitExecutionRes
 
 func localBareTemplateRemote(remotes []map[string]any) map[string]any {
 	for _, remote := range remotes {
-		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(remote["provider_type"])), "local_bare") ||
-			strings.EqualFold(strings.TrimSpace(fmt.Sprint(remote["kind"])), "local_bare") {
+		if isLocalBareRemote(remote) {
 			return remote
 		}
+	}
+	return nil
+}
+
+func isLocalBareRemote(remote map[string]any) bool {
+	return strings.EqualFold(strings.TrimSpace(fmt.Sprint(remote["provider_type"])), "local_bare") ||
+		strings.EqualFold(strings.TrimSpace(fmt.Sprint(remote["kind"])), "local_bare")
+}
+
+func (e *GitExecutor) validateExistingLocalBareRemote(ctx context.Context, result *gitExecutionResult, remote map[string]any, remoteURL, label string) error {
+	if !isLocalBareRemote(remote) {
+		return nil
+	}
+	if result != nil && result.Details != nil {
+		result.Details[label+"_local_bare_remote"] = true
+	}
+	if !safeLocalBareRemotePath(remoteURL, e.LocalBareBaseDirs) {
+		return fmt.Errorf("%s local_bare remote_url must be under an allowed absolute base directory", label)
+	}
+	if !safeResolvedLocalBareRemotePath(remoteURL, e.LocalBareBaseDirs) {
+		return fmt.Errorf("%s local_bare remote_url resolves outside allowed base directories", label)
+	}
+	if err := e.ensureBareRepository(ctx, result, remoteURL); err != nil {
+		return fmt.Errorf("%s local_bare remote is invalid: %w", label, err)
+	}
+	if result != nil && result.Details != nil {
+		result.Details[label+"_local_bare_path_allowed"] = true
+		result.Details[label+"_local_bare_bare_repository"] = true
 	}
 	return nil
 }
@@ -2699,8 +2740,7 @@ func (e *GitExecutor) run(ctx context.Context, result *gitExecutionResult, dir, 
 		runner = execCommandRunner{}
 	}
 	stdout, stderr, err := runner.Run(ctx, dir, name, args...)
-	result.Stdout += sanitizeGitOutput(stdout)
-	result.Stderr += sanitizeGitOutput(stderr)
+	appendGitExecutionOutput(result, sanitizeGitOutput(stdout), sanitizeGitOutput(stderr))
 	if err != nil {
 		return fmt.Errorf("%s %s failed: %w", name, strings.Join(redactGitArgs(args), " "), err)
 	}
@@ -2907,4 +2947,24 @@ var gitURLPattern = regexp.MustCompile(`(?i)((?:https?|ssh|git)://[^\s'"]+|[A-Za
 
 func sanitizeGitOutput(output string) string {
 	return gitURLPattern.ReplaceAllString(output, "<remote>")
+}
+
+func sanitizeGitOutputForLocalPath(output, path string) string {
+	output = sanitizeGitOutput(output)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return output
+	}
+	if cleanPath, err := filepath.Abs(filepath.Clean(path)); err == nil {
+		output = strings.ReplaceAll(output, cleanPath, "<local_bare>")
+	}
+	return strings.ReplaceAll(output, path, "<local_bare>")
+}
+
+func appendGitExecutionOutput(result *gitExecutionResult, stdout, stderr string) {
+	if result == nil {
+		return
+	}
+	result.Stdout += stdout
+	result.Stderr += stderr
 }
