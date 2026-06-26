@@ -67,6 +67,33 @@ With the test example, gateway and worker mount `assops-kubeconfigs` read-only a
 
 Set `env.version`, `env.commit`, and `env.buildTime` in the private overlay when deploying a tagged test build. The gateway, control worker, and node worker expose these values from `/healthz`, and the chart web service proxies `/healthz` to the gateway so the running build can be checked without opening worker ports.
 
+After the external application Secret, database, kubeconfig Secret, image pull access, and private values overlay are ready, install or upgrade the test release:
+
+```bash
+helm upgrade --install assops deploy/helm/assops \
+  -n assops-test \
+  --create-namespace \
+  --wait \
+  --wait-for-jobs \
+  --timeout 10m \
+  -f deploy/helm/assops/values.test.example.yaml \
+  -f /path/to/private-test-values.yaml
+```
+
+Verify the test workloads and the gateway health payload through the web Service:
+
+```bash
+kubectl -n assops-test rollout status deployment/assops-gateway --timeout=180s
+kubectl -n assops-test rollout status deployment/assops-worker --timeout=180s
+kubectl -n assops-test rollout status deployment/assops-node-worker --timeout=180s
+kubectl -n assops-test rollout status deployment/assops-web --timeout=180s
+
+kubectl -n assops-test port-forward svc/assops-web 18080:80
+curl -fsS http://127.0.0.1:18080/healthz
+```
+
+The health response should include `ok: true`, `component: gateway`, and the `version`, `commit`, and `build_time` values from the private overlay. If the response still shows `test`, `local`, or `unknown`, the release image overlay or private metadata values were not applied.
+
 ## Production Values
 
 Prefer an external secret for production. Start from `deploy/helm/assops/values.production.example.yaml` and commit or store an environment-specific overlay outside the chart defaults:
