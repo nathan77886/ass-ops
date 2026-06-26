@@ -135,6 +135,9 @@ jobs:
       - name: Run API smoke self-test
         run: make api-smoke-self-test
 
+      - name: Run Helm test preflight self-test
+        run: make helm-test-preflight-self-test
+
       - name: Run Helm test smoke self-test
         run: make helm-test-smoke-self-test
 

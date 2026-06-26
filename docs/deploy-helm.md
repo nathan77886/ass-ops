@@ -83,6 +83,19 @@ With the test example, gateway and worker mount `assops-kubeconfigs` read-only a
 
 Set `env.version`, `env.commit`, and `env.buildTime` in the private overlay when deploying a tagged test build. The gateway, control worker, and node worker expose these values from `/healthz`, and the chart web service proxies `/healthz` to the gateway so the running build can be checked without opening worker ports.
 
+Before installing, run the read-only test-environment preflight from a machine that has access to the target test cluster:
+
+```bash
+ASSOPS_HELM_PREFLIGHT_NAMESPACE=assops-test \
+ASSOPS_HELM_PREFLIGHT_RELEASE=assops \
+ASSOPS_HELM_PREFLIGHT_APP_SECRET=assops-test-secret \
+ASSOPS_HELM_PREFLIGHT_KUBECONFIG_SECRET=assops-kubeconfigs \
+ASSOPS_HELM_PREFLIGHT_KUBECONFIG_KEY=test-assops-reader.yaml \
+make helm-test-preflight
+```
+
+The preflight lints and renders the chart with `values.test.example.yaml`, checks that the namespace exists, verifies the external application Secret has every required key, and verifies the kubeconfig Secret contains the key that the UI should store as `kubeconfig_secret_ref`. It only uses `helm lint`, `helm template`, and `kubectl get`; it does not install, upgrade, delete, patch, restart, port-forward, or read Secret values into output.
+
 After the external application Secret, database, kubeconfig Secret, image pull access, and private values overlay are ready, install or upgrade the test release:
 
 ```bash

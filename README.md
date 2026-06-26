@@ -129,10 +129,12 @@ make release-helm-values GHCR_OWNER=nathan77886 VERSION=v0.1.0 OUTPUT=.assops/re
 make release-helm-test-readiness-plan OUTPUT=.assops/release-notes/helm-test-readiness-plan.md
 make release-promotion-plan REPO=nathan77886/ass-ops GHCR_OWNER=nathan77886 VERSION=v0.1.0 ARTIFACT_DIR=.assops/release-artifacts REHEARSAL_REPORT=.assops/release-notes/restore-rehearsal.json HELM_VALUES=.assops/release-notes/helm-values-v0.1.0.yaml OUTPUT=.assops/release-notes/promotion-plan-v0.1.0.md
 make release-backup-schedule-plan REPO=nathan77886/ass-ops ENV=production RUNNER=ubuntu-latest CRON='17 3 * * 1' BACKUP_SOURCE=artifact:retained-assops-backup RETENTION_DAYS=14 OUTPUT=.assops/release-notes/backup-schedule-plan.md
+make helm-test-preflight
 make helm-test-smoke
 ```
 
 `make first-deployable-check` is the local pre-test-deploy gate. It requires `go`, `pnpm`, `helm`, `curl`, and `python3`, installs web dependencies from the lockfile, then runs backend tests, the web i18n/build gate, the gateway API smoke self-test, the checked-in Helm test readiness plan, Helm lint, and Helm rendering with `values.test.example.yaml`.
+`make helm-test-preflight` is the read-only pre-install gate for a test cluster. It lints and renders the chart, checks the namespace, verifies the external application Secret keys, and verifies the kubeconfig Secret key without installing or mutating Kubernetes resources.
 `make helm-test-smoke` is the read-only post-test-deploy gate for a Helm release. It waits for gateway, worker, node-worker, and web rollouts, checks worker health endpoints, port-forwards the web/worker health Services, and runs the gateway API smoke without writing ASSOPS rows.
 
 ## Runtime Integrations
