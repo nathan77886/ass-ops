@@ -222,6 +222,8 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/api/projects/{id}/argo/connections", s.listArgoConnections)
 		r.Post("/api/argo/connections/{id}/apps/sync", s.syncArgoApps)
 		r.Get("/api/projects/{id}/argo/apps", s.listArgoApps)
+		r.Post("/api/projects/{id}/kubernetes/environments", s.createKubernetesEnvironment)
+		r.Get("/api/projects/{id}/kubernetes/environments", s.listKubernetesEnvironments)
 		r.Get("/api/projects/{id}/deployment-targets", s.listDeploymentTargets)
 		r.Post("/api/deployment-targets/{id}/execution-gate", s.deploymentTargetExecutionGate)
 		r.Get("/api/projects/{id}/deployment-records", s.listDeploymentRecords)
@@ -23892,6 +23894,104 @@ func (s *Server) listArgoApps(w http.ResponseWriter, r *http.Request) {
 	writeQueryResult(w, items, err)
 }
 
+func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "kubernetes_environment", ProjectID: projectID}, "create") {
+		return
+	}
+	var req struct {
+		Name                     string         `json:"name"`
+		Environment              string         `json:"environment"`
+		ClusterName              string         `json:"cluster_name"`
+		Namespace                string         `json:"namespace"`
+		KubeconfigSecretRef      string         `json:"kubeconfig_secret_ref"`
+		ServiceAccount           string         `json:"service_account"`
+		TokenSubjectReviewStatus string         `json:"token_subject_review_status"`
+		RBACReadLogsStatus       string         `json:"rbac_read_logs_status"`
+		Status                   string         `json:"status"`
+		Metadata                 map[string]any `json:"metadata"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.Name = cleanOptionalText(req.Name)
+	req.Environment = cleanOptionalText(req.Environment)
+	req.ClusterName = cleanOptionalText(req.ClusterName)
+	req.Namespace = cleanOptionalText(req.Namespace)
+	req.KubeconfigSecretRef = cleanOptionalText(req.KubeconfigSecretRef)
+	req.ServiceAccount = cleanOptionalText(req.ServiceAccount)
+	req.TokenSubjectReviewStatus = cleanKubernetesReviewStatus(req.TokenSubjectReviewStatus)
+	req.RBACReadLogsStatus = cleanKubernetesReviewStatus(req.RBACReadLogsStatus)
+	req.Status = cleanKubernetesEnvironmentStatus(req.Status)
+	if req.Name == "" || req.Environment == "" || req.ClusterName == "" || req.Namespace == "" {
+		writeError(w, http.StatusBadRequest, "name, environment, cluster_name, and namespace are required")
+		return
+	}
+	if len(req.Name) > 253 || len(req.Environment) > 63 || len(req.ClusterName) > 253 || len(req.Namespace) > 63 || len(req.KubeconfigSecretRef) > 253 || len(req.ServiceAccount) > 253 {
+		writeError(w, http.StatusBadRequest, "kubernetes environment fields exceed allowed length")
+		return
+	}
+	if containsSecretLikeMaterial(req.KubeconfigSecretRef) || containsSecretLikeMaterial(req.ServiceAccount) {
+		writeError(w, http.StatusBadRequest, "kubernetes environment metadata must reference names only, not credential material")
+		return
+	}
+	metadata, err := jsonParam(req.Metadata)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "metadata must be valid JSON")
+		return
+	}
+	item, err := queryOne(r.Context(), s.store.DB, `
+		INSERT INTO kubernetes_environments(
+			project_id, name, environment, cluster_name, namespace,
+			kubeconfig_secret_ref, service_account, token_subject_review_status,
+			rbac_read_logs_status, status, metadata, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, now())
+		ON CONFLICT (project_id, environment, cluster_name, namespace)
+		DO UPDATE SET
+			name=EXCLUDED.name,
+			kubeconfig_secret_ref=EXCLUDED.kubeconfig_secret_ref,
+			service_account=EXCLUDED.service_account,
+			token_subject_review_status=EXCLUDED.token_subject_review_status,
+			rbac_read_logs_status=EXCLUDED.rbac_read_logs_status,
+			status=EXCLUDED.status,
+			metadata=EXCLUDED.metadata,
+			updated_at=now()
+		RETURNING *`,
+		projectID,
+		req.Name,
+		req.Environment,
+		req.ClusterName,
+		req.Namespace,
+		req.KubeconfigSecretRef,
+		req.ServiceAccount,
+		req.TokenSubjectReviewStatus,
+		req.RBACReadLogsStatus,
+		req.Status,
+		metadata,
+	)
+	writeCreatedOne(w, item, err)
+}
+
+func (s *Server) listKubernetesEnvironments(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "kubernetes_environment", ProjectID: projectID}, "read") {
+		return
+	}
+	items, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT id, project_id, name, environment, cluster_name, namespace,
+			kubeconfig_secret_ref, service_account, token_subject_review_status,
+			rbac_read_logs_status, status, metadata, created_at, updated_at,
+			(kubeconfig_secret_ref <> '') AS kubeconfig_secret_ref_present,
+			(token_subject_review_status='reviewed') AS token_subject_review_ready,
+			(rbac_read_logs_status='reviewed') AS rbac_read_logs_ready,
+			(kubeconfig_secret_ref <> '' AND token_subject_review_status='reviewed' AND rbac_read_logs_status='reviewed') AS log_access_metadata_ready
+		FROM kubernetes_environments
+		WHERE project_id=$1
+		ORDER BY environment, namespace, created_at DESC`, projectID)
+	writeQueryResult(w, items, err)
+}
+
 func (s *Server) listDeploymentTargets(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "deployment_target", ProjectID: projectID}, "read") {
@@ -23900,12 +24000,24 @@ func (s *Server) listDeploymentTargets(w http.ResponseWriter, r *http.Request) {
 	items, err := queryMaps(r.Context(), s.store.DB, `
 		SELECT dt.*,
 			ac.name AS argo_connection_name,
-			COUNT(aa.id) AS argo_app_count
+			COUNT(aa.id) AS argo_app_count,
+			ke.id AS kubernetes_environment_id,
+			ke.name AS kubernetes_environment_name,
+			(ke.kubeconfig_secret_ref <> '') AS kubeconfig_secret_ref_present,
+			(ke.service_account <> '') AS service_account_present,
+			ke.token_subject_review_status,
+			ke.rbac_read_logs_status,
+			ke.status AS kubernetes_environment_status
 		FROM deployment_targets dt
 		LEFT JOIN argo_connections ac ON ac.id=dt.argo_connection_id
 		LEFT JOIN argo_apps aa ON aa.deployment_target_id=dt.id
+		LEFT JOIN kubernetes_environments ke
+			ON ke.project_id=dt.project_id
+			AND ke.environment=dt.environment
+			AND ke.cluster_name=dt.cluster_name
+			AND ke.namespace=dt.namespace
 		WHERE dt.project_id=$1
-		GROUP BY dt.id, ac.name
+		GROUP BY dt.id, ac.name, ke.id
 		ORDER BY dt.environment, dt.namespace, dt.created_at DESC
 		LIMIT 500`, projectID)
 	enrichDeploymentTargetsWithExecutionReadiness(items)
@@ -24199,9 +24311,21 @@ func cleanArgoPodLogRequest(req argoPodLogRequest) (argoPodLogRequest, error) {
 
 func loadArgoPodLogTarget(ctx context.Context, db sqlx.ExtContext, projectID, deploymentTargetID string) (map[string]any, error) {
 	return queryOne(ctx, db, `
-		SELECT id, project_id, name, environment, cluster_name, namespace, status
-		FROM deployment_targets
-		WHERE id=$1 AND project_id=$2`, deploymentTargetID, projectID)
+		SELECT dt.id, dt.project_id, dt.name, dt.environment, dt.cluster_name, dt.namespace, dt.status,
+			ke.id AS kubernetes_environment_id,
+			ke.name AS kubernetes_environment_name,
+			(ke.kubeconfig_secret_ref <> '') AS kubeconfig_secret_ref_present,
+			(ke.service_account <> '') AS service_account_present,
+			ke.token_subject_review_status,
+			ke.rbac_read_logs_status,
+			ke.status AS kubernetes_environment_status
+		FROM deployment_targets dt
+		LEFT JOIN kubernetes_environments ke
+			ON ke.project_id=dt.project_id
+			AND ke.environment=dt.environment
+			AND ke.cluster_name=dt.cluster_name
+			AND ke.namespace=dt.namespace
+		WHERE dt.id=$1 AND dt.project_id=$2`, deploymentTargetID, projectID)
 }
 
 func queryArgoPodLogAuditOperations(ctx context.Context, db sqlx.ExtContext, projectID, deploymentTargetID, podName, containerName string) ([]map[string]any, error) {
@@ -24408,12 +24532,21 @@ func argoPodLogQueryPreview(podName, containerName string, tailLines, sinceSecon
 		"since_seconds":  sinceSeconds,
 	}
 	deploymentTarget := map[string]any{
-		"id":           target["id"],
-		"name":         target["name"],
-		"environment":  target["environment"],
-		"cluster_name": clusterName,
-		"namespace":    namespace,
-		"status":       status,
+		"id":                             target["id"],
+		"name":                           target["name"],
+		"environment":                    target["environment"],
+		"cluster_name":                   clusterName,
+		"namespace":                      namespace,
+		"status":                         status,
+		"kubernetes_environment_id":      cleanOptionalID(fmt.Sprint(target["kubernetes_environment_id"])),
+		"kubernetes_environment_name":    cleanOptionalText(fmt.Sprint(target["kubernetes_environment_name"])),
+		"kubeconfig_secret_ref_present":  boolOnlyFromAny(target["kubeconfig_secret_ref_present"]),
+		"service_account_present":        boolOnlyFromAny(target["service_account_present"]),
+		"token_subject_review_status":    cleanOptionalText(fmt.Sprint(target["token_subject_review_status"])),
+		"rbac_read_logs_status":          cleanOptionalText(fmt.Sprint(target["rbac_read_logs_status"])),
+		"kubernetes_environment_status":  cleanOptionalText(fmt.Sprint(target["kubernetes_environment_status"])),
+		"log_access_metadata_ready":      kubernetesLogAccessMetadataReady(target),
+		"kubeconfig_secret_ref_included": false,
 	}
 	var auditEvidenceRows []map[string]any
 	if len(auditRows) > 0 {
@@ -24988,6 +25121,11 @@ func argoPodLogNamespaceKubeconfigReadinessPlan(query, target map[string]any, pr
 	namespaceReady := strings.TrimSpace(fmt.Sprint(target["namespace"])) != ""
 	clusterReady := strings.TrimSpace(fmt.Sprint(target["cluster_name"])) != ""
 	podReady := strings.TrimSpace(fmt.Sprint(query["pod_name"])) != ""
+	kubernetesEnvironmentID := cleanOptionalID(fmt.Sprint(target["kubernetes_environment_id"]))
+	kubeconfigRefPresent := boolOnlyFromAny(target["kubeconfig_secret_ref_present"])
+	tokenSubjectReviewed := cleanPreviewString(target["token_subject_review_status"]) == "reviewed"
+	rbacReadLogsReviewed := cleanPreviewString(target["rbac_read_logs_status"]) == "reviewed"
+	logAccessMetadataReady := kubernetesEnvironmentID != "" && kubeconfigRefPresent && tokenSubjectReviewed && rbacReadLogsReviewed
 	metadataReady := prerequisiteState == "metadata_available" || (namespaceReady && clusterReady && podReady)
 	evidenceState := cleanPreviewString(evidence["evidence_state"])
 	resultObserved := boolOnlyFromAny(evidence["sanitized_result_recorded"])
@@ -25017,7 +25155,20 @@ func argoPodLogNamespaceKubeconfigReadinessPlan(query, target map[string]any, pr
 			readinessReason = "pod_log_audit_worker_status_unknown"
 		}
 	}
-	readinessReady := readinessState == "ready_for_approval" || readinessState == "audit_result_ready_for_binding_review"
+	readinessReady := readinessState == "ready_for_approval" || readinessState == "audit_result_ready_for_binding_review" || logAccessMetadataReady
+	bindingBlockers := []string{"live_log_backend_disabled"}
+	if kubernetesEnvironmentID == "" {
+		bindingBlockers = append(bindingBlockers, "kubernetes_environment_not_configured")
+	}
+	if !kubeconfigRefPresent {
+		bindingBlockers = append(bindingBlockers, "kubeconfig_secret_ref_missing")
+	}
+	if !tokenSubjectReviewed {
+		bindingBlockers = append(bindingBlockers, "token_subject_review_not_performed")
+	}
+	if !rbacReadLogsReviewed {
+		bindingBlockers = append(bindingBlockers, "rbac_read_logs_review_not_performed")
+	}
 	return map[string]any{
 		"mode":                              "pod_log_namespace_kubeconfig_binding_readiness_plan",
 		"readiness_state":                   readinessState,
@@ -25026,13 +25177,19 @@ func argoPodLogNamespaceKubeconfigReadinessPlan(query, target map[string]any, pr
 		"metadata_ready":                    metadataReady,
 		"namespace_scope_ready":             namespaceReady && clusterReady,
 		"pod_identity_present":              podReady,
+		"kubernetes_environment_id":         kubernetesEnvironmentID,
+		"kubernetes_environment_bound":      kubernetesEnvironmentID != "",
+		"kubernetes_environment_status":     cleanOptionalText(fmt.Sprint(target["kubernetes_environment_status"])),
+		"kubeconfig_secret_ref_present":     kubeconfigRefPresent,
+		"service_account_present":           boolOnlyFromAny(target["service_account_present"]),
 		"audit_operation_observed":          hasAudit,
 		"sanitized_audit_result_observed":   resultObserved,
 		"kubeconfig_binding_performed":      false,
-		"namespace_scoped_kubeconfig_bound": false,
+		"namespace_scoped_kubeconfig_bound": logAccessMetadataReady,
 		"kubernetes_client_created":         false,
-		"token_subject_review_performed":    false,
-		"rbac_read_logs_review_performed":   false,
+		"token_subject_review_performed":    tokenSubjectReviewed,
+		"rbac_read_logs_review_performed":   rbacReadLogsReviewed,
+		"log_access_metadata_ready":         logAccessMetadataReady,
 		"kubernetes_api_call":               false,
 		"argocd_api_call":                   false,
 		"kubectl_command_invoked":           false,
@@ -25047,11 +25204,59 @@ func argoPodLogNamespaceKubeconfigReadinessPlan(query, target map[string]any, pr
 		"contains_raw_kubernetes_response":  false,
 		"required_controls":                 []string{"operator_approval", "namespace_scoped_kubeconfig_secret", "token_subject_review", "rbac_read_logs_review", "namespace_confirmation", "pod_identity_confirmation", "result_redaction_review"},
 		"disabled_backends":                 []string{"kubeconfig_secret_binding", "kubernetes_client_create", "token_subject_review", "rbac_review", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs"},
-		"binding_blockers":                  []string{"kubeconfig_secret_binding_not_configured", "namespace_scoped_kubeconfig_not_bound", "token_subject_review_not_performed", "rbac_read_logs_review_not_performed", "live_log_backend_disabled"},
+		"binding_blockers":                  bindingBlockers,
 		"readiness_sequence":                []string{"review_deployment_target_namespace", "approve_pod_log_audit_request", "bind_namespace_scoped_kubeconfig_secret", "review_token_subject", "review_rbac_logs_permission", "create_kubernetes_client", "open_live_log_stream", "record_redacted_log_result"},
 		"suppressed_fields":                 []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "log_body", "redacted_log_body", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret"},
 		"message":                           "Namespace-scoped kubeconfig binding is readiness metadata only; no kubeconfig secret is read, no Kubernetes client is created, and no pod log stream is opened.",
 	}
+}
+
+func kubernetesLogAccessMetadataReady(target map[string]any) bool {
+	return cleanOptionalID(fmt.Sprint(target["kubernetes_environment_id"])) != "" &&
+		boolOnlyFromAny(target["kubeconfig_secret_ref_present"]) &&
+		cleanPreviewString(target["token_subject_review_status"]) == "reviewed" &&
+		cleanPreviewString(target["rbac_read_logs_status"]) == "reviewed"
+}
+
+func cleanKubernetesReviewStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "reviewed", "approved":
+		return "reviewed"
+	case "failed", "rejected":
+		return "failed"
+	case "waived":
+		return "waived"
+	default:
+		return "not_reviewed"
+	}
+}
+
+func cleanKubernetesEnvironmentStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "ready", "reviewed":
+		return "ready"
+	case "disabled":
+		return "disabled"
+	default:
+		return "metadata_only"
+	}
+}
+
+func containsSecretLikeMaterial(value string) bool {
+	cleaned := strings.TrimSpace(value)
+	if cleaned == "" {
+		return false
+	}
+	lower := strings.ToLower(cleaned)
+	return strings.Contains(cleaned, "\n") ||
+		strings.Contains(lower, "apiversion:") ||
+		strings.Contains(lower, `"apiversion"`) ||
+		strings.Contains(lower, "kind: config") ||
+		strings.Contains(lower, `"kind":"config"`) ||
+		strings.Contains(lower, "bearer ") ||
+		strings.Contains(lower, "token:") ||
+		strings.Contains(lower, "client-key-data") ||
+		strings.Contains(lower, "client-certificate-data")
 }
 
 func podLogPlanStatus(ready bool) string {

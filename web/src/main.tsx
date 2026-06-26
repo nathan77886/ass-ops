@@ -7430,6 +7430,8 @@ function ConfigPage() {
   const [podLogRunResult, setPodLogRunResult] = useState<AnyRow>();
   const [podLogSnapshotLoading, setPodLogSnapshotLoading] = useState(false);
   const [podLogSnapshotResult, setPodLogSnapshotResult] = useState<AnyRow>();
+  const [kubernetesEnvironmentOpen, setKubernetesEnvironmentOpen] = useState(false);
+  const [kubernetesEnvironmentForm] = Form.useForm();
   const [deploymentExecutionGateLoadingID, setDeploymentExecutionGateLoadingID] = useState('');
   const [deploymentExecutionGateResults, setDeploymentExecutionGateResults] = useState<Record<string, AnyRow>>({});
   const [rollbackExecutionGateLoadingID, setRollbackExecutionGateLoadingID] = useState('');
@@ -7444,6 +7446,7 @@ function ConfigPage() {
   const argoRows = argoConnections.data?.items || [];
   const argoPick = useSelectedRow(argoRows);
   const argoApps = useLoad(() => project ? api(`/api/projects/${project.id}/argo/apps`) : Promise.resolve({ items: [] }), [project?.id]);
+  const kubernetesEnvironments = useLoad(() => project ? api(`/api/projects/${project.id}/kubernetes/environments`) : Promise.resolve({ items: [] }), [project?.id]);
   const deploymentTargets = useLoad(() => project ? api(`/api/projects/${project.id}/deployment-targets`) : Promise.resolve({ items: [] }), [project?.id]);
   const deploymentRecords = useLoad(() => project ? api(`/api/projects/${project.id}/deployment-records`) : Promise.resolve({ items: [] }), [project?.id]);
   const rollbackPoints = useLoad(() => project ? api(`/api/projects/${project.id}/rollback-points`) : Promise.resolve({ items: [] }), [project?.id]);
@@ -7561,6 +7564,44 @@ function ConfigPage() {
       })
     });
     argoConnections.reload();
+  }
+  async function createKubernetesEnvironment(values: AnyRow) {
+    if (!project) return;
+    await api(`/api/projects/${project.id}/kubernetes/environments`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: values.name,
+        environment: values.environment,
+        cluster_name: values.cluster_name,
+        namespace: values.namespace,
+        kubeconfig_secret_ref: values.kubeconfig_secret_ref,
+        service_account: values.service_account,
+        token_subject_review_status: values.token_subject_review_status || 'not_reviewed',
+        rbac_read_logs_status: values.rbac_read_logs_status || 'not_reviewed',
+        status: values.status || 'metadata_only',
+        metadata: {}
+      })
+    });
+    message.success('Kubernetes environment saved');
+    setKubernetesEnvironmentOpen(false);
+    kubernetesEnvironmentForm.resetFields();
+    kubernetesEnvironments.reload();
+    deploymentTargets.reload();
+    if (podLogPreview) {
+      const target = podLogPreview.deployment_target || {};
+      const query = podLogPreview.query || {};
+      const refreshed = await api(`/api/projects/${project.id}/argo/pod-log-query-preview`, {
+        method: 'POST',
+        body: JSON.stringify({
+          deployment_target_id: target.id,
+          pod_name: query.pod_name,
+          container_name: query.container_name,
+          tail_lines: Number(query.tail_lines || 200),
+          since_seconds: Number(query.since_seconds || 0)
+        })
+      });
+      setPodLogPreview(refreshed);
+    }
   }
   async function syncArgoApps() {
     if (!argoPick.selectedID) {
@@ -7870,7 +7911,8 @@ function ConfigPage() {
           <EntitySelect label="Connection" rows={argoRows} value={argoPick.selectedID} onChange={argoPick.setSelectedID} />
           <Space>
             <Button type="primary" loading={Boolean(argoSyncOpID)} onClick={syncArgoApps} disabled={!argoPick.selectedID || Boolean(argoSyncOpID)}>Sync apps</Button>
-            <Button onClick={() => { argoConnections.reload(); argoApps.reload(); deploymentTargets.reload(); deploymentRecords.reload(); rollbackPoints.reload(); }} disabled={!project}>Refresh</Button>
+            <Button onClick={() => setKubernetesEnvironmentOpen(true)} disabled={!project}>Add Kubernetes env</Button>
+            <Button onClick={() => { argoConnections.reload(); argoApps.reload(); kubernetesEnvironments.reload(); deploymentTargets.reload(); deploymentRecords.reload(); rollbackPoints.reload(); }} disabled={!project}>Refresh</Button>
           </Space>
           <div className="metricGrid">
             <Card><Typography.Text type="secondary">Targets</Typography.Text><Typography.Title level={3}>{deploymentPosture.targets}</Typography.Title></Card>
@@ -7921,6 +7963,7 @@ function ConfigPage() {
                     {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_binding_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.kubeconfig_binding_plan.binding_state === 'planned' ? 'gold' : 'red'}>kubeconfig {podLogPreview.retrieval_plan.execution_plan.kubeconfig_binding_plan.binding_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.readiness_ready ? 'gold' : 'red'}>kube readiness {podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.readiness_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.namespace_scoped_kubeconfig_bound ? 'namespace kubeconfig bound' : 'no namespace kubeconfig'}</Tag> : null}
+                    {podLogPreview.retrieval_plan?.execution_plan?.kubeconfig_readiness_plan ? <Tag>{podLogPreview.retrieval_plan.execution_plan.kubeconfig_readiness_plan.log_access_metadata_ready ? 'log metadata reviewed' : 'log metadata pending'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.pod_scope_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state === 'planned' ? 'gold' : 'red'}>scope {podLogPreview.retrieval_plan.execution_plan.pod_scope_plan.scope_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.log_capture_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state === 'planned' ? 'gold' : 'red'}>capture {podLogPreview.retrieval_plan.execution_plan.log_capture_plan.capture_state || 'blocked'}</Tag> : null}
                     {podLogPreview.retrieval_plan?.execution_plan?.live_log_stream_plan ? <Tag color={podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.stream_ready_for_review ? 'green' : podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.metadata_ready ? 'gold' : 'red'}>live stream {podLogPreview.retrieval_plan.execution_plan.live_log_stream_plan.stream_state || 'blocked'}</Tag> : null}
@@ -7960,11 +8003,22 @@ function ConfigPage() {
             { title: 'Sync', render: (_, row) => <Tag color={row.last_sync_status === 'completed' ? 'green' : row.last_sync_status === 'failed' ? 'red' : row.last_sync_status === 'running' ? 'blue' : 'default'}>{row.last_sync_status || 'never'}</Tag> },
             { title: 'Created', dataIndex: 'created_at' }
           ]} />
+          <Table<AnyRow> rowKey="id" dataSource={kubernetesEnvironments.data?.items || []} pagination={{ pageSize: 6 }} columns={[
+            { title: 'Kubernetes env', dataIndex: 'name' },
+            { title: 'Environment', dataIndex: 'environment' },
+            { title: 'Namespace', dataIndex: 'namespace' },
+            { title: 'Cluster', dataIndex: 'cluster_name' },
+            { title: 'Secret ref', render: (_, row) => row.kubeconfig_secret_ref_present ? <Tag color="green">configured</Tag> : <Tag color="red">missing</Tag> },
+            { title: 'Token review', render: (_, row) => <Tag color={row.token_subject_review_ready ? 'green' : 'gold'}>{row.token_subject_review_status || 'not_reviewed'}</Tag> },
+            { title: 'Logs RBAC', render: (_, row) => <Tag color={row.rbac_read_logs_ready ? 'green' : 'gold'}>{row.rbac_read_logs_status || 'not_reviewed'}</Tag> },
+            { title: 'Metadata', render: (_, row) => <Tag color={row.log_access_metadata_ready ? 'green' : 'gold'}>{row.log_access_metadata_ready ? 'metadata reviewed' : row.status || 'metadata_only'}</Tag> }
+          ]} />
           <Table<AnyRow> rowKey="id" dataSource={deploymentTargets.data?.items || []} pagination={{ pageSize: 6 }} columns={[
             { title: 'Target', dataIndex: 'name' },
             { title: 'Environment', dataIndex: 'environment' },
             { title: 'Namespace', dataIndex: 'namespace' },
             { title: 'Cluster', dataIndex: 'cluster_name' },
+            { title: 'Kube env', render: (_, row) => row.kubernetes_environment_id ? <Tag color={row.kubeconfig_secret_ref_present ? 'green' : 'gold'}>{row.kubernetes_environment_name || 'bound'}</Tag> : <Tag>unbound</Tag> },
             { title: 'Apps', dataIndex: 'argo_app_count' },
             { title: 'Execution', render: (_, row) => <Space direction="vertical" size={4}>{deploymentExecutionReadinessView(row)}{deploymentExecutionGateResults[row.id] ? deploymentExecutionGateView(deploymentExecutionGateResults[row.id]) : null}</Space> },
             { title: 'Action', render: (_, row) => <Button size="small" onClick={() => checkDeploymentExecutionGate(String(row.id || ''))} loading={deploymentExecutionGateLoadingID === row.id} disabled={!row.id || Boolean(deploymentExecutionGateLoadingID)}>Check gate</Button> },
@@ -8002,6 +8056,20 @@ function ConfigPage() {
         </Space> }
       ]} />
       <CreateModal title="Create Argo connection" open={argoOpen} setOpen={setArgoOpen} fields={['name', 'server_url', 'auth_type', 'token', 'insecure_skip_verify']} onSubmit={createArgoConnection} />
+      <Modal title="Add Kubernetes environment" open={kubernetesEnvironmentOpen} onCancel={() => setKubernetesEnvironmentOpen(false)} onOk={() => kubernetesEnvironmentForm.submit()} destroyOnHidden>
+        <Form form={kubernetesEnvironmentForm} layout="vertical" onFinish={createKubernetesEnvironment} initialValues={{ token_subject_review_status: 'not_reviewed', rbac_read_logs_status: 'not_reviewed', status: 'metadata_only' }}>
+          <Typography.Paragraph type="secondary">Records namespace-scoped metadata references only. It does not read kubeconfig data, create a Kubernetes client, or open pod log streams.</Typography.Paragraph>
+          <Form.Item name="name" label="Name" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="environment" label="Environment" rules={[{ required: true }]}><Input placeholder="test" /></Form.Item>
+          <Form.Item name="cluster_name" label="Cluster" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="namespace" label="Namespace" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="kubeconfig_secret_ref" label="Kubeconfig secret ref"><Input placeholder="assops/test/namespace-reader" /></Form.Item>
+          <Form.Item name="service_account" label="Service account"><Input placeholder="system:serviceaccount:ns:assops-reader" /></Form.Item>
+          <Form.Item name="token_subject_review_status" label="Token subject review"><Select options={[{ value: 'not_reviewed', label: 'Not reviewed' }, { value: 'reviewed', label: 'Reviewed' }, { value: 'failed', label: 'Failed' }, { value: 'waived', label: 'Waived' }]} /></Form.Item>
+          <Form.Item name="rbac_read_logs_status" label="RBAC read logs"><Select options={[{ value: 'not_reviewed', label: 'Not reviewed' }, { value: 'reviewed', label: 'Reviewed' }, { value: 'failed', label: 'Failed' }, { value: 'waived', label: 'Waived' }]} /></Form.Item>
+          <Form.Item name="status" label="Status"><Select options={[{ value: 'metadata_only', label: 'Metadata only' }, { value: 'ready', label: 'Ready' }, { value: 'disabled', label: 'Disabled' }]} /></Form.Item>
+        </Form>
+      </Modal>
       <CreateModal title="Create SSH machine" open={sshOpen} setOpen={setSSHOpen} fields={['name', 'host', 'port', 'username', 'auth_type']} onSubmit={(v) => project ? api(`/api/projects/${project.id}/ssh-machines`, { method: 'POST', body: JSON.stringify({ ...v, port: Number(v.port || 22) }) }).then(ssh.reload) : Promise.resolve()} />
       <CreateModal title="Run SSH command" open={commandOpen} setOpen={setCommandOpen} fields={['command', 'timeout_seconds']} onSubmit={runSSHCommand} />
     </Space>

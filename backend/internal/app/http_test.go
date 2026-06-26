@@ -947,6 +947,77 @@ func TestArgoPodLogQueryPreviewIsReadOnlyAndRedacted(t *testing.T) {
 	}
 }
 
+func TestArgoPodLogQueryPreviewUsesKubernetesEnvironmentReadinessMetadata(t *testing.T) {
+	preview := argoPodLogQueryPreview("api-7d9f", "web", 500, 30, map[string]any{
+		"id":                            "target-1",
+		"name":                          "prod",
+		"environment":                   "prod",
+		"cluster_name":                  "prod-cluster",
+		"namespace":                     "billing",
+		"status":                        "Healthy",
+		"kubernetes_environment_id":     "kube-env-1",
+		"kubernetes_environment_name":   "prod billing",
+		"kubeconfig_secret_ref_present": true,
+		"service_account_present":       true,
+		"token_subject_review_status":   "reviewed",
+		"rbac_read_logs_status":         "reviewed",
+		"kubernetes_environment_status": "ready",
+	}, []map[string]any{
+		{"id": "op-pod-logs", "status": "completed", "operation_log_count": int64(1)},
+	})
+	target := mapFromAny(preview["deployment_target"])
+	if target["kubernetes_environment_id"] != "kube-env-1" ||
+		target["kubeconfig_secret_ref_present"] != true ||
+		target["service_account_present"] != true ||
+		target["log_access_metadata_ready"] != true ||
+		target["kubeconfig_secret_ref_included"] != false {
+		t.Fatalf("kubernetes environment target readiness = %#v", target)
+	}
+	retrievalPlan := mapFromAny(preview["retrieval_plan"])
+	executionPlan := mapFromAny(retrievalPlan["execution_plan"])
+	readiness := mapFromAny(executionPlan["kubeconfig_readiness_plan"])
+	if readiness["kubernetes_environment_bound"] != true ||
+		readiness["namespace_scoped_kubeconfig_bound"] != true ||
+		readiness["token_subject_review_performed"] != true ||
+		readiness["rbac_read_logs_review_performed"] != true ||
+		readiness["log_access_metadata_ready"] != true ||
+		readiness["kubernetes_client_created"] != false ||
+		readiness["kubernetes_api_call"] != false ||
+		readiness["log_stream_opened"] != false ||
+		readiness["contains_kubeconfig"] != false ||
+		readiness["contains_log_body"] != false {
+		t.Fatalf("kubernetes environment readiness plan = %#v", readiness)
+	}
+	encoded, _ := json.Marshal(preview)
+	for _, forbidden := range []string{"apiVersion:", "Bearer secret", "client-key-data", "actual log line", "kubeconfig-data"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("pod log kubernetes readiness preview leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestKubernetesEnvironmentInputGuardsRejectCredentialMaterial(t *testing.T) {
+	for _, value := range []string{
+		"apiVersion: v1",
+		`{"apiVersion":"v1","kind":"Config"}`,
+		"client-key-data: secret",
+		"Bearer secret",
+	} {
+		if !containsSecretLikeMaterial(value) {
+			t.Fatalf("credential-like kubernetes metadata was not rejected: %q", value)
+		}
+	}
+	if containsSecretLikeMaterial("assops/test/billing-reader") {
+		t.Fatalf("secret reference name should be allowed")
+	}
+	if got := cleanKubernetesReviewStatus("ready"); got != "not_reviewed" {
+		t.Fatalf("ready should not be accepted as review status, got %q", got)
+	}
+	if got := cleanKubernetesReviewStatus("approved"); got != "reviewed" {
+		t.Fatalf("approved should normalize to reviewed, got %q", got)
+	}
+}
+
 func TestArgoPodLogQueryPreviewReportsMissingTargetMetadata(t *testing.T) {
 	preview := argoPodLogQueryPreview("", "", 0, 60, map[string]any{"id": "target-1", "name": "prod"})
 	query := mapFromAny(preview["query"])
@@ -1271,10 +1342,7 @@ func TestRecordArgoPodLogAuditSnapshotHandlerBlockedByReadiness(t *testing.T) {
 	}
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
-	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
-		WithArgs("target-1", "project-1").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
-			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+	expectArgoPodLogTargetQuery(mock, "billing")
 	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
 		WithArgs("project-1", "target-1", "api-7d9f", "web").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
@@ -1322,10 +1390,7 @@ func TestRecordArgoPodLogAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
 	}
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
-	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
-		WithArgs("target-1", "project-1").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
-			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+	expectArgoPodLogTargetQuery(mock, "billing")
 	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
 		WithArgs("project-1", "target-1", "api-7d9f", "web").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
@@ -1377,11 +1442,44 @@ func TestRecordArgoPodLogAuditSnapshotHandlerWritesWhenReady(t *testing.T) {
 	}
 }
 
-func expectArgoPodLogSnapshotEvidenceQueries(mock sqlmock.Sqlmock, status string, assetFound bool) {
-	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
+func expectArgoPodLogTargetQuery(mock sqlmock.Sqlmock, namespace string) {
+	mock.ExpectQuery(`(?s)SELECT dt\.id, dt\.project_id, dt\.name, dt\.environment, dt\.cluster_name, dt\.namespace, dt\.status,\s+ke\.id AS kubernetes_environment_id,\s+ke\.name AS kubernetes_environment_name,\s+\(ke\.kubeconfig_secret_ref <> ''\) AS kubeconfig_secret_ref_present,\s+\(ke\.service_account <> ''\) AS service_account_present,\s+ke\.token_subject_review_status,\s+ke\.rbac_read_logs_status,\s+ke\.status AS kubernetes_environment_status\s+FROM deployment_targets dt\s+LEFT JOIN kubernetes_environments ke`).
 		WithArgs("target-1", "project-1").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
-			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id",
+			"project_id",
+			"name",
+			"environment",
+			"cluster_name",
+			"namespace",
+			"status",
+			"kubernetes_environment_id",
+			"kubernetes_environment_name",
+			"kubeconfig_secret_ref_present",
+			"service_account_present",
+			"token_subject_review_status",
+			"rbac_read_logs_status",
+			"kubernetes_environment_status",
+		}).AddRow(
+			"target-1",
+			"project-1",
+			"prod",
+			"prod",
+			"prod-cluster",
+			namespace,
+			"Healthy",
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
+		))
+}
+
+func expectArgoPodLogSnapshotEvidenceQueries(mock sqlmock.Sqlmock, status string, assetFound bool) {
+	expectArgoPodLogTargetQuery(mock, "billing")
 	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
 		WithArgs("project-1", "target-1", "api-7d9f", "web").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
@@ -1578,10 +1676,7 @@ func TestRecordArgoPodLogAuditSnapshotHandlerCompletedWithoutAuditLogDoesNotWrit
 	}
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
-	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
-		WithArgs("target-1", "project-1").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
-			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+	expectArgoPodLogTargetQuery(mock, "billing")
 	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
 		WithArgs("project-1", "target-1", "api-7d9f", "web").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
@@ -1625,10 +1720,7 @@ func TestPreviewArgoPodLogQueryLoadsSanitizedAuditEvidence(t *testing.T) {
 	}
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
-	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
-		WithArgs("target-1", "project-1").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
-			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+	expectArgoPodLogTargetQuery(mock, "billing")
 	mock.ExpectQuery(`(?s)SELECT op\.id, op\.status, op\.created_at, op\.updated_at, op\.finished_at,\s+COUNT\(ol\.id\)::int AS operation_log_count\s+FROM operation_runs op\s+LEFT JOIN operation_logs ol ON ol\.operation_run_id=op\.id\s+WHERE op\.project_id=\$1\s+AND op\.operation_type='argo\.pod_logs'\s+AND op\.input->>'deployment_target_id'=\$2\s+AND op\.input->>'pod_name'=\$3\s+AND COALESCE\(op\.input->>'container_name', ''\)=\$4`).
 		WithArgs("project-1", "target-1", "api-7d9f", "web").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "status", "created_at", "updated_at", "finished_at", "operation_log_count"}).
@@ -1774,10 +1866,7 @@ func TestRequestArgoPodLogRetrievalCreatesApprovalForDeveloper(t *testing.T) {
 	}
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
-	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
-		WithArgs("target-1", "project-1").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
-			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "billing", "Healthy"))
+	expectArgoPodLogTargetQuery(mock, "billing")
 	mock.ExpectQuery(`(?s)SELECT EXISTS\(\s+SELECT 1 FROM project_members`).
 		WithArgs("project-1", "dev-1").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
@@ -1828,10 +1917,7 @@ func TestRequestArgoPodLogRetrievalRejectsWhenAuditWorkerDisabled(t *testing.T) 
 	}
 	defer db.Close()
 	server := &Server{store: &Store{DB: sqlx.NewDb(db, "sqlmock")}}
-	mock.ExpectQuery(`(?s)SELECT id, project_id, name, environment, cluster_name, namespace, status\s+FROM deployment_targets\s+WHERE id=\$1 AND project_id=\$2`).
-		WithArgs("target-1", "project-1").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "name", "environment", "cluster_name", "namespace", "status"}).
-			AddRow("target-1", "project-1", "prod", "prod", "prod-cluster", "", "Healthy"))
+	expectArgoPodLogTargetQuery(mock, "")
 
 	body := strings.NewReader(`{"deployment_target_id":"target-1","pod_name":"api-7d9f"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/argo/pod-logs", body)
@@ -38813,6 +38899,36 @@ func TestGitHubActionArtifactsMigrationAndFreshInit(t *testing.T) {
 		}
 		if !strings.Contains(string(content), "020_github_action_artifacts.sql") {
 			t.Fatalf("%s missing 020_github_action_artifacts.sql init mount", path)
+		}
+	}
+}
+
+func TestKubernetesEnvironmentsMigrationAndFreshInit(t *testing.T) {
+	migration, err := os.ReadFile("../../migrations/021_kubernetes_environments.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	for _, token := range []string{
+		"CREATE TABLE IF NOT EXISTS kubernetes_environments",
+		"project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE",
+		"kubeconfig_secret_ref TEXT NOT NULL DEFAULT ''",
+		"token_subject_review_status TEXT NOT NULL DEFAULT 'not_reviewed'",
+		"rbac_read_logs_status TEXT NOT NULL DEFAULT 'not_reviewed'",
+		"UNIQUE(project_id, environment, cluster_name, namespace)",
+		"idx_kubernetes_environments_project",
+		"idx_kubernetes_environments_scope",
+	} {
+		if !strings.Contains(string(migration), token) {
+			t.Fatalf("kubernetes environments migration missing %q", token)
+		}
+	}
+	for _, path := range []string{"../../../deploy/docker-compose.yml", "../../../deploy/compose.prod.yml"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(content), "021_kubernetes_environments.sql") {
+			t.Fatalf("%s missing 021_kubernetes_environments.sql init mount", path)
 		}
 	}
 }
