@@ -73,6 +73,7 @@ first-deployable-check:
 		command -v "$$bin" >/dev/null || { echo "$$bin is required for first-deployable-check"; exit 1; }; \
 	done; \
 	go test ./...; \
+	pnpm -C web install --frozen-lockfile; \
 	pnpm -C web run i18n:check; \
 	pnpm -C web build; \
 	bash scripts/api-smoke-self-test.sh; \

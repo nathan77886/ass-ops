@@ -132,7 +132,7 @@ make release-backup-schedule-plan REPO=nathan77886/ass-ops ENV=production RUNNER
 make helm-test-smoke
 ```
 
-`make first-deployable-check` is the local pre-test-deploy gate. It requires `go`, `pnpm`, `helm`, `curl`, and `python3`, then runs backend tests, the web i18n/build gate, the gateway API smoke self-test, the checked-in Helm test readiness plan, Helm lint, and Helm rendering with `values.test.example.yaml`.
+`make first-deployable-check` is the local pre-test-deploy gate. It requires `go`, `pnpm`, `helm`, `curl`, and `python3`, installs web dependencies from the lockfile, then runs backend tests, the web i18n/build gate, the gateway API smoke self-test, the checked-in Helm test readiness plan, Helm lint, and Helm rendering with `values.test.example.yaml`.
 `make helm-test-smoke` is the read-only post-test-deploy gate for a Helm release. It waits for gateway, worker, node-worker, and web rollouts, checks worker health endpoints, port-forwards the web/worker health Services, and runs the gateway API smoke without writing ASSOPS rows.
 
 ## Runtime Integrations
