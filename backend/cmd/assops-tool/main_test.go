@@ -2283,7 +2283,7 @@ func TestReleaseHelmReadinessPlanForProductionExample(t *testing.T) {
 		"ASSOPS_ADMIN_PASSWORD=",
 		"KUBE_CONFIG_B64=",
 		"Authorization:",
-		"PRIVATE KEY",
+		"PRIVATE" + " KEY",
 	} {
 		if strings.Contains(plan, forbidden) {
 			t.Fatalf("helm readiness plan should not contain %q:\n%s", forbidden, plan)
@@ -2480,6 +2480,107 @@ func TestHelmStorageClassContract(t *testing.T) {
 				if !strings.Contains(source, want) {
 					t.Fatalf("%s missing %q", path, want)
 				}
+			}
+		})
+	}
+}
+
+func TestReleaseHelmTestReadinessPlanForTestExample(t *testing.T) {
+	plan, err := releaseHelmTestReadinessPlan("../../../deploy/helm/assops/values.test.example.yaml")
+	if err != nil {
+		t.Fatalf("releaseHelmTestReadinessPlan: %v", err)
+	}
+	for _, want := range []string{
+		"# ASSOPS Helm Test Environment Readiness Plan",
+		"values.test.example.yaml",
+		"Values sha256:",
+		"External application Secret is required",
+		"assops-test-secret",
+		"Built-in PostgreSQL is disabled",
+		"ServiceAccount token automount is disabled",
+		"pod-log metadata audits are enabled",
+		"assops-kubeconfigs",
+		"/etc/assops/kubeconfigs",
+		"`DATABASE_URL`",
+		"`ASSOPS_JWT_SECRET`",
+		"`ASSOPS_ARGO_READ_TOKEN`",
+		"`kubeconfig_secret_ref`",
+		"does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs",
+		"does not render manifests, bind kubeconfigs, read external Secret values, fetch pod logs, or write deployment records",
+		"helm lint deploy/helm/assops",
+		"helm template assops deploy/helm/assops -n assops-test",
+		"kubectl -n assops-test get secret \"assops-test-secret\"",
+		"kubectl -n assops-test get secret \"assops-kubeconfigs\"",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("helm test readiness plan missing %q in:\n%s", want, plan)
+		}
+	}
+	for _, forbidden := range []string{
+		"ASSOPS_JWT_SECRET=",
+		"ASSOPS_ADMIN_PASSWORD=",
+		"KUBE_CONFIG_B64=",
+		"Authorization:",
+		"PRIVATE" + " KEY",
+	} {
+		if strings.Contains(plan, forbidden) {
+			t.Fatalf("helm test readiness plan should not contain %q:\n%s", forbidden, plan)
+		}
+	}
+}
+
+func TestReleaseHelmTestReadinessPlanRejectsUnsafeFields(t *testing.T) {
+	fixture, err := os.ReadFile("../../../deploy/helm/assops/values.test.example.yaml")
+	if err != nil {
+		t.Fatalf("read test values fixture: %v", err)
+	}
+	cases := []struct {
+		name    string
+		oldText string
+		newText string
+		want    string
+	}{
+		{
+			name:    "external secret required",
+			oldText: "  create: false",
+			newText: "  create: true",
+			want:    "secret.create=false",
+		},
+		{
+			name:    "external postgres required",
+			oldText: "  enabled: false",
+			newText: "  enabled: true",
+			want:    "postgres.enabled=false",
+		},
+		{
+			name:    "pod logs enabled",
+			oldText: "  kubernetesLogsEnabled: \"true\"",
+			newText: "  kubernetesLogsEnabled: \"false\"",
+			want:    "env.kubernetesLogsEnabled=true",
+		},
+		{
+			name:    "kubeconfig secret required",
+			oldText: "    existingSecretName: assops-kubeconfigs",
+			newText: "    existingSecretName: \"\"",
+			want:    "persistence.kubeconfigs.existingSecretName",
+		},
+		{
+			name:    "pod path must be absolute",
+			oldText: "  kubeconfigSecretDir: /etc/assops/kubeconfigs",
+			newText: "  kubeconfigSecretDir: etc/assops/kubeconfigs",
+			want:    "env.kubeconfigSecretDir",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			values := strings.Replace(string(fixture), tc.oldText, tc.newText, 1)
+			valuesPath := filepath.Join(t.TempDir(), "values.yaml")
+			if err := os.WriteFile(valuesPath, []byte(values), 0o600); err != nil {
+				t.Fatalf("write values: %v", err)
+			}
+			_, err := releaseHelmTestReadinessPlan(valuesPath)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("releaseHelmTestReadinessPlan error = %v, want containing %q", err, tc.want)
 			}
 		})
 	}

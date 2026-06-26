@@ -125,6 +125,7 @@ gh workflow run production-retained-backup.yml -f github_environment=production 
 go run ./backend/cmd/assops-tool release backup-schedule-plan nathan77886/ass-ops production ubuntu-latest '17 3 * * 1' artifact:retained-assops-backup 14 .assops/release-notes/backup-schedule-plan.md
 make release-validate-bundle ARTIFACT_DIR=.assops/release-artifacts REHEARSAL_REPORT=.assops/release-notes/restore-rehearsal.json
 make release-helm-values GHCR_OWNER=nathan77886 VERSION=v0.1.0 OUTPUT=.assops/release-notes/helm-values-v0.1.0.yaml
+make release-helm-test-readiness-plan OUTPUT=.assops/release-notes/helm-test-readiness-plan.md
 make release-promotion-plan REPO=nathan77886/ass-ops GHCR_OWNER=nathan77886 VERSION=v0.1.0 ARTIFACT_DIR=.assops/release-artifacts REHEARSAL_REPORT=.assops/release-notes/restore-rehearsal.json HELM_VALUES=.assops/release-notes/helm-values-v0.1.0.yaml OUTPUT=.assops/release-notes/promotion-plan-v0.1.0.md
 make release-backup-schedule-plan REPO=nathan77886/ass-ops ENV=production RUNNER=ubuntu-latest CRON='17 3 * * 1' BACKUP_SOURCE=artifact:retained-assops-backup RETENTION_DAYS=14 OUTPUT=.assops/release-notes/backup-schedule-plan.md
 ```

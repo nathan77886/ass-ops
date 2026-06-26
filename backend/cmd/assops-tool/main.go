@@ -95,6 +95,17 @@ func run() error {
 			fmt.Print(plan)
 			return nil
 		}
+		if (len(args) == 3 || len(args) == 4) && args[1] == "helm-test-readiness-plan" {
+			plan, err := releaseHelmTestReadinessPlan(args[2])
+			if err != nil {
+				return err
+			}
+			if len(args) == 4 {
+				return writeTextFile(args[3], plan)
+			}
+			fmt.Print(plan)
+			return nil
+		}
 		if (len(args) == 8 || len(args) == 9) && args[1] == "promotion-plan" {
 			plan, err := releasePromotionPlan(args[2], args[3], args[4], args[5], args[6], args[7])
 			if err != nil {
@@ -221,7 +232,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release ssh-rehearsal-plan PROJECT_SLUG ENVIRONMENT [OUTPUT_FILE]|release tag-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release config-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release agent-code-rehearsal-plan PROJECT_SLUG RUNTIME_KEY [OUTPUT_FILE]|release agent-tool-rehearsal-plan PROJECT_SLUG RUNTIME_KEY [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release helm-test-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release ssh-rehearsal-plan PROJECT_SLUG ENVIRONMENT [OUTPUT_FILE]|release tag-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release config-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release agent-code-rehearsal-plan PROJECT_SLUG RUNTIME_KEY [OUTPUT_FILE]|release agent-tool-rehearsal-plan PROJECT_SLUG RUNTIME_KEY [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -789,6 +800,87 @@ func releaseHelmReadinessPlan(valuesPath string) (string, error) {
 	fmt.Fprintf(&b, "kubectl -n assops get secret %q\n", values["ingress.tlsSecretName"])
 	fmt.Fprintf(&b, "```\n\n")
 	fmt.Fprintf(&b, "Run the `kubectl` checks only after confirming the target cluster, namespace, and kubeconfig out of band. Keep promotion in preflight-only mode until those checks, restore rehearsal, and operator approval are recorded.\n")
+	return b.String(), nil
+}
+
+func releaseHelmTestReadinessPlan(valuesPath string) (string, error) {
+	valuesPath = strings.TrimSpace(valuesPath)
+	if valuesPath == "" {
+		return "", fmt.Errorf("Helm test values path is required")
+	}
+	values, err := readSimpleHelmValues(valuesPath)
+	if err != nil {
+		return "", err
+	}
+	required := []struct {
+		key  string
+		want string
+	}{
+		{key: "secret.create", want: "false"},
+		{key: "postgres.enabled", want: "false"},
+		{key: "serviceAccount.automountServiceAccountToken", want: "false"},
+		{key: "env.kubernetesLogsEnabled", want: "true"},
+		{key: "web.service.type", want: "ClusterIP"},
+	}
+	for _, item := range required {
+		if got := values[item.key]; got != item.want {
+			return "", fmt.Errorf("Helm test readiness requires %s=%s", item.key, item.want)
+		}
+	}
+	for _, key := range []string{
+		"secret.name",
+		"gatewayURL",
+		"env.version",
+		"env.commit",
+		"env.buildTime",
+		"env.kubeconfigSecretDir",
+		"env.kubectlPath",
+		"persistence.kubeconfigs.existingSecretName",
+	} {
+		if strings.TrimSpace(values[key]) == "" {
+			return "", fmt.Errorf("Helm test readiness requires %s", key)
+		}
+	}
+	if strings.Contains(values["gatewayURL"], "@") {
+		return "", fmt.Errorf("Helm test readiness requires gatewayURL without embedded credentials")
+	}
+	if !strings.HasPrefix(values["env.kubeconfigSecretDir"], "/") {
+		return "", fmt.Errorf("Helm test readiness requires env.kubeconfigSecretDir to be an absolute pod path")
+	}
+	sum, err := sha256File(valuesPath)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# ASSOPS Helm Test Environment Readiness Plan\n\n")
+	fmt.Fprintf(&b, "Values overlay: `%s`\n\n", valuesPath)
+	fmt.Fprintf(&b, "Values sha256: `%s`\n\n", sum)
+	fmt.Fprintf(&b, "## Local Validation\n\n")
+	fmt.Fprintf(&b, "- External application Secret is required via `%s`; chart-managed test secrets are disabled.\n", values["secret.name"])
+	fmt.Fprintf(&b, "- Built-in PostgreSQL is disabled; `DATABASE_URL` must point at the reviewed test database from the external Secret.\n")
+	fmt.Fprintf(&b, "- Application ServiceAccount token automount is disabled.\n")
+	fmt.Fprintf(&b, "- Kubernetes pod-log metadata audits are enabled and use kubeconfig files mounted from Secret `%s` at `%s`.\n", values["persistence.kubeconfigs.existingSecretName"], values["env.kubeconfigSecretDir"])
+	fmt.Fprintf(&b, "- Web stays internal as `ClusterIP`; verify access through port-forward, ingress, or another reviewed test entrypoint.\n")
+	fmt.Fprintf(&b, "- Health metadata should report version `%s`, commit `%s`, and build time `%s` unless a private release overlay overrides them.\n\n", values["env.version"], values["env.commit"], values["env.buildTime"])
+	fmt.Fprintf(&b, "## Required External Secret Keys\n\n")
+	for _, key := range requiredExternalSecretKeys() {
+		fmt.Fprintf(&b, "- `%s`\n", key)
+	}
+	fmt.Fprintf(&b, "\n## Required Kubeconfig Secret\n\n")
+	fmt.Fprintf(&b, "- Secret: `%s`\n", values["persistence.kubeconfigs.existingSecretName"])
+	fmt.Fprintf(&b, "- Mount path: `%s`\n", values["env.kubeconfigSecretDir"])
+	fmt.Fprintf(&b, "- UI `kubeconfig_secret_ref` should be a Secret key or safe relative path below that mount.\n")
+	fmt.Fprintf(&b, "- Store only reviewed namespace-scoped kubeconfig files; do not paste kubeconfig content into ASSOPS.\n\n")
+	fmt.Fprintf(&b, "## No-Call Boundary\n\n")
+	fmt.Fprintf(&b, "- This plan reads only the local values file; it does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs.\n")
+	fmt.Fprintf(&b, "- It does not render manifests, bind kubeconfigs, read external Secret values, fetch pod logs, or write deployment records.\n\n")
+	fmt.Fprintf(&b, "## Preflight Commands\n\n```bash\n")
+	fmt.Fprintf(&b, "helm lint deploy/helm/assops -f %q\n", valuesPath)
+	fmt.Fprintf(&b, "helm template assops deploy/helm/assops -n assops-test -f deploy/helm/assops/values.yaml -f %q >/tmp/assops-test-rendered.yaml\n", valuesPath)
+	fmt.Fprintf(&b, "kubectl -n assops-test get secret %q\n", values["secret.name"])
+	fmt.Fprintf(&b, "kubectl -n assops-test get secret %q\n", values["persistence.kubeconfigs.existingSecretName"])
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "Run the `kubectl` checks only after confirming the test cluster, namespace, and kubeconfig out of band. After install, verify gateway, worker, node-worker, web rollouts, then query `/healthz` through the web Service.\n")
 	return b.String(), nil
 }
 

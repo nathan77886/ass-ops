@@ -1,4 +1,4 @@
-.PHONY: postgres compose-up compose-down gateway worker node-worker web build test tool context db-migrate db-migrations db-seed-demo db-sync-assets db-backup-retain db-rehearse-restore release-validate-bundle release-helm-values release-promotion-plan release-backup-schedule-plan helm-lint helm-template helm-smoke
+.PHONY: postgres compose-up compose-down gateway worker node-worker web build test tool context db-migrate db-migrations db-seed-demo db-sync-assets db-backup-retain db-rehearse-restore release-validate-bundle release-helm-values release-helm-test-readiness-plan release-promotion-plan release-backup-schedule-plan helm-lint helm-template helm-smoke
 
 postgres:
 	docker compose -f deploy/docker-compose.yml up -d postgres
@@ -66,6 +66,9 @@ release-helm-values:
 	@test -n "$(GHCR_OWNER)" || (echo "GHCR_OWNER=github-owner-or-org is required" && exit 1)
 	@test -n "$(VERSION)" || (echo "VERSION=v0.1.0 is required" && exit 1)
 	go run ./backend/cmd/assops-tool release helm-values "$(GHCR_OWNER)" "$(VERSION)" $(if $(OUTPUT),"$(OUTPUT)")
+
+release-helm-test-readiness-plan:
+	go run ./backend/cmd/assops-tool release helm-test-readiness-plan deploy/helm/assops/values.test.example.yaml $(if $(OUTPUT),"$(OUTPUT)")
 
 release-promotion-plan:
 	@test -n "$(REPO)" || (echo "REPO=owner/repo is required" && exit 1)

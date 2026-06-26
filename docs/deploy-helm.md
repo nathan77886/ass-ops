@@ -41,6 +41,14 @@ The external test Secret must provide the same application keys as production:
 
 For a disposable namespace that uses the chart-managed PostgreSQL, enable `postgres.enabled`, `secret.create`, `secret.databaseURL`, and `postgres.password` only in a private values overlay.
 
+Generate a local no-call readiness plan for the checked-in test values before touching a cluster:
+
+```bash
+go run ./backend/cmd/assops-tool release helm-test-readiness-plan \
+  deploy/helm/assops/values.test.example.yaml \
+  .assops/release-notes/helm-test-readiness-plan.md
+```
+
 Create the namespace-scoped kubeconfig Secret out of band. The key name becomes the UI `kubeconfig_secret_ref` value:
 
 ```bash
