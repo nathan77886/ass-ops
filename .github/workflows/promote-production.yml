@@ -163,6 +163,9 @@ jobs:
           helm upgrade --install "${{ inputs.helm_release }}" deploy/helm/assops \
             --namespace "${{ inputs.namespace }}" \
             --create-namespace \
+            --wait \
+            --wait-for-jobs \
+            --timeout 10m \
             -f deploy/helm/assops/values.yaml \
             -f "${{ inputs.environment_values }}" \
             -f "${{ needs.preflight.outputs.helm_values }}"
