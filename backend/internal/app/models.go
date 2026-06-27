@@ -39,6 +39,7 @@ type GitRemote struct {
 	ProviderType           string         `db:"provider_type" json:"provider_type"`
 	SourceProviderID       sql.NullString `db:"source_provider_id" json:"source_provider_id"`
 	SourceAccountID        sql.NullString `db:"source_account_id" json:"source_account_id"`
+	CredentialID           sql.NullString `db:"credential_id" json:"credential_id"`
 	RemoteURL              string         `db:"remote_url" json:"remote_url"`
 	WebURL                 string         `db:"web_url" json:"web_url"`
 	RemoteRole             string         `db:"remote_role" json:"remote_role"`
@@ -55,18 +56,19 @@ type GitRemote struct {
 }
 
 type ProviderAccount struct {
-	ID           string    `db:"id" json:"id"`
-	Name         string    `db:"name" json:"name"`
-	ProviderType string    `db:"provider_type" json:"provider_type"`
-	APIBaseURL   string    `db:"api_base_url" json:"api_base_url"`
-	WebBaseURL   string    `db:"web_base_url" json:"web_base_url"`
-	TokenEnv     string    `db:"token_env" json:"-"`
-	DefaultOwner string    `db:"default_owner" json:"default_owner"`
-	Visibility   string    `db:"visibility" json:"visibility"`
-	Enabled      bool      `db:"enabled" json:"enabled"`
-	Metadata     JSONValue `db:"metadata" json:"metadata"`
-	CreatedAt    time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt    time.Time `db:"updated_at" json:"updated_at"`
+	ID           string         `db:"id" json:"id"`
+	Name         string         `db:"name" json:"name"`
+	ProviderType string         `db:"provider_type" json:"provider_type"`
+	APIBaseURL   string         `db:"api_base_url" json:"api_base_url"`
+	WebBaseURL   string         `db:"web_base_url" json:"web_base_url"`
+	TokenEnv     string         `db:"token_env" json:"-"`
+	DefaultOwner string         `db:"default_owner" json:"default_owner"`
+	Visibility   string         `db:"visibility" json:"visibility"`
+	CredentialID sql.NullString `db:"credential_id" json:"credential_id"`
+	Enabled      bool           `db:"enabled" json:"enabled"`
+	Metadata     JSONValue      `db:"metadata" json:"metadata"`
+	CreatedAt    time.Time      `db:"created_at" json:"created_at"`
+	UpdatedAt    time.Time      `db:"updated_at" json:"updated_at"`
 }
 
 type OperationRun struct {

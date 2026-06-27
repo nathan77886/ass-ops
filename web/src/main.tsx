@@ -847,6 +847,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.ssh_key': 'SSH key pair',
     'option.ssh_password': 'SSH password',
     'option.argo_token': 'Argo token',
+    'option.provider_token': 'Provider token',
     'option.private': 'Private',
     'option.public': 'Public',
     'option.internal': 'Internal',
@@ -2089,6 +2090,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.ssh_key': 'SSH 密钥对',
     'option.ssh_password': 'SSH 密码',
     'option.argo_token': 'Argo Token',
+    'option.provider_token': '提供方 Token',
     'option.private': '私有',
     'option.public': '公开',
     'option.internal': '内部',
@@ -5963,10 +5965,14 @@ function TemplateUseModal({ template, open, setOpen, onSubmit }: { template?: An
 function ProviderAccounts() {
   const { t } = useI18n();
   const accounts = useLoad(() => api('/api/provider-accounts'), []);
+  const credentials = useLoad(() => api('/api/connection-credentials'), []);
+  const credentialRows = credentials.data?.items || [];
+  const providerCredentialOptions = credentialRows.filter((row: AnyRow) => row.kind === 'provider_token').map((row: AnyRow) => ({ value: row.id, label: `${row.name || row.id} · ${row.secret_configured ? t('common.configured') : t('common.missing')}` }));
   const tokenRotationSummary = accounts.data?.token_rotation_summary || {};
   const tokenRotationPlan = accounts.data?.token_rotation_plan || {};
   const tokenRotationPlanByID = providerAutoRotationPlanByID(tokenRotationPlan);
   const [open, setOpen] = useState(false);
+  const [credentialOpen, setCredentialOpen] = useState(false);
   const [checkingID, setCheckingID] = useState('');
   const [rotatingID, setRotatingID] = useState('');
   const [rotateForm] = Form.useForm();
@@ -5981,6 +5987,20 @@ function ProviderAccounts() {
     });
     message.success(t('provider.accountCreated'));
     accounts.reload();
+  }
+  async function createConnectionCredential(values: AnyRow) {
+    await api('/api/connection-credentials', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: values.name,
+        kind: 'provider_token',
+        secret_value: values.secret_value,
+        public_value: values.public_value,
+        metadata: {}
+      })
+    });
+    message.success(t('form.createConnectionCredential'));
+    credentials.reload();
   }
   async function checkAccount(id: string) {
     setCheckingID(id);
@@ -6024,6 +6044,9 @@ function ProviderAccounts() {
   return (
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="Provider Accounts" onCreate={() => setOpen(true)} />
+      <Space>
+        <Button onClick={() => setCredentialOpen(true)}>{t('form.createConnectionCredential')}</Button>
+      </Space>
       <Space wrap>
         <Tag>{tokenRotationSummary.total || 0} {t('provider.accounts')}</Tag>
         {providerTokenRotationSummaryTags(tokenRotationSummary, t).map((item) => <Tag key={item.key} color={item.color}>{item.label}</Tag>)}
@@ -6041,6 +6064,7 @@ function ProviderAccounts() {
         { title: t('provider.owner'), dataIndex: 'default_owner' },
         { title: t('provider.visibility'), render: (_, row) => translatedValue(row.visibility, t) },
         { title: t('provider.tokenEnv'), dataIndex: 'masked_token_env' },
+        { title: t('common.credential'), render: (_, row) => row.credential_name ? <Tag color={row.credential_configured ? 'green' : 'gold'}>{row.credential_name}</Tag> : <Tag>{t('common.unbound')}</Tag> },
         {
           title: t('provider.rotation'),
           render: (_, row) => {
@@ -6086,10 +6110,18 @@ function ProviderAccounts() {
 	        { title: t('common.action'), render: (_, row) => <Space><Button size="small" onClick={() => checkAccount(row.id)} loading={checkingID === row.id}>{t('provider.check')}</Button><Button size="small" onClick={() => openRotateToken(row)}>{t('provider.rotate')}</Button></Space> }
 	      ]} />
 	      <CreateModal
+	        title="Create connection credential"
+        open={credentialOpen}
+        setOpen={setCredentialOpen}
+	        fields={[{ name: 'name', helpKey: 'help.name' }, 'secret_value', 'public_value']}
+	        initialValues={{ kind: 'provider_token' }}
+	        onSubmit={createConnectionCredential}
+	      />
+	      <CreateModal
 	        title="Create provider account"
         open={open}
         setOpen={setOpen}
-	        fields={['name', 'provider_type', 'api_base_url', 'web_base_url', 'token_env', 'default_owner', 'visibility', 'enabled', 'metadata_json']}
+	        fields={['name', 'provider_type', 'api_base_url', 'web_base_url', { name: 'token_env', required: false }, { name: 'credential_id', input: 'select', optionItems: providerCredentialOptions, helpKey: 'help.credential_id', required: false }, 'default_owner', 'visibility', 'enabled', 'metadata_json']}
         initialValues={{ provider_type: 'github', visibility: 'private', enabled: true }}
 	        onSubmit={createAccount}
 	      />
@@ -7077,6 +7109,8 @@ function GitRemotes() {
   const repo = repoPick.selected;
   const remotes = useLoad(() => repo ? api(`/api/git-repositories/${repo.id}/remotes`) : Promise.resolve({ items: [] }), [repo?.id]);
   const remoteRows = remotes.data?.items || [];
+  const credentials = useLoad(() => project ? api(`/api/projects/${project.id}/connection-credentials`) : Promise.resolve({ items: [] }), [project?.id]);
+  const gitCredentialOptions = (credentials.data?.items || []).filter((row: AnyRow) => row.kind === 'ssh_key').map((row: AnyRow) => ({ value: row.id, label: `${row.name || row.id} · ${row.secret_configured ? t('common.configured') : t('common.missing')}` }));
   const sourcePick = useSelectedRow(remoteRows);
   const sourceRemote = sourcePick.selected;
   const targetPick = useSelectedRow(remoteRows.filter((row: AnyRow) => row.id !== sourcePick.selectedID));
@@ -7460,10 +7494,11 @@ function GitRemotes() {
         { title: t('common.role'), render: (_, row) => translatedValue(row.remote_role, t) },
         { title: t('common.primary'), render: (_, row) => row.is_primary ? <Tag color="green">{t('value.primary')}</Tag> : null },
         { title: t('common.sync'), render: (_, row) => <Tag>{row.last_sync_status ? translatedValue(row.last_sync_status, t) : t('common.never')}</Tag> },
+        { title: t('common.credential'), render: (_, row) => row.credential_name ? <Tag color={row.credential_configured ? 'green' : 'gold'}>{row.credential_name}</Tag> : <Tag>{t('common.unbound')}</Tag> },
         { title: t('common.url'), render: (_, row) => urlsText(row) }
       ]} />
       {!repo && <Alert type="info" showIcon message={t('git.createRepositoryFirst')} />}
-      <CreateModal title="Create remote" open={open} setOpen={setOpen} descriptionKey="git.remoteModalDescription" fields={[{ name: 'name', helpKey: 'help.git_remote_name' }, 'remote_key', 'provider_type', 'remote_url', 'web_url', 'remote_role', 'urls', 'default_branch']} initialValues={{ provider_type: 'github', remote_role: 'mirror', default_branch: 'main' }} onSubmit={createRemote} />
+      <CreateModal title="Create remote" open={open} setOpen={setOpen} descriptionKey="git.remoteModalDescription" fields={[{ name: 'name', helpKey: 'help.git_remote_name' }, 'remote_key', 'provider_type', 'remote_url', 'web_url', 'remote_role', { name: 'credential_id', input: 'select', optionItems: gitCredentialOptions, helpKey: 'help.credential_id', required: false }, 'urls', 'default_branch']} initialValues={{ provider_type: 'github', remote_role: 'mirror', default_branch: 'main' }} onSubmit={createRemote} />
       <CreateModal title="Create tag" open={tagOpen} setOpen={setTagOpen} descriptionKey="git.tagModalDescription" fields={['tag_name', 'target_sha', 'branch', 'tag_message']} initialValues={{ branch: repo?.default_branch || sourceRemote?.default_branch || 'main' }} onSubmit={createTag} />
       <CreateModal title="Save repo sync asset" open={syncAssetOpen} setOpen={setSyncAssetOpen} descriptionKey="git.syncAssetModalDescription" fields={[{ name: 'name', helpKey: 'help.repo_sync_name' }, 'trigger_mode', 'sync_mode', 'transport', 'driver']} initialValues={{ trigger_mode: 'manual_or_webhook', sync_mode: 'selected_refs', transport: 'ssh', driver: 'projectops_worker_git_ssh' }} onSubmit={createRepoSyncAsset} />
       <CreateModal title="Edit repo sync asset" open={syncAssetEditOpen} setOpen={setSyncAssetEditOpen} descriptionKey="git.syncAssetModalDescription" fields={[{ name: 'name', helpKey: 'help.repo_sync_name' }, 'trigger_mode', 'sync_mode', 'transport', 'driver', 'enabled']} onSubmit={updateRepoSyncAsset} />
@@ -10790,7 +10825,7 @@ const fieldMeta: Record<string, FieldMeta> = {
   auth_type: { input: 'select', options: ['token', 'key', 'password'], helpKey: 'help.auth_type' },
   argo_auth_type: { input: 'select', options: ['token'], labelKey: 'field.argo_auth_type', helpKey: 'help.argo_auth_type', required: true },
   ssh_auth_type: { input: 'select', options: ['key', 'password'], labelKey: 'field.ssh_auth_type', helpKey: 'help.ssh_auth_type', required: true },
-  kind: { input: 'select', options: ['ssh_key', 'ssh_password', 'argo_token'], helpKey: 'help.credential_kind', required: true },
+  kind: { input: 'select', options: ['ssh_key', 'ssh_password', 'argo_token', 'provider_token'], helpKey: 'help.credential_kind', required: true },
   secret_value: { input: 'textarea', helpKey: 'help.secret_value', required: true },
   public_value: { input: 'textarea', helpKey: 'help.public_value' },
   credential_id: { input: 'select', helpKey: 'help.credential_id', required: true },

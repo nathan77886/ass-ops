@@ -89,6 +89,8 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/project-template-runs/{id}/request-provider-review-execution", s.requestProjectTemplateProviderReviewExecution)
 		r.Get("/api/provider-accounts", s.listProviderAccounts)
 		r.Post("/api/provider-accounts", s.createProviderAccount)
+		r.Get("/api/connection-credentials", s.listGlobalConnectionCredentials)
+		r.Post("/api/connection-credentials", s.createGlobalConnectionCredential)
 		r.Post("/api/provider-accounts/execute-token-rotation-plan", s.executeProviderAccountTokenRotationPlan)
 		r.Get("/api/provider-accounts/{id}", s.getProviderAccount)
 		r.Patch("/api/provider-accounts/{id}", s.updateProviderAccount)
@@ -1199,8 +1201,11 @@ func (s *Server) listProviderAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT * FROM provider_accounts
-		ORDER BY provider_type, name`)
+		SELECT pa.*, cc.name AS credential_name, cc.kind AS credential_kind,
+			(cc.secret_ciphertext <> '') AS credential_configured
+		FROM provider_accounts pa
+		LEFT JOIN connection_credentials cc ON cc.id=pa.credential_id
+		ORDER BY pa.provider_type, pa.name`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -1216,7 +1221,12 @@ func (s *Server) getProviderAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "provider_account", ID: chi.URLParam(r, "id")}, "read") {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM provider_accounts WHERE id=$1", chi.URLParam(r, "id"))
+	item, err := queryOne(r.Context(), s.store.DB, `
+		SELECT pa.*, cc.name AS credential_name, cc.kind AS credential_kind,
+			(cc.secret_ciphertext <> '') AS credential_configured
+		FROM provider_accounts pa
+		LEFT JOIN connection_credentials cc ON cc.id=pa.credential_id
+		WHERE pa.id=$1`, chi.URLParam(r, "id"))
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -1234,6 +1244,7 @@ func (s *Server) createProviderAccount(w http.ResponseWriter, r *http.Request) {
 		APIBaseURL   string         `json:"api_base_url"`
 		WebBaseURL   string         `json:"web_base_url"`
 		TokenEnv     string         `json:"token_env"`
+		CredentialID string         `json:"credential_id"`
 		DefaultOwner string         `json:"default_owner"`
 		Visibility   string         `json:"visibility"`
 		Enabled      *bool          `json:"enabled"`
@@ -1251,6 +1262,10 @@ func (s *Server) createProviderAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	credentialID := cleanOptionalID(req.CredentialID)
+	if credentialID != "" && strings.TrimSpace(req.TokenEnv) == "" {
+		input.TokenEnv = ""
+	}
 	metadata, err := jsonParam(input.Metadata)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid metadata")
@@ -1262,15 +1277,29 @@ func (s *Server) createProviderAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	if credentialID != "" {
+		if _, err := requireConnectionCredential(r.Context(), tx, "", credentialID, "provider_token"); err != nil {
+			writeError(w, http.StatusBadRequest, "credential_id must reference a global provider token credential")
+			return
+		}
+	}
+	credentialArg := nullableIDArg(credentialID)
 	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO provider_accounts(name, provider_type, api_base_url, web_base_url, token_env, default_owner, visibility, enabled, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
-		RETURNING *`,
+		WITH inserted AS (
+			INSERT INTO provider_accounts(name, provider_type, api_base_url, web_base_url, token_env, credential_id, default_owner, visibility, enabled, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+			RETURNING *
+		)
+		SELECT inserted.*, cc.name AS credential_name, cc.kind AS credential_kind,
+			(cc.secret_ciphertext <> '') AS credential_configured
+		FROM inserted
+		LEFT JOIN connection_credentials cc ON cc.id=inserted.credential_id`,
 		input.Name,
 		input.ProviderType,
 		input.APIBaseURL,
 		input.WebBaseURL,
 		input.TokenEnv,
+		credentialArg,
 		input.DefaultOwner,
 		input.Visibility,
 		enabled,
@@ -1305,6 +1334,7 @@ func (s *Server) updateProviderAccount(w http.ResponseWriter, r *http.Request) {
 		APIBaseURL   *string         `json:"api_base_url"`
 		WebBaseURL   *string         `json:"web_base_url"`
 		TokenEnv     *string         `json:"token_env"`
+		CredentialID *string         `json:"credential_id"`
 		DefaultOwner *string         `json:"default_owner"`
 		Visibility   *string         `json:"visibility"`
 		Enabled      *bool           `json:"enabled"`
@@ -1344,26 +1374,46 @@ func (s *Server) updateProviderAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	credentialID := stringPtrValue(req.CredentialID)
+	if req.CredentialID == nil {
+		credentialID = current.CredentialID
+	}
+	credentialID = cleanOptionalID(credentialID)
+	if credentialID != "" {
+		if _, err := requireConnectionCredential(r.Context(), tx, "", credentialID, "provider_token"); err != nil {
+			writeError(w, http.StatusBadRequest, "credential_id must reference a global provider token credential")
+			return
+		}
+	}
+	credentialArg := nullableIDArg(credentialID)
 	item, err := queryOne(r.Context(), tx, `
-		UPDATE provider_accounts
-		SET name=$2,
-			provider_type=$3,
-			api_base_url=$4,
-			web_base_url=$5,
-			token_env=$6,
-			default_owner=$7,
-			visibility=$8,
-			enabled=$9,
-			metadata=$10::jsonb,
-			updated_at=now()
-		WHERE id=$1 AND token_env=$11
-		RETURNING *`,
+		WITH updated AS (
+			UPDATE provider_accounts
+			SET name=$2,
+				provider_type=$3,
+				api_base_url=$4,
+				web_base_url=$5,
+				token_env=$6,
+				credential_id=$7,
+				default_owner=$8,
+				visibility=$9,
+				enabled=$10,
+				metadata=$11::jsonb,
+				updated_at=now()
+			WHERE id=$1 AND token_env=$12
+			RETURNING *
+		)
+		SELECT updated.*, cc.name AS credential_name, cc.kind AS credential_kind,
+			(cc.secret_ciphertext <> '') AS credential_configured
+		FROM updated
+		LEFT JOIN connection_credentials cc ON cc.id=updated.credential_id`,
 		chi.URLParam(r, "id"),
 		input.Name,
 		input.ProviderType,
 		input.APIBaseURL,
 		input.WebBaseURL,
 		input.TokenEnv,
+		credentialArg,
 		input.DefaultOwner,
 		input.Visibility,
 		enabled,
@@ -1749,6 +1799,14 @@ func runProviderAccountCheck(ctx context.Context, account providerAccountConfig,
 		"status":            "error",
 	}
 	token := strings.TrimSpace(os.Getenv(account.TokenEnv))
+	if token == "" && strings.TrimSpace(account.CredentialCiphertext) != "" {
+		plain, err := decryptArgoCredentialSecret(account.CredentialCiphertext, argoCredentialSecretKeyMaterial())
+		if err != nil {
+			check["message"] = "provider token credential could not be decrypted"
+			return check
+		}
+		token = strings.TrimSpace(plain)
+	}
 	if token == "" {
 		check["message"] = "provider token environment variable is not set"
 		return check
@@ -1841,16 +1899,18 @@ func mergeMaps(base, overlay map[string]any) map[string]any {
 }
 
 type providerAccountConfig struct {
-	ID           string
-	Name         string
-	ProviderType string
-	APIBaseURL   string
-	WebBaseURL   string
-	TokenEnv     string
-	DefaultOwner string
-	Visibility   string
-	Enabled      bool
-	Metadata     map[string]any
+	ID                   string
+	Name                 string
+	ProviderType         string
+	APIBaseURL           string
+	WebBaseURL           string
+	TokenEnv             string
+	CredentialID         string
+	CredentialCiphertext string
+	DefaultOwner         string
+	Visibility           string
+	Enabled              bool
+	Metadata             map[string]any
 }
 
 func loadProviderAccountConfigByID(ctx context.Context, db sqlx.ExtContext, id string) (providerAccountConfig, error) {
@@ -1865,9 +1925,11 @@ func loadProviderAccountConfig(ctx context.Context, db sqlx.ExtContext, where st
 	var cfg providerAccountConfig
 	var metadataBytes []byte
 	query := `
-		SELECT id::text, name, provider_type, api_base_url, web_base_url, token_env, default_owner, visibility, enabled, metadata
-		FROM provider_accounts
-		WHERE ` + where
+		SELECT pa.id::text, pa.name, pa.provider_type, pa.api_base_url, pa.web_base_url, pa.token_env,
+			COALESCE(pa.credential_id::text, ''), COALESCE(cc.secret_ciphertext, ''), pa.default_owner, pa.visibility, pa.enabled, pa.metadata
+		FROM provider_accounts pa
+		LEFT JOIN connection_credentials cc ON cc.id=pa.credential_id AND cc.kind='provider_token'
+		WHERE pa.` + where
 	err := db.QueryRowxContext(ctx, query, arg).Scan(
 		&cfg.ID,
 		&cfg.Name,
@@ -1875,6 +1937,8 @@ func loadProviderAccountConfig(ctx context.Context, db sqlx.ExtContext, where st
 		&cfg.APIBaseURL,
 		&cfg.WebBaseURL,
 		&cfg.TokenEnv,
+		&cfg.CredentialID,
+		&cfg.CredentialCiphertext,
 		&cfg.DefaultOwner,
 		&cfg.Visibility,
 		&cfg.Enabled,
@@ -1919,7 +1983,7 @@ func sanitizeProviderAccount(item map[string]any) map[string]any {
 		out[key] = value
 	}
 	tokenEnv := rawStringFromMap(item, "token_env")
-	out["token_configured"] = tokenEnv != ""
+	out["token_configured"] = tokenEnv != "" || boolOnlyFromAny(item["credential_configured"])
 	out["masked_token_env"] = maskProviderTokenEnv(tokenEnv)
 	out["token_rotation_status"] = providerAccountTokenRotationStatus(item, time.Now().UTC())
 	out["token_rotation_candidate"] = providerAccountRotationCandidate(item)
@@ -8731,6 +8795,7 @@ func (s *Server) createGitRemote(w http.ResponseWriter, r *http.Request) {
 		Kind           string         `json:"kind"`
 		RemoteKey      string         `json:"remote_key"`
 		ProviderType   string         `json:"provider_type"`
+		CredentialID   string         `json:"credential_id"`
 		RemoteURL      string         `json:"remote_url"`
 		WebURL         string         `json:"web_url"`
 		RemoteRole     string         `json:"remote_role"`
@@ -8787,13 +8852,20 @@ func (s *Server) createGitRemote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	credentialID := cleanOptionalID(req.CredentialID)
+	if credentialID != "" {
+		if _, err := requireConnectionCredential(r.Context(), tx, projectID, credentialID, "ssh_key"); err != nil {
+			writeError(w, http.StatusBadRequest, "credential_id must reference an SSH key credential in this project")
+			return
+		}
+	}
 	item, err := queryOne(r.Context(), tx, `
 		INSERT INTO git_remotes(
 			project_git_repository_id, name, kind, remote_key, provider_type, remote_url, web_url,
 			remote_role, is_primary, sync_enabled, protected, latest_sha, last_sync_status,
-			urls, default_branch, metadata
+			urls, default_branch, credential_id, metadata
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16::jsonb)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16, $17::jsonb)
 		RETURNING *`,
 		chi.URLParam(r, "id"),
 		req.Name,
@@ -8810,6 +8882,7 @@ func (s *Server) createGitRemote(w http.ResponseWriter, r *http.Request) {
 		req.LastSyncStatus,
 		urls,
 		req.DefaultBranch,
+		nullableIDArg(credentialID),
 		metadata,
 	)
 	if err != nil {
@@ -8836,7 +8909,12 @@ func (s *Server) listGitRemotes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT * FROM git_remotes WHERE project_git_repository_id=$1 ORDER BY created_at DESC`, chi.URLParam(r, "id"))
+		SELECT gr.*, cc.name AS credential_name, cc.kind AS credential_kind,
+			(cc.secret_ciphertext <> '') AS credential_configured
+		FROM git_remotes gr
+		LEFT JOIN connection_credentials cc ON cc.id=gr.credential_id
+		WHERE gr.project_git_repository_id=$1
+		ORDER BY gr.created_at DESC`, chi.URLParam(r, "id"))
 	writeQueryResult(w, items, err)
 }
 
@@ -20140,6 +20218,14 @@ func cleanOptionalID(value string) string {
 	return value
 }
 
+func nullableIDArg(value string) any {
+	value = cleanOptionalID(value)
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 func cleanOptionalText(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" || value == "<nil>" {
@@ -24946,6 +25032,17 @@ func (s *Server) createConnectionCredential(w http.ResponseWriter, r *http.Reque
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "connection_credential", ProjectID: projectID}, "create") {
 		return
 	}
+	s.createConnectionCredentialForProject(w, r, projectID)
+}
+
+func (s *Server) createGlobalConnectionCredential(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePolicy(w, r, PolicyResource{Type: "connection_credential"}, "create") {
+		return
+	}
+	s.createConnectionCredentialForProject(w, r, "")
+}
+
+func (s *Server) createConnectionCredentialForProject(w http.ResponseWriter, r *http.Request, projectID string) {
 	var req struct {
 		Name        string         `json:"name"`
 		Kind        string         `json:"kind"`
@@ -24976,6 +25073,10 @@ func (s *Server) createConnectionCredential(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "ssh_key secret_value must be a private key")
 		return
 	}
+	if projectID == "" && req.Kind != "provider_token" {
+		writeError(w, http.StatusBadRequest, "global credentials must use provider_token kind")
+		return
+	}
 	secretCiphertext, err := s.encryptWebhookSecret(req.SecretValue)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not encrypt credential secret")
@@ -24986,11 +25087,15 @@ func (s *Server) createConnectionCredential(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "metadata must be valid JSON")
 		return
 	}
+	var projectArg any = projectID
+	if projectID == "" {
+		projectArg = nil
+	}
 	item, err := queryOne(r.Context(), s.store.DB, `
 		INSERT INTO connection_credentials(project_id, name, kind, secret_ciphertext, public_value, metadata)
 		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 		RETURNING id, project_id, name, kind, public_value, metadata, created_at, updated_at,
-			(secret_ciphertext <> '') AS secret_configured`, projectID, req.Name, req.Kind, secretCiphertext, req.PublicValue, metadata)
+			(secret_ciphertext <> '') AS secret_configured`, projectArg, req.Name, req.Kind, secretCiphertext, req.PublicValue, metadata)
 	writeCreatedOne(w, item, err)
 }
 
@@ -25008,9 +25113,22 @@ func (s *Server) listConnectionCredentials(w http.ResponseWriter, r *http.Reques
 	writeQueryResult(w, items, err)
 }
 
+func (s *Server) listGlobalConnectionCredentials(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePolicy(w, r, PolicyResource{Type: "connection_credential"}, "read") {
+		return
+	}
+	items, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT id, project_id, name, kind, public_value, metadata, created_at, updated_at,
+			(secret_ciphertext <> '') AS secret_configured
+		FROM connection_credentials
+		WHERE project_id IS NULL
+		ORDER BY created_at DESC`)
+	writeQueryResult(w, items, err)
+}
+
 func cleanConnectionCredentialKind(kind string) string {
 	switch strings.TrimSpace(kind) {
-	case "ssh_key", "ssh_password", "argo_token":
+	case "ssh_key", "ssh_password", "argo_token", "provider_token":
 		return strings.TrimSpace(kind)
 	default:
 		return ""
@@ -25036,7 +25154,7 @@ func requireConnectionCredential(ctx context.Context, db sqlx.ExtContext, projec
 	credential, err := queryOne(ctx, db, `
 		SELECT id, name, kind, secret_ciphertext
 		FROM connection_credentials
-		WHERE id=$1 AND project_id=$2 AND kind=$3`, credentialID, projectID, kind)
+		WHERE id=$1 AND kind=$3 AND (($2 = '' AND project_id IS NULL) OR project_id::text=$2)`, credentialID, projectID, kind)
 	if err != nil {
 		return nil, err
 	}
