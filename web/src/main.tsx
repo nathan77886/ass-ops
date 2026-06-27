@@ -10391,39 +10391,12 @@ function ConfigPage() {
               <Space direction="vertical" size={8} className="full">
                 <Space wrap>
                   <Tag color={sshRehearsalView.rehearsal_state === 'ready' ? 'green' : sshRehearsalView.rehearsal_state === 'blocked' ? 'red' : 'gold'}>{translatedValue(sshRehearsalView.rehearsal_state, t)}</Tag>
-                  <Tag>{t(sshRehearsalView.execution_enabled ? 'value.execution_enabled' : 'value.execution_disabled')}</Tag>
-                  <Tag>{t(sshRehearsalView.ssh_process_started ? 'value.ssh_started' : 'value.no_ssh_process')}</Tag>
-                  <Tag color={sshRehearsalView.live_evidence_recorded ? 'green' : 'default'}>{t(sshRehearsalView.live_evidence_recorded ? 'value.live_evidence_recorded' : 'value.no_live_evidence')}</Tag>
-                  <Tag color={sshRehearsalView.sanitized_result_recorded ? 'green' : 'default'}>{t(sshRehearsalView.sanitized_result_recorded ? 'value.sanitized_result_recorded' : 'value.no_sanitized_result')}</Tag>
-                  {sshRehearsalView.approval_request_plan ? <Tag color="gold">{t('value.approval')} {translatedValue(sshRehearsalView.approval_request_plan.request_state || 'blocked', t)}</Tag> : null}
                   {sshRehearsalView.auth_binding_plan ? <Tag color={sshRehearsalView.auth_binding_plan.binding_state === 'planned' ? 'gold' : sshRehearsalView.auth_binding_plan.binding_state === 'observed' ? 'green' : 'red'}>{t('value.auth')} {translatedValue(sshRehearsalView.auth_binding_plan.binding_state || 'blocked', t)}</Tag> : null}
                   {sshRehearsalView.verify_execution_plan ? <Tag color={sshRehearsalView.verify_execution_plan.verify_state === 'observed' ? 'green' : sshRehearsalView.verify_execution_plan.verify_state === 'planned' ? 'gold' : 'red'}>{t('value.verify')} {translatedValue(sshRehearsalView.verify_execution_plan.verify_state || 'blocked', t)}</Tag> : null}
                   {sshRehearsalView.exec_execution_plan ? <Tag color={sshRehearsalView.exec_execution_plan.exec_state === 'observed' ? 'green' : sshRehearsalView.exec_execution_plan.exec_state === 'planned' ? 'gold' : 'red'}>{t('value.exec')} {translatedValue(sshRehearsalView.exec_execution_plan.exec_state || 'blocked', t)}</Tag> : null}
-                  <Tag>{t(sshRehearsalView.private_key_included ? 'value.key_included' : 'value.no_key_material')}</Tag>
-                  <Tag>{t(sshRehearsalView.stdout_included || sshRehearsalView.stderr_included ? 'value.output_included' : 'value.no_command_output')}</Tag>
-                  {sshRehearsalView.result_recording_plan ? <Tag>{translatedValue(sshRehearsalView.result_recording_plan.recording_state || 'blocked', t)} {t('value.recording')}</Tag> : null}
-                  {sshRehearsalView.result_recording_plan ? <Tag>{t(sshRehearsalView.result_recording_plan.auth_binding_recorded ? 'value.auth_recorded' : 'value.no_auth_record')}</Tag> : null}
-                  {sshRehearsalView.result_recording_plan ? <Tag>{t(sshRehearsalView.result_recording_plan.verify_result_recorded ? 'value.verify_recorded' : 'value.no_verify_record')}</Tag> : null}
-                  {sshRehearsalView.result_recording_plan ? <Tag>{t(sshRehearsalView.result_recording_plan.exec_result_recorded ? 'value.exec_recorded' : 'value.no_exec_record')}</Tag> : null}
-                  {sshRehearsalView.live_rehearsal_control_evidence ? <Tag color={sshRehearsalView.live_rehearsal_control_evidence.control_state === 'ready' ? 'green' : sshRehearsalView.live_rehearsal_control_evidence.control_state === 'blocked' ? 'red' : 'gold'}>{t('value.controls')} {translatedValue(sshRehearsalView.live_rehearsal_control_evidence.control_state || 'blocked', t)}</Tag> : null}
-                  {sshRehearsalView.live_rehearsal_control_evidence ? <Tag>{t(sshRehearsalView.live_rehearsal_control_evidence.runbook_reference_recorded ? 'value.runbook_recorded' : 'value.no_runbook')}</Tag> : null}
-                  {sshRehearsalView.live_rehearsal_control_evidence ? <Tag>{t(sshRehearsalView.live_rehearsal_control_evidence.fixture_reference_recorded ? 'value.fixture_recorded' : 'value.no_fixture')}</Tag> : null}
-                  {sshRehearsalView.operator_approved_proof_recorded ? <Tag color="green">{t('value.operator_proof_recorded')}</Tag> : <Tag>{t('value.no_operator_proof')}</Tag>}
-                  {sshRehearsalView.environment_proof_plan ? <Tag color={sshRehearsalView.environment_proof_plan.environment_proof_state === 'ready' ? 'green' : sshRehearsalView.environment_proof_plan.environment_proof_state === 'blocked' ? 'red' : 'gold'}>{t('value.env_proof')} {translatedValue(sshRehearsalView.environment_proof_plan.environment_proof_state || 'blocked', t)}</Tag> : null}
-                  {sshRehearsalView.environment_proof_plan ? <Tag>{t(sshRehearsalView.environment_proof_plan.environment_proof_ready ? 'value.env_proof_ready' : 'value.env_proof_pending')}</Tag> : null}
-                  {sshRehearsalView.target_environment_attestation_plan ? <Tag color={sshRehearsalView.target_environment_attestation_plan.attestation_state === 'ready_for_operator_review' ? 'green' : sshRehearsalView.target_environment_attestation_plan.attestation_state === 'blocked' ? 'red' : 'gold'}>{t('value.target_attestation')} {translatedValue(sshRehearsalView.target_environment_attestation_plan.attestation_state || 'blocked', t)}</Tag> : null}
-                  {sshRehearsalView.target_environment_attestation_plan ? <Tag>{t(sshRehearsalView.target_environment_attestation_plan.environment_probe_performed ? 'value.env_probed' : 'value.no_env_probe')}</Tag> : null}
-                  {sshRehearsalView.target_environment_attestation_plan ? <Tag>{t(sshRehearsalView.target_environment_attestation_plan.raw_output_recorded ? 'value.raw_output_recorded' : 'value.no_raw_output')}</Tag> : null}
                   {sshRehearsalView.target_environment_attestation_ready ? <Tag color="green">{t('value.target_proof_review_ready')}</Tag> : <Tag>{t('value.target_proof_pending')}</Tag>}
                   {sshRehearsalView.target_environment_proof_registered ? <Tag color="green">{t('value.target_proof_registered')}</Tag> : <Tag>{t('value.target_proof_unregistered')}</Tag>}
-                  {sshRehearsalView.target_environment_proof_registration ? <Tag color={sshRehearsalView.target_environment_proof_registration.proof_state === 'recorded' ? 'green' : sshRehearsalView.target_environment_proof_registration.proof_state === 'lookup_failed' ? 'red' : 'gold'}>{t('value.proof')} {translatedValue(sshRehearsalView.target_environment_proof_registration.proof_state || 'not_recorded', t)}</Tag> : null}
                   {sshRehearsalView.recent_evidence?.evidence_state ? <Tag color={sshRehearsalView.recent_evidence.evidence_state === 'recorded' ? 'green' : sshRehearsalView.recent_evidence.evidence_state === 'failed' ? 'red' : 'gold'}>{t('value.evidence')} {translatedValue(sshRehearsalView.recent_evidence.evidence_state, t)}</Tag> : null}
-                  <Tag>{sshRehearsalView.recent_evidence?.verify_runs || 0} {t('value.verify_runs')}</Tag>
-                  <Tag>{sshRehearsalView.recent_evidence?.exec_runs || 0} {t('value.exec_runs')}</Tag>
-                  <Tag>{sshRehearsalView.recent_evidence?.unknown_runs || 0} {t('value.unknown_runs')}</Tag>
-                  <Tag>{sshRehearsalView.recent_evidence?.active_runs || 0} {t('value.active_runs')}</Tag>
-                  <Tag>{sshRehearsalView.recent_evidence?.failed_runs || 0} {t('value.failed_runs')}</Tag>
-                  <Tag>{sshRehearsalView.recent_evidence?.canceled_runs || 0} {t('value.canceled_runs')}</Tag>
                 </Space>
                 {sshProofResult && (
                   <Space wrap>
@@ -10443,7 +10416,6 @@ function ConfigPage() {
                     <Tag>{t(sshSnapshotResult.private_key_included ? 'value.key_included' : 'value.no_key_material')}</Tag>
                   </Space>
                 )}
-                <JSONBlock value={sshRehearsalView} />
               </Space>
             </Card>
           )}
