@@ -215,6 +215,8 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/ai-runtimes/{id}/verify", s.verifyAIRuntime)
 		r.Post("/api/projects/{id}/agent/tasks", s.createAgentTask)
 		r.Get("/api/projects/{id}/agent/tasks", s.listAgentTasks)
+		r.Post("/api/projects/{id}/connection-credentials", s.createConnectionCredential)
+		r.Get("/api/projects/{id}/connection-credentials", s.listConnectionCredentials)
 		r.Get("/api/agent/tasks/{id}", s.getAgentTask)
 		r.Get("/api/agent/tasks/{id}/tool-calls", s.listAgentTaskToolCalls)
 		r.Post("/api/agent/tasks/{id}/tool-audit-snapshot", s.recordAgentToolAuditSnapshot)
@@ -24939,16 +24941,122 @@ func readinessStatus(ready bool) string {
 	return "blocked"
 }
 
+func (s *Server) createConnectionCredential(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "connection_credential", ProjectID: projectID}, "create") {
+		return
+	}
+	var req struct {
+		Name        string         `json:"name"`
+		Kind        string         `json:"kind"`
+		SecretValue string         `json:"secret_value"`
+		PublicValue string         `json:"public_value"`
+		Metadata    map[string]any `json:"metadata"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.Name = cleanOptionalText(req.Name)
+	req.Kind = cleanConnectionCredentialKind(req.Kind)
+	req.SecretValue = strings.TrimSpace(req.SecretValue)
+	req.PublicValue = strings.TrimSpace(req.PublicValue)
+	if req.Name == "" || req.Kind == "" {
+		writeError(w, http.StatusBadRequest, "name and kind are required")
+		return
+	}
+	if req.SecretValue == "" {
+		writeError(w, http.StatusBadRequest, "secret_value is required")
+		return
+	}
+	if len(req.Name) > 253 || len(req.PublicValue) > 4096 || len(req.SecretValue) > 128*1024 {
+		writeError(w, http.StatusBadRequest, "credential fields exceed allowed length")
+		return
+	}
+	if req.Kind == "ssh_key" && !strings.Contains(req.SecretValue, "PRIVATE KEY") {
+		writeError(w, http.StatusBadRequest, "ssh_key secret_value must be a private key")
+		return
+	}
+	secretCiphertext, err := s.encryptWebhookSecret(req.SecretValue)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not encrypt credential secret")
+		return
+	}
+	metadata, err := jsonParam(req.Metadata)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "metadata must be valid JSON")
+		return
+	}
+	item, err := queryOne(r.Context(), s.store.DB, `
+		INSERT INTO connection_credentials(project_id, name, kind, secret_ciphertext, public_value, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+		RETURNING id, project_id, name, kind, public_value, metadata, created_at, updated_at,
+			(secret_ciphertext <> '') AS secret_configured`, projectID, req.Name, req.Kind, secretCiphertext, req.PublicValue, metadata)
+	writeCreatedOne(w, item, err)
+}
+
+func (s *Server) listConnectionCredentials(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "connection_credential", ProjectID: projectID}, "read") {
+		return
+	}
+	items, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT id, project_id, name, kind, public_value, metadata, created_at, updated_at,
+			(secret_ciphertext <> '') AS secret_configured
+		FROM connection_credentials
+		WHERE project_id=$1
+		ORDER BY created_at DESC`, projectID)
+	writeQueryResult(w, items, err)
+}
+
+func cleanConnectionCredentialKind(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case "ssh_key", "ssh_password", "argo_token":
+		return strings.TrimSpace(kind)
+	default:
+		return ""
+	}
+}
+
+func connectionCredentialKindForSSHAuth(authType string) string {
+	switch strings.TrimSpace(authType) {
+	case "key":
+		return "ssh_key"
+	case "password":
+		return "ssh_password"
+	default:
+		return ""
+	}
+}
+
+func requireConnectionCredential(ctx context.Context, db sqlx.ExtContext, projectID, credentialID, kind string) (map[string]any, error) {
+	credentialID = cleanOptionalID(credentialID)
+	if credentialID == "" {
+		return nil, fmt.Errorf("credential_id is required")
+	}
+	credential, err := queryOne(ctx, db, `
+		SELECT id, name, kind, secret_ciphertext
+		FROM connection_credentials
+		WHERE id=$1 AND project_id=$2 AND kind=$3`, credentialID, projectID, kind)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(fmt.Sprint(credential["secret_ciphertext"])) == "" {
+		return nil, fmt.Errorf("credential has no secret configured")
+	}
+	return credential, nil
+}
+
 func (s *Server) createArgoConnection(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "argo_connection", ProjectID: projectID}, "create") {
 		return
 	}
 	var req struct {
-		Name      string         `json:"name"`
-		ServerURL string         `json:"server_url"`
-		AuthType  string         `json:"auth_type"`
-		Config    map[string]any `json:"config"`
+		Name         string         `json:"name"`
+		ServerURL    string         `json:"server_url"`
+		AuthType     string         `json:"auth_type"`
+		CredentialID string         `json:"credential_id"`
+		Config       map[string]any `json:"config"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -24964,6 +25072,10 @@ func (s *Server) createArgoConnection(w http.ResponseWriter, r *http.Request) {
 	if req.AuthType == "" {
 		req.AuthType = "token"
 	}
+	if req.AuthType != "token" {
+		writeError(w, http.StatusBadRequest, "auth_type must be token")
+		return
+	}
 	config, err := jsonParam(req.Config)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "config must be valid JSON")
@@ -24975,10 +25087,17 @@ func (s *Server) createArgoConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	credential, err := requireConnectionCredential(r.Context(), tx, projectID, req.CredentialID, "argo_token")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credential_id must reference an Argo token credential in this project")
+		return
+	}
 	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO argo_connections(project_id, name, server_url, auth_type, config)
-		VALUES ($1, $2, $3, $4, $5::jsonb)
-		RETURNING *`, projectID, req.Name, req.ServerURL, req.AuthType, config)
+		INSERT INTO argo_connections(project_id, name, server_url, auth_type, credential_id, config)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+		RETURNING id, project_id, name, server_url, auth_type, credential_id, config,
+			last_sync_status, last_sync_error, created_at, updated_at,
+			$7::text AS credential_name, $8::text AS credential_kind, true AS credential_configured`, projectID, req.Name, req.ServerURL, req.AuthType, req.CredentialID, config, credential["name"], credential["kind"])
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "could not create resource")
 		return
@@ -24998,7 +25117,13 @@ func (s *Server) listArgoConnections(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "argo_connection", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, "SELECT * FROM argo_connections WHERE project_id=$1 ORDER BY created_at DESC", projectID)
+	items, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT ac.*, cc.name AS credential_name, cc.kind AS credential_kind,
+			(cc.secret_ciphertext <> '') AS credential_configured
+		FROM argo_connections ac
+		LEFT JOIN connection_credentials cc ON cc.id=ac.credential_id
+		WHERE ac.project_id=$1
+		ORDER BY ac.created_at DESC`, projectID)
 	writeQueryResult(w, items, err)
 }
 
@@ -27118,12 +27243,13 @@ func (s *Server) createSSHMachine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name     string         `json:"name"`
-		Host     string         `json:"host"`
-		Port     int            `json:"port"`
-		Username string         `json:"username"`
-		AuthType string         `json:"auth_type"`
-		Metadata map[string]any `json:"metadata"`
+		Name         string         `json:"name"`
+		Host         string         `json:"host"`
+		Port         int            `json:"port"`
+		Username     string         `json:"username"`
+		AuthType     string         `json:"auth_type"`
+		CredentialID string         `json:"credential_id"`
+		Metadata     map[string]any `json:"metadata"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -27134,17 +27260,32 @@ func (s *Server) createSSHMachine(w http.ResponseWriter, r *http.Request) {
 	if req.AuthType == "" {
 		req.AuthType = "key"
 	}
-	metadata, _ := jsonParam(req.Metadata)
+	credentialKind := connectionCredentialKindForSSHAuth(req.AuthType)
+	if credentialKind == "" {
+		writeError(w, http.StatusBadRequest, "auth_type must be key or password")
+		return
+	}
+	metadata, err := jsonParam(req.Metadata)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "metadata must be valid JSON")
+		return
+	}
 	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not start ssh machine transaction")
 		return
 	}
 	defer tx.Rollback()
+	credential, err := requireConnectionCredential(r.Context(), tx, projectID, req.CredentialID, credentialKind)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credential_id must reference a matching SSH credential in this project")
+		return
+	}
 	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO ssh_machines(project_id, name, host, port, username, auth_type, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-		RETURNING *`, projectID, req.Name, req.Host, req.Port, req.Username, req.AuthType, metadata)
+		INSERT INTO ssh_machines(project_id, name, host, port, username, auth_type, credential_id, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+		RETURNING id, project_id, name, host, port, username, auth_type, credential_id, metadata, created_at, updated_at,
+			$9::text AS credential_name, $10::text AS credential_kind, true AS credential_configured`, projectID, req.Name, req.Host, req.Port, req.Username, req.AuthType, req.CredentialID, metadata, credential["name"], credential["kind"])
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "could not create resource")
 		return
@@ -27164,7 +27305,13 @@ func (s *Server) listSSHMachines(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "ssh_machine", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, "SELECT * FROM ssh_machines WHERE project_id=$1 ORDER BY created_at DESC", projectID)
+	items, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT sm.*, cc.name AS credential_name, cc.kind AS credential_kind,
+			(cc.secret_ciphertext <> '') AS credential_configured
+		FROM ssh_machines sm
+		LEFT JOIN connection_credentials cc ON cc.id=sm.credential_id
+		WHERE sm.project_id=$1
+		ORDER BY sm.created_at DESC`, projectID)
 	writeQueryResult(w, items, err)
 }
 

@@ -44,6 +44,7 @@ fi
 ASSOPS_GATEWAY_URL="$base_url" \
 ASSOPS_ADMIN_EMAIL="${ASSOPS_ADMIN_EMAIL:-admin@assops.local}" \
 ASSOPS_ADMIN_PASSWORD="${ASSOPS_ADMIN_PASSWORD:-admin1234}" \
+ASSOPS_API_SMOKE_PROJECT_SLUG="assops-demo" \
 ASSOPS_API_SMOKE_REQUIRE_PROJECT=true \
   bash scripts/api-smoke.sh
 

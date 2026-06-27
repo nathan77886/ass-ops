@@ -66,6 +66,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.status': 'Status',
     'common.type': 'Type',
     'common.auth': 'Auth',
+    'common.credential': 'Credential',
     'common.refresh': 'Refresh',
     'common.required': 'This field is required',
     'common.validUrl': 'Enter a valid URL',
@@ -188,6 +189,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.sshMachines': 'SSH Machines',
     'title.argoConnections': 'Argo Connections',
     'title.argoSsh': 'Argo / SSH',
+    'title.connectionCredentials': 'Connection Credentials',
     'title.sshRehearsal': 'SSH rehearsal',
     'title.argoApps': 'Argo Apps',
     'title.gitRemotes': 'Git Remotes',
@@ -222,6 +224,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.editRepoSyncAsset': 'Edit repo sync asset',
     'form.createWebhook': 'Create webhook',
     'form.createArgoConnection': 'Create Argo connection',
+    'form.createConnectionCredential': 'Create connection credential',
     'form.addKubernetesEnvironment': 'Add Kubernetes environment',
     'form.createSSHMachine': 'Create SSH machine',
     'form.runSSHCommand': 'Run SSH command',
@@ -360,6 +363,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.auth_type': 'Auth type',
     'field.argo_auth_type': 'Argo auth type',
     'field.ssh_auth_type': 'SSH auth type',
+    'field.kind': 'Kind',
+    'field.secret_value': 'Secret value',
+    'field.public_value': 'Public value',
+    'field.credential_id': 'Credential',
     'field.token': 'Token',
     'field.insecure_skip_verify': 'Skip TLS verification',
     'field.kubeconfig_secret_ref': 'Kubeconfig secret ref',
@@ -421,6 +428,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.auth_type': 'Credential type the worker should use. Argo uses token; SSH uses key or password.',
     'help.argo_auth_type': 'Argo CD connection authentication mode. The first deployable version supports bearer token only.',
     'help.ssh_auth_type': 'SSH authentication mode prepared for the worker. Use key when the worker has an approved key reference; use password only for controlled test environments.',
+    'help.credential_kind': 'Credential type available to Argo connections and SSH machines.',
+    'help.secret_value': 'Stored encrypted by the API and never returned by list endpoints.',
+    'help.public_value': 'Optional public key or non-secret note for operators.',
+    'help.credential_id': 'Select a credential previously configured for this project.',
     'help.token': 'Argo bearer token. It is sent to the gateway and should be scoped for the target environment.',
     'help.insecure_skip_verify': 'Only use for test clusters with self-signed TLS. Do not enable in production.',
     'help.environment': 'Environment key used to bind Argo deployment targets and Kubernetes access metadata, such as test or prod.',
@@ -833,6 +844,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.token': 'Token',
     'option.key': 'SSH key',
     'option.password': 'Password',
+    'option.ssh_key': 'SSH key pair',
+    'option.ssh_password': 'SSH password',
+    'option.argo_token': 'Argo token',
     'option.private': 'Private',
     'option.public': 'Public',
     'option.internal': 'Internal',
@@ -1294,6 +1308,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.status': '状态',
     'common.type': '类型',
     'common.auth': '认证',
+    'common.credential': '凭据',
     'common.refresh': '刷新',
     'common.required': '此项必填',
     'common.validUrl': '请输入有效 URL',
@@ -1416,6 +1431,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.sshMachines': 'SSH 主机',
     'title.argoConnections': 'Argo 连接',
     'title.argoSsh': 'Argo / SSH',
+    'title.connectionCredentials': '连接凭据',
     'title.sshRehearsal': 'SSH 演练',
     'title.argoApps': 'Argo 应用',
     'title.gitRemotes': 'Git 远端',
@@ -1450,6 +1466,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.editRepoSyncAsset': '编辑同步资产',
     'form.createWebhook': '创建 Webhook',
     'form.createArgoConnection': '创建 Argo 连接',
+    'form.createConnectionCredential': '创建连接凭据',
     'form.addKubernetesEnvironment': '添加 Kubernetes 环境',
     'form.createSSHMachine': '创建 SSH 主机',
     'form.runSSHCommand': '执行 SSH 命令',
@@ -1588,6 +1605,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'field.auth_type': '认证类型',
     'field.argo_auth_type': 'Argo 认证类型',
     'field.ssh_auth_type': 'SSH 认证类型',
+    'field.kind': '类型',
+    'field.secret_value': '密钥内容',
+    'field.public_value': '公钥/备注',
+    'field.credential_id': '凭据',
     'field.token': '令牌',
     'field.insecure_skip_verify': '跳过 TLS 校验',
     'field.kubeconfig_secret_ref': 'Kubeconfig 密钥引用',
@@ -1649,6 +1670,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.auth_type': 'Worker 使用的凭证类型。Argo 使用 token，SSH 使用 key 或 password。',
     'help.argo_auth_type': 'Argo CD 连接的认证方式。首个可部署版本仅支持 bearer token。',
     'help.ssh_auth_type': 'Worker 连接 SSH 主机时准备使用的认证方式。Worker 已有审查过的 key 引用时选 key；password 仅用于受控测试环境。',
+    'help.credential_kind': '可供 Argo 连接和 SSH 主机选择的凭据类型。',
+    'help.secret_value': 'API 加密保存，列表接口永不返回该值。',
+    'help.public_value': '可选公钥或非敏感备注，方便操作者识别。',
+    'help.credential_id': '选择当前项目已配置的凭据。',
     'help.token': 'Argo bearer token，会提交给 gateway，应限制在目标环境权限内。',
     'help.insecure_skip_verify': '仅用于自签 TLS 的测试集群；生产环境不要启用。',
     'help.environment': '用于绑定 Argo 部署目标和 Kubernetes 访问元数据的环境键，例如 test 或 prod。',
@@ -2061,6 +2086,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.token': 'Token',
     'option.key': 'SSH Key',
     'option.password': '密码',
+    'option.ssh_key': 'SSH 密钥对',
+    'option.ssh_password': 'SSH 密码',
+    'option.argo_token': 'Argo Token',
     'option.private': '私有',
     'option.public': '公开',
     'option.internal': '内部',
@@ -9846,6 +9874,7 @@ function ConfigPage() {
   const projectPick = useSelectedRow(projectRows);
   const project = projectPick.selected;
   const [argoOpen, setArgoOpen] = useState(false);
+  const [credentialOpen, setCredentialOpen] = useState(false);
   const [argoSyncOpID, setArgoSyncOpID] = useState<string>();
   const [podLogForm] = Form.useForm();
   const [podLogPreview, setPodLogPreview] = useState<AnyRow>();
@@ -9873,6 +9902,11 @@ function ConfigPage() {
   const [sshSnapshotResult, setSSHSnapshotResult] = useState<AnyRow>();
   const [sshProofLoading, setSSHProofLoading] = useState(false);
   const [sshProofResult, setSSHProofResult] = useState<AnyRow>();
+  const credentials = useLoad(() => project ? api(`/api/projects/${project.id}/connection-credentials`) : Promise.resolve({ items: [] }), [project?.id]);
+  const credentialRows = credentials.data?.items || [];
+  const credentialOptionLabel = (row: AnyRow) => `${row.name || row.id} · ${t(`option.${row.kind}`)} · ${row.secret_configured ? t('common.configured') : t('common.missing')}`;
+  const argoCredentialOptions = credentialRows.filter((row: AnyRow) => row.kind === 'argo_token').map((row: AnyRow) => ({ value: row.id, label: credentialOptionLabel(row) }));
+  const sshCredentialOptions = credentialRows.filter((row: AnyRow) => row.kind === 'ssh_key' || row.kind === 'ssh_password').map((row: AnyRow) => ({ value: row.id, label: credentialOptionLabel(row) }));
   const argoConnections = useLoad(() => project ? api(`/api/projects/${project.id}/argo/connections`) : Promise.resolve({ items: [] }), [project?.id]);
   const argoRows = argoConnections.data?.items || [];
   const argoPick = useSelectedRow(argoRows);
@@ -9997,13 +10031,27 @@ function ConfigPage() {
         name: values.name,
         server_url: values.server_url,
         auth_type: values.auth_type || 'token',
+        credential_id: values.credential_id,
         config: {
-          token: values.token,
           insecure_skip_verify: values.insecure_skip_verify === true || values.insecure_skip_verify === 'true'
         }
       })
     });
     argoConnections.reload();
+  }
+  async function createConnectionCredential(values: AnyRow) {
+    if (!project) return;
+    await api(`/api/projects/${project.id}/connection-credentials`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: values.name,
+        kind: values.kind,
+        secret_value: values.secret_value,
+        public_value: values.public_value,
+        metadata: {}
+      })
+    });
+    credentials.reload();
   }
   async function createKubernetesEnvironment(values: AnyRow) {
     if (!project) return;
@@ -10317,6 +10365,16 @@ function ConfigPage() {
       <Typography.Title level={2}>{t('title.argoSsh')}</Typography.Title>
       <EntitySelect label={t('common.project')} rows={projectRows} value={projectPick.selectedID} onChange={projectPick.setSelectedID} />
       <Tabs items={[
+        { key: 'credentials', label: t('title.connectionCredentials'), children: <Space direction="vertical" size={16} className="full">
+          <Toolbar title="Create connection credential" onCreate={() => setCredentialOpen(true)} disabled={!project} />
+          <Table<AnyRow> rowKey="id" dataSource={credentialRows} pagination={false} columns={[
+            { title: t('common.name'), dataIndex: 'name' },
+            { title: t('common.type'), render: (_, row) => translatedValue(row.kind, t) },
+            { title: t('field.public_value'), dataIndex: 'public_value', render: (value) => value ? shortText(String(value), 96) : '-' },
+            { title: t('common.status'), render: (_, row) => <Tag color={row.secret_configured ? 'green' : 'red'}>{row.secret_configured ? t('common.configured') : t('common.missing')}</Tag> },
+            { title: t('common.created'), dataIndex: 'created_at' }
+          ]} />
+        </Space> },
         { key: 'ssh', label: t('title.sshMachines'), children: <Space direction="vertical" size={16} className="full">
           <Toolbar title="SSH Machines" onCreate={() => setSSHOpen(true)} disabled={!project} />
           <EntitySelect label={t('title.sshMachines')} rows={sshRows} value={sshPick.selectedID} onChange={sshPick.setSelectedID} />
@@ -10394,7 +10452,8 @@ function ConfigPage() {
             { title: t('field.host'), dataIndex: 'host' },
             { title: t('field.port'), dataIndex: 'port' },
             { title: t('config.sshHostUser'), dataIndex: 'username' },
-            { title: t('common.auth'), render: (_, row) => translatedValue(row.auth_type, t) }
+            { title: t('common.auth'), render: (_, row) => translatedValue(row.auth_type, t) },
+            { title: t('common.credential'), render: (_, row) => row.credential_name ? <Tag color={row.credential_configured ? 'green' : 'gold'}>{row.credential_name}</Tag> : <Tag color="red">{t('common.missing')}</Tag> }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={sshRuns.data?.items || []} pagination={{ pageSize: 6 }} columns={[
             { title: t('config.operationType'), render: (_, row) => <Tag color={row.operation_type === 'ssh.verify' ? 'cyan' : 'default'}>{row.operation_type || t('common.unknown')}</Tag> },
@@ -10560,6 +10619,7 @@ function ConfigPage() {
             { title: t('common.name'), dataIndex: 'name' },
             { title: t('common.server'), dataIndex: 'server_url' },
             { title: t('common.auth'), render: (_, row) => translatedValue(row.auth_type, t) },
+            { title: t('common.credential'), render: (_, row) => row.credential_name ? <Tag color={row.credential_configured ? 'green' : 'gold'}>{row.credential_name}</Tag> : <Tag color="red">{t('common.missing')}</Tag> },
             { title: t('common.sync'), render: (_, row) => <Tag color={row.last_sync_status === 'completed' ? 'green' : row.last_sync_status === 'failed' ? 'red' : row.last_sync_status === 'running' ? 'blue' : 'default'}>{row.last_sync_status ? translatedValue(row.last_sync_status, t) : t('common.never')}</Tag> },
             { title: t('common.created'), dataIndex: 'created_at' }
           ]} />
@@ -10616,11 +10676,19 @@ function ConfigPage() {
         </Space> }
       ]} />
       <CreateModal
+        title="Create connection credential"
+        open={credentialOpen}
+        setOpen={setCredentialOpen}
+        fields={[{ name: 'name', helpKey: 'help.name' }, { name: 'kind', metaKey: 'kind' }, 'secret_value', 'public_value']}
+        initialValues={{ kind: 'ssh_key' }}
+        onSubmit={createConnectionCredential}
+      />
+      <CreateModal
         title="Create Argo connection"
         open={argoOpen}
         setOpen={setArgoOpen}
         descriptionKey="argo.connectionModalDescription"
-        fields={[{ name: 'name', helpKey: 'help.argo_connection_name' }, 'server_url', { name: 'auth_type', metaKey: 'argo_auth_type' }, { name: 'token', metaKey: 'argo_token' }, 'insecure_skip_verify']}
+        fields={[{ name: 'name', helpKey: 'help.argo_connection_name' }, 'server_url', { name: 'auth_type', metaKey: 'argo_auth_type' }, { name: 'credential_id', input: 'select', optionItems: argoCredentialOptions, helpKey: 'help.credential_id', required: true }, 'insecure_skip_verify']}
         initialValues={{ auth_type: 'token', insecure_skip_verify: false }}
         onSubmit={createArgoConnection}
       />
@@ -10639,7 +10707,7 @@ function ConfigPage() {
         open={sshOpen}
         setOpen={setSSHOpen}
         descriptionKey="ssh.machineModalDescription"
-        fields={[{ name: 'name', helpKey: 'help.ssh_machine_name' }, 'host', 'port', 'username', { name: 'auth_type', metaKey: 'ssh_auth_type' }]}
+        fields={[{ name: 'name', helpKey: 'help.ssh_machine_name' }, 'host', 'port', 'username', { name: 'auth_type', metaKey: 'ssh_auth_type' }, { name: 'credential_id', input: 'select', optionItems: sshCredentialOptions, helpKey: 'help.credential_id', required: true }]}
         initialValues={{ port: 22, auth_type: 'key' }}
         onSubmit={(v) => project ? api(`/api/projects/${project.id}/ssh-machines`, { method: 'POST', body: JSON.stringify({ ...v, port: Number(v.port || 22) }) }).then(ssh.reload) : Promise.resolve()}
       />
@@ -10673,6 +10741,7 @@ const titleKeys: Record<string, string> = {
   'Edit repo sync asset': 'form.editRepoSyncAsset',
   'Create webhook': 'form.createWebhook',
   'Create Argo connection': 'form.createArgoConnection',
+  'Create connection credential': 'form.createConnectionCredential',
   'Create SSH machine': 'form.createSSHMachine',
   'Run SSH command': 'form.runSSHCommand'
 };
@@ -10694,6 +10763,7 @@ type FieldMeta = {
   helpKey?: string;
   input?: 'text' | 'textarea' | 'password' | 'url' | 'number' | 'select' | 'checkbox';
   options?: string[];
+  optionItems?: Array<{ value: string; label: React.ReactNode }>;
   required?: boolean;
   placeholder?: string;
 };
@@ -10748,6 +10818,10 @@ const fieldMeta: Record<string, FieldMeta> = {
   auth_type: { input: 'select', options: ['token', 'key', 'password'], helpKey: 'help.auth_type' },
   argo_auth_type: { input: 'select', options: ['token'], labelKey: 'field.argo_auth_type', helpKey: 'help.argo_auth_type', required: true },
   ssh_auth_type: { input: 'select', options: ['key', 'password'], labelKey: 'field.ssh_auth_type', helpKey: 'help.ssh_auth_type', required: true },
+  kind: { input: 'select', options: ['ssh_key', 'ssh_password', 'argo_token'], helpKey: 'help.credential_kind', required: true },
+  secret_value: { input: 'textarea', helpKey: 'help.secret_value', required: true },
+  public_value: { input: 'textarea', helpKey: 'help.public_value' },
+  credential_id: { input: 'select', helpKey: 'help.credential_id', required: true },
   token: { input: 'password', helpKey: 'help.token' },
   argo_token: { input: 'password', labelKey: 'field.token', helpKey: 'help.argo_token' },
   insecure_skip_verify: { input: 'checkbox', helpKey: 'help.insecure_skip_verify' },
@@ -10809,6 +10883,7 @@ function fieldInput(field: string, t: (key: string) => string, metaOverride?: Fi
   if (meta.input === 'select' && meta.options) {
     return <Select options={meta.options.map((value) => ({ value, label: t(`option.${value}`) }))} />;
   }
+  if (meta.input === 'select' && meta.optionItems) return <Select options={meta.optionItems} />;
   if (meta.input === 'textarea' || field === 'command' || field.endsWith('_json')) return <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder={placeholder} />;
   if (meta.input === 'url' || field === 'server_url' || field.endsWith('_url')) return <Input type="url" placeholder={placeholder} />;
   if (meta.input === 'password' || field === 'token' || field === 'password' || field.endsWith('_password')) return <Input.Password placeholder={placeholder} />;

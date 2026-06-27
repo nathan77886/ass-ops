@@ -2,8 +2,12 @@ package app
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
 	"crypto/tls"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,7 +22,8 @@ import (
 )
 
 type ArgoSyncer struct {
-	HTTPClient *http.Client
+	HTTPClient        *http.Client
+	SecretKeyMaterial string
 }
 
 type ArgoSyncResult struct {
@@ -38,7 +43,7 @@ type ArgoAppInput struct {
 }
 
 func NewArgoSyncer() *ArgoSyncer {
-	return &ArgoSyncer{}
+	return &ArgoSyncer{SecretKeyMaterial: argoCredentialSecretKeyMaterial()}
 }
 
 func (s *ArgoSyncer) SyncApps(ctx context.Context, db *sqlx.DB, opID string) (*ArgoSyncResult, error) {
@@ -60,7 +65,7 @@ func (s *ArgoSyncer) SyncApps(ctx context.Context, db *sqlx.DB, opID string) (*A
 		ConnectionID: connection.ID,
 		ServerURL:    connection.ServerURL,
 	}
-	apps, err := s.fetchApps(ctx, connection)
+	apps, err := s.fetchApps(ctx, connection, db)
 	if err != nil {
 		return result, err
 	}
@@ -80,7 +85,11 @@ func rawArgoConnection(ctx context.Context, db *sqlx.DB, id string) (*ArgoConnec
 	return &connection, nil
 }
 
-func (s *ArgoSyncer) fetchApps(ctx context.Context, connection *ArgoConnection) ([]ArgoAppInput, error) {
+func (s *ArgoSyncer) fetchApps(ctx context.Context, connection *ArgoConnection, dbOpt ...*sqlx.DB) ([]ArgoAppInput, error) {
+	var db *sqlx.DB
+	if len(dbOpt) > 0 {
+		db = dbOpt[0]
+	}
 	baseURL := strings.TrimRight(connection.ServerURL, "/")
 	if !validPublicHTTPURL(ctx, baseURL) {
 		return nil, fmt.Errorf("Argo server_url must be a public http or https URL")
@@ -89,7 +98,10 @@ func (s *ArgoSyncer) fetchApps(ctx context.Context, connection *ArgoConnection) 
 	if err != nil {
 		return nil, err
 	}
-	token := argoToken(connection)
+	token, err := s.argoToken(ctx, db, connection)
+	if err != nil {
+		return nil, err
+	}
 	client := s.HTTPClient
 	if client == nil {
 		client = argoHTTPClient(connection)
@@ -254,15 +266,92 @@ func dialPublicOnly(ctx context.Context, network, addr string) (net.Conn, error)
 	return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 }
 
-func argoToken(connection *ArgoConnection) string {
+func (s *ArgoSyncer) argoToken(ctx context.Context, db *sqlx.DB, connection *ArgoConnection) (string, error) {
 	config := mapFromAny(connection.Config.Data)
 	for _, key := range []string{"token", "access_token", "ARGO_TOKEN"} {
 		if value := strings.TrimSpace(fmt.Sprint(config[key])); value != "" && value != "<nil>" {
-			return value
+			return value, nil
 		}
 	}
+	if connection.CredentialID.Valid && strings.TrimSpace(connection.CredentialID.String) != "" {
+		if db == nil {
+			return "", fmt.Errorf("Argo credential lookup requires database")
+		}
+		ciphertext, err := s.argoCredentialCiphertext(ctx, db, connection)
+		if err != nil {
+			return "", err
+		}
+		return decryptArgoCredentialSecret(ciphertext, s.SecretKeyMaterial)
+	}
 	if value, ok := config["use_env_token"].(bool); !ok || !value {
+		return "", nil
+	}
+	return strings.TrimSpace(os.Getenv("ASSOPS_ARGO_READ_TOKEN")), nil
+}
+
+func argoToken(connection *ArgoConnection) string {
+	token, err := NewArgoSyncer().argoToken(context.Background(), nil, connection)
+	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(os.Getenv("ASSOPS_ARGO_READ_TOKEN"))
+	return token
+}
+
+func (s *ArgoSyncer) argoCredentialCiphertext(ctx context.Context, db *sqlx.DB, connection *ArgoConnection) (string, error) {
+	var ciphertext string
+	err := db.GetContext(ctx, &ciphertext, `
+		SELECT secret_ciphertext
+		FROM connection_credentials
+		WHERE id=$1 AND project_id=$2 AND kind='argo_token'`, connection.CredentialID.String, connection.ProjectID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	if strings.TrimSpace(ciphertext) == "" {
+		return "", fmt.Errorf("Argo credential has no token configured")
+	}
+	return ciphertext, nil
+}
+
+func decryptArgoCredentialSecret(ciphertext, material string) (string, error) {
+	parts := strings.Split(strings.TrimSpace(ciphertext), ":")
+	if len(parts) == 3 && parts[0] == "v1" {
+		parts = parts[1:]
+	} else if len(parts) != 2 {
+		return "", fmt.Errorf("invalid credential ciphertext")
+	}
+	nonce, err := hex.DecodeString(parts[0])
+	if err != nil {
+		return "", fmt.Errorf("decoding credential nonce: %w", err)
+	}
+	sealed, err := hex.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("decoding credential ciphertext: %w", err)
+	}
+	sum := sha256.Sum256([]byte("assops:webhook-secret-encryption:" + material))
+	block, err := aes.NewCipher(sum[:])
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	plain, err := gcm.Open(nil, nonce, sealed, nil)
+	if err != nil {
+		return "", fmt.Errorf("decrypting credential: %w", err)
+	}
+	return string(plain), nil
+}
+
+func argoCredentialSecretKeyMaterial() string {
+	if value := strings.TrimSpace(os.Getenv("ASSOPS_WEBHOOK_SECRET_KEY")); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(os.Getenv("ASSOPS_JWT_SECRET")); value != "" {
+		return value
+	}
+	return "dev-assops-webhook-change-me"
 }

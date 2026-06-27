@@ -4,6 +4,7 @@ set -euo pipefail
 repo="${ASSOPS_FIRST_DEPLOYABLE_REPO:-nathan77886/ass-ops}"
 version="${ASSOPS_FIRST_DEPLOYABLE_VERSION:-v0.1.0}"
 ghcr_owner="${ASSOPS_FIRST_DEPLOYABLE_GHCR_OWNER:-nathan77886}"
+deployment_mode="${ASSOPS_FIRST_DEPLOYABLE_DEPLOYMENT_MODE:-docker-local}"
 status_file="${ASSOPS_FIRST_DEPLOYABLE_EXTERNAL_EVIDENCE_FILE:-.assops/release-notes/external-evidence-status.local.json}"
 output="${ASSOPS_FIRST_DEPLOYABLE_EXTERNAL_AUDIT_OUTPUT:-.assops/release-notes/first-deployable-external-audit.json}"
 
@@ -94,6 +95,7 @@ python3 - \
   "$repo" \
   "$version" \
   "$ghcr_owner" \
+  "$deployment_mode" \
   "$status_file" \
   "$output" \
   "$tmpdir" <<'PY'
@@ -105,9 +107,10 @@ from pathlib import Path
 repo = sys.argv[1]
 version = sys.argv[2]
 ghcr_owner = sys.argv[3]
-status_file = Path(sys.argv[4])
-output = Path(sys.argv[5])
-tmpdir = Path(sys.argv[6])
+deployment_mode = sys.argv[4]
+status_file = Path(sys.argv[5])
+output = Path(sys.argv[6])
+tmpdir = Path(sys.argv[7])
 
 def load_json(path, default):
     if not path.is_file() or not path.read_text(encoding="utf-8").strip():
@@ -153,15 +156,17 @@ package_query_status = int((tmpdir / "packages.status").read_text(encoding="utf-
 packages = load_json(tmpdir / "packages.json", [])
 package_names = [pkg.get("name") for pkg in packages]
 expected_packages = [f"assops-{name}" for name in ("gateway", "worker", "node-worker", "web")]
-expected_secret_names = [
-    "ASSOPS_ACTIVE_DATABASE_URL",
-    "ASSOPS_ACTIVE_DATABASE_PASSWORD",
-    "ASSOPS_REHEARSAL_DATABASE_URL",
-    "ASSOPS_REHEARSAL_DATABASE_PASSWORD",
-    "KUBE_CONFIG_B64",
-    "ASSOPS_ADMIN_EMAIL",
-    "ASSOPS_ADMIN_PASSWORD",
-]
+expected_secret_names = []
+if deployment_mode == "helm-kubernetes":
+    expected_secret_names = [
+        "ASSOPS_ACTIVE_DATABASE_URL",
+        "ASSOPS_ACTIVE_DATABASE_PASSWORD",
+        "ASSOPS_REHEARSAL_DATABASE_URL",
+        "ASSOPS_REHEARSAL_DATABASE_PASSWORD",
+        "KUBE_CONFIG_B64",
+        "ASSOPS_ADMIN_EMAIL",
+        "ASSOPS_ADMIN_PASSWORD",
+    ]
 
 tag_names = [tag.get("name") for tag in tags]
 release_tags = [release.get("tagName") for release in releases]
@@ -229,7 +234,7 @@ configure_secret_actions = [
         "evidence": "gh api /repos/{repo}/environments/production/secrets returns every expected secret name",
     }
 ]
-if "production" not in environment_names:
+if deployment_mode == "helm-kubernetes" and "production" not in environment_names:
     add_blocker("protected_helm_rollout_completed", "GitHub production environment is absent", [
         {
             "description": "Create the protected GitHub production environment before deploy=true promotion runs.",
@@ -239,7 +244,7 @@ if "production" not in environment_names:
     ])
 if missing_secret_names:
     add_blocker("protected_helm_rollout_completed", f"missing required GitHub secret names: {', '.join(missing_secret_names)}", configure_secret_actions)
-if not workflow["production_retained_backup"]["successful_run_ids"]:
+if deployment_mode == "helm-kubernetes" and not workflow["production_retained_backup"]["successful_run_ids"]:
     add_blocker("retained_backup_artifact_published", "no successful production-retained-backup workflow run returned", [
         {
             "description": "After active database secrets are present, manually publish the retained backup artifact from the protected environment.",
@@ -247,7 +252,7 @@ if not workflow["production_retained_backup"]["successful_run_ids"]:
             "evidence": "a successful production-retained-backup.yml workflow run id",
         }
     ])
-if not retained_backup_artifact_names:
+if deployment_mode == "helm-kubernetes" and not retained_backup_artifact_names:
     add_blocker("retained_backup_artifact_published", "no unexpired retained-assops-backup artifact returned", [
         {
             "description": "Keep one private unexpired retained backup artifact for restore rehearsal input.",
@@ -255,7 +260,7 @@ if not retained_backup_artifact_names:
             "evidence": "one unexpired retained-assops-backup artifact id",
         }
     ])
-if not workflow["production_restore_rehearsal"]["successful_run_ids"]:
+if deployment_mode == "helm-kubernetes" and not workflow["production_restore_rehearsal"]["successful_run_ids"]:
     add_blocker("restore_rehearsal_completed", "no successful production-restore-rehearsal workflow run returned", [
         {
             "description": "After retained backup and rehearsal database secrets are present, restore into the disposable rehearsal database.",
@@ -263,7 +268,7 @@ if not workflow["production_restore_rehearsal"]["successful_run_ids"]:
             "evidence": "a successful production-restore-rehearsal.yml workflow run id and uploaded rehearsal report artifact",
         }
     ])
-if version not in tag_names and version not in release_tags:
+if deployment_mode == "helm-kubernetes" and version not in tag_names and version not in release_tags:
     add_blocker("ghcr_images_and_attestations_verified", f"no tag or release named {version} returned", [
         {
             "description": "Create the reviewed release tag/release only after the current deployable changes are intentionally committed and pushed.",
@@ -271,7 +276,7 @@ if version not in tag_names and version not in release_tags:
             "evidence": f"GitHub tag or release named {version}",
         }
     ])
-if package_query_status != 0:
+if deployment_mode == "helm-kubernetes" and package_query_status != 0:
     add_blocker("ghcr_images_and_attestations_verified", "GHCR package API query failed; current gh token likely lacks read:packages", [
         {
             "description": "Use a GitHub token with read:packages or make the release packages visible to the verifier.",
@@ -279,7 +284,7 @@ if package_query_status != 0:
             "evidence": "GHCR package API returns assops-gateway, assops-worker, assops-node-worker, and assops-web",
         }
     ])
-elif missing := [name for name in expected_packages if name not in package_names]:
+elif deployment_mode == "helm-kubernetes" and (missing := [name for name in expected_packages if name not in package_names]):
     add_blocker("ghcr_images_and_attestations_verified", f"missing GHCR packages: {', '.join(missing)}", [
         {
             "description": "Publish all release images and attestations from the tag-gated release workflow.",
@@ -287,7 +292,7 @@ elif missing := [name for name in expected_packages if name not in package_names
             "evidence": "successful release.yml run plus GHCR packages for all four ASSOPS images",
         }
     ])
-if not workflow["promote_production"]["successful_run_ids"]:
+if deployment_mode == "helm-kubernetes" and not workflow["promote_production"]["successful_run_ids"]:
     add_blocker("promotion_preflight_completed", "no successful promote-production workflow run returned", [
         {
             "description": "Run protected promotion preflight with deploy=false after release images and attestations are visible.",
@@ -323,6 +328,7 @@ audit = {
     "repository": repo,
     "version": version,
     "ghcr_owner": ghcr_owner,
+    "deployment_mode": deployment_mode,
     "repo": repo_info,
     "external_evidence_status": external_status,
     "tags": {"contains_version": version in tag_names, "returned_names": tag_names[:30]},

@@ -219,16 +219,17 @@ type AgentPlan struct {
 }
 
 type ArgoConnection struct {
-	ID             string    `db:"id" json:"id"`
-	ProjectID      string    `db:"project_id" json:"project_id"`
-	Name           string    `db:"name" json:"name"`
-	ServerURL      string    `db:"server_url" json:"server_url"`
-	AuthType       string    `db:"auth_type" json:"auth_type"`
-	Config         JSONValue `db:"config" json:"config"`
-	LastSyncStatus string    `db:"last_sync_status" json:"last_sync_status"`
-	LastSyncError  string    `db:"last_sync_error" json:"last_sync_error"`
-	CreatedAt      time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt      time.Time `db:"updated_at" json:"updated_at"`
+	ID             string         `db:"id" json:"id"`
+	ProjectID      string         `db:"project_id" json:"project_id"`
+	Name           string         `db:"name" json:"name"`
+	ServerURL      string         `db:"server_url" json:"server_url"`
+	AuthType       string         `db:"auth_type" json:"auth_type"`
+	CredentialID   sql.NullString `db:"credential_id" json:"credential_id"`
+	Config         JSONValue      `db:"config" json:"config"`
+	LastSyncStatus string         `db:"last_sync_status" json:"last_sync_status"`
+	LastSyncError  string         `db:"last_sync_error" json:"last_sync_error"`
+	CreatedAt      time.Time      `db:"created_at" json:"created_at"`
+	UpdatedAt      time.Time      `db:"updated_at" json:"updated_at"`
 }
 
 type ArgoApp struct {
@@ -261,16 +262,17 @@ type DeploymentTarget struct {
 }
 
 type SSHMachine struct {
-	ID        string    `db:"id" json:"id"`
-	ProjectID string    `db:"project_id" json:"project_id"`
-	Name      string    `db:"name" json:"name"`
-	Host      string    `db:"host" json:"host"`
-	Port      int       `db:"port" json:"port"`
-	Username  string    `db:"username" json:"username"`
-	AuthType  string    `db:"auth_type" json:"auth_type"`
-	Metadata  JSONValue `db:"metadata" json:"metadata"`
-	CreatedAt time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+	ID           string         `db:"id" json:"id"`
+	ProjectID    string         `db:"project_id" json:"project_id"`
+	Name         string         `db:"name" json:"name"`
+	Host         string         `db:"host" json:"host"`
+	Port         int            `db:"port" json:"port"`
+	Username     string         `db:"username" json:"username"`
+	AuthType     string         `db:"auth_type" json:"auth_type"`
+	CredentialID sql.NullString `db:"credential_id" json:"credential_id"`
+	Metadata     JSONValue      `db:"metadata" json:"metadata"`
+	CreatedAt    time.Time      `db:"created_at" json:"created_at"`
+	UpdatedAt    time.Time      `db:"updated_at" json:"updated_at"`
 }
 
 type SSHCommandRun struct {

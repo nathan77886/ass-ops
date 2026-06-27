@@ -5,6 +5,7 @@ base_url="${ASSOPS_GATEWAY_URL:-http://localhost:8080}"
 email="${ASSOPS_ADMIN_EMAIL:-admin@assops.local}"
 password="${ASSOPS_ADMIN_PASSWORD:-admin1234}"
 require_project="${ASSOPS_API_SMOKE_REQUIRE_PROJECT:-false}"
+project_slug="${ASSOPS_API_SMOKE_PROJECT_SLUG:-}"
 
 need() {
   command -v "$1" >/dev/null || {
@@ -121,6 +122,28 @@ print("")
 ' "$@"
 }
 
+project_id_for_slug() {
+  python3 -c '
+import json
+import sys
+
+slug = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"invalid JSON response: {exc}")
+items = data.get("items")
+if not isinstance(items, list):
+    print("")
+    raise SystemExit(0)
+for item in items:
+    if isinstance(item, dict) and str(item.get("slug", "")) == slug:
+        print(item.get("id", "") or "")
+        raise SystemExit(0)
+print("")
+' "$1"
+}
+
 auth_get() {
   local path="$1"
   curl -fsS "$base_url$path" -H "authorization: Bearer $token"
@@ -186,6 +209,12 @@ projects="$(curl -fsS "$base_url/api/projects" \
   -H "authorization: Bearer $token")"
 printf '%s' "$projects" | json_field items >/dev/null
 project_id="$(printf '%s' "$projects" | first_item_field id)"
+if [[ -n "$project_slug" ]]; then
+  slug_project_id="$(printf '%s' "$projects" | project_id_for_slug "$project_slug")"
+  if [[ -n "$slug_project_id" && "$slug_project_id" != "null" ]]; then
+    project_id="$slug_project_id"
+  fi
+fi
 if [[ "$require_project" == "true" && ( -z "$project_id" || "$project_id" == "null" ) ]]; then
   echo "api-smoke expected at least one project but /api/projects returned none" >&2
   exit 1

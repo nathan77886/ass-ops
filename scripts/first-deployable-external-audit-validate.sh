@@ -50,8 +50,10 @@ for key in ("contains_token_values", "contains_database_password", "contains_kub
 
 secrets = data.get("github_secrets", {})
 expected_names = secrets.get("expected_names")
-if not isinstance(expected_names, list) or not expected_names:
-    raise SystemExit("external audit github_secrets.expected_names must be non-empty")
+if not isinstance(expected_names, list):
+    raise SystemExit("external audit github_secrets.expected_names must be a list")
+if data.get("deployment_mode") != "docker-local" and not expected_names:
+    raise SystemExit("external audit github_secrets.expected_names must be non-empty outside docker-local mode")
 if secrets.get("contains_secret_values") is not False:
     raise SystemExit("external audit must declare contains_secret_values=false")
 
