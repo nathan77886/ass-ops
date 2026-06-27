@@ -23044,8 +23044,13 @@ func (s *Server) createNodeTestJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listAIRuntimes(w http.ResponseWriter, r *http.Request) {
-	items, err := queryMaps(r.Context(), s.store.DB, "SELECT * FROM ai_runtimes ORDER BY created_at DESC")
-	writeQueryResult(w, items, err)
+	items, err := queryMaps(r.Context(), s.store.DB, `
+		SELECT ar.*, cc.name AS credential_name, cc.kind AS credential_kind,
+			(cc.secret_ciphertext <> '') AS credential_configured
+		FROM ai_runtimes ar
+		LEFT JOIN connection_credentials cc ON cc.id=ar.credential_id
+		ORDER BY ar.created_at DESC`)
+	writeQueryResult(w, sanitizeAIRuntimes(items), err)
 }
 
 func (s *Server) createAIRuntime(w http.ResponseWriter, r *http.Request) {
@@ -23053,12 +23058,15 @@ func (s *Server) createAIRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		ProjectID   string         `json:"project_id"`
-		Name        string         `json:"name"`
-		RuntimeType string         `json:"runtime_type"`
-		CodexBinary string         `json:"codex_binary"`
-		Model       string         `json:"model"`
-		Config      map[string]any `json:"config"`
+		ProjectID    string         `json:"project_id"`
+		Name         string         `json:"name"`
+		RuntimeType  string         `json:"runtime_type"`
+		CodexBinary  string         `json:"codex_binary"`
+		ProviderType string         `json:"provider_type"`
+		APIBaseURL   string         `json:"api_base_url"`
+		CredentialID string         `json:"credential_id"`
+		Model        string         `json:"model"`
+		Config       map[string]any `json:"config"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -23069,17 +23077,42 @@ func (s *Server) createAIRuntime(w http.ResponseWriter, r *http.Request) {
 	if req.CodexBinary == "" {
 		req.CodexBinary = "codex"
 	}
-	config, _ := jsonParam(req.Config)
+	req.ProviderType = cleanAIProviderType(req.ProviderType)
+	req.APIBaseURL = strings.TrimSpace(req.APIBaseURL)
+	credentialID := cleanOptionalID(req.CredentialID)
+	if req.APIBaseURL != "" && !validPublicHTTPURL(r.Context(), req.APIBaseURL) {
+		writeError(w, http.StatusBadRequest, "api_base_url must be a public http or https URL")
+		return
+	}
+	config, err := jsonParam(sanitizeAIRuntimeConfig(req.Config))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "config must be valid JSON")
+		return
+	}
 	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not start AI runtime transaction")
 		return
 	}
 	defer tx.Rollback()
+	var credential map[string]any
+	if credentialID != "" {
+		credential, err = requireConnectionCredentialForProjectOrGlobal(r.Context(), tx, req.ProjectID, credentialID, "ai_provider_api_key")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "credential_id must reference an AI provider API key credential in this project or globally")
+			return
+		}
+	}
+	credentialArg := nullableIDArg(credentialID)
 	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO ai_runtimes(project_id, name, runtime_type, codex_binary, model, config)
-		VALUES (NULLIF($1,'')::uuid, $2, $3, $4, $5, $6::jsonb)
-		RETURNING *`, req.ProjectID, req.Name, req.RuntimeType, req.CodexBinary, req.Model, config)
+		WITH inserted AS (
+			INSERT INTO ai_runtimes(project_id, name, runtime_type, codex_binary, provider_type, api_base_url, credential_id, model, config)
+			VALUES (NULLIF($1,'')::uuid, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+			RETURNING *
+		)
+		SELECT inserted.*, $10::text AS credential_name, $11::text AS credential_kind,
+			($7::uuid IS NOT NULL) AS credential_configured
+		FROM inserted`, req.ProjectID, req.Name, req.RuntimeType, req.CodexBinary, req.ProviderType, req.APIBaseURL, credentialArg, req.Model, config, credentialText(credential, "name"), credentialText(credential, "kind"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "could not create AI runtime")
 		return
@@ -23091,7 +23124,7 @@ func (s *Server) createAIRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not commit AI runtime")
 		return
 	}
-	writeJSON(w, http.StatusCreated, item)
+	writeJSON(w, http.StatusCreated, sanitizeAIRuntime(item))
 }
 
 func (s *Server) verifyAIRuntime(w http.ResponseWriter, r *http.Request) {
@@ -23104,7 +23137,14 @@ func (s *Server) verifyAIRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, "UPDATE ai_runtimes SET status='verified', updated_at=now() WHERE id=$1 RETURNING *", chi.URLParam(r, "id"))
+	item, err := queryOne(r.Context(), tx, `
+		WITH updated AS (
+			UPDATE ai_runtimes SET status='verified', updated_at=now() WHERE id=$1 RETURNING *
+		)
+		SELECT updated.*, cc.name AS credential_name, cc.kind AS credential_kind,
+			(cc.secret_ciphertext <> '') AS credential_configured
+		FROM updated
+		LEFT JOIN connection_credentials cc ON cc.id=updated.credential_id`, chi.URLParam(r, "id"))
 	if err != nil {
 		writeQueryOne(w, item, err)
 		return
@@ -23116,7 +23156,51 @@ func (s *Server) verifyAIRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not commit AI runtime verification")
 		return
 	}
-	writeJSON(w, http.StatusOK, item)
+	writeJSON(w, http.StatusOK, sanitizeAIRuntime(item))
+}
+
+func cleanAIProviderType(value string) string {
+	switch strings.TrimSpace(value) {
+	case "openai", "anthropic", "openrouter", "gemini", "groq", "azure_openai", "custom", "local":
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
+}
+
+func sanitizeAIRuntimes(items []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, sanitizeAIRuntime(item))
+	}
+	return out
+}
+
+func sanitizeAIRuntime(item map[string]any) map[string]any {
+	if item == nil {
+		return nil
+	}
+	out := make(map[string]any, len(item)+1)
+	for key, value := range item {
+		if key == "config" {
+			out[key] = sanitizeAIRuntimeConfig(mapFromAny(value))
+			continue
+		}
+		out[key] = value
+	}
+	out["api_key_configured"] = boolOnlyFromAny(item["credential_configured"])
+	return out
+}
+
+func sanitizeAIRuntimeConfig(config map[string]any) map[string]any {
+	out := cloneMap(config)
+	for key := range out {
+		clean := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", "_"), " ", "_"))
+		if strings.Contains(clean, "api_key") || strings.Contains(clean, "token") || strings.Contains(clean, "secret") || strings.Contains(clean, "password") {
+			delete(out, key)
+		}
+	}
+	return out
 }
 
 func (s *Server) createAgentTask(w http.ResponseWriter, r *http.Request) {
@@ -25073,8 +25157,8 @@ func (s *Server) createConnectionCredentialForProject(w http.ResponseWriter, r *
 		writeError(w, http.StatusBadRequest, "ssh_key secret_value must be a private key")
 		return
 	}
-	if projectID == "" && req.Kind != "provider_token" {
-		writeError(w, http.StatusBadRequest, "global credentials must use provider_token kind")
+	if projectID == "" && req.Kind != "provider_token" && req.Kind != "ai_provider_api_key" {
+		writeError(w, http.StatusBadRequest, "global credentials must use provider_token or ai_provider_api_key kind")
 		return
 	}
 	secretCiphertext, err := s.encryptWebhookSecret(req.SecretValue)
@@ -25128,7 +25212,7 @@ func (s *Server) listGlobalConnectionCredentials(w http.ResponseWriter, r *http.
 
 func cleanConnectionCredentialKind(kind string) string {
 	switch strings.TrimSpace(kind) {
-	case "ssh_key", "ssh_password", "argo_token", "provider_token":
+	case "ssh_key", "ssh_password", "argo_token", "provider_token", "ai_provider_api_key":
 		return strings.TrimSpace(kind)
 	default:
 		return ""
@@ -25162,6 +25246,36 @@ func requireConnectionCredential(ctx context.Context, db sqlx.ExtContext, projec
 		return nil, fmt.Errorf("credential has no secret configured")
 	}
 	return credential, nil
+}
+
+func requireConnectionCredentialForProjectOrGlobal(ctx context.Context, db sqlx.ExtContext, projectID, credentialID, kind string) (map[string]any, error) {
+	credentialID = cleanOptionalID(credentialID)
+	projectID = cleanOptionalID(projectID)
+	if credentialID == "" {
+		return nil, fmt.Errorf("credential_id is required")
+	}
+	credential, err := queryOne(ctx, db, `
+		SELECT id, name, kind, secret_ciphertext
+		FROM connection_credentials
+		WHERE id=$1 AND kind=$3 AND (project_id IS NULL OR project_id::text=$2)`, credentialID, projectID, kind)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(fmt.Sprint(credential["secret_ciphertext"])) == "" {
+		return nil, fmt.Errorf("credential has no secret configured")
+	}
+	return credential, nil
+}
+
+func credentialText(credential map[string]any, key string) string {
+	if credential == nil {
+		return ""
+	}
+	value := strings.TrimSpace(fmt.Sprint(credential[key]))
+	if value == "<nil>" {
+		return ""
+	}
+	return value
 }
 
 func (s *Server) createArgoConnection(w http.ResponseWriter, r *http.Request) {

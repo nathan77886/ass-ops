@@ -66,6 +66,7 @@ services:
       - ../backend/migrations/024_provider_review_live_execution.sql:/docker-entrypoint-initdb.d/024_provider_review_live_execution.sql:ro
       - ../backend/migrations/025_connection_credentials.sql:/docker-entrypoint-initdb.d/025_connection_credentials.sql:ro
       - ../backend/migrations/026_provider_git_credentials.sql:/docker-entrypoint-initdb.d/026_provider_git_credentials.sql:ro
+      - ../backend/migrations/027_ai_runtime_provider_credentials.sql:/docker-entrypoint-initdb.d/027_ai_runtime_provider_credentials.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U assops -d assops"]
       interval: 5s

@@ -821,6 +821,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'readiness.approvalNext': 'Queue a high-risk action that creates an approval request.',
     'readiness.contextLabel': 'Generate AI-readable context from graph',
     'readiness.contextNext': 'Create an agent task or AI runtime after syncing the canonical asset ledger.',
+    'field.ai_provider_type': 'AI provider',
+    'help.ai_provider_type': 'AI API provider used by this agent runtime.',
     'option.code': 'Code',
     'option.service': 'Service',
     'option.github': 'GitHub',
@@ -848,6 +850,15 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.ssh_password': 'SSH password',
     'option.argo_token': 'Argo token',
     'option.provider_token': 'Provider token',
+    'option.ai_provider_api_key': 'AI provider API key',
+    'option.openai': 'OpenAI',
+    'option.anthropic': 'Anthropic',
+    'option.openrouter': 'OpenRouter',
+    'option.gemini': 'Gemini',
+    'option.groq': 'Groq',
+    'option.azure_openai': 'Azure OpenAI',
+    'option.custom': 'Custom',
+    'option.local': 'Local',
     'option.private': 'Private',
     'option.public': 'Public',
     'option.internal': 'Internal',
@@ -2064,6 +2075,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'readiness.approvalNext': '发起一个会创建审批请求的高风险操作。',
     'readiness.contextLabel': '从图谱生成 AI 可读上下文',
     'readiness.contextNext': '同步规范资产账本后，创建 Agent 任务或 AI 运行时。',
+    'field.ai_provider_type': 'AI 供应商',
+    'help.ai_provider_type': '此 Agent 运行时使用的 AI API 供应商。',
     'option.code': '代码',
     'option.service': '服务',
     'option.github': 'GitHub',
@@ -2091,6 +2104,15 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.ssh_password': 'SSH 密码',
     'option.argo_token': 'Argo Token',
     'option.provider_token': '提供方 Token',
+    'option.ai_provider_api_key': 'AI 供应商 API Key',
+    'option.openai': 'OpenAI',
+    'option.anthropic': 'Anthropic',
+    'option.openrouter': 'OpenRouter',
+    'option.gemini': 'Gemini',
+    'option.groq': 'Groq',
+    'option.azure_openai': 'Azure OpenAI',
+    'option.custom': '自定义',
+    'option.local': '本地',
     'option.private': '私有',
     'option.public': '公开',
     'option.internal': '内部',
@@ -9366,18 +9388,59 @@ function WorkerNodes() {
 function AIRuntime() {
   const { t } = useI18n();
   const runtimes = useLoad(() => api('/api/ai-runtimes'), []);
+  const credentials = useLoad(() => api('/api/connection-credentials'), []);
+  const aiCredentialOptions = (credentials.data?.items || []).filter((row: AnyRow) => row.kind === 'ai_provider_api_key').map((row: AnyRow) => ({ value: row.id, label: `${row.name || row.id} · ${row.secret_configured ? t('common.configured') : t('common.missing')}` }));
   const [open, setOpen] = useState(false);
+  const [credentialOpen, setCredentialOpen] = useState(false);
+  async function createConnectionCredential(values: AnyRow) {
+    await api('/api/connection-credentials', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: values.name,
+        kind: 'ai_provider_api_key',
+        secret_value: values.secret_value,
+        public_value: values.public_value,
+        metadata: {}
+      })
+    });
+    message.success(t('form.createConnectionCredential'));
+    credentials.reload();
+  }
+  async function createRuntime(values: AnyRow) {
+    await api('/api/ai-runtimes', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: values.name,
+        runtime_type: values.runtime_type,
+        codex_binary: values.codex_binary,
+        provider_type: values.provider_type,
+        api_base_url: values.api_base_url,
+        credential_id: values.credential_id,
+        model: values.model,
+        config: {}
+      })
+    });
+    runtimes.reload();
+  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="AI Runtime" onCreate={() => setOpen(true)} />
+      <Space>
+        <Button onClick={() => setCredentialOpen(true)}>{t('form.createConnectionCredential')}</Button>
+      </Space>
       <Table<AnyRow> rowKey="id" dataSource={runtimes.data?.items || []} pagination={false} columns={[
         { title: t('common.name'), dataIndex: 'name' },
         { title: t('common.type'), render: (_, row) => translatedValue(row.runtime_type, t) },
+        { title: t('field.ai_provider_type'), render: (_, row) => translatedValue(row.provider_type, t) },
+        { title: t('field.api_base_url'), dataIndex: 'api_base_url' },
+        { title: t('field.model'), dataIndex: 'model' },
+        { title: t('common.credential'), render: (_, row) => row.credential_name ? <Tag color={row.credential_configured ? 'green' : 'gold'}>{row.credential_name}</Tag> : <Tag>{t('common.unbound')}</Tag> },
         { title: t('common.binary'), dataIndex: 'codex_binary' },
         { title: t('common.status'), render: (_, row) => <Tag>{translatedValue(row.status, t)}</Tag> },
         { title: t('common.action'), render: (_, row) => <Button size="small" onClick={() => api(`/api/ai-runtimes/${row.id}/verify`, { method: 'POST' }).then(runtimes.reload)}>{t('ai.verify')}</Button> }
       ]} />
-      <CreateModal title="Create AI runtime" open={open} setOpen={setOpen} descriptionKey="ai.runtimeDescription" fields={['name', 'runtime_type', 'codex_binary', 'model']} initialValues={{ runtime_type: 'codex-cli', codex_binary: 'codex' }} onSubmit={(v) => api('/api/ai-runtimes', { method: 'POST', body: JSON.stringify(v) }).then(runtimes.reload)} />
+      <CreateModal title="Create connection credential" open={credentialOpen} setOpen={setCredentialOpen} fields={[{ name: 'name', helpKey: 'help.name' }, 'secret_value', 'public_value']} initialValues={{ kind: 'ai_provider_api_key' }} onSubmit={createConnectionCredential} />
+      <CreateModal title="Create AI runtime" open={open} setOpen={setOpen} descriptionKey="ai.runtimeDescription" fields={['name', 'runtime_type', 'codex_binary', { name: 'provider_type', input: 'select', options: ['openai', 'anthropic', 'openrouter', 'gemini', 'groq', 'azure_openai', 'custom', 'local'], labelKey: 'field.ai_provider_type', helpKey: 'help.ai_provider_type', required: false }, 'api_base_url', { name: 'credential_id', input: 'select', optionItems: aiCredentialOptions, helpKey: 'help.credential_id', required: false }, 'model']} initialValues={{ runtime_type: 'codex-cli', codex_binary: 'codex', provider_type: 'openai' }} onSubmit={createRuntime} />
     </Space>
   );
 }
@@ -10825,7 +10888,7 @@ const fieldMeta: Record<string, FieldMeta> = {
   auth_type: { input: 'select', options: ['token', 'key', 'password'], helpKey: 'help.auth_type' },
   argo_auth_type: { input: 'select', options: ['token'], labelKey: 'field.argo_auth_type', helpKey: 'help.argo_auth_type', required: true },
   ssh_auth_type: { input: 'select', options: ['key', 'password'], labelKey: 'field.ssh_auth_type', helpKey: 'help.ssh_auth_type', required: true },
-  kind: { input: 'select', options: ['ssh_key', 'ssh_password', 'argo_token', 'provider_token'], helpKey: 'help.credential_kind', required: true },
+  kind: { input: 'select', options: ['ssh_key', 'ssh_password', 'argo_token', 'provider_token', 'ai_provider_api_key'], helpKey: 'help.credential_kind', required: true },
   secret_value: { input: 'textarea', helpKey: 'help.secret_value', required: true },
   public_value: { input: 'textarea', helpKey: 'help.public_value' },
   credential_id: { input: 'select', helpKey: 'help.credential_id', required: true },

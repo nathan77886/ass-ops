@@ -188,16 +188,19 @@ type GitHubActionRun struct {
 }
 
 type AIRuntime struct {
-	ID          string         `db:"id" json:"id"`
-	ProjectID   sql.NullString `db:"project_id" json:"project_id"`
-	Name        string         `db:"name" json:"name"`
-	RuntimeType string         `db:"runtime_type" json:"runtime_type"`
-	CodexBinary string         `db:"codex_binary" json:"codex_binary"`
-	Model       string         `db:"model" json:"model"`
-	Config      JSONValue      `db:"config" json:"config"`
-	Status      string         `db:"status" json:"status"`
-	CreatedAt   time.Time      `db:"created_at" json:"created_at"`
-	UpdatedAt   time.Time      `db:"updated_at" json:"updated_at"`
+	ID           string         `db:"id" json:"id"`
+	ProjectID    sql.NullString `db:"project_id" json:"project_id"`
+	Name         string         `db:"name" json:"name"`
+	RuntimeType  string         `db:"runtime_type" json:"runtime_type"`
+	CodexBinary  string         `db:"codex_binary" json:"codex_binary"`
+	ProviderType string         `db:"provider_type" json:"provider_type"`
+	APIBaseURL   string         `db:"api_base_url" json:"api_base_url"`
+	CredentialID sql.NullString `db:"credential_id" json:"credential_id"`
+	Model        string         `db:"model" json:"model"`
+	Config       JSONValue      `db:"config" json:"config"`
+	Status       string         `db:"status" json:"status"`
+	CreatedAt    time.Time      `db:"created_at" json:"created_at"`
+	UpdatedAt    time.Time      `db:"updated_at" json:"updated_at"`
 }
 
 type AgentTask struct {
