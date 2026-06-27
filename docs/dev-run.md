@@ -11,7 +11,7 @@ cd web && pnpm install && pnpm dev
 ```
 
 Gateway listens on `:8080`. Vite listens on `:5173` and proxies `/api` to the gateway.
-Docker Compose initializes every numbered file in `backend/migrations` for a fresh PostgreSQL volume, currently `001_init.sql` through `023_kubernetes_pod_restart_access.sql`.
+Docker Compose initializes every numbered file in `backend/migrations` for a fresh PostgreSQL volume, currently `001_init.sql` through `024_provider_review_live_execution.sql`.
 
 If local port `5432` is already in use:
 
@@ -56,7 +56,17 @@ go run ./backend/cmd/assops-tool db inspect-backup .assops/backups/assops-YYYYMM
 make api-smoke
 ```
 
-Set `ASSOPS_GATEWAY_URL`, `ASSOPS_ADMIN_EMAIL`, and `ASSOPS_ADMIN_PASSWORD` to point the same smoke check at a deployed test gateway. The smoke check verifies `/healthz`, login, project listing, and worker queue summary without creating or modifying rows.
+Set `ASSOPS_GATEWAY_URL`, `ASSOPS_ADMIN_EMAIL`, and `ASSOPS_ADMIN_PASSWORD` to point the same smoke check at a deployed test gateway. The smoke check verifies `/healthz`, login, project listing, worker queue summary, and first-version read surfaces for assets, operations, approvals, repo sync/tag runs, AI runtimes, project-level Argo/Kubernetes/deployment/SSH/webhook/agent lists, repository-to-remote GitHub Actions/labels lists, and field-level GitHub artifact/tag/label evidence when project and remote rows exist. With `ASSOPS_API_SMOKE_REQUIRE_PROJECT=true`, it also requires a Kubernetes environment/deployment target pair, checks pod metadata listing, and checks the Argo pod-log query preview returns no-call/no-secret/no-log-body guardrails. It does not create approvals, restart pods, pull live logs, or modify rows.
+
+For a disposable local Compose deployment rehearsal:
+
+```bash
+make compose-smoke
+```
+
+The Compose smoke target builds gateway, worker, node-worker, and web images, starts an isolated fresh PostgreSQL volume, waits for service health, seeds demo data inside the temporary database, runs the API smoke through the web entrypoint with a required seeded project/repository/remote/deployment-target chain, verifies worker/node-worker health, and then removes its temporary containers and volumes. The seeded data includes a GitHub Action artifact, GitHub repository labels, a completed repo tag run, and a reviewed demo Kubernetes environment linked to the Argo deployment target so the smoke can validate those first-version read models and metadata-only pod observability. Set `ASSOPS_COMPOSE_SMOKE_WEB_PORT` or `ASSOPS_COMPOSE_SMOKE_PROJECT` only when you need a fixed port or project name for debugging. If the Docker registry mirror is temporarily unavailable but the compose smoke images already exist locally, set `ASSOPS_COMPOSE_SMOKE_BUILD=false` to rehearse with `docker compose up --no-build`.
+
+`make first-deployable-check` also runs `helm-test-smoke-self-test`, which stubs `kubectl port-forward` and verifies the post-Helm smoke script still waits for gateway/worker/node-worker/web rollouts, checks worker endpoints, and runs the same gateway API smoke through the web service.
 
 ## Environment
 
@@ -73,6 +83,10 @@ ASSOPS_ADMIN_EMAIL='admin@assops.local'
 ASSOPS_ADMIN_PASSWORD='admin1234'
 ASSOPS_GITHUB_ACTIONS_READ_TOKEN=''
 ASSOPS_ARGO_READ_TOKEN=''
+ASSOPS_GITHUB_TEMPLATE_TOKEN=''
+ASSOPS_GITEA_TEMPLATE_TOKEN=''
+ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION='false'
+ASSOPS_ARM_PROVIDER_REVIEW_MUTATION='false'
 ASSOPS_KUBERNETES_LOGS_ENABLED='false'
 ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED='false'
 ASSOPS_KUBERNETES_RESTARTS_ENABLED='false'

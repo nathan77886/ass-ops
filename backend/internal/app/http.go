@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -200,6 +201,8 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/provider-review-attempts/{id}/live-execution-guard-snapshot", s.recordProviderReviewAttemptLiveExecutionGuardSnapshot)
 		r.Post("/api/provider-review-attempts/{id}/live-execution-preflight", s.providerReviewAttemptLiveExecutionPreflight)
 		r.Post("/api/provider-review-attempts/{id}/live-execution-launch-plan", s.providerReviewAttemptLiveExecutionLaunchPlan)
+		r.Post("/api/provider-review-attempts/{id}/execute-live", s.executeProviderReviewAttemptLive)
+		r.Post("/api/provider-review-attempts/{id}/cleanup-live", s.cleanupProviderReviewAttemptLive)
 		r.Get("/api/operations", s.listOperations)
 		r.Get("/api/worker-queue/summary", s.getWorkerQueueSummary)
 		r.Get("/api/operations/{id}", s.getOperation)
@@ -11468,6 +11471,12 @@ func stringFromMap(input map[string]any, keys ...string) string {
 		if text, ok := value.(string); ok {
 			return text
 		}
+		if text, ok := value.([]byte); ok {
+			if len(text) > 1<<20 || !utf8.Valid(text) {
+				return ""
+			}
+			return string(text)
+		}
 		return fmt.Sprint(value)
 	}
 	return ""
@@ -14943,6 +14952,15 @@ func (s *Server) providerReviewAttemptLedgerForApprovalDB(ctx context.Context, d
 			provider_api_call_made,
 			provider_api_mutation,
 			external_call_made,
+			provider_status_class,
+			provider_review_url,
+			executed_at,
+			live_execution_phase,
+			live_execution_retryable,
+			live_execution_manual_cleanup_hint,
+			cleanup_attempted,
+			cleanup_succeeded,
+			cleanup_required,
 			claimed_at,
 			claimed_by_user_id
 		FROM provider_review_attempts
@@ -15252,6 +15270,1027 @@ func (s *Server) recordProviderReviewAttemptLocalResult(w http.ResponseWriter, r
 		return
 	}
 	writeJSON(w, http.StatusOK, providerReviewAttemptLocalResultResponse(recorded, ledger, true, "recorded", resultStatus, resultPlan))
+}
+
+func (s *Server) executeProviderReviewAttemptLive(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval"}, "update") {
+		return
+	}
+	attemptID := cleanOptionalID(chi.URLParam(r, "id"))
+	if attemptID == "" {
+		writeError(w, http.StatusBadRequest, "provider review attempt id is required")
+		return
+	}
+	if !s.requireProviderReviewAttemptUpdatePolicy(w, r, attemptID) {
+		return
+	}
+	locked, unlock, err := s.acquireProviderReviewLiveExecutionLock(r.Context(), attemptID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not lock provider review live execution")
+		return
+	}
+	if !locked {
+		writeJSON(w, http.StatusOK, providerReviewAttemptLiveExecutionConflictResponse(attemptID))
+		return
+	}
+	defer unlock()
+	input, attempt, blocked, err := s.providerReviewLiveExecutionInput(r.Context(), attemptID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not prepare provider review live execution")
+		return
+	}
+	if blocked != nil {
+		writeJSON(w, http.StatusOK, blocked)
+		return
+	}
+	idempotencyHash := providerReviewLiveExecutionHash(attemptID, stringFromMap(attempt, "operation_name"), cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])))
+	idempotencyMaterial, err := jsonParam(map[string]any{
+		"material":                      "redacted_live_execution_attempt_scope",
+		"provider_review_attempt_id":    attemptID,
+		"operation_name":                safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name")),
+		"operation_approval_id_present": cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])) != "",
+		"branch_name_included":          false,
+		"repository_ref_included":       false,
+		"provider_url_included":         false,
+		"file_content_included":         false,
+		"token_included":                false,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not encode provider review idempotency material")
+		return
+	}
+	if blocked, err := s.markProviderReviewAttemptLiveExecutionArmed(r.Context(), attemptID, idempotencyHash, idempotencyMaterial); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not arm provider review live execution")
+		return
+	} else if blocked != nil {
+		writeJSON(w, http.StatusOK, blocked)
+		return
+	}
+	result, execErr := (reviewBranchExecutor{HTTPClient: newTemplateProviderHTTPClient()}).Execute(r.Context(), input)
+	recorded, err := s.recordProviderReviewAttemptLiveExecutionResult(r.Context(), attemptID, attempt, result, execErr)
+	if err != nil {
+		log := s.log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("provider review live execution result recording failed", "provider_review_attempt_id", attemptID, "error", err)
+		writeError(w, http.StatusInternalServerError, "could not record provider review live execution result")
+		return
+	}
+	writeJSON(w, http.StatusOK, recorded)
+}
+
+func (s *Server) cleanupProviderReviewAttemptLive(w http.ResponseWriter, r *http.Request) {
+	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval"}, "update") {
+		return
+	}
+	attemptID := cleanOptionalID(chi.URLParam(r, "id"))
+	if attemptID == "" {
+		writeError(w, http.StatusBadRequest, "provider review attempt id is required")
+		return
+	}
+	if !s.requireProviderReviewAttemptUpdatePolicy(w, r, attemptID) {
+		return
+	}
+	locked, unlock, err := s.acquireProviderReviewLiveExecutionLock(r.Context(), attemptID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not lock provider review live cleanup")
+		return
+	}
+	if !locked {
+		writeJSON(w, http.StatusOK, providerReviewAttemptLiveExecutionConflictResponse(attemptID))
+		return
+	}
+	defer unlock()
+	input, attempt, blocked, err := s.providerReviewLiveCleanupInput(r.Context(), attemptID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not prepare provider review live cleanup")
+		return
+	}
+	if blocked != nil {
+		writeJSON(w, http.StatusOK, blocked)
+		return
+	}
+	result, cleanupErr := (reviewBranchExecutor{HTTPClient: newTemplateProviderHTTPClient()}).Cleanup(r.Context(), input)
+	recorded, err := s.recordProviderReviewAttemptLiveCleanupResult(r.Context(), attemptID, attempt, result, cleanupErr)
+	if err != nil {
+		log := s.log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("provider review live cleanup result recording failed", "provider_review_attempt_id", attemptID, "error", err)
+		writeError(w, http.StatusInternalServerError, "could not record provider review live cleanup result")
+		return
+	}
+	writeJSON(w, http.StatusOK, recorded)
+}
+
+func (s *Server) providerReviewLiveExecutionInput(ctx context.Context, attemptID string) (reviewBranchExecutionInput, map[string]any, map[string]any, error) {
+	attempt, err := queryOne(ctx, s.store.DB, `
+		SELECT
+			pra.id,
+			pra.operation_approval_id,
+			pra.project_template_run_id,
+			pra.provider_type,
+			pra.review_kind,
+			pra.operation_name,
+			pra.endpoint_key,
+			pra.status,
+			pra.replay_check,
+			pra.conflict_policy,
+			pra.retry_policy,
+			pra.operation_order,
+			pra.depends_on_operation,
+			pra.dependency_status,
+			pra.request_summary,
+			pra.response_diagnostics,
+			pra.provider_api_call_made,
+			pra.provider_api_mutation,
+			pra.external_call_made,
+			pra.provider_status_class,
+			pra.provider_review_url,
+			pra.executed_at,
+			pra.live_execution_phase,
+			pra.live_execution_retryable,
+			pra.live_execution_manual_cleanup_hint,
+			pra.cleanup_attempted,
+			pra.cleanup_succeeded,
+			pra.cleanup_required,
+			pra.claimed_at,
+			pra.claimed_by_user_id,
+			oa.id AS approval_id,
+			oa.project_id AS approval_project_id,
+			oa.action AS approval_action,
+			oa.status AS approval_status,
+			oa.request_payload AS approval_request_payload,
+			ptr.result AS template_run_result
+		FROM provider_review_attempts pra
+		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
+		LEFT JOIN project_template_runs ptr ON ptr.id=pra.project_template_run_id
+		WHERE pra.id=$1`, attemptID)
+	if err != nil {
+		return reviewBranchExecutionInput{}, nil, nil, err
+	}
+	missing := providerReviewLiveExecutionMissingEvidence(s.cfg, attempt)
+	if len(missing) == 0 {
+		assetID, assetErr := providerReviewAttemptAssetID(ctx, s.store.DB, attemptID)
+		if assetErr != nil {
+			missing = append(missing, "provider_review_attempt_asset_missing")
+		} else {
+			ready, err := providerReviewAttemptStatusObserved(ctx, s.store, assetID, "provider_review_attempt_live_execution_review_ready")
+			if err != nil {
+				return reviewBranchExecutionInput{}, attempt, nil, err
+			}
+			if !ready {
+				missing = append(missing, "provider_review_attempt_live_execution_readiness")
+			}
+		}
+		arming, err := providerReviewApprovalStatusObserved(ctx, s.store, cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])), "provider_review_mutation_arming_review_ready")
+		if err != nil {
+			return reviewBranchExecutionInput{}, attempt, nil, err
+		}
+		if !arming {
+			missing = append(missing, "provider_review_mutation_arming_review")
+		}
+	}
+	if len(missing) > 0 {
+		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveExecutionBlockedResponse(attempt, "blocked", missing), nil
+	}
+	runID := cleanOptionalID(fmt.Sprint(attempt["project_template_run_id"]))
+	runResult := mapFromAny(attempt["template_run_result"])
+	remoteID := cleanOptionalID(fmt.Sprint(mapFromAny(mapFromAny(runResult["details"])["repository_reconciliation"])["remote_id"]))
+	if remoteID == "" {
+		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveExecutionBlockedResponse(attempt, "blocked", []string{"provider_review_target_remote_missing"}), nil
+	}
+	remote, err := queryOne(ctx, s.store.DB, "SELECT * FROM git_remotes WHERE id=$1", remoteID)
+	if err != nil {
+		return reviewBranchExecutionInput{}, attempt, nil, err
+	}
+	repoID := cleanOptionalID(fmt.Sprint(remote["project_git_repository_id"]))
+	repo, err := queryOne(ctx, s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+	if err != nil {
+		return reviewBranchExecutionInput{}, attempt, nil, err
+	}
+	spec, ok := buildExternalTemplateProviderSpec(repo, remote)
+	if !ok || spec.Provider != "github" {
+		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveExecutionBlockedResponse(attempt, "blocked", []string{"provider_review_github_target_missing"}), nil
+	}
+	if spec.Token == "" {
+		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveExecutionBlockedResponse(attempt, "blocked", []string{"provider_token_env_present"}), nil
+	}
+	files, err := providerReviewStarterFilesForLiveExecution(ctx, s.store.DB, runID, repoID)
+	if err != nil {
+		return reviewBranchExecutionInput{}, attempt, nil, err
+	}
+	if len(files) == 0 {
+		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveExecutionBlockedResponse(attempt, "blocked", []string{"starter_file_payload_staged"}), nil
+	}
+	request := mapFromAny(mapFromAny(attempt["approval_request_payload"])["execution_request"])
+	reviewBranch := safeProviderReviewExecutionBranch(stringFromMap(request, "source_branch"))
+	baseBranch := safeProviderReviewExecutionBranch(stringFromMap(request, "target_branch"))
+	if reviewBranch == "" || baseBranch == "" {
+		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveExecutionBlockedResponse(attempt, "blocked", []string{"review_branches_valid"}), nil
+	}
+	return reviewBranchExecutionInput{
+		ProviderType: "github",
+		APIBase:      spec.APIBase,
+		Owner:        spec.Owner,
+		Repository:   spec.RepositoryName,
+		BaseBranch:   baseBranch,
+		ReviewBranch: reviewBranch,
+		Files:        files,
+		Title:        "ASSOPS provider review",
+		Body:         "Created by ASSOPS from an approved provider-review execution.",
+		TokenEnv:     spec.TokenEnv,
+	}, attempt, nil, nil
+}
+
+func providerReviewLiveExecutionMissingEvidence(cfg Config, attempt map[string]any) []string {
+	missing := []string{}
+	if stringFromMap(attempt, "approval_action") != templateProviderReviewExecuteApprovalAction {
+		missing = append(missing, "provider_review_execution_approval_action")
+	}
+	if stringFromMap(attempt, "approval_status") != "approved" {
+		missing = append(missing, "operation_approval_not_approved")
+	}
+	if !cfg.ProviderReviewExecutionEnabled {
+		missing = append(missing, "provider_review_execution_enabled")
+	}
+	if !cfg.ProviderReviewMutationArmed {
+		missing = append(missing, "provider_review_mutation_armed")
+	}
+	if safeProviderReviewProviderType(stringFromMap(attempt, "provider_type")) != "github" {
+		missing = append(missing, "provider_supported")
+	}
+	if safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name")) != "create_branch_ref" ||
+		safeProviderReviewEndpointKey(stringFromMap(attempt, "endpoint_key")) != "github.create_branch_ref" {
+		missing = append(missing, "provider_review_claim_metadata")
+	}
+	if safeProviderReviewAttemptStatus(stringFromMap(attempt, "status")) != "running" || !providerReviewAttemptClaimRecorded(attempt) {
+		missing = append(missing, "provider_review_attempt_claim_not_recorded")
+	}
+	if !providerReviewAttemptClaimDependencyReady(stringFromMap(attempt, "dependency_status")) {
+		missing = append(missing, "provider_review_dependency_not_ready")
+	}
+	if boolOnlyFromAny(attempt["provider_api_call_made"]) || boolOnlyFromAny(attempt["external_call_made"]) {
+		missing = append(missing, "provider_review_attempt_already_executed")
+	}
+	if cleanOptionalID(fmt.Sprint(attempt["project_template_run_id"])) == "" {
+		missing = append(missing, "project_template_run_missing")
+	}
+	return missing
+}
+
+func (s *Server) providerReviewLiveCleanupInput(ctx context.Context, attemptID string) (reviewBranchExecutionInput, map[string]any, map[string]any, error) {
+	attempt, err := queryOne(ctx, s.store.DB, `
+		SELECT
+			pra.id,
+			pra.operation_approval_id,
+			pra.project_template_run_id,
+			pra.provider_type,
+			pra.review_kind,
+			pra.operation_name,
+			pra.endpoint_key,
+			pra.status,
+			pra.replay_check,
+			pra.conflict_policy,
+			pra.retry_policy,
+			pra.operation_order,
+			pra.depends_on_operation,
+			pra.dependency_status,
+			pra.request_summary,
+			pra.response_diagnostics,
+			pra.provider_api_call_made,
+			pra.provider_api_mutation,
+			pra.external_call_made,
+			pra.provider_status_class,
+			pra.provider_review_url,
+			pra.executed_at,
+			pra.live_execution_phase,
+			pra.live_execution_retryable,
+			pra.live_execution_manual_cleanup_hint,
+			pra.cleanup_attempted,
+			pra.cleanup_succeeded,
+			pra.cleanup_required,
+			pra.claimed_at,
+			pra.claimed_by_user_id,
+			oa.id AS approval_id,
+			oa.project_id AS approval_project_id,
+			oa.action AS approval_action,
+			oa.status AS approval_status,
+			oa.request_payload AS approval_request_payload,
+			ptr.result AS template_run_result
+		FROM provider_review_attempts pra
+		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
+		LEFT JOIN project_template_runs ptr ON ptr.id=pra.project_template_run_id
+		WHERE pra.id=$1`, attemptID)
+	if err != nil {
+		return reviewBranchExecutionInput{}, nil, nil, err
+	}
+	missing := providerReviewLiveCleanupMissingEvidence(s.cfg, attempt)
+	if len(missing) > 0 {
+		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveCleanupBlockedResponse(attempt, "blocked", missing), nil
+	}
+	runResult := mapFromAny(attempt["template_run_result"])
+	remoteID := cleanOptionalID(fmt.Sprint(mapFromAny(mapFromAny(runResult["details"])["repository_reconciliation"])["remote_id"]))
+	if remoteID == "" {
+		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveCleanupBlockedResponse(attempt, "blocked", []string{"provider_review_target_remote_missing"}), nil
+	}
+	remote, err := queryOne(ctx, s.store.DB, "SELECT * FROM git_remotes WHERE id=$1", remoteID)
+	if err != nil {
+		return reviewBranchExecutionInput{}, attempt, nil, err
+	}
+	repoID := cleanOptionalID(fmt.Sprint(remote["project_git_repository_id"]))
+	repo, err := queryOne(ctx, s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+	if err != nil {
+		return reviewBranchExecutionInput{}, attempt, nil, err
+	}
+	spec, ok := buildExternalTemplateProviderSpec(repo, remote)
+	if !ok || spec.Provider != "github" {
+		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveCleanupBlockedResponse(attempt, "blocked", []string{"provider_review_github_target_missing"}), nil
+	}
+	if spec.Token == "" {
+		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveCleanupBlockedResponse(attempt, "blocked", []string{"provider_token_env_present"}), nil
+	}
+	request := mapFromAny(mapFromAny(attempt["approval_request_payload"])["execution_request"])
+	reviewBranch := safeProviderReviewExecutionBranch(stringFromMap(request, "source_branch"))
+	if reviewBranch == "" {
+		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveCleanupBlockedResponse(attempt, "blocked", []string{"review_branch_valid"}), nil
+	}
+	return reviewBranchExecutionInput{
+		ProviderType: "github",
+		APIBase:      spec.APIBase,
+		Owner:        spec.Owner,
+		Repository:   spec.RepositoryName,
+		ReviewBranch: reviewBranch,
+		TokenEnv:     spec.TokenEnv,
+		Files:        map[string]string{"cleanup-marker": ""},
+		BaseBranch:   "cleanup-base",
+		Title:        "ASSOPS provider review cleanup",
+		Body:         "",
+	}, attempt, nil, nil
+}
+
+func providerReviewLiveCleanupMissingEvidence(cfg Config, attempt map[string]any) []string {
+	missing := []string{}
+	if stringFromMap(attempt, "approval_action") != templateProviderReviewExecuteApprovalAction {
+		missing = append(missing, "provider_review_execution_approval_action")
+	}
+	if stringFromMap(attempt, "approval_status") != "approved" {
+		missing = append(missing, "operation_approval_not_approved")
+	}
+	if !cfg.ProviderReviewExecutionEnabled {
+		missing = append(missing, "provider_review_execution_enabled")
+	}
+	if !cfg.ProviderReviewMutationArmed {
+		missing = append(missing, "provider_review_mutation_armed")
+	}
+	if safeProviderReviewProviderType(stringFromMap(attempt, "provider_type")) != "github" {
+		missing = append(missing, "provider_supported")
+	}
+	if safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name")) != "create_branch_ref" ||
+		safeProviderReviewEndpointKey(stringFromMap(attempt, "endpoint_key")) != "github.create_branch_ref" {
+		missing = append(missing, "provider_review_claim_metadata")
+	}
+	if safeProviderReviewAttemptStatus(stringFromMap(attempt, "status")) != "failed" {
+		missing = append(missing, "provider_review_attempt_not_failed")
+	}
+	if !boolOnlyFromAny(attempt["cleanup_required"]) ||
+		safeProviderReviewManualCleanupHint(stringFromMap(attempt, "live_execution_manual_cleanup_hint")) != "review_branch_delete_required" {
+		missing = append(missing, "provider_review_cleanup_not_required")
+	}
+	if cleanOptionalID(fmt.Sprint(attempt["project_template_run_id"])) == "" {
+		missing = append(missing, "project_template_run_missing")
+	}
+	return missing
+}
+
+func (s *Server) acquireProviderReviewLiveExecutionLock(ctx context.Context, attemptID string) (bool, func(), error) {
+	conn, err := s.store.DB.Connx(ctx)
+	if err != nil {
+		return false, nil, err
+	}
+	var locked bool
+	if err := conn.QueryRowxContext(ctx, `SELECT pg_try_advisory_lock(hashtext($1::text), hashtext($2::text))`, "provider_review_live_execution", attemptID).Scan(&locked); err != nil {
+		conn.Close()
+		return false, nil, err
+	}
+	if !locked {
+		conn.Close()
+		return false, nil, nil
+	}
+	unlock := func() {
+		var released bool
+		_ = conn.QueryRowxContext(context.Background(), `SELECT pg_advisory_unlock(hashtext($1::text), hashtext($2::text))`, "provider_review_live_execution", attemptID).Scan(&released)
+		conn.Close()
+	}
+	return true, unlock, nil
+}
+
+func providerReviewStarterFilesForLiveExecution(ctx context.Context, db sqlx.ExtContext, runID, repoID string) (map[string]string, error) {
+	rows, err := queryMaps(ctx, db, `
+		SELECT path, content
+		FROM project_template_files
+		WHERE project_template_run_id=$1
+			AND project_git_repository_id=$2
+		ORDER BY created_at, path`, runID, repoID)
+	if err != nil {
+		return nil, err
+	}
+	files := make(map[string]string, len(rows))
+	for _, row := range rows {
+		path := safeTemplateFilePath(stringFromMap(row, "path"))
+		if path == "" {
+			continue
+		}
+		content := stringFromMap(row, "content")
+		if len([]byte(content)) > reviewBranchExecutorMaxFileBytes {
+			return nil, fmt.Errorf("provider review starter file is too large")
+		}
+		files[path] = content
+	}
+	return files, nil
+}
+
+func (s *Server) markProviderReviewAttemptLiveExecutionArmed(ctx context.Context, attemptID, idempotencyHash, idempotencyMaterial string) (map[string]any, error) {
+	_, err := queryOne(ctx, s.store.DB, `
+		UPDATE provider_review_attempts
+		SET provider_api_mutation='enabled',
+			idempotency_key_hash=$2,
+			idempotency_key_material=$3::jsonb,
+			updated_at=now()
+		WHERE id=$1
+			AND status='running'
+			AND claimed_at IS NOT NULL
+			AND operation_name='create_branch_ref'
+			AND endpoint_key='github.create_branch_ref'
+			AND provider_api_call_made=false
+			AND external_call_made=false
+		RETURNING id`, attemptID, idempotencyHash, idempotencyMaterial)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return map[string]any{
+				"live_execution_state":       "provider_review_attempt_execution_conflict",
+				"live_execution_ready":       false,
+				"executed":                   false,
+				"provider_review_attempt_id": attemptID,
+				"missing_evidence":           []string{"provider_review_attempt_execution_conflict"},
+				"external_call_made":         false,
+				"provider_api_call_made":     false,
+				"provider_api_mutation":      "disabled",
+				"contains_token":             false,
+				"contains_file_content":      false,
+			}, nil
+		}
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (s *Server) recordProviderReviewAttemptLiveExecutionResult(ctx context.Context, attemptID string, attempt map[string]any, result reviewBranchExecutionResult, execErr error) (map[string]any, error) {
+	status := "completed"
+	responseStatus := "success"
+	if execErr != nil {
+		status = "failed"
+		responseStatus = "failed"
+	}
+	statusClass := safeProviderReviewStatusClass(result.ProviderStatusClass)
+	if statusClass == "" && execErr != nil {
+		statusClass = safeProviderReviewStatusClass(providerStatusClassFromError(execErr))
+	}
+	if statusClass == "" {
+		statusClass = "unknown"
+	}
+	reviewURL := sanitizeProviderReviewURLForResponse(result.ReviewURL)
+	diagnostics, err := jsonParam(providerReviewAttemptLiveExecutionDiagnostics(attempt, responseStatus, statusClass, result))
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.store.DB.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	recorded, err := queryOne(ctx, tx, `
+		UPDATE provider_review_attempts
+		SET status=$2,
+			response_diagnostics=$3::jsonb,
+			provider_api_call_made=$4,
+			provider_api_mutation='enabled',
+			external_call_made=$5,
+			provider_status_class=$6,
+			provider_review_url=$7,
+			executed_at=COALESCE(executed_at, now()),
+			live_execution_phase=$8,
+			live_execution_retryable=$9,
+			live_execution_manual_cleanup_hint=$10,
+			cleanup_attempted=$11,
+			cleanup_succeeded=$12,
+			cleanup_required=$13,
+			updated_at=now()
+		WHERE id=$1
+			AND status='running'
+		RETURNING
+			id,
+			operation_approval_id,
+			project_template_run_id,
+			provider_type,
+			review_kind,
+			operation_name,
+			endpoint_key,
+			status,
+			replay_check,
+			conflict_policy,
+			retry_policy,
+			operation_order,
+			depends_on_operation,
+			dependency_status,
+			request_summary,
+			response_diagnostics,
+			provider_api_call_made,
+			provider_api_mutation,
+			external_call_made,
+			provider_status_class,
+			provider_review_url,
+			executed_at,
+			live_execution_phase,
+			live_execution_retryable,
+			live_execution_manual_cleanup_hint,
+			cleanup_attempted,
+			cleanup_succeeded,
+			cleanup_required,
+			claimed_at,
+			claimed_by_user_id`,
+		attemptID,
+		status,
+		diagnostics,
+		result.ExternalCallMade,
+		result.ExternalCallMade,
+		statusClass,
+		reviewURL,
+		safeProviderReviewLiveExecutionPhase(result.ExecutionPhase),
+		result.Retryable,
+		safeProviderReviewManualCleanupHint(result.ManualCleanupHint),
+		result.CleanupAttempted,
+		result.CleanupSucceeded,
+		result.CleanupRequired,
+	)
+	if err != nil {
+		return nil, err
+	}
+	approvalID := cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"]))
+	if status == "completed" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE provider_review_attempts
+			SET status='completed',
+				dependency_status='dependency_satisfied',
+				response_diagnostics=COALESCE(response_diagnostics, '{}'::jsonb) || jsonb_build_object(
+					'status', $12,
+					'live_result_recorded', true,
+					'live_result_source', 'atomic_github_review_branch_executor',
+					'provider_status_class', $4,
+					'provider_api_call_made', $3,
+					'provider_api_mutation', 'enabled',
+					'external_call_made', $3,
+					'live_execution_phase', $6,
+					'live_execution_retryable', $7,
+					'manual_cleanup_hint', $8,
+					'cleanup_attempted', $9,
+					'cleanup_succeeded', $10,
+					'cleanup_required', $11,
+					'provider_response_status_included', false,
+					'provider_request_id_included', false,
+					'response_body_included', false,
+					'headers_included', false,
+					'provider_url_included', false,
+					'idempotency_key_included', false,
+					'contains_token', false,
+					'contains_provider_url', false,
+					'contains_repository_ref', false,
+					'contains_branch_name', false,
+					'contains_file_content', false
+				),
+				provider_api_call_made=$3,
+				provider_api_mutation='enabled',
+				external_call_made=$3,
+				provider_status_class=$4,
+				provider_review_url=$5,
+				live_execution_phase=$6,
+				live_execution_retryable=$7,
+				live_execution_manual_cleanup_hint=$8,
+				executed_at=COALESCE(executed_at, now()),
+				cleanup_attempted=$9,
+				cleanup_succeeded=$10,
+				cleanup_required=$11,
+				updated_at=now()
+			WHERE operation_approval_id=$1
+				AND id<>$2
+				AND operation_name IN ('commit_starter_files', 'open_review_request')
+				AND status IN ('planned', 'running')`,
+			approvalID,
+			attemptID,
+			result.ExternalCallMade,
+			statusClass,
+			reviewURL,
+			safeProviderReviewLiveExecutionPhase(result.ExecutionPhase),
+			result.Retryable,
+			safeProviderReviewManualCleanupHint(result.ManualCleanupHint),
+			result.CleanupAttempted,
+			result.CleanupSucceeded,
+			result.CleanupRequired,
+			responseStatus,
+		); err != nil {
+			return nil, err
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE provider_review_attempts
+			SET dependency_status='dependency_failed',
+				updated_at=now()
+			WHERE operation_approval_id=$1
+				AND depends_on_operation=$2
+				AND dependency_status='waiting_for_dependency'`,
+			approvalID,
+			safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name")),
+		); err != nil {
+			return nil, err
+		}
+	}
+	ledger, err := s.providerReviewAttemptLedgerForApprovalDB(ctx, tx, approvalID)
+	if err != nil {
+		return nil, err
+	}
+	syncResult, err := SyncCanonicalAssetsWith(ctx, tx)
+	if err != nil {
+		return nil, fmt.Errorf("syncing canonical assets for provider review live execution: %w", err)
+	}
+	if s.log != nil {
+		s.log.Debug("canonical assets synced in transaction", "reason", "provider_review_attempt.live_execute", "synced_assets", syncResult.SyncedAssets, "inserted_relations", syncResult.InsertedRelations, "pruned_relations", syncResult.PrunedRelations, "inserted_status_snapshots", syncResult.InsertedStatusSnapshots)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return providerReviewAttemptLiveExecutionResponse(recorded, ledger, execErr == nil, responseStatus, statusClass, reviewURL, result), nil
+}
+
+func (s *Server) recordProviderReviewAttemptLiveCleanupResult(ctx context.Context, attemptID string, attempt map[string]any, result reviewBranchExecutionResult, cleanupErr error) (map[string]any, error) {
+	responseStatus := "success"
+	if cleanupErr != nil {
+		responseStatus = "failed"
+	}
+	statusClass := safeProviderReviewStatusClass(result.ProviderStatusClass)
+	if statusClass == "" && cleanupErr != nil {
+		statusClass = safeProviderReviewStatusClass(providerStatusClassFromError(cleanupErr))
+	}
+	if statusClass == "" {
+		statusClass = "unknown"
+	}
+	diagnostics := sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(attempt["response_diagnostics"]))
+	diagnostics["cleanup_result_recorded"] = true
+	diagnostics["cleanup_result_source"] = "atomic_github_review_branch_cleanup"
+	diagnostics["cleanup_status"] = safeProviderReviewAttemptResponseStatus(responseStatus)
+	diagnostics["provider_status_class"] = statusClass
+	diagnostics["live_execution_phase"] = safeProviderReviewLiveExecutionPhase(result.ExecutionPhase)
+	diagnostics["live_execution_retryable"] = result.Retryable
+	diagnostics["manual_cleanup_hint"] = safeProviderReviewManualCleanupHint(result.ManualCleanupHint)
+	diagnostics["cleanup_attempted"] = result.CleanupAttempted
+	diagnostics["cleanup_succeeded"] = result.CleanupSucceeded
+	diagnostics["cleanup_required"] = result.CleanupRequired
+	diagnostics["provider_api_call_made"] = true
+	diagnostics["provider_api_mutation"] = "enabled"
+	diagnostics["external_call_made"] = true
+	diagnostics["provider_response_status_included"] = false
+	diagnostics["provider_request_id_included"] = false
+	diagnostics["response_body_included"] = false
+	diagnostics["headers_included"] = false
+	diagnostics["provider_url_included"] = false
+	diagnostics["idempotency_key_included"] = false
+	diagnostics["contains_token"] = false
+	diagnostics["contains_provider_url"] = false
+	diagnostics["contains_repository_ref"] = false
+	diagnostics["contains_branch_name"] = false
+	diagnostics["contains_file_content"] = false
+	diagnosticsJSON, err := jsonParam(diagnostics)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.store.DB.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	recorded, err := queryOne(ctx, tx, `
+		UPDATE provider_review_attempts
+		SET response_diagnostics=$2::jsonb,
+			provider_api_mutation='enabled',
+			provider_status_class=$3,
+			live_execution_phase=$4,
+			live_execution_retryable=$5,
+			live_execution_manual_cleanup_hint=$6,
+			cleanup_attempted=true,
+			cleanup_succeeded=$7,
+			cleanup_required=$8,
+			updated_at=now()
+		WHERE id=$1
+			AND status='failed'
+			AND cleanup_required=true
+		RETURNING
+			id,
+			operation_approval_id,
+			project_template_run_id,
+			provider_type,
+			review_kind,
+			operation_name,
+			endpoint_key,
+			status,
+			replay_check,
+			conflict_policy,
+			retry_policy,
+			operation_order,
+			depends_on_operation,
+			dependency_status,
+			request_summary,
+			response_diagnostics,
+			provider_api_call_made,
+			provider_api_mutation,
+			external_call_made,
+			provider_status_class,
+			provider_review_url,
+			executed_at,
+			live_execution_phase,
+			live_execution_retryable,
+			live_execution_manual_cleanup_hint,
+			cleanup_attempted,
+			cleanup_succeeded,
+			cleanup_required,
+			claimed_at,
+			claimed_by_user_id`,
+		attemptID,
+		diagnosticsJSON,
+		statusClass,
+		safeProviderReviewLiveExecutionPhase(result.ExecutionPhase),
+		result.Retryable,
+		safeProviderReviewManualCleanupHint(result.ManualCleanupHint),
+		result.CleanupSucceeded,
+		result.CleanupRequired,
+	)
+	if err != nil {
+		return nil, err
+	}
+	approvalID := cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"]))
+	ledger, err := s.providerReviewAttemptLedgerForApprovalDB(ctx, tx, approvalID)
+	if err != nil {
+		return nil, err
+	}
+	syncResult, err := SyncCanonicalAssetsWith(ctx, tx)
+	if err != nil {
+		return nil, fmt.Errorf("syncing canonical assets for provider review live cleanup: %w", err)
+	}
+	if s.log != nil {
+		s.log.Debug("canonical assets synced in transaction", "reason", "provider_review_attempt.live_cleanup", "synced_assets", syncResult.SyncedAssets, "inserted_relations", syncResult.InsertedRelations, "pruned_relations", syncResult.PrunedRelations, "inserted_status_snapshots", syncResult.InsertedStatusSnapshots)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return providerReviewAttemptLiveCleanupResponse(recorded, ledger, cleanupErr == nil, responseStatus, statusClass, result), nil
+}
+
+func providerReviewAttemptLiveExecutionDiagnostics(attempt map[string]any, responseStatus, statusClass string, result reviewBranchExecutionResult) map[string]any {
+	diagnostics := sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(attempt["response_diagnostics"]))
+	diagnostics["status"] = safeProviderReviewAttemptResponseStatus(responseStatus)
+	diagnostics["live_result_recorded"] = true
+	diagnostics["live_result_source"] = "atomic_github_review_branch_executor"
+	diagnostics["provider_status_class"] = safeProviderReviewStatusClass(statusClass)
+	diagnostics["provider_api_call_made"] = result.ExternalCallMade
+	diagnostics["provider_api_mutation"] = "enabled"
+	diagnostics["external_call_made"] = result.ExternalCallMade
+	diagnostics["live_execution_phase"] = safeProviderReviewLiveExecutionPhase(result.ExecutionPhase)
+	diagnostics["live_execution_retryable"] = result.Retryable
+	diagnostics["manual_cleanup_hint"] = safeProviderReviewManualCleanupHint(result.ManualCleanupHint)
+	diagnostics["cleanup_attempted"] = result.CleanupAttempted
+	diagnostics["cleanup_succeeded"] = result.CleanupSucceeded
+	diagnostics["cleanup_required"] = result.CleanupRequired
+	diagnostics["provider_response_status_included"] = false
+	diagnostics["provider_request_id_included"] = false
+	diagnostics["response_body_included"] = false
+	diagnostics["headers_included"] = false
+	diagnostics["provider_url_included"] = false
+	diagnostics["idempotency_key_included"] = false
+	diagnostics["contains_token"] = false
+	diagnostics["contains_provider_url"] = false
+	diagnostics["contains_repository_ref"] = false
+	diagnostics["contains_branch_name"] = false
+	diagnostics["contains_file_content"] = false
+	return diagnostics
+}
+
+func providerReviewAttemptLiveExecutionResponse(attempt, ledger map[string]any, ok bool, responseStatus, statusClass, reviewURL string, result reviewBranchExecutionResult) map[string]any {
+	state := "completed"
+	if !ok {
+		state = "failed"
+	}
+	return map[string]any{
+		"live_execution_state":          state,
+		"live_execution_recorded":       true,
+		"live_execution_success":        ok,
+		"executed":                      ok,
+		"result_status":                 safeProviderReviewAttemptResponseStatus(responseStatus),
+		"provider_review_attempt_id":    cleanOptionalID(fmt.Sprint(attempt["id"])),
+		"operation_approval_id":         cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])),
+		"operation_name":                safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name")),
+		"endpoint_key":                  safeProviderReviewEndpointKey(stringFromMap(attempt, "endpoint_key")),
+		"provider_status_class":         safeProviderReviewStatusClass(statusClass),
+		"provider_review_url":           reviewURL,
+		"provider_review_url_included":  reviewURL != "",
+		"attempt":                       providerReviewAttemptLedgerSummary([]map[string]any{attempt})["operations"].([]map[string]any)[0],
+		"ledger":                        ledger,
+		"live_execution_phase":          safeProviderReviewLiveExecutionPhase(result.ExecutionPhase),
+		"live_execution_retryable":      result.Retryable,
+		"manual_cleanup_hint":           safeProviderReviewManualCleanupHint(result.ManualCleanupHint),
+		"external_call_made":            result.ExternalCallMade,
+		"provider_api_call_made":        result.ExternalCallMade,
+		"provider_api_mutation":         "enabled",
+		"cleanup_attempted":             result.CleanupAttempted,
+		"cleanup_succeeded":             result.CleanupSucceeded,
+		"cleanup_required":              result.CleanupRequired,
+		"request_body_included":         false,
+		"response_body_included":        false,
+		"headers_included":              false,
+		"authorization_header_included": false,
+		"idempotency_key_included":      false,
+		"contains_token":                false,
+		"contains_repository_ref":       false,
+		"contains_branch_name":          false,
+		"contains_file_content":         false,
+	}
+}
+
+func providerReviewAttemptLiveCleanupResponse(attempt, ledger map[string]any, ok bool, responseStatus, statusClass string, result reviewBranchExecutionResult) map[string]any {
+	state := "cleanup_completed"
+	if !ok {
+		state = "cleanup_failed"
+	}
+	return map[string]any{
+		"live_cleanup_state":            state,
+		"live_cleanup_recorded":         true,
+		"live_cleanup_success":          ok,
+		"cleanup_status":                safeProviderReviewAttemptResponseStatus(responseStatus),
+		"provider_review_attempt_id":    cleanOptionalID(fmt.Sprint(attempt["id"])),
+		"operation_approval_id":         cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])),
+		"operation_name":                safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name")),
+		"endpoint_key":                  safeProviderReviewEndpointKey(stringFromMap(attempt, "endpoint_key")),
+		"provider_status_class":         safeProviderReviewStatusClass(statusClass),
+		"attempt":                       providerReviewAttemptLedgerSummary([]map[string]any{attempt})["operations"].([]map[string]any)[0],
+		"ledger":                        ledger,
+		"live_execution_phase":          safeProviderReviewLiveExecutionPhase(result.ExecutionPhase),
+		"live_execution_retryable":      result.Retryable,
+		"manual_cleanup_hint":           safeProviderReviewManualCleanupHint(result.ManualCleanupHint),
+		"external_call_made":            result.ExternalCallMade,
+		"provider_api_call_made":        result.ExternalCallMade,
+		"provider_api_mutation":         "enabled",
+		"cleanup_attempted":             result.CleanupAttempted,
+		"cleanup_succeeded":             result.CleanupSucceeded,
+		"cleanup_required":              result.CleanupRequired,
+		"request_body_included":         false,
+		"response_body_included":        false,
+		"headers_included":              false,
+		"authorization_header_included": false,
+		"idempotency_key_included":      false,
+		"contains_token":                false,
+		"contains_repository_ref":       false,
+		"contains_branch_name":          false,
+		"contains_file_content":         false,
+	}
+}
+
+func safeProviderReviewLiveExecutionPhase(value string) string {
+	switch cleanOptionalText(value) {
+	case "input_validation", "read_base_ref", "create_review_branch", "commit_starter_files", "open_review_request", "cleanup_review_branch", "completed":
+		return cleanOptionalText(value)
+	default:
+		return ""
+	}
+}
+
+func safeProviderReviewManualCleanupHint(value string) string {
+	switch cleanOptionalText(value) {
+	case "review_branch_delete_required":
+		return cleanOptionalText(value)
+	default:
+		return ""
+	}
+}
+
+func providerReviewAttemptLiveExecutionBlockedResponse(attempt map[string]any, state string, missing []string) map[string]any {
+	return map[string]any{
+		"live_execution_state":       cleanOptionalText(state),
+		"live_execution_ready":       false,
+		"live_execution_recorded":    false,
+		"executed":                   false,
+		"provider_review_attempt_id": cleanOptionalID(fmt.Sprint(attempt["id"])),
+		"operation_approval_id":      cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])),
+		"operation_name":             safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name")),
+		"endpoint_key":               safeProviderReviewEndpointKey(stringFromMap(attempt, "endpoint_key")),
+		"missing_evidence":           safeProviderReviewBlockedReasons(missing),
+		"external_call_made":         false,
+		"provider_api_call_made":     false,
+		"provider_api_mutation":      safeProviderReviewProviderAPIMutation(stringFromMap(attempt, "provider_api_mutation")),
+		"provider_request_sent":      false,
+		"provider_response_received": false,
+		"contains_token":             false,
+		"contains_repository_ref":    false,
+		"contains_branch_name":       false,
+		"contains_file_content":      false,
+	}
+}
+
+func providerReviewAttemptLiveCleanupBlockedResponse(attempt map[string]any, state string, missing []string) map[string]any {
+	return map[string]any{
+		"live_cleanup_state":         cleanOptionalText(state),
+		"live_cleanup_ready":         false,
+		"live_cleanup_recorded":      false,
+		"provider_review_attempt_id": cleanOptionalID(fmt.Sprint(attempt["id"])),
+		"operation_approval_id":      cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])),
+		"operation_name":             safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name")),
+		"endpoint_key":               safeProviderReviewEndpointKey(stringFromMap(attempt, "endpoint_key")),
+		"missing_evidence":           safeProviderReviewBlockedReasons(missing),
+		"external_call_made":         false,
+		"provider_api_call_made":     false,
+		"provider_api_mutation":      safeProviderReviewProviderAPIMutation(stringFromMap(attempt, "provider_api_mutation")),
+		"provider_request_sent":      false,
+		"provider_response_received": false,
+		"contains_token":             false,
+		"contains_repository_ref":    false,
+		"contains_branch_name":       false,
+		"contains_file_content":      false,
+	}
+}
+
+func providerReviewAttemptLiveExecutionConflictResponse(attemptID string) map[string]any {
+	return map[string]any{
+		"live_execution_state":       "provider_review_attempt_execution_conflict",
+		"live_execution_ready":       false,
+		"live_execution_recorded":    false,
+		"executed":                   false,
+		"provider_review_attempt_id": cleanOptionalID(attemptID),
+		"missing_evidence":           []string{"provider_review_attempt_execution_conflict"},
+		"external_call_made":         false,
+		"provider_api_call_made":     false,
+		"provider_api_mutation":      "disabled",
+		"provider_request_sent":      false,
+		"provider_response_received": false,
+		"contains_token":             false,
+		"contains_repository_ref":    false,
+		"contains_branch_name":       false,
+		"contains_file_content":      false,
+	}
+}
+
+func providerReviewLiveExecutionHash(attemptID, operationName, approvalID string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		cleanOptionalID(attemptID),
+		safeProviderReviewAttemptOperationName(operationName),
+		cleanOptionalID(approvalID),
+		"atomic_github_review_branch_executor",
+	}, ":")))
+	return hex.EncodeToString(sum[:])
+}
+
+func safeProviderReviewExecutionBranch(value string) string {
+	value = strings.TrimSpace(value)
+	if !isSafeGitRefPart(value) {
+		return ""
+	}
+	return value
+}
+
+func safeProviderReviewProviderAPIMutation(value string) string {
+	switch cleanOptionalText(value) {
+	case "enabled":
+		return "enabled"
+	default:
+		return "disabled"
+	}
+}
+
+func sanitizeProviderReviewURLForResponse(value string) string {
+	value = strings.TrimSpace(sanitizeURLUserInfo(value))
+	if len(value) > 512 {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed == nil || parsed.User != nil {
+		return ""
+	}
+	switch parsed.Scheme {
+	case "http", "https":
+		if parsed.Host == "" {
+			return ""
+		}
+		return parsed.String()
+	default:
+		return ""
+	}
 }
 
 func (s *Server) recordProviderReviewAttemptSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -17180,9 +18219,17 @@ func providerReviewAttemptLocalResultResponse(attempt map[string]any, ledger map
 		"endpoint_key":               safeProviderReviewEndpointKey(stringFromMap(attempt, "endpoint_key")),
 		"result_recording_plan":      resultPlan,
 		"ledger":                     ledger,
-		"external_call_made":         false,
-		"provider_api_call_made":     false,
-		"provider_api_mutation":      "disabled",
+		"external_call_made":         boolOnlyFromAny(attempt["external_call_made"]),
+		"provider_api_call_made":     boolOnlyFromAny(attempt["provider_api_call_made"]),
+		"provider_api_mutation":      safeProviderReviewProviderAPIMutation(stringFromMap(attempt, "provider_api_mutation")),
+		"provider_status_class":      safeProviderReviewStatusClass(stringFromMap(attempt, "provider_status_class")),
+		"provider_review_url":        sanitizeProviderReviewURLForResponse(stringFromMap(attempt, "provider_review_url")),
+		"live_execution_phase":       safeProviderReviewLiveExecutionPhase(stringFromMap(attempt, "live_execution_phase")),
+		"live_execution_retryable":   boolOnlyFromAny(attempt["live_execution_retryable"]),
+		"manual_cleanup_hint":        safeProviderReviewManualCleanupHint(stringFromMap(attempt, "live_execution_manual_cleanup_hint")),
+		"cleanup_attempted":          boolOnlyFromAny(attempt["cleanup_attempted"]),
+		"cleanup_succeeded":          boolOnlyFromAny(attempt["cleanup_succeeded"]),
+		"cleanup_required":           boolOnlyFromAny(attempt["cleanup_required"]),
 		"response_body_included":     false,
 		"headers_included":           false,
 		"idempotency_key_included":   false,
@@ -17195,6 +18242,7 @@ func providerReviewAttemptLocalResultResponse(attempt map[string]any, ledger map
 }
 
 func providerReviewAttemptLocalResultPlanFromAttempt(attempt map[string]any, resultStatus string) map[string]any {
+	providerAPIMutation := safeProviderReviewProviderAPIMutation(stringFromMap(attempt, "provider_api_mutation"))
 	operation := map[string]any{
 		"name":                  stringFromMap(attempt, "operation_name"),
 		"endpoint_key":          stringFromMap(attempt, "endpoint_key"),
@@ -17205,7 +18253,7 @@ func providerReviewAttemptLocalResultPlanFromAttempt(attempt map[string]any, res
 		"response_diagnostics":  attempt["response_diagnostics"],
 		"claimed_at":            attempt["claimed_at"],
 		"claimed_by_user_id":    attempt["claimed_by_user_id"],
-		"provider_api_mutation": "disabled",
+		"provider_api_mutation": providerAPIMutation,
 	}
 	operationName := safeProviderReviewAttemptOperationName(stringFromMap(operation, "name"))
 	endpointKey := safeProviderReviewEndpointKey(stringFromMap(operation, "endpoint_key"))
@@ -17247,9 +18295,9 @@ func providerReviewAttemptLocalResultPlanFromAttempt(attempt map[string]any, res
 	resultPlan["attempt_status"] = safeProviderReviewAttemptStatus(stringFromMap(attempt, "status"))
 	resultPlan["response_recorded"] = false
 	resultPlan["local_result_recording_enabled"] = metadataReady
-	resultPlan["external_call_made"] = false
-	resultPlan["provider_api_call_made"] = false
-	resultPlan["provider_api_mutation"] = "disabled"
+	resultPlan["external_call_made"] = boolOnlyFromAny(attempt["external_call_made"])
+	resultPlan["provider_api_call_made"] = boolOnlyFromAny(attempt["provider_api_call_made"])
+	resultPlan["provider_api_mutation"] = providerAPIMutation
 	resultPlan["response_body_included"] = false
 	resultPlan["headers_included"] = false
 	resultPlan["contains_token"] = false
@@ -17488,27 +18536,39 @@ func safeProviderReviewAdapterStatus(value string) string {
 
 func safeProviderReviewBlockedReasons(items []string) []string {
 	allowed := map[string]bool{
-		"provider_supported":                      true,
-		"starter_file_payload_staged":             true,
-		"provider_api_request_plan_ready":         true,
-		"provider_review_execution_enabled":       true,
-		"provider_credential_configured":          true,
-		"provider_token_env_present":              true,
-		"provider_review_api_adapter":             true,
-		"provider_review_adapter_rehearsal":       true,
-		"provider_review_claim_metadata":          true,
-		"provider_review_adapter_contract":        true,
-		"provider_review_request_materialization": true,
-		"provider_review_branch_policy":           true,
-		"provider_review_credential_binding":      true,
-		"provider_review_adapter_runtime":         true,
-		"provider_review_transport_metadata":      true,
-		"provider_review_response_recording":      true,
-		"provider_review_transaction_boundary":    true,
-		"provider_review_mutation_armed":          true,
-		"review_branches_valid":                   true,
-		"review_target_summary_ready":             true,
-		"provider_review_target_summary_safe":     true,
+		"provider_supported":                               true,
+		"starter_file_payload_staged":                      true,
+		"provider_api_request_plan_ready":                  true,
+		"provider_review_execution_enabled":                true,
+		"provider_credential_configured":                   true,
+		"provider_token_env_present":                       true,
+		"provider_review_api_adapter":                      true,
+		"provider_review_adapter_rehearsal":                true,
+		"provider_review_claim_metadata":                   true,
+		"provider_review_adapter_contract":                 true,
+		"provider_review_request_materialization":          true,
+		"provider_review_branch_policy":                    true,
+		"provider_review_credential_binding":               true,
+		"provider_review_adapter_runtime":                  true,
+		"provider_review_transport_metadata":               true,
+		"provider_review_response_recording":               true,
+		"provider_review_transaction_boundary":             true,
+		"provider_review_mutation_armed":                   true,
+		"review_branches_valid":                            true,
+		"review_target_summary_ready":                      true,
+		"provider_review_target_summary_safe":              true,
+		"provider_review_execution_approval_action":        true,
+		"operation_approval_not_approved":                  true,
+		"provider_review_attempt_claim_not_recorded":       true,
+		"provider_review_dependency_not_ready":             true,
+		"provider_review_attempt_already_executed":         true,
+		"project_template_run_missing":                     true,
+		"provider_review_attempt_asset_missing":            true,
+		"provider_review_attempt_live_execution_readiness": true,
+		"provider_review_mutation_arming_review":           true,
+		"provider_review_target_remote_missing":            true,
+		"provider_review_github_target_missing":            true,
+		"provider_review_attempt_execution_conflict":       true,
 	}
 	out := make([]string, 0, len(items))
 	seen := map[string]bool{}
@@ -17530,22 +18590,28 @@ func sanitizedProviderReviewAttemptLedger(value map[string]any) map[string]any {
 	operations := make([]map[string]any, 0, len(mapSliceFromAny(value["operations"])))
 	for _, operation := range mapSliceFromAny(value["operations"]) {
 		operations = append(operations, map[string]any{
-			"id":                       cleanOptionalID(fmt.Sprint(operation["id"])),
-			"name":                     cleanOptionalText(stringFromMap(operation, "name")),
-			"endpoint_key":             cleanOptionalText(stringFromMap(operation, "endpoint_key")),
-			"status":                   cleanOptionalText(stringFromMap(operation, "status")),
-			"replay_check":             cleanOptionalText(stringFromMap(operation, "replay_check")),
-			"conflict_policy":          cleanOptionalText(stringFromMap(operation, "conflict_policy")),
-			"retry_policy":             cleanOptionalText(stringFromMap(operation, "retry_policy")),
-			"operation_order":          intFromAny(operation["operation_order"], 0),
-			"depends_on_operation":     safeProviderReviewAttemptDependencyName(stringFromMap(operation, "depends_on_operation")),
-			"dependency_status":        safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(operation, "dependency_status")),
-			"request_summary":          sanitizedProviderReviewAttemptRequestSummary(mapFromAny(operation["request_summary"])),
-			"response_diagnostics":     sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(operation["response_diagnostics"])),
-			"external_call_made":       false,
-			"provider_api_call_made":   false,
-			"provider_api_mutation":    "disabled",
-			"idempotency_key_included": false,
+			"id":                           cleanOptionalID(fmt.Sprint(operation["id"])),
+			"name":                         cleanOptionalText(stringFromMap(operation, "name")),
+			"endpoint_key":                 cleanOptionalText(stringFromMap(operation, "endpoint_key")),
+			"status":                       cleanOptionalText(stringFromMap(operation, "status")),
+			"replay_check":                 cleanOptionalText(stringFromMap(operation, "replay_check")),
+			"conflict_policy":              cleanOptionalText(stringFromMap(operation, "conflict_policy")),
+			"retry_policy":                 cleanOptionalText(stringFromMap(operation, "retry_policy")),
+			"operation_order":              intFromAny(operation["operation_order"], 0),
+			"depends_on_operation":         safeProviderReviewAttemptDependencyName(stringFromMap(operation, "depends_on_operation")),
+			"dependency_status":            safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(operation, "dependency_status")),
+			"request_summary":              sanitizedProviderReviewAttemptRequestSummary(mapFromAny(operation["request_summary"])),
+			"response_diagnostics":         sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(operation["response_diagnostics"])),
+			"external_call_made":           false,
+			"provider_api_call_made":       false,
+			"provider_api_mutation":        "disabled",
+			"provider_status_class":        "",
+			"provider_review_url":          "",
+			"provider_review_url_included": false,
+			"cleanup_attempted":            false,
+			"cleanup_succeeded":            false,
+			"cleanup_required":             false,
+			"idempotency_key_included":     false,
 		})
 	}
 	return map[string]any{
@@ -19464,26 +20530,51 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 		if claimedAt == "<nil>" {
 			claimedAt = ""
 		}
+		executedAt := cleanOptionalText(fmt.Sprint(attempt["executed_at"]))
+		if executedAt == "<nil>" {
+			executedAt = ""
+		}
+		externalCallMade := boolOnlyFromAny(attempt["external_call_made"])
+		providerAPICallMade := boolOnlyFromAny(attempt["provider_api_call_made"])
+		providerAPIMutation := safeProviderReviewProviderAPIMutation(stringFromMap(attempt, "provider_api_mutation"))
+		responseDiagnostics := sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(attempt["response_diagnostics"]))
+		responseDiagnostics["external_call_made"] = externalCallMade
+		responseDiagnostics["provider_api_call_made"] = providerAPICallMade
+		responseDiagnostics["provider_api_mutation"] = providerAPIMutation
+		responseDiagnostics["provider_status_class"] = safeProviderReviewStatusClass(stringFromMap(attempt, "provider_status_class"))
+		responseDiagnostics["live_execution_phase"] = safeProviderReviewLiveExecutionPhase(stringFromMap(attempt, "live_execution_phase"))
+		responseDiagnostics["live_execution_retryable"] = boolOnlyFromAny(attempt["live_execution_retryable"])
+		responseDiagnostics["manual_cleanup_hint"] = safeProviderReviewManualCleanupHint(stringFromMap(attempt, "live_execution_manual_cleanup_hint"))
 		operations = append(operations, map[string]any{
-			"id":                       cleanOptionalID(fmt.Sprint(attempt["id"])),
-			"name":                     cleanOptionalText(stringFromMap(attempt, "operation_name")),
-			"endpoint_key":             cleanOptionalText(stringFromMap(attempt, "endpoint_key")),
-			"status":                   safeProviderReviewAttemptStatus(stringFromMap(attempt, "status")),
-			"replay_check":             safeProviderReviewReplayCheck(stringFromMap(attempt, "replay_check")),
-			"conflict_policy":          safeProviderReviewConflictPolicy(stringFromMap(attempt, "conflict_policy")),
-			"retry_policy":             safeProviderReviewRetryPolicy(stringFromMap(attempt, "retry_policy")),
-			"operation_order":          intFromAny(attempt["operation_order"], 0),
-			"depends_on_operation":     safeProviderReviewAttemptDependencyName(stringFromMap(attempt, "depends_on_operation")),
-			"dependency_status":        safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(attempt, "dependency_status")),
-			"request_summary":          sanitizedProviderReviewAttemptRequestSummary(mapFromAny(attempt["request_summary"])),
-			"response_diagnostics":     sanitizedProviderReviewAttemptResponseDiagnostics(mapFromAny(attempt["response_diagnostics"])),
-			"result_recording_plan":    providerReviewAttemptLedgerResultRecordingPlan(attempt),
-			"claim_recorded":           providerReviewAttemptClaimRecorded(attempt),
-			"claimed_at":               claimedAt,
-			"external_call_made":       false,
-			"provider_api_call_made":   false,
-			"provider_api_mutation":    "disabled",
-			"idempotency_key_included": false,
+			"id":                           cleanOptionalID(fmt.Sprint(attempt["id"])),
+			"name":                         cleanOptionalText(stringFromMap(attempt, "operation_name")),
+			"endpoint_key":                 cleanOptionalText(stringFromMap(attempt, "endpoint_key")),
+			"status":                       safeProviderReviewAttemptStatus(stringFromMap(attempt, "status")),
+			"replay_check":                 safeProviderReviewReplayCheck(stringFromMap(attempt, "replay_check")),
+			"conflict_policy":              safeProviderReviewConflictPolicy(stringFromMap(attempt, "conflict_policy")),
+			"retry_policy":                 safeProviderReviewRetryPolicy(stringFromMap(attempt, "retry_policy")),
+			"operation_order":              intFromAny(attempt["operation_order"], 0),
+			"depends_on_operation":         safeProviderReviewAttemptDependencyName(stringFromMap(attempt, "depends_on_operation")),
+			"dependency_status":            safeProviderReviewAttemptClaimDependencyStatus(stringFromMap(attempt, "dependency_status")),
+			"request_summary":              sanitizedProviderReviewAttemptRequestSummary(mapFromAny(attempt["request_summary"])),
+			"response_diagnostics":         responseDiagnostics,
+			"result_recording_plan":        providerReviewAttemptLedgerResultRecordingPlan(attempt),
+			"claim_recorded":               providerReviewAttemptClaimRecorded(attempt),
+			"claimed_at":                   claimedAt,
+			"executed_at":                  executedAt,
+			"external_call_made":           externalCallMade,
+			"provider_api_call_made":       providerAPICallMade,
+			"provider_api_mutation":        providerAPIMutation,
+			"provider_status_class":        safeProviderReviewStatusClass(stringFromMap(attempt, "provider_status_class")),
+			"provider_review_url":          sanitizeProviderReviewURLForResponse(stringFromMap(attempt, "provider_review_url")),
+			"provider_review_url_included": sanitizeProviderReviewURLForResponse(stringFromMap(attempt, "provider_review_url")) != "",
+			"live_execution_phase":         safeProviderReviewLiveExecutionPhase(stringFromMap(attempt, "live_execution_phase")),
+			"live_execution_retryable":     boolOnlyFromAny(attempt["live_execution_retryable"]),
+			"manual_cleanup_hint":          safeProviderReviewManualCleanupHint(stringFromMap(attempt, "live_execution_manual_cleanup_hint")),
+			"cleanup_attempted":            boolOnlyFromAny(attempt["cleanup_attempted"]),
+			"cleanup_succeeded":            boolOnlyFromAny(attempt["cleanup_succeeded"]),
+			"cleanup_required":             boolOnlyFromAny(attempt["cleanup_required"]),
+			"idempotency_key_included":     false,
 		})
 	}
 	status := "not_recorded"
@@ -19497,16 +20588,34 @@ func providerReviewAttemptLedgerSummary(attempts []map[string]any) map[string]an
 		"attempt_count":            len(operations),
 		"operations":               operations,
 		"orchestration":            orchestration,
-		"external_call_made":       false,
-		"provider_api_call_made":   false,
-		"provider_api_mutation":    "disabled",
+		"external_call_made":       providerReviewAttemptAnyBool(operations, "external_call_made"),
+		"provider_api_call_made":   providerReviewAttemptAnyBool(operations, "provider_api_call_made"),
+		"provider_api_mutation":    providerReviewAttemptLedgerMutation(operations),
 		"idempotency_key_included": false,
 		"contains_token":           false,
-		"contains_provider_url":    false,
+		"contains_provider_url":    providerReviewAttemptAnyBool(operations, "provider_review_url_included"),
 		"contains_repository_ref":  false,
 		"contains_branch_name":     false,
 		"contains_file_content":    false,
 	}
+}
+
+func providerReviewAttemptAnyBool(operations []map[string]any, key string) bool {
+	for _, operation := range operations {
+		if boolOnlyFromAny(operation[key]) {
+			return true
+		}
+	}
+	return false
+}
+
+func providerReviewAttemptLedgerMutation(operations []map[string]any) string {
+	for _, operation := range operations {
+		if safeProviderReviewProviderAPIMutation(stringFromMap(operation, "provider_api_mutation")) == "enabled" {
+			return "enabled"
+		}
+	}
+	return "disabled"
 }
 
 func sanitizedProviderReviewAttemptRequestSummary(value map[string]any) map[string]any {
@@ -19615,7 +20724,7 @@ func safeProviderReviewRetryPolicy(value string) string {
 
 func safeProviderReviewStatusClass(value string) string {
 	switch cleanOptionalText(value) {
-	case "2xx", "4xx", "5xx":
+	case "2xx", "4xx", "5xx", "unknown":
 		return cleanOptionalText(value)
 	default:
 		return ""

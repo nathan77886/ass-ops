@@ -26,6 +26,7 @@ serviceAccount:
 image:
   registry: ghcr.io
   pullPolicy: IfNotPresent
+  pullSecrets: []
   gateway:
     repository: nathan77886/assops-gateway
     tag: v0.1.0
@@ -47,6 +48,8 @@ env:
   workerIntervalSeconds: "3"
   localBareBaseDirs: /var/lib/assops/bare-repos
   configGitLocalBareWritesEnabled: "false"
+  providerReviewExecutionEnabled: "false"
+  providerReviewMutationArmed: "false"
   kubernetesLogsEnabled: "false"
   kubernetesRestartsEnabled: "false"
   kubeconfigSecretDir: /etc/assops/kubeconfigs

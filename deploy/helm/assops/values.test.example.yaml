@@ -9,6 +9,9 @@ secret:
 postgres:
   enabled: false
 
+image:
+  pullSecrets: []
+
 env:
   approvalWebhookURL: ""
   version: test
@@ -17,6 +20,8 @@ env:
   workerIntervalSeconds: "3"
   localBareBaseDirs: /var/lib/assops/bare-repos
   configGitLocalBareWritesEnabled: "false"
+  providerReviewExecutionEnabled: "false"
+  providerReviewMutationArmed: "false"
   kubernetesLogsEnabled: "true"
   kubernetesLogPreviewEnabled: "false"
   kubernetesRestartsEnabled: "true"

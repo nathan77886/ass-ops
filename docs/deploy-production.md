@@ -13,10 +13,72 @@ docker build --target node-worker -t assops/node-worker:local .
 docker build --target web -t assops/web:local .
 ```
 
+To build release-named images locally without pushing:
+
+```bash
+ASSOPS_RELEASE_IMAGE_OWNER=nathan77886 \
+ASSOPS_RELEASE_IMAGE_VERSION=v0.1.0 \
+make release-images
+```
+
+To intentionally publish those images from a trusted workstation, authenticate first and set the explicit push flag:
+
+```bash
+docker login ghcr.io
+ASSOPS_RELEASE_IMAGE_OWNER=nathan77886 \
+ASSOPS_RELEASE_IMAGE_VERSION=v0.1.0 \
+ASSOPS_RELEASE_IMAGE_PUSH=true \
+make release-images
+```
+
+If the target cluster pulls from a private registry, create a namespace-local `kubernetes.io/dockerconfigjson` Secret through the environment's secret-management process and set the private Helm overlay to reference it:
+
+```yaml
+image:
+  pullSecrets:
+    - name: assops-registry-pull
+```
+
 For a tagged release candidate, push a `v*` tag or manually run the `Release Candidate` workflow in GitHub Actions. The workflow uploads Linux amd64 binaries, the web bundle, a packaged Helm chart, `SHA256SUMS`, and Docker image smoke-build results as an artifact, then creates GitHub artifact attestations for the release files. Tagged `v*` runs also publish gateway, worker, node-worker, and web images to GHCR with version and commit-SHA tags and registry-backed image attestations. Keep the release artifact together with the restore rehearsal JSON report before promoting an update.
 
 Before treating the repository default branch as a release branch, generate the local branch-protection plan and then have a repository administrator apply the GitHub repository ruleset from `.github/rulesets/main-required-checks.json`; see `docs/github-branch-protection.md`. The ruleset requires PR review, fresh CI checks, and blocks branch deletion or force pushes.
 The CI workflow includes `actionlint`, so changes to CI/release/promotion workflows are checked for common GitHub Actions expression and workflow mistakes before merge. It also runs Gitleaks secret scanning to catch accidental hardcoded credentials before protected-branch merge.
+
+Run the offline workflow safety check when editing release, backup, restore, or promotion workflows:
+
+```bash
+make workflow-safety-self-test
+```
+
+This parses the workflow YAML and checks the first-deployable safety contracts that do not require network access: workflow lint and secret-scan jobs exist, release image publication is tag-gated, protected backup/restore schedules remain default-off, promotion deployment requires the explicit `deploy` input and production environment, and the CI-only restore rehearsal warns against production credentials. It does not replace `actionlint` in CI.
+
+Validate the production Helm example hardening contract locally before a protected environment rollout review:
+
+```bash
+make helm-production-hardening-self-test
+```
+
+This renders `deploy/helm/assops/values.production.example.yaml` and checks external Secret use, external PostgreSQL, TLS ingress, service-account token automount, NetworkPolicies, PodDisruptionBudgets, non-root/read-only Go containers, retained StorageClass PVCs, and GHCR release image references. It is a no-cluster render check only; real storage class, TLS Secret, registry credentials, and namespace policy still need environment review.
+
+Generate a first-deployable external handoff pack before asking environment owners to apply branch protection, run protected backup rehearsal, or review a Helm rollout:
+
+```bash
+make first-deployable-handoff-plan
+```
+
+The pack is written to `.assops/release-notes/first-deployable/` by default. It contains a branch-protection plan, production backup rehearsal plan, generated release Helm values, Helm rollout rehearsal plan, Markdown and machine-readable completion audits, JSON Schemas for machine-readable audit/checklist/status files, checksum manifest, and a short index of the external actions still required. This generator writes local files only; it does not call GitHub, contact registries, run Helm against a cluster, invoke Argo, connect to PostgreSQL, read kubeconfigs or token values, or push images. Validate the generated pack with `make first-deployable-handoff-validate`; this includes manifest checksum validation plus cross-file completion audit and evidence checklist/status consistency.
+
+External owners should copy `.assops/release-notes/first-deployable/external-evidence-status.example.json` to a private evidence status file, keep any sensitive run logs or screenshots outside the repository, fill only references and short summaries, then validate only the local status structure with `make first-deployable-external-evidence-validate EVIDENCE_FILE=/path/to/external-evidence-status.json` before using it in release notes. This validator checks schema, ids, source-checklist checksum shape, owner/required-evidence traceability, status fields, UTC `verified_at` timestamps, evidence reference shape, rejected-entry summaries, and secret-shaped text; it does not prove GitHub, registry, Kubernetes, database, provider, or Dashboard truth.
+
+Before declaring the first deployable complete, run `make first-deployable-external-evidence-complete-validate EVIDENCE_FILE=/path/to/external-evidence-status.json`. This uses the same local schema checks but fails until every external evidence entry is `verified` with a reference, verifier, and timestamp; it still does not contact or prove the remote systems.
+
+Run the local completion audit when deciding whether the deployable goal can be closed:
+
+```bash
+make first-deployable-completion-audit
+```
+
+The audit checks the repository evidence and prints the external proof still required before completion. It is intentionally local only: it does not call GitHub, registries, Kubernetes, Argo, PostgreSQL, Redis, MQ, provider APIs, SSH, or Codex CLI.
 
 Validate Compose expansion:
 
@@ -55,6 +117,8 @@ ASSOPS_APPROVAL_WEBHOOK_URL=''
 ASSOPS_APPROVAL_WEBHOOK_TOKEN=''
 ASSOPS_GITHUB_ACTIONS_READ_TOKEN=''
 ASSOPS_ARGO_READ_TOKEN=''
+ASSOPS_GITHUB_TEMPLATE_TOKEN=''
+ASSOPS_GITEA_TEMPLATE_TOKEN=''
 ASSOPS_KUBERNETES_LOGS_ENABLED='false'
 ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED='false'
 ASSOPS_KUBERNETES_RESTARTS_ENABLED='false'
@@ -65,6 +129,8 @@ ASSOPS_NODE_WORKER_HEALTH_ADDR=':8082'
 ASSOPS_WEB_PORT='8080'
 ASSOPS_LOCAL_BARE_BASE_DIRS='/var/lib/assops/bare-repos'
 ASSOPS_CONFIG_GIT_LOCAL_BARE_WRITES_ENABLED='false'
+ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION='false'
+ASSOPS_ARM_PROVIDER_REVIEW_MUTATION='false'
 ```
 
 ## Start
@@ -220,6 +286,19 @@ The workflow does not create backups, does not create the disposable database, a
 
 Before enabling the scheduled environment job, generate a local schedule-readiness plan. The command is offline: it validates the intended repository, GitHub environment, runner, cron expression, backup source shape, and artifact retention, but it does not read or print GitHub environment secret values.
 
+You can also generate the protected-environment backup/restore rehearsal checklist without invoking `assops-tool` or GitHub Actions:
+
+```bash
+ASSOPS_PRODUCTION_BACKUP_REHEARSAL_REPO=nathan77886/ass-ops \
+ASSOPS_PRODUCTION_BACKUP_REHEARSAL_ENV=production \
+ASSOPS_PRODUCTION_BACKUP_REHEARSAL_RUNNER=ubuntu-latest \
+ASSOPS_PRODUCTION_BACKUP_REHEARSAL_BACKUP_SOURCE=artifact:retained-assops-backup \
+ASSOPS_PRODUCTION_BACKUP_REHEARSAL_PLAN_OUTPUT=/backups/release-notes/production-backup-rehearsal-plan.md \
+make production-backup-rehearsal-plan
+```
+
+This verifier checks only non-secret local inputs: repository, protected environment, runner, cron expression, backup source shape, retained artifact/report names, retention days, and dangerous backup source markers. It does not read `ASSOPS_ACTIVE_DATABASE_URL`, read `ASSOPS_REHEARSAL_DATABASE_URL`, trigger either production workflow, connect to PostgreSQL, download artifacts, or inspect backup contents. Use it before the manual retained-backup and restore-rehearsal dispatches; it does not replace those dispatches.
+
 Use a retained backup artifact source with a GitHub-hosted runner:
 
 ```bash
@@ -267,6 +346,18 @@ docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml run --rm d
 ```
 
 The command is offline. It verifies `SHA256SUMS`, rejects unsafe checksum paths, requires binary, web, and Helm chart artifacts, and checks that the rehearsal report has a redacted target database, backup object counts, migrations, and an RFC3339 rehearsal timestamp.
+
+The local self-test for that promotion gate creates a temporary bundle and confirms the CLI/Make path accepts matching checksums and rejects tampered artifacts:
+
+```bash
+make release-validate-bundle-self-test
+```
+
+The local promotion-plan self-test extends that check through generated Helm values and the operator checklist, including mismatched-value and malformed-repository rejection:
+
+```bash
+make release-promotion-plan-self-test
+```
 
 After downloading the release candidate, verify the GitHub artifact attestations from the same repository:
 
@@ -351,6 +442,25 @@ assops-tool release helm-readiness-plan \
 ```
 
 The plan validates the local overlay for external Secret usage, external PostgreSQL, HTTPS/TLS ingress, ServiceAccount token isolation, NetworkPolicy, PodDisruptionBudget, explicit storage classes for retained PVCs, resource requests/limits, and non-root/drop-capability runtime posture. It does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs, and the listed `kubectl` checks should only be run after the target cluster, namespace, and kubeconfig are confirmed out of band.
+
+Before setting `deploy=true`, also generate a protected rollout rehearsal checklist from the same reviewed environment overlay and the generated release-image overlay:
+
+```bash
+ASSOPS_HELM_ROLLOUT_REHEARSAL_REPO=<owner>/<repo> \
+ASSOPS_HELM_ROLLOUT_REHEARSAL_GHCR_OWNER=<owner> \
+ASSOPS_HELM_ROLLOUT_REHEARSAL_VERSION=v0.1.0 \
+ASSOPS_HELM_ROLLOUT_REHEARSAL_NAMESPACE=assops \
+ASSOPS_HELM_ROLLOUT_REHEARSAL_RELEASE=assops \
+ASSOPS_HELM_ROLLOUT_REHEARSAL_ENVIRONMENT=production \
+ASSOPS_HELM_ROLLOUT_REHEARSAL_ENV_VALUES=/backups/release-notes/values.production.reviewed.yaml \
+ASSOPS_HELM_ROLLOUT_REHEARSAL_RELEASE_VALUES=/backups/release-notes/helm-values-v0.1.0.yaml \
+ASSOPS_HELM_ROLLOUT_REHEARSAL_PREVIOUS_VALUES=/backups/release-notes/helm-values-previous.yaml \
+ASSOPS_HELM_ROLLOUT_REHEARSAL_RESTORE_REPORT=/backups/release-notes/restore-rehearsal-YYYYMMDD-HHMMSS.json \
+ASSOPS_HELM_ROLLOUT_REHEARSAL_PLAN_OUTPUT=/backups/release-notes/helm-rollout-rehearsal-plan-v0.1.0.md \
+make helm-rollout-rehearsal-plan
+```
+
+This check validates only non-secret local inputs and file shapes: repository, GHCR owner, release version, namespace, release name, reviewed values files, optional previous rollback values, and optional restore rehearsal report. It rejects common secret-shaped paths or names and writes a Markdown checklist without reading kubeconfigs, reading Secret data, calling GitHub, contacting registries, invoking Helm, calling Argo, or mutating Kubernetes.
 
 Before importing a real demo project with provider remotes, generate the live demo import plan:
 

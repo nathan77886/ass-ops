@@ -401,13 +401,30 @@ func upsertDemoOperationalHistory(ctx context.Context, tx *sqlx.Tx, projectID, r
 	if err := upsertDemoRepoSyncRun(ctx, tx, failedOpID, projectID, repositoryID, sourceRemoteID, targetRemoteID, repoSyncAssetID, adminID, "refs/heads/release", "failed", "target remote rejected non-fast-forward update", -30); err != nil {
 		return err
 	}
-	if err := upsertDemoGitHubActionRun(ctx, tx, completedOpID, targetRemoteID); err != nil {
+	githubActionRunID, err := upsertDemoGitHubActionRun(ctx, tx, completedOpID, targetRemoteID)
+	if err != nil {
+		return err
+	}
+	if err := upsertDemoGitHubActionArtifact(ctx, tx, githubActionRunID, targetRemoteID); err != nil {
+		return err
+	}
+	if err := upsertDemoGitHubRepositoryLabels(ctx, tx, completedOpID, targetRemoteID); err != nil {
+		return err
+	}
+	tagOpID, err := upsertDemoOperationRun(ctx, tx, projectID, targetRemoteID, "repo.tag", "Demo release tag", "completed", "", map[string]any{"tag_name": "v0.1.0", "target_sha": "0123456789abcdef0123456789abcdef01234567"}, map[string]any{"remote_tag_found": true, "matched_sha_present": true}, -68)
+	if err != nil {
+		return err
+	}
+	if err := upsertDemoRepoTagRun(ctx, tx, tagOpID, projectID, repositoryID, targetRemoteID, adminID); err != nil {
 		return err
 	}
 	if err := upsertDemoWebhookEvents(ctx, tx, webhookConnectionID, projectID, repoSyncAssetID, completedOpID); err != nil {
 		return err
 	}
 	if _, err := upsertDemoOperationRun(ctx, tx, projectID, "", "argo.apps.sync", "Demo Argo app sync", "completed", "", map[string]any{"argo_connection_id": argoID}, map[string]any{"synced_apps": 1, "deployment_targets": 1}, -69); err != nil {
+		return err
+	}
+	if err := upsertDemoKubernetesEnvironment(ctx, tx, projectID); err != nil {
 		return err
 	}
 	if err := upsertDemoDeploymentReadModel(ctx, tx, projectID, argoID); err != nil {
@@ -518,8 +535,9 @@ func upsertDemoRepoSyncRun(ctx context.Context, tx *sqlx.Tx, operationRunID, pro
 	return nil
 }
 
-func upsertDemoGitHubActionRun(ctx context.Context, tx *sqlx.Tx, operationRunID, targetRemoteID string) error {
-	_, err := tx.ExecContext(ctx, `
+func upsertDemoGitHubActionRun(ctx context.Context, tx *sqlx.Tx, operationRunID, targetRemoteID string) (string, error) {
+	var id string
+	err := tx.GetContext(ctx, &id, `
 		INSERT INTO github_action_runs(
 			operation_run_id, git_remote_id, external_run_id, run_id, workflow_name, branch, commit_sha,
 			status, conclusion, html_url, metadata, started_at, updated_at, synced_at, created_at
@@ -537,13 +555,108 @@ func upsertDemoGitHubActionRun(ctx context.Context, tx *sqlx.Tx, operationRunID,
 			metadata=EXCLUDED.metadata,
 			started_at=EXCLUDED.started_at,
 			updated_at=EXCLUDED.updated_at,
-			synced_at=EXCLUDED.synced_at`,
+			synced_at=EXCLUDED.synced_at
+		RETURNING id`,
 		operationRunID,
 		targetRemoteID,
 		JSONValue{Data: map[string]any{"source": "demo_seed"}},
 	)
 	if err != nil {
-		return fmt.Errorf("upserting demo GitHub Action run: %w", err)
+		return "", fmt.Errorf("upserting demo GitHub Action run: %w", err)
+	}
+	return id, nil
+}
+
+func upsertDemoGitHubActionArtifact(ctx context.Context, tx *sqlx.Tx, githubActionRunID, targetRemoteID string) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO github_action_artifacts(
+			git_remote_id, github_action_run_id, external_artifact_id, name, size_in_bytes, expired, metadata, created_at, updated_at, expires_at, synced_at
+		)
+		VALUES ($1, $2, 'artifact-demo-build', 'demo-service-linux-amd64.tar.gz', 1048576, false, $3, now() - interval '69 hours', now() - interval '69 hours', now() + interval '21 days', now() - interval '69 hours')
+		ON CONFLICT (github_action_run_id, external_artifact_id) WHERE external_artifact_id <> '' DO UPDATE SET
+			git_remote_id=EXCLUDED.git_remote_id,
+			name=EXCLUDED.name,
+			size_in_bytes=EXCLUDED.size_in_bytes,
+			expired=EXCLUDED.expired,
+			metadata=EXCLUDED.metadata,
+			created_at=EXCLUDED.created_at,
+			updated_at=EXCLUDED.updated_at,
+			expires_at=EXCLUDED.expires_at,
+			synced_at=EXCLUDED.synced_at`,
+		targetRemoteID,
+		githubActionRunID,
+		JSONValue{Data: map[string]any{"source": "demo_seed"}},
+	)
+	if err != nil {
+		return fmt.Errorf("upserting demo GitHub Action artifact: %w", err)
+	}
+	return nil
+}
+
+func upsertDemoGitHubRepositoryLabels(ctx context.Context, tx *sqlx.Tx, operationRunID, targetRemoteID string) error {
+	for _, label := range []struct {
+		externalID  string
+		nodeID      string
+		name        string
+		color       string
+		description string
+		isDefault   bool
+	}{
+		{"label-demo-bug", "LA_demo_bug", "bug", "d73a4a", "Something is not working", true},
+		{"label-demo-deploy", "LA_demo_deploy", "deploy", "0e8a16", "Deployment or release work", false},
+	} {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO github_repository_labels(
+				operation_run_id, git_remote_id, external_label_id, node_id, name, color, description, is_default, synced_at, created_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() - interval '69 hours', now() - interval '69 hours')
+			ON CONFLICT (git_remote_id, lower(name)) DO UPDATE SET
+				operation_run_id=EXCLUDED.operation_run_id,
+				external_label_id=EXCLUDED.external_label_id,
+				node_id=EXCLUDED.node_id,
+				color=EXCLUDED.color,
+				description=EXCLUDED.description,
+				is_default=EXCLUDED.is_default,
+				synced_at=EXCLUDED.synced_at`,
+			operationRunID,
+			targetRemoteID,
+			label.externalID,
+			label.nodeID,
+			label.name,
+			label.color,
+			label.description,
+			label.isDefault,
+		)
+		if err != nil {
+			return fmt.Errorf("upserting demo GitHub repository label %q: %w", label.name, err)
+		}
+	}
+	return nil
+}
+
+func upsertDemoRepoTagRun(ctx context.Context, tx *sqlx.Tx, operationRunID, projectID, repositoryID, targetRemoteID, adminID string) error {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM repo_tag_runs WHERE operation_run_id=$1", operationRunID); err != nil {
+		return fmt.Errorf("deleting existing demo repo tag run: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO repo_tag_runs(
+			operation_run_id, git_remote_id, project_id, project_git_repository_id, target_remote_id,
+			tag_name, target_sha, tag_message, actor_user_id, status, stdout, stderr, error_message,
+			started_at, finished_at, created_at
+		)
+		VALUES (
+			$1, $4, $2, $3, $4,
+			'v0.1.0', '0123456789abcdef0123456789abcdef01234567', 'Demo release tag', $5, 'completed',
+			'created demo tag v0.1.0', '', '',
+			now() - interval '68 hours', now() - interval '67 hours 56 minutes', now() - interval '68 hours'
+		)`,
+		operationRunID,
+		projectID,
+		repositoryID,
+		targetRemoteID,
+		adminID,
+	); err != nil {
+		return fmt.Errorf("inserting demo repo tag run: %w", err)
 	}
 	return nil
 }
@@ -584,6 +697,36 @@ func upsertDemoWebhookEvents(ctx context.Context, tx *sqlx.Tx, webhookConnection
 		if err != nil {
 			return fmt.Errorf("upserting demo webhook event %q: %w", event.deliveryID, err)
 		}
+	}
+	return nil
+}
+
+func upsertDemoKubernetesEnvironment(ctx context.Context, tx *sqlx.Tx, projectID string) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO kubernetes_environments(
+			project_id, name, environment, cluster_name, namespace,
+			kubeconfig_secret_ref, service_account, token_subject_review_status,
+			rbac_read_logs_status, rbac_restart_pods_status, status, metadata, updated_at
+		)
+		VALUES (
+			$1, 'Demo Kubernetes Environment', 'staging', 'demo-cluster', 'demo',
+			'demo/assops-reader.yaml', 'system:serviceaccount:demo:assops-reader',
+			'reviewed', 'reviewed', 'reviewed', 'ready', $2, now()
+		)
+		ON CONFLICT(project_id, environment, cluster_name, namespace) DO UPDATE SET
+			name=EXCLUDED.name,
+			kubeconfig_secret_ref=EXCLUDED.kubeconfig_secret_ref,
+			service_account=EXCLUDED.service_account,
+			token_subject_review_status=EXCLUDED.token_subject_review_status,
+			rbac_read_logs_status=EXCLUDED.rbac_read_logs_status,
+			rbac_restart_pods_status=EXCLUDED.rbac_restart_pods_status,
+			status=EXCLUDED.status,
+			metadata=EXCLUDED.metadata,
+			updated_at=now()`,
+		projectID,
+		JSONValue{Data: map[string]any{"source": "demo_seed", "scope": "namespace_readonly"}},
+	); err != nil {
+		return fmt.Errorf("upserting demo Kubernetes environment: %w", err)
 	}
 	return nil
 }

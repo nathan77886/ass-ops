@@ -45,7 +45,10 @@ type reviewBranchExecutionResult struct {
 	BaseSHA               string
 	FileCount             int
 	ReviewURL             string
+	ExecutionPhase        string
 	ProviderStatusClass   string
+	Retryable             bool
+	ManualCleanupHint     string
 	ExternalCallMade      bool
 	ProviderAPIMutation   bool
 	CleanupAttempted      bool
@@ -67,6 +70,7 @@ func (e reviewBranchExecutor) Execute(ctx context.Context, input reviewBranchExe
 		ReviewBranch:          normalized.ReviewBranch,
 		BranchRef:             "refs/heads/" + normalized.ReviewBranch,
 		FileCount:             len(normalized.Files),
+		ExecutionPhase:        "input_validation",
 		ExternalCallMade:      false,
 		ProviderAPIMutation:   false,
 		TokenConfigured:       token != "",
@@ -87,33 +91,91 @@ func (e reviewBranchExecutor) Execute(ctx context.Context, input reviewBranchExe
 	if client == nil {
 		client = newTemplateProviderHTTPClient()
 	}
+	result.ExecutionPhase = "read_base_ref"
 	baseSHA, err := e.githubBaseBranchSHA(ctx, client, normalized, token)
 	result.ExternalCallMade = true
 	if err != nil {
 		result.ProviderStatusClass = providerStatusClassFromError(err)
+		result.Retryable = reviewBranchExecutionRetryable(result.ProviderStatusClass, result.ExecutionPhase)
 		return result, err
 	}
 	result.BaseSHA = baseSHA
+	result.ExecutionPhase = "create_review_branch"
 	if err := e.githubCreateBranchRef(ctx, client, normalized, token, baseSHA); err != nil {
 		result.ProviderStatusClass = providerStatusClassFromError(err)
+		result.Retryable = reviewBranchExecutionRetryable(result.ProviderStatusClass, result.ExecutionPhase)
 		return result, err
 	}
 	result.ProviderAPIMutation = true
+	result.ExecutionPhase = "commit_starter_files"
 	for _, path := range sortedReviewBranchFilePaths(normalized.Files) {
 		if err := e.githubPutFile(ctx, client, normalized, token, path, normalized.Files[path]); err != nil {
 			result.ProviderStatusClass = providerStatusClassFromError(err)
 			result = e.cleanupGitHubReviewBranch(ctx, client, normalized, token, result)
+			result.Retryable = reviewBranchExecutionRetryable(result.ProviderStatusClass, result.ExecutionPhase) && !result.CleanupRequired
 			return result, err
 		}
 	}
+	result.ExecutionPhase = "open_review_request"
 	reviewURL, err := e.githubOpenPullRequest(ctx, client, normalized, token)
 	if err != nil {
 		result.ProviderStatusClass = providerStatusClassFromError(err)
 		result = e.cleanupGitHubReviewBranch(ctx, client, normalized, token, result)
+		result.Retryable = reviewBranchExecutionRetryable(result.ProviderStatusClass, result.ExecutionPhase) && !result.CleanupRequired
 		return result, err
 	}
 	result.ReviewURL = sanitizeURLUserInfo(reviewURL)
+	result.ExecutionPhase = "completed"
 	result.ProviderStatusClass = "2xx"
+	result.Retryable = false
+	return result, nil
+}
+
+func (e reviewBranchExecutor) Cleanup(ctx context.Context, input reviewBranchExecutionInput) (reviewBranchExecutionResult, error) {
+	normalized, token, err := normalizeReviewBranchCleanupInput(input)
+	result := reviewBranchExecutionResult{
+		ProviderType:          normalized.ProviderType,
+		Owner:                 normalized.Owner,
+		Repository:            normalized.Repository,
+		ReviewBranch:          normalized.ReviewBranch,
+		BranchRef:             "refs/heads/" + normalized.ReviewBranch,
+		ExecutionPhase:        "cleanup_review_branch",
+		ExternalCallMade:      false,
+		ProviderAPIMutation:   false,
+		TokenConfigured:       token != "",
+		TokenIncluded:         false,
+		RequestBodiesIncluded: false,
+		ResponseBodyIncluded:  false,
+		CleanupAttempted:      true,
+		ManualCleanupHint:     "review_branch_delete_required",
+	}
+	if err != nil {
+		return result, err
+	}
+	if token == "" {
+		return result, fmt.Errorf("provider token environment is not configured")
+	}
+	if err := validateTemplateProviderURL(ctx, normalized.APIBase); err != nil {
+		return result, fmt.Errorf("unsafe provider API URL: %w", err)
+	}
+	client := e.HTTPClient
+	if client == nil {
+		client = newTemplateProviderHTTPClient()
+	}
+	endpoint := reviewBranchGitHubURL(normalized, "/repos/%s/%s/git/refs/heads/%s", normalized.Owner, normalized.Repository, normalized.ReviewBranch)
+	result.ExternalCallMade = true
+	result.ProviderAPIMutation = true
+	if _, err := e.githubJSON(ctx, client, http.MethodDelete, endpoint, token, nil, http.StatusOK, http.StatusNoContent); err != nil {
+		result.ProviderStatusClass = providerStatusClassFromError(err)
+		result.CleanupRequired = true
+		result.Retryable = reviewBranchExecutionRetryable(result.ProviderStatusClass, result.ExecutionPhase)
+		return result, err
+	}
+	result.ProviderStatusClass = "2xx"
+	result.CleanupSucceeded = true
+	result.CleanupRequired = false
+	result.ManualCleanupHint = ""
+	result.Retryable = false
 	return result, nil
 }
 
@@ -139,8 +201,8 @@ func normalizeReviewBranchExecutionInput(input reviewBranchExecutionInput) (revi
 	if !isSafeGitRefPart(input.BaseBranch) || !isSafeGitRefPart(input.ReviewBranch) || input.BaseBranch == input.ReviewBranch {
 		return input, "", fmt.Errorf("unsafe review branch refs")
 	}
-	if !strings.HasPrefix(input.ReviewBranch, "assops/review/") {
-		return input, "", fmt.Errorf("review branch must use assops/review/ prefix")
+	if !strings.HasPrefix(input.ReviewBranch, "assops/review/") && !strings.HasPrefix(input.ReviewBranch, "assops/template/") {
+		return input, "", fmt.Errorf("review branch must use assops review or template prefix")
 	}
 	if input.Title == "" {
 		input.Title = "ASSOPS review branch"
@@ -166,6 +228,37 @@ func normalizeReviewBranchExecutionInput(input reviewBranchExecutionInput) (revi
 		files[path] = content
 	}
 	input.Files = files
+	return input, strings.TrimSpace(os.Getenv(input.TokenEnv)), nil
+}
+
+func normalizeReviewBranchCleanupInput(input reviewBranchExecutionInput) (reviewBranchExecutionInput, string, error) {
+	input.ProviderType = strings.ToLower(strings.TrimSpace(input.ProviderType))
+	input.APIBase = strings.TrimRight(strings.TrimSpace(input.APIBase), "/")
+	input.Owner = strings.TrimSpace(input.Owner)
+	input.Repository = strings.TrimSpace(input.Repository)
+	input.ReviewBranch = strings.TrimSpace(input.ReviewBranch)
+	input.TokenEnv = strings.TrimSpace(input.TokenEnv)
+	if input.ProviderType != "github" {
+		return input, "", fmt.Errorf("unsupported review branch provider")
+	}
+	if input.APIBase == "" {
+		input.APIBase = "https://api.github.com"
+	}
+	if !isSafeRepositoryName(input.Owner) || !isSafeRepositoryName(input.Repository) {
+		return input, "", fmt.Errorf("unsafe repository owner or name")
+	}
+	if !isSafeGitRefPart(input.ReviewBranch) {
+		return input, "", fmt.Errorf("unsafe review branch ref")
+	}
+	if !strings.HasPrefix(input.ReviewBranch, "assops/review/") && !strings.HasPrefix(input.ReviewBranch, "assops/template/") {
+		return input, "", fmt.Errorf("review branch must use assops review or template prefix")
+	}
+	if input.TokenEnv == "" {
+		input.TokenEnv = defaultTemplateProviderTokenEnv(input.ProviderType)
+	}
+	if !safeTemplateProviderTokenEnv(input.ProviderType, input.TokenEnv) {
+		return input, "", fmt.Errorf("unsafe provider token environment")
+	}
 	return input, strings.TrimSpace(os.Getenv(input.TokenEnv)), nil
 }
 
@@ -221,11 +314,27 @@ func (e reviewBranchExecutor) cleanupGitHubReviewBranch(ctx context.Context, cli
 	endpoint := reviewBranchGitHubURL(input, "/repos/%s/%s/git/refs/heads/%s", input.Owner, input.Repository, input.ReviewBranch)
 	if _, err := e.githubJSON(ctx, client, http.MethodDelete, endpoint, token, nil, http.StatusOK, http.StatusNoContent); err != nil {
 		result.CleanupRequired = true
+		result.ManualCleanupHint = "review_branch_delete_required"
 		return result
 	}
 	result.CleanupSucceeded = true
 	result.CleanupRequired = false
+	result.ManualCleanupHint = ""
 	return result
+}
+
+func reviewBranchExecutionRetryable(statusClass, phase string) bool {
+	switch phase {
+	case "read_base_ref", "create_review_branch", "commit_starter_files", "open_review_request", "cleanup_review_branch":
+	default:
+		return false
+	}
+	switch safeProviderReviewStatusClass(statusClass) {
+	case "5xx", "unknown":
+		return true
+	default:
+		return false
+	}
 }
 
 func (e reviewBranchExecutor) githubJSON(ctx context.Context, client *http.Client, method, endpoint, token string, body map[string]any, okStatuses ...int) (map[string]any, error) {

@@ -8,6 +8,12 @@ cleanup() {
 trap cleanup EXIT
 
 log="$tmpdir/commands.log"
+extra_values="$tmpdir/private-values.yaml"
+cat > "$extra_values" <<'YAML'
+image:
+  pullSecrets:
+    - name: assops-registry-pull
+YAML
 
 cat > "$tmpdir/helm" <<'SH'
 #!/usr/bin/env bash
@@ -50,6 +56,8 @@ keys = [
     "ASSOPS_APPROVAL_WEBHOOK_TOKEN",
     "ASSOPS_GITHUB_ACTIONS_READ_TOKEN",
     "ASSOPS_ARGO_READ_TOKEN",
+    "ASSOPS_GITHUB_TEMPLATE_TOKEN",
+    "ASSOPS_GITEA_TEMPLATE_TOKEN",
     "test-assops-reader.yaml",
 ]
 data = {key: "cHJlc2VudA==" for key in keys}
@@ -76,6 +84,7 @@ ASSOPS_PREFLIGHT_STUB_LOG="$log" \
 ASSOPS_HELM_PREFLIGHT_NAMESPACE=assops-test \
 ASSOPS_HELM_PREFLIGHT_RELEASE=test \
 ASSOPS_HELM_PREFLIGHT_VALUES=deploy/helm/assops/values.test.example.yaml \
+ASSOPS_HELM_PREFLIGHT_EXTRA_VALUES="$extra_values" \
 ASSOPS_HELM_PREFLIGHT_APP_SECRET=assops-test-secret \
 ASSOPS_HELM_PREFLIGHT_KUBECONFIG_SECRET=assops-kubeconfigs \
 ASSOPS_HELM_PREFLIGHT_KUBECONFIG_KEY=test-assops-reader.yaml \
@@ -93,6 +102,7 @@ grep -q 'kubectl -n assops-test get secret assops-kubeconfigs' "$log"
 grep -q 'kubectl --kubeconfig .* -n assops-test auth can-i get pods' "$log"
 grep -q 'kubectl --kubeconfig .* -n assops-test auth can-i get pods/log' "$log"
 grep -q 'kubectl --kubeconfig .* -n assops-test auth can-i patch deployments' "$log"
+grep -q -- "-f $extra_values" "$log"
 
 skip_rbac_log="$tmpdir/skip-rbac.log"
 PATH="$tmpdir:$PATH" \

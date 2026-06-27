@@ -5,6 +5,7 @@ namespace="${ASSOPS_HELM_PREFLIGHT_NAMESPACE:-assops-test}"
 release="${ASSOPS_HELM_PREFLIGHT_RELEASE:-assops}"
 chart_name="${ASSOPS_HELM_PREFLIGHT_CHART_NAME:-assops}"
 values_file="${ASSOPS_HELM_PREFLIGHT_VALUES:-deploy/helm/assops/values.test.example.yaml}"
+extra_values="${ASSOPS_HELM_PREFLIGHT_EXTRA_VALUES:-}"
 app_secret="${ASSOPS_HELM_PREFLIGHT_APP_SECRET:-assops-test-secret}"
 kubeconfig_secret="${ASSOPS_HELM_PREFLIGHT_KUBECONFIG_SECRET:-assops-kubeconfigs}"
 kubeconfig_key="${ASSOPS_HELM_PREFLIGHT_KUBECONFIG_KEY:-test-assops-reader.yaml}"
@@ -118,8 +119,23 @@ if [[ ! -f "$values_file" ]]; then
   exit 1
 fi
 
-helm lint deploy/helm/assops -f "$values_file"
-helm template "$release" deploy/helm/assops -n "$namespace" -f "$values_file" >/tmp/assops-test-preflight-rendered.yaml
+helm_args=(-f "$values_file")
+if [[ -n "$extra_values" ]]; then
+  IFS=':' read -r -a extra_files <<< "$extra_values"
+  for file in "${extra_files[@]}"; do
+    if [[ -z "$file" ]]; then
+      continue
+    fi
+    if [[ ! -f "$file" ]]; then
+      echo "extra values file not found: $file" >&2
+      exit 1
+    fi
+    helm_args+=(-f "$file")
+  done
+fi
+
+helm lint deploy/helm/assops "${helm_args[@]}"
+helm template "$release" deploy/helm/assops -n "$namespace" "${helm_args[@]}" >/tmp/assops-test-preflight-rendered.yaml
 
 kubectl get namespace "$namespace" >/dev/null
 
@@ -132,6 +148,8 @@ required_app_keys=(
   ASSOPS_APPROVAL_WEBHOOK_TOKEN
   ASSOPS_GITHUB_ACTIONS_READ_TOKEN
   ASSOPS_ARGO_READ_TOKEN
+  ASSOPS_GITHUB_TEMPLATE_TOKEN
+  ASSOPS_GITEA_TEMPLATE_TOKEN
 )
 
 for key in "${required_app_keys[@]}"; do

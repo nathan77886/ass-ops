@@ -40,7 +40,7 @@ import zhCN from 'antd/locale/zh_CN';
 import './styles.css';
 
 const { Header, Sider, Content } = Layout;
-const API = import.meta.env.VITE_API_BASE || '';
+const API = import.meta.env.VITE_API_BASE || (globalThis.location?.hostname === 'ass-ops.4nathan.com' ? 'https://ass-ops-api.4nathan.com' : '');
 
 type AnyRow = Record<string, any>;
 type Language = 'en' | 'zh';
@@ -129,6 +129,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.summary': 'Summary',
     'common.input': 'Input',
     'common.output': 'Output',
+    'common.files': 'Files',
     'common.decision': 'Decision',
     'common.audit': 'Audit',
     'common.logs': 'Logs',
@@ -136,6 +137,36 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.close': 'Close',
     'common.open': 'Open',
     'common.history': 'History',
+    'providerReview.executeLive': 'Execute live review',
+    'providerReview.attemptClaimed': 'Provider review attempt claimed',
+    'providerReview.claimFailed': 'Could not claim provider review attempt',
+    'providerReview.attemptNotClaimable': 'Provider review attempt not claimable',
+    'providerReview.localResultRecorded': 'Provider review local result recorded',
+    'providerReview.localResultFailed': 'Could not record provider review result',
+    'providerReview.resultNotRecordable': 'Provider review result not recordable',
+    'providerReview.preflightBlocked': 'Provider review live execution preflight is blocked',
+    'providerReview.preflightReady': 'Provider review live execution preflight is ready',
+    'providerReview.preflightFailed': 'Could not check provider review live execution preflight',
+    'providerReview.launchPlanBlocked': 'Provider review live execution launch plan is blocked',
+    'providerReview.launchPlanReady': 'Provider review live execution launch plan is ready',
+    'providerReview.launchPlanFailed': 'Could not check provider review live execution launch plan',
+    'providerReview.currentLaunchPlanBlocked': 'Current provider review live execution launch plan is blocked',
+    'providerReview.currentLaunchPlanReady': 'Current provider review live execution launch plan is ready',
+    'providerReview.currentLaunchPlanFailed': 'Could not check current provider review live execution launch plan',
+    'providerReview.currentGateBlocked': 'Current provider review live execution gate is blocked',
+    'providerReview.currentGateReady': 'Current provider review live execution gate is ready',
+    'providerReview.currentGateFailed': 'Could not check current provider review live execution gate',
+    'providerReview.claimRunningAttemptFirst': 'Claim a running attempt first',
+    'providerReview.liveExecutionAlreadyRequested': 'Live execution already requested',
+    'providerReview.executeLiveSuccess': 'Provider review executed',
+    'providerReview.executeLiveBlocked': 'Provider review execution is blocked',
+    'providerReview.executeLiveFailed': 'Could not execute provider review',
+    'providerReview.cleanupLive': 'Cleanup live review',
+    'providerReview.cleanupLiveSuccess': 'Provider review cleanup completed',
+    'providerReview.cleanupLiveBlocked': 'Provider review cleanup is blocked',
+    'providerReview.cleanupLiveFailed': 'Could not cleanup provider review',
+    'providerReview.cleanupAlreadyRequested': 'Live cleanup already requested',
+    'providerReview.cleanupNotRequired': 'No live cleanup is required',
     'common.generate': 'Generate',
     'common.approve': 'Approve',
     'common.reject': 'Reject',
@@ -160,6 +191,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.sshRehearsal': 'SSH rehearsal',
     'title.argoApps': 'Argo Apps',
     'title.gitRemotes': 'Git Remotes',
+    'title.projects': 'Projects',
+    'title.projectTemplates': 'Project Templates',
+    'title.templateRuns': 'Template Runs',
     'title.syncAssets': 'Sync assets',
     'title.webhooks': 'Webhooks',
     'title.syncRuns': 'Sync runs',
@@ -194,6 +228,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.podLogQuery': 'Pod log query',
     'form.createVersionManifest': 'Create version manifest',
     'argo.connectionModalDescription': 'Adds the Argo CD API endpoint ASSOPS will poll for applications, deployment targets, rollout state, pod log metadata, and guarded restart requests.',
+    'git.remoteModalDescription': 'Registers a repository remote. Use provider type for API-backed features, clone URL for worker Git operations, and role to tell ASSOPS whether this remote is source, mirror, target, or config.',
+    'git.syncAssetModalDescription': 'Defines how ASSOPS syncs refs between the selected source and target remotes. The first deployable version uses worker Git over SSH with selected refs by default.',
+    'git.tagModalDescription': 'Queues an approval-gated tag operation on the selected remote. Use a reviewed commit SHA and avoid putting sensitive details in the tag message.',
+    'git.webhookModalDescription': 'Registers an inbound provider webhook. The secret is stored as credential material and should match the provider-side webhook configuration.',
     'ssh.machineModalDescription': 'Registers a worker-reachable SSH host. The first deployable version records auth mode and target metadata, then runs verification or approved commands through worker jobs.',
     'ssh.commandModalDescription': 'Queues an approved SSH command for the selected machine. Keep commands non-destructive and avoid printing secrets.',
     'config.repoInitialized': 'Config repository initialized',
@@ -415,6 +453,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.prompt': 'Task prompt sent to the selected agent runtime.',
     'help.agent_task_title': 'Short task title shown in the queue and audit views.',
     'help.name': 'Human-readable name shown in ASSOPS lists.',
+    'help.git_remote_name': 'Human-readable name for this remote, such as GitHub mirror or Gitea source.',
+    'help.repo_sync_name': 'Human-readable name for this sync rule, such as gitea-to-github-main.',
+    'help.webhook_name': 'Human-readable name for this webhook connection.',
     'help.argo_connection_name': 'Short name for this Argo CD connection, for example test-argo or prod-argo.',
     'help.ssh_machine_name': 'Short name for this SSH target, for example test-worker or jump-host.',
     'help.api_base_url': 'Provider API base URL used by gateway/worker integrations, for example https://api.github.com.',
@@ -423,10 +464,80 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.default_owner': 'Default organization or owner used when creating or syncing repositories.',
     'help.visibility': 'Default repository visibility requested from the provider when a template provisions a repository.',
     'help.metadata_json': 'Optional non-secret JSON metadata. Do not paste provider tokens, SSH keys, cookies, or kubeconfig content.',
+    'help.argo_token': 'Argo CD bearer token for this connection. Scope it to the target environment and avoid using a personal admin token.',
     'project.createFirst': 'Create a project first.',
     'project.contextGenerated': 'Context generated',
     'project.generateContext': 'Generate context',
     'project.noDescription': 'No description',
+    'template.operationQueued': 'Template operation queued',
+    'template.retryQueued': 'Template provision retry queued',
+    'template.retryFailed': 'Could not retry template provision',
+    'template.reviewApprovalRequested': 'Provider review execution approval requested',
+    'template.reviewApprovalRequestFailed': 'Could not request provider review execution',
+    'template.details': 'Details',
+    'template.use': 'Use',
+    'template.useTemplate': 'Use template',
+    'template.result': 'Result',
+    'template.steps': 'Steps',
+    'template.reconcile': 'Reconcile',
+    'template.provision': 'Provision',
+    'template.repoSync': 'RepoSync',
+    'template.retryProvision': 'Retry provision',
+    'template.requestReview': 'Request review',
+    'template.statusProvisioned': 'provisioned',
+    'template.statusProvisioning': 'provisioning',
+    'template.statusNeedsReconcile': 'needs reconcile',
+    'template.statusGuarded': 'guarded',
+    'template.statusToken': 'token',
+    'template.statusPushSkipped': 'push skipped',
+    'template.statusError': 'error',
+    'template.statusPending': 'pending',
+    'template.statusBranchStrategy': 'branch strategy',
+    'template.statusManualReconcile': 'manual reconcile',
+    'template.statusProvider': 'provider',
+    'template.statusReview': 'review',
+    'template.guidanceRepositoryProvisionedTitle': 'Repository provisioned',
+    'template.guidanceRepositoryProvisionedDetail': 'Starter files were pushed and the repository metadata is linked to this template run.',
+    'template.guidanceRepositoryProvisionedNext': 'Continue with RepoSync or deployment wiring.',
+    'template.guidanceProvisioningTitle': 'Provisioning in progress',
+    'template.guidanceProvisioningDetail': 'The worker is still reconciling repository provisioning for this template run.',
+    'template.guidanceProvisioningNext': 'Wait for the run to finish before retrying.',
+    'template.guidanceExistingRepositoryTitle': 'Existing repository needs reconciliation',
+    'template.guidanceProtectedBranchReadyTitle': 'Protected branch strategy ready',
+    'template.guidanceProtectedBranchGuardTitle': 'Protected branch guard is active',
+    'template.guidanceMissingTokenTitle': 'Provider token is not configured',
+    'template.guidanceNeedsReconciliationTitle': 'Repository needs reconciliation',
+    'template.guidanceNeedsOperatorReview': 'Repository provisioning needs operator review.',
+    'template.guidanceRetryAfterProviderFixed': 'Retry after the missing provider condition is fixed.',
+    'template.guidanceExistingRepositoryDetail': 'Starter files were skipped because the external repository already exists.',
+    'template.guidanceExistingRepositoryNext': 'Review the repository contents, then set allow_existing_repository_push only when it is safe to write starter files.',
+    'template.guidanceStarterGuardDetail': 'Starter files were skipped by a template remote protection guard.',
+    'template.guidanceStarterGuardNext': 'Configure a provider-specific branch strategy or set allow_protected_branch_push only after branch protection rules are reviewed.',
+    'template.guidanceTokenDetail': 'The selected provider account token environment variable is missing at runtime.',
+    'template.guidanceTokenNext': 'Rotate the provider account to a configured token env, run Check, then retry provisioning.',
+    'template.guidanceProviderHttpTitle': 'Provider returned HTTP',
+    'template.guidanceProviderApiErrorTitle': 'Provider API error',
+    'template.guidanceProviderNext': 'Use the provider account Check action and provider diagnostics before retrying.',
+    'template.guidanceRepositoryReviewTitle': 'Repository needs review',
+    'template.guidanceRepositoryReviewNext': 'Review the template remote metadata and retry after the missing condition is fixed.',
+    'template.guidanceNotAttemptedTitle': 'Provisioning not attempted',
+    'template.guidanceNotAttemptedDetail': 'No repository provisioning result has been recorded for this run yet.',
+    'template.guidanceNotAttemptedNext': 'Start or retry the template run when the provider account and template remotes are ready.',
+    'template.providerExecution': 'provider execution',
+    'template.guardrail': 'guardrail',
+    'template.request': 'request',
+    'template.apiPlan': 'api plan',
+    'template.resource': 'Resource',
+    'template.blocked': 'Blocked',
+    'template.giteaAccount': 'Gitea account',
+    'template.githubAccount': 'GitHub account',
+    'template.sourceAccount': 'Source account',
+    'template.mirrorAccount': 'Mirror account',
+    'template.parameters': 'Parameters',
+    'template.invalidParametersJson': 'Invalid JSON in parameters',
+    'template.remotes': 'Remotes',
+    'template.defaults': 'Defaults',
+    'template.preview': 'Preview',
     'version.validationPreviewReady': 'Version validation preview ready',
     'version.refreshQueued': 'Version refresh operations queued',
     'version.snapshotRecorded': 'Validation snapshot recorded',
@@ -1246,6 +1357,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.summary': '摘要',
     'common.input': '输入',
     'common.output': '输出',
+    'common.files': '文件',
     'common.decision': '决策',
     'common.audit': '审计',
     'common.logs': '日志',
@@ -1253,6 +1365,36 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.close': '关闭',
     'common.open': '打开',
     'common.history': '历史',
+    'providerReview.executeLive': '执行 live 评审',
+    'providerReview.attemptClaimed': 'Provider review attempt 已 claim',
+    'providerReview.claimFailed': '无法 claim provider review attempt',
+    'providerReview.attemptNotClaimable': 'Provider review attempt 当前不可 claim',
+    'providerReview.localResultRecorded': 'Provider review 本地结果已记录',
+    'providerReview.localResultFailed': '无法记录 provider review 结果',
+    'providerReview.resultNotRecordable': 'Provider review 结果当前不可记录',
+    'providerReview.preflightBlocked': 'Provider review live execution preflight 受阻',
+    'providerReview.preflightReady': 'Provider review live execution preflight 已就绪',
+    'providerReview.preflightFailed': '无法检查 provider review live execution preflight',
+    'providerReview.launchPlanBlocked': 'Provider review live execution launch plan 受阻',
+    'providerReview.launchPlanReady': 'Provider review live execution launch plan 已就绪',
+    'providerReview.launchPlanFailed': '无法检查 provider review live execution launch plan',
+    'providerReview.currentLaunchPlanBlocked': '当前 provider review live execution launch plan 受阻',
+    'providerReview.currentLaunchPlanReady': '当前 provider review live execution launch plan 已就绪',
+    'providerReview.currentLaunchPlanFailed': '无法检查当前 provider review live execution launch plan',
+    'providerReview.currentGateBlocked': '当前 provider review live execution gate 受阻',
+    'providerReview.currentGateReady': '当前 provider review live execution gate 已就绪',
+    'providerReview.currentGateFailed': '无法检查当前 provider review live execution gate',
+    'providerReview.claimRunningAttemptFirst': '请先 claim 一个运行中的 attempt',
+    'providerReview.liveExecutionAlreadyRequested': 'live 执行已请求',
+    'providerReview.executeLiveSuccess': 'Provider review 已执行',
+    'providerReview.executeLiveBlocked': 'Provider review 执行受阻',
+    'providerReview.executeLiveFailed': '无法执行 provider review',
+    'providerReview.cleanupLive': '清理 live 评审',
+    'providerReview.cleanupLiveSuccess': 'Provider review 清理已完成',
+    'providerReview.cleanupLiveBlocked': 'Provider review 清理受阻',
+    'providerReview.cleanupLiveFailed': '无法清理 provider review',
+    'providerReview.cleanupAlreadyRequested': 'live 清理已请求',
+    'providerReview.cleanupNotRequired': '无需 live 清理',
     'common.generate': '生成',
     'common.approve': '通过',
     'common.reject': '拒绝',
@@ -1277,6 +1419,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'title.sshRehearsal': 'SSH 演练',
     'title.argoApps': 'Argo 应用',
     'title.gitRemotes': 'Git 远端',
+    'title.projects': '项目',
+    'title.projectTemplates': '项目模板',
+    'title.templateRuns': '模板运行',
     'title.syncAssets': '同步资产',
     'title.webhooks': 'Webhooks',
     'title.syncRuns': '同步记录',
@@ -1311,6 +1456,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.podLogQuery': 'Pod 日志查询',
     'form.createVersionManifest': '创建版本清单',
     'argo.connectionModalDescription': '添加 Argo CD API 端点，ASSOPS 会用它同步应用、部署目标、运行状态、Pod 日志元数据，以及受保护的重启请求。',
+    'git.remoteModalDescription': '登记代码仓库远端。provider type 用于 API 能力，clone URL 用于 Worker Git 操作，role 用来说明这个远端是源端、镜像、目标端还是配置仓库。',
+    'git.syncAssetModalDescription': '定义 ASSOPS 如何在选中的源远端和目标远端之间同步 refs。首个可部署版本默认使用 Worker Git SSH 和选定 refs。',
+    'git.tagModalDescription': '创建一个需要审批的标签操作。请使用已审查的 commit SHA，不要在 tag message 里写入敏感信息。',
+    'git.webhookModalDescription': '登记提供方入站 Webhook。这里的 secret 会作为凭证材料保存，应与提供方侧 Webhook 配置一致。',
     'ssh.machineModalDescription': '登记 Worker 可访问的 SSH 主机。首个可部署版本会记录认证方式和目标元数据，再通过 Worker Job 执行验证或已审批命令。',
     'ssh.commandModalDescription': '向当前 SSH 主机下发需审批的命令。请保持命令非破坏性，并避免输出密钥。',
     'config.repoInitialized': '配置仓库已初始化',
@@ -1532,6 +1681,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.prompt': '发送给选定 Agent 运行时的任务提示词。',
     'help.agent_task_title': '任务列表和审计视图中展示的简短任务标题。',
     'help.name': 'ASSOPS 列表中展示的人类可读名称。',
+    'help.git_remote_name': '该远端的人类可读名称，例如 GitHub mirror 或 Gitea source。',
+    'help.repo_sync_name': '该同步规则的人类可读名称，例如 gitea-to-github-main。',
+    'help.webhook_name': '该 Webhook 连接的人类可读名称。',
     'help.argo_connection_name': '该 Argo CD 连接的短名称，例如 test-argo 或 prod-argo。',
     'help.api_base_url': 'Gateway/Worker 集成使用的提供方 API 基础地址，例如 https://api.github.com。',
     'help.web_base_url': '人工跳转使用的浏览器基础地址，例如 https://github.com。',
@@ -1540,10 +1692,80 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.visibility': '模板创建仓库时向提供方请求的默认仓库可见性。',
     'help.metadata_json': '可选的非敏感 JSON 元数据。不要粘贴 provider token、SSH key、Cookie 或 kubeconfig 内容。',
     'help.ssh_machine_name': '该 SSH 目标的短名称，例如 test-worker 或 jump-host。',
+    'help.argo_token': '该 Argo CD 连接使用的 bearer token。请按目标环境限制权限，避免使用个人管理员 token。',
     'project.createFirst': '请先创建项目。',
     'project.contextGenerated': '上下文已生成',
     'project.generateContext': '生成上下文',
     'project.noDescription': '暂无描述',
+    'template.operationQueued': '模板操作已入队',
+    'template.retryQueued': '模板制备重试已入队',
+    'template.retryFailed': '无法重试模板制备',
+    'template.reviewApprovalRequested': 'Provider review 执行审批已发起',
+    'template.reviewApprovalRequestFailed': '无法发起 provider review 执行审批',
+    'template.details': '详情',
+    'template.use': '使用',
+    'template.useTemplate': '使用模板',
+    'template.result': '结果',
+    'template.steps': '步骤',
+    'template.reconcile': '对账',
+    'template.provision': '制备',
+    'template.repoSync': '仓库同步',
+    'template.retryProvision': '重试制备',
+    'template.requestReview': '发起评审',
+    'template.statusProvisioned': '已制备',
+    'template.statusProvisioning': '制备中',
+    'template.statusNeedsReconcile': '需对账',
+    'template.statusGuarded': '受保护',
+    'template.statusToken': 'Token',
+    'template.statusPushSkipped': '跳过推送',
+    'template.statusError': '错误',
+    'template.statusPending': '待处理',
+    'template.statusBranchStrategy': '分支策略',
+    'template.statusManualReconcile': '人工对账',
+    'template.statusProvider': '服务商',
+    'template.statusReview': '待评审',
+    'template.guidanceRepositoryProvisionedTitle': '仓库已制备',
+    'template.guidanceRepositoryProvisionedDetail': 'Starter 文件已推送，仓库元数据已关联到本次模板运行。',
+    'template.guidanceRepositoryProvisionedNext': '继续配置 RepoSync 或部署链路。',
+    'template.guidanceProvisioningTitle': '制备进行中',
+    'template.guidanceProvisioningDetail': 'Worker 正在为本次模板运行对账仓库制备状态。',
+    'template.guidanceProvisioningNext': '等待运行结束后再重试。',
+    'template.guidanceExistingRepositoryTitle': '已有仓库需要对账',
+    'template.guidanceProtectedBranchReadyTitle': '受保护分支策略已就绪',
+    'template.guidanceProtectedBranchGuardTitle': '受保护分支保护已生效',
+    'template.guidanceMissingTokenTitle': '服务商 Token 未配置',
+    'template.guidanceNeedsReconciliationTitle': '仓库需要对账',
+    'template.guidanceNeedsOperatorReview': '仓库制备需要操作员评审。',
+    'template.guidanceRetryAfterProviderFixed': '修复缺失的服务商条件后再重试。',
+    'template.guidanceExistingRepositoryDetail': '外部仓库已存在，因此已跳过 Starter 文件。',
+    'template.guidanceExistingRepositoryNext': '先检查仓库内容，仅在确认安全后设置 allow_existing_repository_push 写入 Starter 文件。',
+    'template.guidanceStarterGuardDetail': '模板远端保护规则已跳过 Starter 文件。',
+    'template.guidanceStarterGuardNext': '配置服务商分支策略，或仅在分支保护规则已评审后设置 allow_protected_branch_push。',
+    'template.guidanceTokenDetail': '所选服务商账号的 Token 环境变量在运行时缺失。',
+    'template.guidanceTokenNext': '将服务商账号轮换到已配置的 Token 环境变量，执行 Check 后再重试制备。',
+    'template.guidanceProviderHttpTitle': '服务商返回 HTTP',
+    'template.guidanceProviderApiErrorTitle': '服务商 API 错误',
+    'template.guidanceProviderNext': '先使用服务商账号的 Check 操作和诊断信息，再重试。',
+    'template.guidanceRepositoryReviewTitle': '仓库需要评审',
+    'template.guidanceRepositoryReviewNext': '检查模板远端元数据，修复缺失条件后再重试。',
+    'template.guidanceNotAttemptedTitle': '尚未尝试制备',
+    'template.guidanceNotAttemptedDetail': '本次运行尚未记录仓库制备结果。',
+    'template.guidanceNotAttemptedNext': '服务商账号和模板远端就绪后启动或重试模板运行。',
+    'template.providerExecution': '服务商执行',
+    'template.guardrail': '护栏',
+    'template.request': '请求',
+    'template.apiPlan': 'API 计划',
+    'template.resource': '资源',
+    'template.blocked': '受阻',
+    'template.giteaAccount': 'Gitea 账号',
+    'template.githubAccount': 'GitHub 账号',
+    'template.sourceAccount': '源端账号',
+    'template.mirrorAccount': '镜像账号',
+    'template.parameters': '参数',
+    'template.invalidParametersJson': '参数 JSON 无效',
+    'template.remotes': '远端',
+    'template.defaults': '默认值',
+    'template.preview': '预览',
     'version.validationPreviewReady': '版本校验预览已就绪',
     'version.refreshQueued': '版本刷新操作已入队',
     'version.snapshotRecorded': '校验快照已记录',
@@ -2681,20 +2903,20 @@ function bytesText(value: any) {
   return `${next.toFixed(next >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
-function templateProvisionSummary(row: AnyRow) {
+function templateProvisionSummary(row: AnyRow, t: (key: string) => string = createTranslator('en')) {
   const details = row.result?.details || {};
   const reconciliation = details.repository_reconciliation || {};
-  if (row.result?.repository_provisioned) return { color: 'green', label: 'provisioned', detail: '' };
-  if (row.status === 'provisioning') return { color: 'blue', label: 'provisioning', detail: '' };
-  if (reconciliation.kind === 'existing_repository') return { color: 'gold', label: 'needs reconcile', detail: 'existing repository' };
-  if (reconciliation.kind === 'protected_branch') return { color: 'gold', label: 'guarded', detail: 'protected branch' };
-  if (reconciliation.kind === 'missing_token') return { color: 'red', label: 'token', detail: 'not configured' };
-  if (details.starter_push_skipped && details.repository_exists) return { color: 'gold', label: 'push skipped', detail: 'repository exists' };
-  if (details.starter_push_skipped) return { color: 'gold', label: 'push skipped', detail: shortText(row.result?.repository_provision_reason || details.reason, 44) };
+  if (row.result?.repository_provisioned) return { color: 'green', label: t('template.statusProvisioned'), detail: '' };
+  if (row.status === 'provisioning') return { color: 'blue', label: t('template.statusProvisioning'), detail: '' };
+  if (reconciliation.kind === 'existing_repository') return { color: 'gold', label: t('template.statusNeedsReconcile'), detail: translatedValue('existing repository', t) };
+  if (reconciliation.kind === 'protected_branch') return { color: 'gold', label: t('template.statusGuarded'), detail: translatedValue('protected branch', t) };
+  if (reconciliation.kind === 'missing_token') return { color: 'red', label: t('template.statusToken'), detail: translatedValue('not configured', t) };
+  if (details.starter_push_skipped && details.repository_exists) return { color: 'gold', label: t('template.statusPushSkipped'), detail: translatedValue('repository exists', t) };
+  if (details.starter_push_skipped) return { color: 'gold', label: t('template.statusPushSkipped'), detail: shortText(row.result?.repository_provision_reason || details.reason, 44) };
   if (details.provider_status) return { color: 'red', label: `HTTP ${details.provider_status}`, detail: shortText(details.provider_error, 44) };
-  if (details.provider_error) return { color: 'red', label: 'error', detail: shortText(details.provider_error, 44) };
-  if (row.result?.repository_provision_reason) return { color: 'gold', label: 'needs reconcile', detail: shortText(row.result.repository_provision_reason, 44) };
-  return { color: 'default', label: 'pending', detail: '' };
+  if (details.provider_error) return { color: 'red', label: t('template.statusError'), detail: shortText(details.provider_error, 44) };
+  if (row.result?.repository_provision_reason) return { color: 'gold', label: t('template.statusNeedsReconcile'), detail: shortText(row.result.repository_provision_reason, 44) };
+  return { color: 'default', label: t('template.statusPending'), detail: '' };
 }
 
 type TemplateProvisionGuidance = {
@@ -2745,25 +2967,25 @@ function templateGuidance(value: Omit<TemplateProvisionGuidance, 'reviewStatus' 
   };
 }
 
-function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
+function templateProvisionGuidance(row: AnyRow, t: (key: string) => string = createTranslator('en')): TemplateProvisionGuidance {
   const details = row.result?.details || {};
   const reconciliation = details.repository_reconciliation || {};
   if (row.result?.repository_provisioned) {
     return templateGuidance({
       status: 'ready',
       color: 'green',
-      title: 'Repository provisioned',
-      detail: 'Starter files were pushed and the repository metadata is linked to this template run.',
-      next: 'Continue with RepoSync or deployment wiring.'
+      title: t('template.guidanceRepositoryProvisionedTitle'),
+      detail: t('template.guidanceRepositoryProvisionedDetail'),
+      next: t('template.guidanceRepositoryProvisionedNext')
     });
   }
   if (row.status === 'provisioning' || row.status === 'running' || row.status === 'queued') {
     return templateGuidance({
       status: 'waiting',
       color: 'blue',
-      title: 'Provisioning in progress',
-      detail: 'The worker is still reconciling repository provisioning for this template run.',
-      next: 'Wait for the run to finish before retrying.'
+      title: t('template.guidanceProvisioningTitle'),
+      detail: t('template.guidanceProvisioningDetail'),
+      next: t('template.guidanceProvisioningNext')
     });
   }
   if (reconciliation.kind) {
@@ -2775,16 +2997,16 @@ function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
     const apiRequestPlan = executionPlan.provider_api_request_plan || {};
     const branchStrategyReady = reconciliation.kind === 'protected_branch' && branchStrategy.strategy_status === 'planned';
     const titles: Record<string, string> = {
-      existing_repository: 'Existing repository needs reconciliation',
-      protected_branch: branchStrategyReady ? 'Protected branch strategy ready' : 'Protected branch guard is active',
-      missing_token: 'Provider token is not configured'
+      existing_repository: t('template.guidanceExistingRepositoryTitle'),
+      protected_branch: branchStrategyReady ? t('template.guidanceProtectedBranchReadyTitle') : t('template.guidanceProtectedBranchGuardTitle'),
+      missing_token: t('template.guidanceMissingTokenTitle')
     };
     return templateGuidance({
-      status: reconciliation.kind === 'missing_token' ? 'token' : branchStrategyReady ? 'branch strategy' : 'manual reconcile',
+      status: reconciliation.kind === 'missing_token' ? t('template.statusToken') : branchStrategyReady ? t('template.statusBranchStrategy') : t('template.statusManualReconcile'),
       color: reconciliation.kind === 'missing_token' ? 'red' : 'gold',
-      title: titles[String(reconciliation.kind)] || 'Repository needs reconciliation',
-      detail: String((branchStrategyReady ? reconciliation.action_required : branchStrategy.message) || reconciliation.action_required || details.reason || row.result?.repository_provision_reason || 'Repository provisioning needs operator review.'),
-      next: String(providerReview.message || reconciliation.retry_after || 'Retry after the missing provider condition is fixed.'),
+      title: titles[String(reconciliation.kind)] || t('template.guidanceNeedsReconciliationTitle'),
+      detail: String((branchStrategyReady ? reconciliation.action_required : branchStrategy.message) || reconciliation.action_required || details.reason || row.result?.repository_provision_reason || t('template.guidanceNeedsOperatorReview')),
+      next: String(providerReview.message || reconciliation.retry_after || t('template.guidanceRetryAfterProviderFixed')),
       reviewStatus: String(providerReview.status || ''),
       reviewExecution: providerReview.execution_enabled === true ? 'enabled' : 'disabled',
       reviewPlanMode: String(executionPlan.mode || ''),
@@ -2806,55 +3028,55 @@ function templateProvisionGuidance(row: AnyRow): TemplateProvisionGuidance {
   }
   if (details.repository_exists && details.starter_push_skipped) {
     return templateGuidance({
-      status: 'manual reconcile',
+      status: t('template.statusManualReconcile'),
       color: 'gold',
-      title: 'Existing repository needs reconciliation',
-      detail: 'Starter files were skipped because the external repository already exists.',
-      next: 'Review the repository contents, then set allow_existing_repository_push only when it is safe to write starter files.'
+      title: t('template.guidanceExistingRepositoryTitle'),
+      detail: t('template.guidanceExistingRepositoryDetail'),
+      next: t('template.guidanceExistingRepositoryNext')
     });
   }
   if (details.starter_push_skipped) {
     return templateGuidance({
-      status: 'manual reconcile',
+      status: t('template.statusManualReconcile'),
       color: 'gold',
-      title: 'Protected branch guard is active',
-      detail: String(row.result?.repository_provision_reason || details.reason || 'Starter files were skipped by a template remote protection guard.'),
-      next: 'Configure a provider-specific branch strategy or set allow_protected_branch_push only after branch protection rules are reviewed.'
+      title: t('template.guidanceProtectedBranchGuardTitle'),
+      detail: String(row.result?.repository_provision_reason || details.reason || t('template.guidanceStarterGuardDetail')),
+      next: t('template.guidanceStarterGuardNext')
     });
   }
   if (details.token_configured === false) {
     return templateGuidance({
-      status: 'token',
+      status: t('template.statusToken'),
       color: 'red',
-      title: 'Provider token is not configured',
-      detail: 'The selected provider account token environment variable is missing at runtime.',
-      next: 'Rotate the provider account to a configured token env, run Check, then retry provisioning.'
+      title: t('template.guidanceMissingTokenTitle'),
+      detail: t('template.guidanceTokenDetail'),
+      next: t('template.guidanceTokenNext')
     });
   }
   if (details.provider_status || details.provider_error) {
     return templateGuidance({
-      status: 'provider',
+      status: t('template.statusProvider'),
       color: 'red',
-      title: details.provider_status ? `Provider returned HTTP ${details.provider_status}` : 'Provider API error',
+      title: details.provider_status ? `${t('template.guidanceProviderHttpTitle')} ${details.provider_status}` : t('template.guidanceProviderApiErrorTitle'),
       detail: shortText(details.provider_error || row.result?.repository_provision_reason, 96),
-      next: 'Use the provider account Check action and provider diagnostics before retrying.'
+      next: t('template.guidanceProviderNext')
     });
   }
   if (row.result?.repository_provision_reason) {
     return templateGuidance({
-      status: 'review',
+      status: t('template.statusReview'),
       color: 'gold',
-      title: 'Repository needs review',
+      title: t('template.guidanceRepositoryReviewTitle'),
       detail: shortText(row.result.repository_provision_reason, 96),
-      next: 'Review the template remote metadata and retry after the missing condition is fixed.'
+      next: t('template.guidanceRepositoryReviewNext')
     });
   }
   return templateGuidance({
-    status: 'pending',
+    status: t('template.statusPending'),
     color: 'default',
-    title: 'Provisioning not attempted',
-    detail: 'No repository provisioning result has been recorded for this run yet.',
-    next: 'Start or retry the template run when the provider account and template remotes are ready.'
+    title: t('template.guidanceNotAttemptedTitle'),
+    detail: t('template.guidanceNotAttemptedDetail'),
+    next: t('template.guidanceNotAttemptedNext')
   });
 }
 
@@ -4131,6 +4353,7 @@ function Dashboard() {
 }
 
 function Projects() {
+  const { t } = useI18n();
 	const projects = useLoad(() => api('/api/projects'), []);
 	const templates = useLoad(() => api('/api/project-templates'), []);
 	const templateRuns = useLoad(() => api('/api/project-template-runs'), []);
@@ -4151,26 +4374,26 @@ function Projects() {
 				parameters
 			})
 		});
-		message.success('Template operation queued');
+		message.success(t('template.operationQueued'));
 		templateRuns.reload();
 	}
 	async function retryTemplateProvision(row: AnyRow) {
 		try {
 			await api(`/api/project-template-runs/${row.id}/retry-provision`, { method: 'POST', body: '{}' });
-			message.success('Template provision retry queued');
+			message.success(t('template.retryQueued'));
 			templateRuns.reload();
 		} catch (error: any) {
-			message.error(error.message || 'Could not retry template provision');
+			message.error(error.message || t('template.retryFailed'));
 		}
   }
 	async function requestProviderReviewExecution(row: AnyRow) {
 		setRequestingReviewID(row.id);
 		try {
 			await api(`/api/project-template-runs/${row.id}/request-provider-review-execution`, { method: 'POST', body: '{}' });
-			message.success('Provider review execution approval requested');
+			message.success(t('template.reviewApprovalRequested'));
 			templateRuns.reload();
 		} catch (error: any) {
-			message.error(error.message || 'Could not request provider review execution');
+			message.error(error.message || t('template.reviewApprovalRequestFailed'));
 		} finally {
 			setRequestingReviewID('');
 		}
@@ -4179,51 +4402,51 @@ function Projects() {
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="Projects" onCreate={() => setOpen(true)} />
       <Table rowKey="id" dataSource={projects.data?.items || []} pagination={false} columns={[
-        { title: 'Name', dataIndex: 'name' },
-        { title: 'Slug', dataIndex: 'slug' },
-        { title: 'Description', dataIndex: 'description' },
-        { title: 'Created', dataIndex: 'created_at' }
+        { title: t('common.name'), dataIndex: 'name' },
+        { title: t('field.slug'), dataIndex: 'slug' },
+        { title: t('common.description'), dataIndex: 'description' },
+        { title: t('common.created'), dataIndex: 'created_at' }
       ]} />
-      <Typography.Title level={3}>Project Templates</Typography.Title>
+      <Typography.Title level={3}>{t('title.projectTemplates')}</Typography.Title>
       <Table<AnyRow> rowKey="id" dataSource={templates.data?.items || []} pagination={false} columns={[
-        { title: 'Name', dataIndex: 'name' },
-        { title: 'Slug', dataIndex: 'slug' },
-        { title: 'Version', dataIndex: 'version' },
-        { title: 'Status', render: (_, row) => <Tag color={row.status === 'active' ? 'green' : 'blue'}>{row.status}</Tag> },
-        { title: 'Steps', render: (_, row) => Array.isArray(row.steps) ? row.steps.length : 0 },
-        { title: 'Updated', dataIndex: 'updated_at' },
-        { title: 'Action', render: (_, row) => <Space><Button size="small" onClick={() => { setSelectedTemplate(row); setTemplateDetailOpen(true); }}>Details</Button><Button size="small" onClick={() => { setSelectedTemplate(row); setTemplateOpen(true); }}>Use</Button></Space> }
+        { title: t('common.name'), dataIndex: 'name' },
+        { title: t('field.slug'), dataIndex: 'slug' },
+        { title: t('field.version'), dataIndex: 'version' },
+        { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'active' ? 'green' : 'blue'}>{translatedValue(row.status, t)}</Tag> },
+        { title: t('template.steps'), render: (_, row) => Array.isArray(row.steps) ? row.steps.length : 0 },
+        { title: t('common.updated'), dataIndex: 'updated_at' },
+        { title: t('common.action'), render: (_, row) => <Space><Button size="small" onClick={() => { setSelectedTemplate(row); setTemplateDetailOpen(true); }}>{t('template.details')}</Button><Button size="small" onClick={() => { setSelectedTemplate(row); setTemplateOpen(true); }}>{t('template.use')}</Button></Space> }
       ]} />
-      <Typography.Title level={3}>Template Runs</Typography.Title>
+      <Typography.Title level={3}>{t('title.templateRuns')}</Typography.Title>
       <Table<AnyRow>
         rowKey="id"
         dataSource={templateRuns.data?.items || []}
         pagination={{ pageSize: 6 }}
         expandable={{
           expandedRowRender: (row) => <Tabs items={[
-            { key: 'result', label: 'Result', children: <JSONBlock value={row.result} /> },
-            { key: 'steps', label: 'Steps', children: <JSONBlock value={row.steps} /> },
-            { key: 'reconcile', label: 'Reconcile', children: templateProvisionGuidanceView(row) }
+            { key: 'result', label: t('template.result'), children: <JSONBlock value={row.result} /> },
+            { key: 'steps', label: t('template.steps'), children: <JSONBlock value={row.steps} /> },
+            { key: 'reconcile', label: t('template.reconcile'), children: templateProvisionGuidanceView(row, t) }
           ]} />
         }}
         columns={[
-          { title: 'Project', dataIndex: 'project_name' },
-          { title: 'Template', dataIndex: 'template_name' },
-          { title: 'Status', render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : row.status === 'running' || row.status === 'provisioning' ? 'blue' : 'gold'}>{row.status}</Tag> },
-          { title: 'Repository', render: (_, row) => row.result?.repository_id ? <Tag color="green">created</Tag> : <Tag>planned</Tag> },
-          { title: 'Provision', render: (_, row) => templateProvisionStatus(row) },
-          { title: 'Reconcile', render: (_, row) => templateProvisionGuidanceView(row, true) },
-          { title: 'RepoSync', render: (_, row) => row.result?.repo_sync_asset_id ? <Tag color="green">created</Tag> : <Tag>planned</Tag> },
-          { title: 'Files', render: (_, row) => Array.isArray(row.result?.template_file_ids) ? <Tag color="green">{row.result.template_file_ids.length}</Tag> : <Tag>planned</Tag> },
-          { title: 'Steps', render: (_, row) => Array.isArray(row.steps) ? `${row.steps.filter((step: AnyRow) => step.status === 'completed').length}/${row.steps.length}` : '-' },
-          { title: 'Error', render: (_, row) => templateRunErrorText(row) },
-          { title: 'Created', dataIndex: 'created_at' },
-          { title: 'Action', render: (_, row) => {
-            const guidance = templateProvisionGuidance(row);
+          { title: t('common.project'), dataIndex: 'project_name' },
+          { title: t('template.useTemplate'), dataIndex: 'template_name' },
+          { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : row.status === 'running' || row.status === 'provisioning' ? 'blue' : 'gold'}>{translatedValue(row.status, t)}</Tag> },
+          { title: t('common.repository'), render: (_, row) => row.result?.repository_id ? <Tag color="green">{t('common.created')}</Tag> : <Tag>{translatedValue('planned', t)}</Tag> },
+          { title: t('template.provision'), render: (_, row) => templateProvisionStatus(row, t) },
+          { title: t('template.reconcile'), render: (_, row) => templateProvisionGuidanceView(row, t, true) },
+          { title: t('template.repoSync'), render: (_, row) => row.result?.repo_sync_asset_id ? <Tag color="green">{t('common.created')}</Tag> : <Tag>{translatedValue('planned', t)}</Tag> },
+          { title: t('common.files'), render: (_, row) => Array.isArray(row.result?.template_file_ids) ? <Tag color="green">{row.result.template_file_ids.length}</Tag> : <Tag>{translatedValue('planned', t)}</Tag> },
+          { title: t('template.steps'), render: (_, row) => Array.isArray(row.steps) ? `${row.steps.filter((step: AnyRow) => step.status === 'completed').length}/${row.steps.length}` : '-' },
+          { title: t('common.error'), render: (_, row) => templateRunErrorText(row) },
+          { title: t('common.created'), dataIndex: 'created_at' },
+          { title: t('common.action'), render: (_, row) => {
+            const guidance = templateProvisionGuidance(row, t);
             return (
               <Space>
-                {canRetryTemplateProvision(row) ? <Button size="small" title={templateProvisionRetryTitle(row)} onClick={() => retryTemplateProvision(row)}>Retry provision</Button> : null}
-                {guidance.executionRequestStatus === 'approval_ready' ? <Button size="small" loading={requestingReviewID === row.id} disabled={Boolean(requestingReviewID)} onClick={() => requestProviderReviewExecution(row)}>Request review</Button> : null}
+                {canRetryTemplateProvision(row) ? <Button size="small" title={templateProvisionRetryTitle(row)} onClick={() => retryTemplateProvision(row)}>{t('template.retryProvision')}</Button> : null}
+                {guidance.executionRequestStatus === 'approval_ready' ? <Button size="small" loading={requestingReviewID === row.id} disabled={Boolean(requestingReviewID)} onClick={() => requestProviderReviewExecution(row)}>{t('template.requestReview')}</Button> : null}
                 {!canRetryTemplateProvision(row) && guidance.executionRequestStatus !== 'approval_ready' ? '-' : null}
               </Space>
             );
@@ -4237,8 +4460,8 @@ function Projects() {
   );
 }
 
-function templateProvisionStatus(row: AnyRow) {
-  const summary = templateProvisionSummary(row);
+function templateProvisionStatus(row: AnyRow, t: (key: string) => string = createTranslator('en')) {
+  const summary = templateProvisionSummary(row, t);
   return (
     <Space size={4} wrap>
       <Tag color={summary.color}>{summary.label}</Tag>
@@ -4247,15 +4470,15 @@ function templateProvisionStatus(row: AnyRow) {
   );
 }
 
-function templateProvisionGuidanceView(row: AnyRow, compact = false) {
-  const guidance = templateProvisionGuidance(row);
+function templateProvisionGuidanceView(row: AnyRow, t: (key: string) => string = createTranslator('en'), compact = false) {
+  const guidance = templateProvisionGuidance(row, t);
   if (compact) {
     return (
       <Space direction="vertical" size={2}>
         <Space size={4} wrap>
           <Tag color={guidance.color}>{guidance.status}</Tag>
-          {guidance.reviewStatus ? <Tag>{guidance.reviewStatus}</Tag> : null}
-          {guidance.reviewPlanMode ? <Tag color="blue">{guidance.reviewPlanMode}</Tag> : null}
+          {guidance.reviewStatus ? <Tag>{translatedValue(guidance.reviewStatus, t)}</Tag> : null}
+          {guidance.reviewPlanMode ? <Tag color="blue">{translatedValue(guidance.reviewPlanMode, t)}</Tag> : null}
         </Space>
         <Typography.Text type="secondary">{shortText(guidance.next, 96)}</Typography.Text>
       </Space>
@@ -4268,49 +4491,49 @@ function templateProvisionGuidanceView(row: AnyRow, compact = false) {
       message={guidance.title}
       description={<Space direction="vertical" size={4}>
         <Typography.Text>{guidance.detail}</Typography.Text>
-        {guidance.reviewStatus ? <Space size={4} wrap><Tag>{guidance.reviewStatus}</Tag><Tag>provider execution: {guidance.reviewExecution}</Tag></Space> : null}
-        {guidance.reviewPlanMode ? <TemplateProviderReviewPlan guidance={guidance} /> : null}
+        {guidance.reviewStatus ? <Space size={4} wrap><Tag>{translatedValue(guidance.reviewStatus, t)}</Tag><Tag>{t('template.providerExecution')}: {translatedValue(guidance.reviewExecution, t)}</Tag></Space> : null}
+        {guidance.reviewPlanMode ? <TemplateProviderReviewPlan guidance={guidance} t={t} /> : null}
         <Typography.Text strong>{guidance.next}</Typography.Text>
       </Space>}
     />
   );
 }
 
-function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionGuidance }) {
+function TemplateProviderReviewPlan({ guidance, t }: { guidance: TemplateProvisionGuidance; t: (key: string) => string }) {
   const requestColor = guidance.executionRequestStatus === 'approval_ready' ? 'green' : guidance.executionRequestStatus === 'blocked' ? 'gold' : 'default';
   const apiPlanColor = guidance.apiPlanStatus === 'ready' ? 'green' : guidance.apiPlanStatus === 'blocked' ? 'gold' : 'default';
   return (
     <Space direction="vertical" size={4}>
       <Space size={4} wrap>
-        <Tag color="blue">{guidance.reviewPlanMode}</Tag>
-        {guidance.reviewKind ? <Tag>{guidance.reviewKind}</Tag> : null}
-        {guidance.approvalAction ? <Tag>{guidance.approvalAction}</Tag> : null}
-        {guidance.guardrailMode ? <Tag color="gold">guardrail {guidance.guardrailMode.replaceAll('_', ' ')}</Tag> : null}
-        {guidance.executionRequestStatus ? <Tag color={requestColor}>request {guidance.executionRequestStatus.replaceAll('_', ' ')}</Tag> : null}
-        {guidance.apiPlanStatus ? <Tag color={apiPlanColor}>api plan {guidance.apiPlanStatus}</Tag> : null}
+        <Tag color="blue">{translatedValue(guidance.reviewPlanMode, t)}</Tag>
+        {guidance.reviewKind ? <Tag>{translatedValue(guidance.reviewKind, t)}</Tag> : null}
+        {guidance.approvalAction ? <Tag>{translatedValue(guidance.approvalAction, t)}</Tag> : null}
+        {guidance.guardrailMode ? <Tag color="gold">{t('template.guardrail')} {translatedValue(guidance.guardrailMode, t)}</Tag> : null}
+        {guidance.executionRequestStatus ? <Tag color={requestColor}>{t('template.request')} {translatedValue(guidance.executionRequestStatus, t)}</Tag> : null}
+        {guidance.apiPlanStatus ? <Tag color={apiPlanColor}>{t('template.apiPlan')} {translatedValue(guidance.apiPlanStatus, t)}</Tag> : null}
       </Space>
       {guidance.sourceBranch || guidance.targetBranch ? (
         <Typography.Text type="secondary">{guidance.sourceBranch || '-'} -&gt; {guidance.targetBranch || '-'}</Typography.Text>
       ) : null}
       {guidance.executionRequestResource ? (
-        <Typography.Text type="secondary">Resource: {guidance.executionRequestResource}</Typography.Text>
+        <Typography.Text type="secondary">{t('template.resource')}: {translatedValue(guidance.executionRequestResource, t)}</Typography.Text>
       ) : null}
       {guidance.guardrailGates.length ? (
         <Space size={4} wrap>
           {guidance.guardrailGates.map((gate, index) => (
             <Tag key={`${gate.gate || 'gate'}-${index}`} color={gate.status === 'ready' ? 'green' : 'gold'}>
-              {String(gate.gate || 'gate')}: {String(gate.status || 'unknown')}
+              {translatedValue(String(gate.gate || 'gate'), t)}: {translatedValue(String(gate.status || 'unknown'), t)}
             </Tag>
           ))}
         </Space>
       ) : null}
       {guidance.guardrailReasons.length ? (
-        <Typography.Text type="secondary">{shortText(`Blocked: ${guidance.guardrailReasons.join(', ')}`, 120)}</Typography.Text>
+        <Typography.Text type="secondary">{shortText(`${t('template.blocked')}: ${guidance.guardrailReasons.join(', ')}`, 120)}</Typography.Text>
       ) : null}
       {guidance.apiPlanOperations.length ? (
         <Space size={4} wrap>
-          {guidance.apiPlanMode ? <Tag>{guidance.apiPlanMode.replaceAll('_', ' ')}</Tag> : null}
-          <Tag>files {guidance.apiPlanFileCount}</Tag>
+          {guidance.apiPlanMode ? <Tag>{translatedValue(guidance.apiPlanMode, t)}</Tag> : null}
+          <Tag>{t('common.files')} {guidance.apiPlanFileCount}</Tag>
           {guidance.apiPlanOperations.map((operation, index) => (
             <Tag key={String(operation.endpoint_key || operation.name || `api-${index}`)} color={operation.api_call === true ? 'red' : 'default'}>
               {String(operation.endpoint_key || operation.name || 'provider.api')}: {String(operation.payload_shape || operation.method || 'redacted')}
@@ -4322,7 +4545,7 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
         <Space size={4} wrap>
           {guidance.reviewSteps.map((step, index) => (
             <Tag key={`${step.name || 'step'}-${index}`} color={step.api_call === true ? 'red' : 'default'}>
-              {String(step.name || 'step')}: {String(step.status || 'planned')}
+              {translatedValue(String(step.name || 'step'), t)}: {translatedValue(String(step.status || 'planned'), t)}
             </Tag>
           ))}
         </Space>
@@ -4331,7 +4554,8 @@ function TemplateProviderReviewPlan({ guidance }: { guidance: TemplateProvisionG
   );
 }
 
-function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onRecordAttemptSnapshot, onRecordAttemptCredentialSnapshot, onRecordAttemptBranchPolicySnapshot, onRecordAttemptRuntimeSnapshot, onRecordAttemptAdapterRehearsalSnapshot, onRecordAttemptAdapterBlueprintSnapshot, onRecordAttemptLiveAdapterContractSnapshot, onRecordAttemptInvocationSnapshot, onRecordAttemptExecutionLockSnapshot, onRecordAttemptRequestEnvelopeSnapshot, onRecordAttemptIdempotencySnapshot, onRecordAttemptRequestValidationSnapshot, onRecordAttemptRequestMaterializationSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptTransportSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptRetryBackoffSnapshot, onRecordAttemptResponseSnapshot, onRecordAttemptResultRecordingSnapshot, onRecordAttemptProviderCallBoundarySnapshot, onRecordAttemptTransactionSnapshot, onRecordAttemptLiveExecutionReadinessSnapshot, onRecordAttemptLiveExecutionGuardSnapshot, onCheckAttemptLiveExecutionPreflight, onCheckAttemptLiveExecutionLaunchPlan, onRecordCurrentAttemptLiveReadinessSnapshot, onCheckCurrentAttemptLiveExecutionLaunchPlan, onCheckCurrentLiveExecutionGate, onRecordArmingSnapshot, canRecordCurrentAttemptLiveReadinessSnapshot, canCheckCurrentAttemptLiveExecutionLaunchPlan, canCheckCurrentLiveExecutionGate, canRecordArmingSnapshot, claimLoading, resultLoading, snapshotLoading, credentialSnapshotLoading, branchPolicySnapshotLoading, runtimeSnapshotLoading, adapterRehearsalSnapshotLoading, adapterBlueprintSnapshotLoading, liveAdapterContractSnapshotLoading, invocationSnapshotLoading, executionLockSnapshotLoading, requestEnvelopeSnapshotLoading, idempotencySnapshotLoading, requestValidationSnapshotLoading, requestMaterializationSnapshotLoading, activationSnapshotLoading, transportSnapshotLoading, sendSnapshotLoading, retryBackoffSnapshotLoading, responseSnapshotLoading, resultRecordingSnapshotLoading, providerCallBoundarySnapshotLoading, transactionSnapshotLoading, liveExecutionReadinessSnapshotLoading, liveExecutionGuardSnapshotLoading, liveExecutionPreflightLoading, liveExecutionLaunchPlanLoading, currentLiveReadinessSnapshotLoading, currentLiveExecutionLaunchPlanLoading, currentLiveExecutionGateLoading, armingSnapshotLoading, snapshotResult, credentialSnapshotResult, branchPolicySnapshotResult, runtimeSnapshotResult, adapterRehearsalSnapshotResult, adapterBlueprintSnapshotResult, liveAdapterContractSnapshotResult, invocationSnapshotResult, executionLockSnapshotResult, requestEnvelopeSnapshotResult, idempotencySnapshotResult, requestValidationSnapshotResult, requestMaterializationSnapshotResult, activationSnapshotResult, transportSnapshotResult, sendSnapshotResult, retryBackoffSnapshotResult, responseSnapshotResult, resultRecordingSnapshotResult, providerCallBoundarySnapshotResult, transactionSnapshotResult, liveExecutionReadinessSnapshotResult, liveExecutionGuardSnapshotResult, liveExecutionPreflightResult, liveExecutionLaunchPlanResult, currentLiveReadinessSnapshotResult, currentLiveExecutionLaunchPlanResult, currentLiveExecutionGateResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptCredentialSnapshot?: (id: string) => void; onRecordAttemptBranchPolicySnapshot?: (id: string) => void; onRecordAttemptRuntimeSnapshot?: (id: string) => void; onRecordAttemptAdapterRehearsalSnapshot?: (id: string) => void; onRecordAttemptAdapterBlueprintSnapshot?: (id: string) => void; onRecordAttemptLiveAdapterContractSnapshot?: (id: string) => void; onRecordAttemptInvocationSnapshot?: (id: string) => void; onRecordAttemptExecutionLockSnapshot?: (id: string) => void; onRecordAttemptRequestEnvelopeSnapshot?: (id: string) => void; onRecordAttemptIdempotencySnapshot?: (id: string) => void; onRecordAttemptRequestValidationSnapshot?: (id: string) => void; onRecordAttemptRequestMaterializationSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptTransportSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptRetryBackoffSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordAttemptResultRecordingSnapshot?: (id: string) => void; onRecordAttemptProviderCallBoundarySnapshot?: (id: string) => void; onRecordAttemptTransactionSnapshot?: (id: string) => void; onRecordAttemptLiveExecutionReadinessSnapshot?: (id: string) => void; onRecordAttemptLiveExecutionGuardSnapshot?: (id: string) => void; onCheckAttemptLiveExecutionPreflight?: (id: string) => void; onCheckAttemptLiveExecutionLaunchPlan?: (id: string) => void; onRecordCurrentAttemptLiveReadinessSnapshot?: () => void; onCheckCurrentAttemptLiveExecutionLaunchPlan?: () => void; onCheckCurrentLiveExecutionGate?: () => void; onRecordArmingSnapshot?: () => void; canRecordCurrentAttemptLiveReadinessSnapshot?: boolean; canCheckCurrentAttemptLiveExecutionLaunchPlan?: boolean; canCheckCurrentLiveExecutionGate?: boolean; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; snapshotLoading?: boolean; credentialSnapshotLoading?: boolean; branchPolicySnapshotLoading?: boolean; runtimeSnapshotLoading?: boolean; adapterRehearsalSnapshotLoading?: boolean; adapterBlueprintSnapshotLoading?: boolean; liveAdapterContractSnapshotLoading?: boolean; invocationSnapshotLoading?: boolean; executionLockSnapshotLoading?: boolean; requestEnvelopeSnapshotLoading?: boolean; idempotencySnapshotLoading?: boolean; requestValidationSnapshotLoading?: boolean; requestMaterializationSnapshotLoading?: boolean; activationSnapshotLoading?: boolean; transportSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; retryBackoffSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; resultRecordingSnapshotLoading?: boolean; providerCallBoundarySnapshotLoading?: boolean; transactionSnapshotLoading?: boolean; liveExecutionReadinessSnapshotLoading?: boolean; liveExecutionGuardSnapshotLoading?: boolean; liveExecutionPreflightLoading?: boolean; liveExecutionLaunchPlanLoading?: boolean; currentLiveReadinessSnapshotLoading?: boolean; currentLiveExecutionLaunchPlanLoading?: boolean; currentLiveExecutionGateLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; credentialSnapshotResult?: AnyRow; branchPolicySnapshotResult?: AnyRow; runtimeSnapshotResult?: AnyRow; adapterRehearsalSnapshotResult?: AnyRow; adapterBlueprintSnapshotResult?: AnyRow; liveAdapterContractSnapshotResult?: AnyRow; invocationSnapshotResult?: AnyRow; executionLockSnapshotResult?: AnyRow; requestEnvelopeSnapshotResult?: AnyRow; idempotencySnapshotResult?: AnyRow; requestValidationSnapshotResult?: AnyRow; requestMaterializationSnapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; transportSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; retryBackoffSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; resultRecordingSnapshotResult?: AnyRow; providerCallBoundarySnapshotResult?: AnyRow; transactionSnapshotResult?: AnyRow; liveExecutionReadinessSnapshotResult?: AnyRow; liveExecutionGuardSnapshotResult?: AnyRow; liveExecutionPreflightResult?: AnyRow; liveExecutionLaunchPlanResult?: AnyRow; currentLiveReadinessSnapshotResult?: AnyRow; currentLiveExecutionLaunchPlanResult?: AnyRow; currentLiveExecutionGateResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string }) {
+function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAttempt, onRecordAttemptResult, onExecuteAttemptLive, onCleanupAttemptLive, onRecordAttemptSnapshot, onRecordAttemptCredentialSnapshot, onRecordAttemptBranchPolicySnapshot, onRecordAttemptRuntimeSnapshot, onRecordAttemptAdapterRehearsalSnapshot, onRecordAttemptAdapterBlueprintSnapshot, onRecordAttemptLiveAdapterContractSnapshot, onRecordAttemptInvocationSnapshot, onRecordAttemptExecutionLockSnapshot, onRecordAttemptRequestEnvelopeSnapshot, onRecordAttemptIdempotencySnapshot, onRecordAttemptRequestValidationSnapshot, onRecordAttemptRequestMaterializationSnapshot, onRecordAttemptActivationSnapshot, onRecordAttemptTransportSnapshot, onRecordAttemptSendSnapshot, onRecordAttemptRetryBackoffSnapshot, onRecordAttemptResponseSnapshot, onRecordAttemptResultRecordingSnapshot, onRecordAttemptProviderCallBoundarySnapshot, onRecordAttemptTransactionSnapshot, onRecordAttemptLiveExecutionReadinessSnapshot, onRecordAttemptLiveExecutionGuardSnapshot, onCheckAttemptLiveExecutionPreflight, onCheckAttemptLiveExecutionLaunchPlan, onRecordCurrentAttemptLiveReadinessSnapshot, onCheckCurrentAttemptLiveExecutionLaunchPlan, onCheckCurrentLiveExecutionGate, onRecordArmingSnapshot, canRecordCurrentAttemptLiveReadinessSnapshot, canCheckCurrentAttemptLiveExecutionLaunchPlan, canCheckCurrentLiveExecutionGate, canRecordArmingSnapshot, claimLoading, resultLoading, liveExecuteLoading, liveCleanupLoading, snapshotLoading, credentialSnapshotLoading, branchPolicySnapshotLoading, runtimeSnapshotLoading, adapterRehearsalSnapshotLoading, adapterBlueprintSnapshotLoading, liveAdapterContractSnapshotLoading, invocationSnapshotLoading, executionLockSnapshotLoading, requestEnvelopeSnapshotLoading, idempotencySnapshotLoading, requestValidationSnapshotLoading, requestMaterializationSnapshotLoading, activationSnapshotLoading, transportSnapshotLoading, sendSnapshotLoading, retryBackoffSnapshotLoading, responseSnapshotLoading, resultRecordingSnapshotLoading, providerCallBoundarySnapshotLoading, transactionSnapshotLoading, liveExecutionReadinessSnapshotLoading, liveExecutionGuardSnapshotLoading, liveExecutionPreflightLoading, liveExecutionLaunchPlanLoading, currentLiveReadinessSnapshotLoading, currentLiveExecutionLaunchPlanLoading, currentLiveExecutionGateLoading, armingSnapshotLoading, snapshotResult, credentialSnapshotResult, branchPolicySnapshotResult, runtimeSnapshotResult, adapterRehearsalSnapshotResult, adapterBlueprintSnapshotResult, liveAdapterContractSnapshotResult, invocationSnapshotResult, executionLockSnapshotResult, requestEnvelopeSnapshotResult, idempotencySnapshotResult, requestValidationSnapshotResult, requestMaterializationSnapshotResult, activationSnapshotResult, transportSnapshotResult, sendSnapshotResult, retryBackoffSnapshotResult, responseSnapshotResult, resultRecordingSnapshotResult, providerCallBoundarySnapshotResult, transactionSnapshotResult, liveExecutionReadinessSnapshotResult, liveExecutionGuardSnapshotResult, liveExecutionPreflightResult, liveExecutionLaunchPlanResult, liveExecutionResult, liveCleanupResult, currentLiveReadinessSnapshotResult, currentLiveExecutionLaunchPlanResult, currentLiveExecutionGateResult, armingSnapshotResult, optimisticallyClaimedAttemptID, optimisticallyRecordedAttemptID, optimisticallyLiveExecutedAttemptID, optimisticallyLiveCleanedAttemptID }: { value?: AnyRow; persistedAttemptLedger?: AnyRow; onClaimAttempt?: (id: string) => void; onRecordAttemptResult?: (id: string, result: 'success' | 'retryable' | 'failed') => void; onExecuteAttemptLive?: (id: string) => void; onCleanupAttemptLive?: (id: string) => void; onRecordAttemptSnapshot?: (id: string) => void; onRecordAttemptCredentialSnapshot?: (id: string) => void; onRecordAttemptBranchPolicySnapshot?: (id: string) => void; onRecordAttemptRuntimeSnapshot?: (id: string) => void; onRecordAttemptAdapterRehearsalSnapshot?: (id: string) => void; onRecordAttemptAdapterBlueprintSnapshot?: (id: string) => void; onRecordAttemptLiveAdapterContractSnapshot?: (id: string) => void; onRecordAttemptInvocationSnapshot?: (id: string) => void; onRecordAttemptExecutionLockSnapshot?: (id: string) => void; onRecordAttemptRequestEnvelopeSnapshot?: (id: string) => void; onRecordAttemptIdempotencySnapshot?: (id: string) => void; onRecordAttemptRequestValidationSnapshot?: (id: string) => void; onRecordAttemptRequestMaterializationSnapshot?: (id: string) => void; onRecordAttemptActivationSnapshot?: (id: string) => void; onRecordAttemptTransportSnapshot?: (id: string) => void; onRecordAttemptSendSnapshot?: (id: string) => void; onRecordAttemptRetryBackoffSnapshot?: (id: string) => void; onRecordAttemptResponseSnapshot?: (id: string) => void; onRecordAttemptResultRecordingSnapshot?: (id: string) => void; onRecordAttemptProviderCallBoundarySnapshot?: (id: string) => void; onRecordAttemptTransactionSnapshot?: (id: string) => void; onRecordAttemptLiveExecutionReadinessSnapshot?: (id: string) => void; onRecordAttemptLiveExecutionGuardSnapshot?: (id: string) => void; onCheckAttemptLiveExecutionPreflight?: (id: string) => void; onCheckAttemptLiveExecutionLaunchPlan?: (id: string) => void; onRecordCurrentAttemptLiveReadinessSnapshot?: () => void; onCheckCurrentAttemptLiveExecutionLaunchPlan?: () => void; onCheckCurrentLiveExecutionGate?: () => void; onRecordArmingSnapshot?: () => void; canRecordCurrentAttemptLiveReadinessSnapshot?: boolean; canCheckCurrentAttemptLiveExecutionLaunchPlan?: boolean; canCheckCurrentLiveExecutionGate?: boolean; canRecordArmingSnapshot?: boolean; claimLoading?: boolean; resultLoading?: boolean; liveExecuteLoading?: boolean; liveCleanupLoading?: boolean; snapshotLoading?: boolean; credentialSnapshotLoading?: boolean; branchPolicySnapshotLoading?: boolean; runtimeSnapshotLoading?: boolean; adapterRehearsalSnapshotLoading?: boolean; adapterBlueprintSnapshotLoading?: boolean; liveAdapterContractSnapshotLoading?: boolean; invocationSnapshotLoading?: boolean; executionLockSnapshotLoading?: boolean; requestEnvelopeSnapshotLoading?: boolean; idempotencySnapshotLoading?: boolean; requestValidationSnapshotLoading?: boolean; requestMaterializationSnapshotLoading?: boolean; activationSnapshotLoading?: boolean; transportSnapshotLoading?: boolean; sendSnapshotLoading?: boolean; retryBackoffSnapshotLoading?: boolean; responseSnapshotLoading?: boolean; resultRecordingSnapshotLoading?: boolean; providerCallBoundarySnapshotLoading?: boolean; transactionSnapshotLoading?: boolean; liveExecutionReadinessSnapshotLoading?: boolean; liveExecutionGuardSnapshotLoading?: boolean; liveExecutionPreflightLoading?: boolean; liveExecutionLaunchPlanLoading?: boolean; currentLiveReadinessSnapshotLoading?: boolean; currentLiveExecutionLaunchPlanLoading?: boolean; currentLiveExecutionGateLoading?: boolean; armingSnapshotLoading?: boolean; snapshotResult?: AnyRow; credentialSnapshotResult?: AnyRow; branchPolicySnapshotResult?: AnyRow; runtimeSnapshotResult?: AnyRow; adapterRehearsalSnapshotResult?: AnyRow; adapterBlueprintSnapshotResult?: AnyRow; liveAdapterContractSnapshotResult?: AnyRow; invocationSnapshotResult?: AnyRow; executionLockSnapshotResult?: AnyRow; requestEnvelopeSnapshotResult?: AnyRow; idempotencySnapshotResult?: AnyRow; requestValidationSnapshotResult?: AnyRow; requestMaterializationSnapshotResult?: AnyRow; activationSnapshotResult?: AnyRow; transportSnapshotResult?: AnyRow; sendSnapshotResult?: AnyRow; retryBackoffSnapshotResult?: AnyRow; responseSnapshotResult?: AnyRow; resultRecordingSnapshotResult?: AnyRow; providerCallBoundarySnapshotResult?: AnyRow; transactionSnapshotResult?: AnyRow; liveExecutionReadinessSnapshotResult?: AnyRow; liveExecutionGuardSnapshotResult?: AnyRow; liveExecutionPreflightResult?: AnyRow; liveExecutionLaunchPlanResult?: AnyRow; liveExecutionResult?: AnyRow; liveCleanupResult?: AnyRow; currentLiveReadinessSnapshotResult?: AnyRow; currentLiveExecutionLaunchPlanResult?: AnyRow; currentLiveExecutionGateResult?: AnyRow; armingSnapshotResult?: AnyRow; optimisticallyClaimedAttemptID?: string; optimisticallyRecordedAttemptID?: string; optimisticallyLiveExecutedAttemptID?: string; optimisticallyLiveCleanedAttemptID?: string }) {
+  const { t } = useI18n();
   if (!value || value.kind !== 'project_template_provider_review_execute') return null;
   const request = value.execution_request || {};
   const guardrail = value.execution_guardrail || {};
@@ -4430,8 +4654,18 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
   const resultRecordableAttemptID = String(resultRecordableAttempt?.id || '');
   const resultRecordablePlan = resultRecordableAttempt?.result_recording_plan || {};
   const resultOptimistic = Boolean(resultRecordableAttemptID) && optimisticallyRecordedAttemptID === resultRecordableAttemptID;
+  const liveExecuteOptimistic = Boolean(resultRecordableAttemptID) && optimisticallyLiveExecutedAttemptID === resultRecordableAttemptID;
+  const cleanupableAttempt = attemptOperations.find((operation: AnyRow) =>
+    String(operation.status || '') === 'failed' &&
+    operation.cleanup_required === true &&
+    String(operation.manual_cleanup_hint || '') === 'review_branch_delete_required'
+  );
+  const cleanupableAttemptID = String(cleanupableAttempt?.id || '');
+  const liveCleanupOptimistic = Boolean(cleanupableAttemptID) && optimisticallyLiveCleanedAttemptID === cleanupableAttemptID;
   const canClaimAttempt = Boolean(claimableAttemptID) && attemptClaimPlan.claim_metadata_ready === true && attemptClaimPlan.claim_recorded !== true && !claimOptimistic;
   const canRecordAttemptResult = Boolean(resultRecordableAttemptID) && resultRecordablePlan.result_recording_metadata_ready === true && !resultOptimistic;
+  const canExecuteAttemptLive = Boolean(resultRecordableAttemptID) && !liveExecuteOptimistic && !liveExecuteLoading;
+  const canCleanupAttemptLive = Boolean(cleanupableAttemptID) && !liveCleanupOptimistic && !liveCleanupLoading;
   const claimBlockedReason = claimOptimistic
     ? 'claim already requested'
     : attemptClaimPlan.claim_recorded === true
@@ -4445,6 +4679,16 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
       ? 'claim a running attempt first'
       : resultRecordablePlan.result_recording_metadata_ready !== true
         ? String((Array.isArray(resultRecordablePlan.blocked_reasons) && resultRecordablePlan.blocked_reasons[0]) || 'result metadata not ready')
+      : '';
+  const liveExecuteBlockedReason = liveExecuteOptimistic
+    ? t('providerReview.liveExecutionAlreadyRequested')
+    : !resultRecordableAttemptID
+      ? t('providerReview.claimRunningAttemptFirst')
+      : '';
+  const liveCleanupBlockedReason = liveCleanupOptimistic
+    ? t('providerReview.cleanupAlreadyRequested')
+    : !cleanupableAttemptID
+      ? t('providerReview.cleanupNotRequired')
       : '';
   return (
     <Space direction="vertical" size={8} className="full">
@@ -5214,6 +5458,30 @@ function ProviderReviewApprovalAudit({ value, persistedAttemptLedger, onClaimAtt
               </Button>
             </Tooltip>
           ) : null}
+          {onExecuteAttemptLive ? (
+            <Tooltip title={!canExecuteAttemptLive ? liveExecuteBlockedReason : ''}>
+              <Button size="small" type="primary" loading={liveExecuteLoading && liveExecuteOptimistic} disabled={!canExecuteAttemptLive} onClick={() => onExecuteAttemptLive(resultRecordableAttemptID)}>
+                {t('providerReview.executeLive')}
+              </Button>
+            </Tooltip>
+          ) : null}
+          {liveExecutionResult?.execution_state ? (
+            <Tag color={liveExecutionResult.execution_state === 'executed' ? 'green' : 'gold'}>
+              {t('common.live')} {translatedValue(liveExecutionResult.execution_state, t)}
+            </Tag>
+          ) : null}
+          {onCleanupAttemptLive ? (
+            <Tooltip title={!canCleanupAttemptLive ? liveCleanupBlockedReason : ''}>
+              <Button size="small" loading={liveCleanupLoading && liveCleanupOptimistic} disabled={!canCleanupAttemptLive} onClick={() => onCleanupAttemptLive(cleanupableAttemptID)}>
+                {t('providerReview.cleanupLive')}
+              </Button>
+            </Tooltip>
+          ) : null}
+          {liveCleanupResult?.live_cleanup_state ? (
+            <Tag color={liveCleanupResult.live_cleanup_success === true ? 'green' : 'gold'}>
+              {translatedValue(liveCleanupResult.live_cleanup_state, t)}
+            </Tag>
+          ) : null}
         </Space>
       ) : null}
       {attemptDispatchPlan.mode ? (
@@ -5556,21 +5824,22 @@ function templateRunErrorText(row: AnyRow) {
 }
 
 function TemplateDetailModal({ template, open, setOpen }: { template?: AnyRow; open: boolean; setOpen: (v: boolean) => void }) {
+  const { t } = useI18n();
   const detail = useLoad(() => open && template ? api(`/api/project-templates/${template.id}`) : Promise.resolve({}), [open, template?.id]);
   const row = detail.data || template;
   return (
-    <Modal title={row?.name || 'Project template'} open={open} onCancel={() => setOpen(false)} footer={null} width={900} destroyOnHidden>
+    <Modal title={row?.name || t('title.projectTemplates')} open={open} onCancel={() => setOpen(false)} footer={null} width={900} destroyOnHidden>
       {row && <Space direction="vertical" size={16} className="full">
         <Space wrap>
           <Tag>{row.slug}</Tag>
           <Tag>{row.version}</Tag>
-          <Tag color={row.status === 'active' ? 'green' : 'default'}>{row.status}</Tag>
+          <Tag color={row.status === 'active' ? 'green' : 'default'}>{translatedValue(row.status, t)}</Tag>
         </Space>
         <Typography.Paragraph>{row.description}</Typography.Paragraph>
         <Tabs items={[
-          { key: 'defaults', label: 'Defaults', children: <JSONBlock value={row.defaults} /> },
-          { key: 'steps', label: 'Steps', children: <JSONBlock value={row.steps} /> },
-          { key: 'metadata', label: 'Metadata', children: <JSONBlock value={row.metadata} /> }
+          { key: 'defaults', label: t('template.defaults'), children: <JSONBlock value={row.defaults} /> },
+          { key: 'steps', label: t('template.steps'), children: <JSONBlock value={row.steps} /> },
+          { key: 'metadata', label: t('common.metadata'), children: <JSONBlock value={row.metadata} /> }
         ]} />
       </Space>}
     </Modal>
@@ -5578,6 +5847,7 @@ function TemplateDetailModal({ template, open, setOpen }: { template?: AnyRow; o
 }
 
 function TemplateUseModal({ template, open, setOpen, onSubmit }: { template?: AnyRow; open: boolean; setOpen: (v: boolean) => void; onSubmit: (values: AnyRow) => Promise<any> }) {
+  const { t } = useI18n();
   const [form] = Form.useForm();
   const [preview, setPreview] = useState<AnyRow>();
   const [loading, setLoading] = useState(false);
@@ -5615,47 +5885,47 @@ function TemplateUseModal({ template, open, setOpen, onSubmit }: { template?: An
       setPreview(undefined);
       form.resetFields();
     } catch (error: any) {
-      message.error(error instanceof SyntaxError ? 'Invalid JSON in parameters' : error.message);
+      message.error(error instanceof SyntaxError ? t('template.invalidParametersJson') : error.message);
     }
   }
   return (
-    <Modal title={`Use template${template ? `: ${template.name}` : ''}`} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} width={980} destroyOnHidden>
+    <Modal title={`${t('template.useTemplate')}${template ? `: ${template.name}` : ''}`} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} width={980} destroyOnHidden>
       <Space direction="vertical" size={16} className="full">
         <Form form={form} layout="vertical" onFinish={submitTemplate}>
-          <Form.Item name="name" label="name" rules={fieldRules('name')}>
+          <Form.Item name="name" label={t('common.name')} rules={fieldRules('name')}>
             <Input />
           </Form.Item>
-          <Form.Item name="slug" label="slug">
+          <Form.Item name="slug" label={t('field.slug')}>
             <Input />
           </Form.Item>
-          <Form.Item name="description" label="description">
+          <Form.Item name="description" label={t('common.description')}>
             <Input />
           </Form.Item>
           <Space size={12} className="full" wrap>
-            <Form.Item name="gitea_provider_account_id" label="Gitea account" className="templateAccountField">
-              <Select allowClear options={rowOptions(giteaAccounts)} placeholder="Source account" disabled={!giteaAccounts.length} />
+            <Form.Item name="gitea_provider_account_id" label={t('template.giteaAccount')} className="templateAccountField">
+              <Select allowClear options={rowOptions(giteaAccounts)} placeholder={t('template.sourceAccount')} disabled={!giteaAccounts.length} />
             </Form.Item>
-            <Form.Item name="github_provider_account_id" label="GitHub account" className="templateAccountField">
-              <Select allowClear options={rowOptions(githubAccounts)} placeholder="Mirror account" disabled={!githubAccounts.length} />
+            <Form.Item name="github_provider_account_id" label={t('template.githubAccount')} className="templateAccountField">
+              <Select allowClear options={rowOptions(githubAccounts)} placeholder={t('template.mirrorAccount')} disabled={!githubAccounts.length} />
             </Form.Item>
           </Space>
-          <Form.Item name="parameters_json" label="parameters">
+          <Form.Item name="parameters_json" label={t('template.parameters')}>
             <Input.TextArea autoSize={{ minRows: 6, maxRows: 12 }} placeholder='{"remotes":[{"remote_key":"gitea","provider_type":"gitea","remote_url":"git@example.com:org/repo.git"}],"repo_sync":{"source_remote_key":"gitea","target_remote_key":"github"}}' />
           </Form.Item>
-          <Button onClick={() => runPreview(form.getFieldsValue())} loading={loading}>Preview</Button>
+          <Button onClick={() => runPreview(form.getFieldsValue())} loading={loading}>{t('template.preview')}</Button>
         </Form>
         {preview && <Tabs items={[
-          { key: 'summary', label: 'Summary', children: <Space direction="vertical" size={8}>
-            <Typography.Text>Project: {preview.project?.name} / {preview.project?.slug}</Typography.Text>
-            <Typography.Text>Repository: {preview.repository?.repo_key} ({preview.repository?.default_branch})</Typography.Text>
-            <Typography.Text>Remotes: {Array.isArray(preview.remotes) ? preview.remotes.length : 0}</Typography.Text>
-            <Typography.Text>RepoSync: <Tag>{preview.repo_sync?.status}</Tag> {preview.repo_sync?.reason}</Typography.Text>
-            <Typography.Text>Files: {Array.isArray(preview.files) ? preview.files.length : 0}</Typography.Text>
+          { key: 'summary', label: t('common.summary'), children: <Space direction="vertical" size={8}>
+            <Typography.Text>{t('common.project')}: {preview.project?.name} / {preview.project?.slug}</Typography.Text>
+            <Typography.Text>{t('common.repository')}: {preview.repository?.repo_key} ({preview.repository?.default_branch})</Typography.Text>
+            <Typography.Text>{t('template.remotes')}: {Array.isArray(preview.remotes) ? preview.remotes.length : 0}</Typography.Text>
+            <Typography.Text>{t('template.repoSync')}: <Tag>{translatedValue(preview.repo_sync?.status, t)}</Tag> {preview.repo_sync?.reason}</Typography.Text>
+            <Typography.Text>{t('common.files')}: {Array.isArray(preview.files) ? preview.files.length : 0}</Typography.Text>
           </Space> },
-          { key: 'files', label: 'Files', children: <JSONBlock value={preview.files} /> },
-          { key: 'steps', label: 'Steps', children: <JSONBlock value={preview.steps} /> },
-          { key: 'defaults', label: 'Defaults', children: <JSONBlock value={preview.defaults} /> },
-          { key: 'parameters', label: 'Parameters', children: <JSONBlock value={preview.parameters} /> }
+          { key: 'files', label: t('common.files'), children: <JSONBlock value={preview.files} /> },
+          { key: 'steps', label: t('template.steps'), children: <JSONBlock value={preview.steps} /> },
+          { key: 'defaults', label: t('template.defaults'), children: <JSONBlock value={preview.defaults} /> },
+          { key: 'parameters', label: t('template.parameters'), children: <JSONBlock value={preview.parameters} /> }
         ]} />}
       </Space>
     </Modal>
@@ -7165,11 +7435,11 @@ function GitRemotes() {
         { title: t('common.url'), render: (_, row) => urlsText(row) }
       ]} />
       {!repo && <Alert type="info" showIcon message={t('git.createRepositoryFirst')} />}
-      <CreateModal title="Create remote" open={open} setOpen={setOpen} fields={['name', 'remote_key', 'provider_type', 'remote_url', 'web_url', 'remote_role', 'urls', 'default_branch']} initialValues={{ provider_type: 'github', remote_role: 'mirror', default_branch: 'main' }} onSubmit={createRemote} />
-      <CreateModal title="Create tag" open={tagOpen} setOpen={setTagOpen} fields={['tag_name', 'target_sha', 'branch', 'tag_message']} initialValues={{ branch: repo?.default_branch || sourceRemote?.default_branch || 'main' }} onSubmit={createTag} />
-      <CreateModal title="Save repo sync asset" open={syncAssetOpen} setOpen={setSyncAssetOpen} fields={['name', 'trigger_mode', 'sync_mode', 'transport', 'driver']} initialValues={{ trigger_mode: 'manual_or_webhook', sync_mode: 'selected_refs', transport: 'ssh', driver: 'projectops_worker_git_ssh' }} onSubmit={createRepoSyncAsset} />
-      <CreateModal title="Edit repo sync asset" open={syncAssetEditOpen} setOpen={setSyncAssetEditOpen} fields={['name', 'trigger_mode', 'sync_mode', 'transport', 'driver', 'enabled']} onSubmit={updateRepoSyncAsset} />
-      <CreateModal title="Create webhook" open={webhookOpen} setOpen={setWebhookOpen} fields={['name', 'provider', 'secret_token']} initialValues={{ provider: 'gitea' }} onSubmit={createWebhookConnection} />
+      <CreateModal title="Create remote" open={open} setOpen={setOpen} descriptionKey="git.remoteModalDescription" fields={[{ name: 'name', helpKey: 'help.git_remote_name' }, 'remote_key', 'provider_type', 'remote_url', 'web_url', 'remote_role', 'urls', 'default_branch']} initialValues={{ provider_type: 'github', remote_role: 'mirror', default_branch: 'main' }} onSubmit={createRemote} />
+      <CreateModal title="Create tag" open={tagOpen} setOpen={setTagOpen} descriptionKey="git.tagModalDescription" fields={['tag_name', 'target_sha', 'branch', 'tag_message']} initialValues={{ branch: repo?.default_branch || sourceRemote?.default_branch || 'main' }} onSubmit={createTag} />
+      <CreateModal title="Save repo sync asset" open={syncAssetOpen} setOpen={setSyncAssetOpen} descriptionKey="git.syncAssetModalDescription" fields={[{ name: 'name', helpKey: 'help.repo_sync_name' }, 'trigger_mode', 'sync_mode', 'transport', 'driver']} initialValues={{ trigger_mode: 'manual_or_webhook', sync_mode: 'selected_refs', transport: 'ssh', driver: 'projectops_worker_git_ssh' }} onSubmit={createRepoSyncAsset} />
+      <CreateModal title="Edit repo sync asset" open={syncAssetEditOpen} setOpen={setSyncAssetEditOpen} descriptionKey="git.syncAssetModalDescription" fields={[{ name: 'name', helpKey: 'help.repo_sync_name' }, 'trigger_mode', 'sync_mode', 'transport', 'driver', 'enabled']} onSubmit={updateRepoSyncAsset} />
+      <CreateModal title="Create webhook" open={webhookOpen} setOpen={setWebhookOpen} descriptionKey="git.webhookModalDescription" fields={[{ name: 'name', helpKey: 'help.webhook_name' }, 'provider', 'secret_token']} initialValues={{ provider: 'gitea' }} onSubmit={createWebhookConnection} />
       <Tabs items={[
         { key: 'assets', label: t('title.syncAssets'), children: <Space direction="vertical" size={12} className="full">
           <Checkbox checked={includeArchivedSyncAssets} onChange={(event) => setIncludeArchivedSyncAssets(event.target.checked)}>{t('git.showArchived')}</Checkbox>
@@ -7703,6 +7973,8 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [delegateReason, setDelegateReason] = useState('');
   const [providerReviewClaimLoading, setProviderReviewClaimLoading] = useState(false);
   const [providerReviewResultLoading, setProviderReviewResultLoading] = useState(false);
+  const [providerReviewLiveExecuteLoading, setProviderReviewLiveExecuteLoading] = useState(false);
+  const [providerReviewLiveCleanupLoading, setProviderReviewLiveCleanupLoading] = useState(false);
   const [providerReviewSnapshotLoading, setProviderReviewSnapshotLoading] = useState(false);
   const [providerReviewCredentialSnapshotLoading, setProviderReviewCredentialSnapshotLoading] = useState(false);
   const [providerReviewBranchPolicySnapshotLoading, setProviderReviewBranchPolicySnapshotLoading] = useState(false);
@@ -7757,12 +8029,16 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   const [providerReviewLiveExecutionGuardSnapshotResult, setProviderReviewLiveExecutionGuardSnapshotResult] = useState<AnyRow>();
   const [providerReviewLiveExecutionPreflightResult, setProviderReviewLiveExecutionPreflightResult] = useState<AnyRow>();
   const [providerReviewLiveExecutionLaunchPlanResult, setProviderReviewLiveExecutionLaunchPlanResult] = useState<AnyRow>();
+  const [providerReviewLiveExecutionResult, setProviderReviewLiveExecutionResult] = useState<AnyRow>();
+  const [providerReviewLiveCleanupResult, setProviderReviewLiveCleanupResult] = useState<AnyRow>();
   const [providerReviewCurrentLiveReadinessSnapshotResult, setProviderReviewCurrentLiveReadinessSnapshotResult] = useState<AnyRow>();
   const [providerReviewCurrentLiveExecutionLaunchPlanResult, setProviderReviewCurrentLiveExecutionLaunchPlanResult] = useState<AnyRow>();
   const [providerReviewCurrentLiveExecutionGateResult, setProviderReviewCurrentLiveExecutionGateResult] = useState<AnyRow>();
   const [providerReviewArmingSnapshotResult, setProviderReviewArmingSnapshotResult] = useState<AnyRow>();
   const [optimisticallyClaimedProviderReviewAttemptID, setOptimisticallyClaimedProviderReviewAttemptID] = useState<string>();
   const [optimisticallyRecordedProviderReviewAttemptID, setOptimisticallyRecordedProviderReviewAttemptID] = useState<string>();
+  const [optimisticallyLiveExecutedProviderReviewAttemptID, setOptimisticallyLiveExecutedProviderReviewAttemptID] = useState<string>();
+  const [optimisticallyLiveCleanedProviderReviewAttemptID, setOptimisticallyLiveCleanedProviderReviewAttemptID] = useState<string>();
   const [ruleForm] = Form.useForm();
   const approvalAudit = useLoad(() => approvalAuditID ? api(`/api/operation-approvals/${approvalAuditID}`) : Promise.resolve({}), [approvalAuditID]);
   const ruleAudits = useLoad(() => ruleAuditID ? api(`/api/operation-approval-rules/${ruleAuditID}/audits`) : Promise.resolve({ items: [] }), [ruleAuditID]);
@@ -7779,6 +8055,8 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
   useEffect(() => {
     setOptimisticallyClaimedProviderReviewAttemptID(undefined);
     setOptimisticallyRecordedProviderReviewAttemptID(undefined);
+    setOptimisticallyLiveExecutedProviderReviewAttemptID(undefined);
+    setOptimisticallyLiveCleanedProviderReviewAttemptID(undefined);
     setProviderReviewSnapshotResult(undefined);
     setProviderReviewCredentialSnapshotResult(undefined);
     setProviderReviewBranchPolicySnapshotResult(undefined);
@@ -7800,6 +8078,8 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     setProviderReviewLiveExecutionGuardSnapshotResult(undefined);
     setProviderReviewLiveExecutionPreflightResult(undefined);
     setProviderReviewLiveExecutionLaunchPlanResult(undefined);
+    setProviderReviewLiveExecutionResult(undefined);
+    setProviderReviewLiveCleanupResult(undefined);
     setProviderReviewCurrentLiveReadinessSnapshotResult(undefined);
     setProviderReviewCurrentLiveExecutionLaunchPlanResult(undefined);
     setProviderReviewCurrentLiveExecutionGateResult(undefined);
@@ -7952,13 +8232,13 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     try {
       const result = await api(`/api/provider-review-attempts/${id}/claim`, { method: 'POST', body: '{}' });
       if (result.claimed === true) {
-        message.success('Provider review attempt claimed');
+        message.success(t('providerReview.attemptClaimed'));
       } else {
-        message.warning(String(result.claim_state || 'Provider review attempt not claimable'));
+        message.warning(String(result.claim_state || t('providerReview.attemptNotClaimable')));
       }
       approvalAudit.reload();
     } catch (error: any) {
-      message.error(error.message || 'Could not claim provider review attempt');
+      message.error(error.message || t('providerReview.claimFailed'));
     } finally {
       setOptimisticallyClaimedProviderReviewAttemptID(undefined);
       setProviderReviewClaimLoading(false);
@@ -7971,16 +8251,60 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
     try {
       const response = await api(`/api/provider-review-attempts/${id}/local-result`, { method: 'POST', body: JSON.stringify({ result }) });
       if (response.result_recorded === true) {
-        message.success('Provider review local result recorded');
+        message.success(t('providerReview.localResultRecorded'));
       } else {
-        message.warning(String(response.result_state || 'Provider review result not recordable'));
+        message.warning(String(response.result_state || t('providerReview.resultNotRecordable')));
       }
       approvalAudit.reload();
     } catch (error: any) {
-      message.error(error.message || 'Could not record provider review result');
+      message.error(error.message || t('providerReview.localResultFailed'));
     } finally {
       setOptimisticallyRecordedProviderReviewAttemptID(undefined);
       setProviderReviewResultLoading(false);
+    }
+  }
+  async function executeProviderReviewAttemptLive(id: string) {
+    if (!id || providerReviewLiveExecuteLoading) return;
+    setOptimisticallyLiveExecutedProviderReviewAttemptID(id);
+    setProviderReviewLiveExecutionResult(undefined);
+    setProviderReviewLiveExecuteLoading(true);
+    try {
+      const response = await api(`/api/provider-review-attempts/${id}/execute-live`, { method: 'POST', body: JSON.stringify({}) });
+      setProviderReviewLiveExecutionResult(response);
+      if (response.executed === true) {
+        message.success(t('providerReview.executeLiveSuccess'));
+      } else {
+        message.warning(response.message || t('providerReview.executeLiveBlocked'));
+      }
+      approvalAudit.reload();
+    } catch (error: any) {
+      setProviderReviewLiveExecutionResult(undefined);
+      message.error(error.message || t('providerReview.executeLiveFailed'));
+    } finally {
+      setOptimisticallyLiveExecutedProviderReviewAttemptID(undefined);
+      setProviderReviewLiveExecuteLoading(false);
+    }
+  }
+  async function cleanupProviderReviewAttemptLive(id: string) {
+    if (!id || providerReviewLiveCleanupLoading) return;
+    setOptimisticallyLiveCleanedProviderReviewAttemptID(id);
+    setProviderReviewLiveCleanupResult(undefined);
+    setProviderReviewLiveCleanupLoading(true);
+    try {
+      const response = await api(`/api/provider-review-attempts/${id}/cleanup-live`, { method: 'POST', body: JSON.stringify({}) });
+      setProviderReviewLiveCleanupResult(response);
+      if (response.live_cleanup_success === true) {
+        message.success(t('providerReview.cleanupLiveSuccess'));
+      } else {
+        message.warning(response.message || t('providerReview.cleanupLiveBlocked'));
+      }
+      approvalAudit.reload();
+    } catch (error: any) {
+      setProviderReviewLiveCleanupResult(undefined);
+      message.error(error.message || t('providerReview.cleanupLiveFailed'));
+    } finally {
+      setOptimisticallyLiveCleanedProviderReviewAttemptID(undefined);
+      setProviderReviewLiveCleanupLoading(false);
     }
   }
   async function recordProviderReviewAttemptSnapshot(id: string) {
@@ -8451,13 +8775,13 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
       const result = await api(`/api/provider-review-attempts/${id}/live-execution-preflight`, { method: 'POST', body: JSON.stringify({}) });
       setProviderReviewLiveExecutionPreflightResult(result);
       if (result.preflight_ready === false) {
-        message.warning(result.message || 'Provider review live execution preflight is blocked');
+        message.warning(result.message || t('providerReview.preflightBlocked'));
       } else {
-        message.success('Provider review live execution preflight is ready');
+        message.success(t('providerReview.preflightReady'));
       }
     } catch (error: any) {
       setProviderReviewLiveExecutionPreflightResult(undefined);
-      message.error(error.message || 'Could not check provider review live execution preflight');
+      message.error(error.message || t('providerReview.preflightFailed'));
     } finally {
       approvalAudit.reload();
       setProviderReviewLiveExecutionPreflightLoading(false);
@@ -8471,13 +8795,13 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
       const result = await api(`/api/provider-review-attempts/${id}/live-execution-launch-plan`, { method: 'POST', body: JSON.stringify({}) });
       setProviderReviewLiveExecutionLaunchPlanResult(result);
       if (result.launch_plan_ready === false) {
-        message.warning(result.message || 'Provider review live execution launch plan is blocked');
+        message.warning(result.message || t('providerReview.launchPlanBlocked'));
       } else {
-        message.success('Provider review live execution launch plan is ready');
+        message.success(t('providerReview.launchPlanReady'));
       }
     } catch (error: any) {
       setProviderReviewLiveExecutionLaunchPlanResult(undefined);
-      message.error(error.message || 'Could not check provider review live execution launch plan');
+      message.error(error.message || t('providerReview.launchPlanFailed'));
     } finally {
       approvalAudit.reload();
       setProviderReviewLiveExecutionLaunchPlanLoading(false);
@@ -8511,13 +8835,13 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
       const result = await api(`/api/operation-approvals/${approvalAuditID}/provider-review-current-live-launch-plan`, { method: 'POST', body: JSON.stringify({}) });
       setProviderReviewCurrentLiveExecutionLaunchPlanResult(result);
       if (result.launch_plan_ready === false) {
-        message.warning(result.message || 'Current provider review live execution launch plan is blocked');
+        message.warning(result.message || t('providerReview.currentLaunchPlanBlocked'));
       } else {
-        message.success('Current provider review live execution launch plan is ready');
+        message.success(t('providerReview.currentLaunchPlanReady'));
       }
     } catch (error: any) {
       setProviderReviewCurrentLiveExecutionLaunchPlanResult(undefined);
-      message.error(error.message || 'Could not check current provider review live execution launch plan');
+      message.error(error.message || t('providerReview.currentLaunchPlanFailed'));
     } finally {
       approvalAudit.reload();
       setProviderReviewCurrentLiveExecutionLaunchPlanLoading(false);
@@ -8531,13 +8855,13 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
       const result = await api(`/api/operation-approvals/${approvalAuditID}/provider-review-current-live-execution-gate`, { method: 'POST', body: JSON.stringify({}) });
       setProviderReviewCurrentLiveExecutionGateResult(result);
       if (result.execution_gate_ready === false) {
-        message.warning(result.message || 'Current provider review live execution gate is blocked');
+        message.warning(result.message || t('providerReview.currentGateBlocked'));
       } else {
-        message.success('Current provider review live execution gate is ready');
+        message.success(t('providerReview.currentGateReady'));
       }
     } catch (error: any) {
       setProviderReviewCurrentLiveExecutionGateResult(undefined);
-      message.error(error.message || 'Could not check current provider review live execution gate');
+      message.error(error.message || t('providerReview.currentGateFailed'));
     } finally {
       approvalAudit.reload();
       setProviderReviewCurrentLiveExecutionGateLoading(false);
@@ -8739,6 +9063,8 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             persistedAttemptLedger={approvalAudit.data?.provider_review_attempt_ledger}
             onClaimAttempt={claimProviderReviewAttempt}
             onRecordAttemptResult={recordProviderReviewAttemptResult}
+            onExecuteAttemptLive={executeProviderReviewAttemptLive}
+            onCleanupAttemptLive={cleanupProviderReviewAttemptLive}
             onRecordAttemptSnapshot={recordProviderReviewAttemptSnapshot}
             onRecordAttemptCredentialSnapshot={recordProviderReviewAttemptCredentialSnapshot}
             onRecordAttemptBranchPolicySnapshot={recordProviderReviewAttemptBranchPolicySnapshot}
@@ -8774,6 +9100,8 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             canRecordArmingSnapshot={Boolean(approvalAuditID)}
             claimLoading={providerReviewClaimLoading}
             resultLoading={providerReviewResultLoading}
+            liveExecuteLoading={providerReviewLiveExecuteLoading}
+            liveCleanupLoading={providerReviewLiveCleanupLoading}
             snapshotLoading={providerReviewSnapshotLoading}
             credentialSnapshotLoading={providerReviewCredentialSnapshotLoading}
             branchPolicySnapshotLoading={providerReviewBranchPolicySnapshotLoading}
@@ -8828,12 +9156,16 @@ function Operations({ embedded = false }: { embedded?: boolean }) {
             liveExecutionGuardSnapshotResult={providerReviewLiveExecutionGuardSnapshotResult}
             liveExecutionPreflightResult={providerReviewLiveExecutionPreflightResult}
             liveExecutionLaunchPlanResult={providerReviewLiveExecutionLaunchPlanResult}
+            liveExecutionResult={providerReviewLiveExecutionResult}
+            liveCleanupResult={providerReviewLiveCleanupResult}
             currentLiveReadinessSnapshotResult={providerReviewCurrentLiveReadinessSnapshotResult}
             currentLiveExecutionLaunchPlanResult={providerReviewCurrentLiveExecutionLaunchPlanResult}
             currentLiveExecutionGateResult={providerReviewCurrentLiveExecutionGateResult}
             armingSnapshotResult={providerReviewArmingSnapshotResult}
             optimisticallyClaimedAttemptID={optimisticallyClaimedProviderReviewAttemptID}
             optimisticallyRecordedAttemptID={optimisticallyRecordedProviderReviewAttemptID}
+            optimisticallyLiveExecutedAttemptID={optimisticallyLiveExecutedProviderReviewAttemptID}
+            optimisticallyLiveCleanedAttemptID={optimisticallyLiveCleanedProviderReviewAttemptID}
           />
           {approvalAudit.data?.approval && approvalStillActive(approvalAudit.data.approval) && canActOnApproval(approvalAudit.data.approval, currentRole) && (
             <Space wrap>
@@ -10288,7 +10620,7 @@ function ConfigPage() {
         open={argoOpen}
         setOpen={setArgoOpen}
         descriptionKey="argo.connectionModalDescription"
-        fields={[{ name: 'name', helpKey: 'help.argo_connection_name' }, 'server_url', { name: 'auth_type', metaKey: 'argo_auth_type' }, 'token', 'insecure_skip_verify']}
+        fields={[{ name: 'name', helpKey: 'help.argo_connection_name' }, 'server_url', { name: 'auth_type', metaKey: 'argo_auth_type' }, { name: 'token', metaKey: 'argo_token' }, 'insecure_skip_verify']}
         initialValues={{ auth_type: 'token', insecure_skip_verify: false }}
         onSubmit={createArgoConnection}
       />
@@ -10322,6 +10654,7 @@ function Toolbar({ title, onCreate, disabled = false }: { title: string; onCreat
 }
 
 const titleKeys: Record<string, string> = {
+  'Projects': 'title.projects',
   'Git Remotes': 'title.gitRemotes',
   'SSH Machines': 'title.sshMachines',
   'Argo Connections': 'title.argoConnections',
@@ -10416,6 +10749,7 @@ const fieldMeta: Record<string, FieldMeta> = {
   argo_auth_type: { input: 'select', options: ['token'], labelKey: 'field.argo_auth_type', helpKey: 'help.argo_auth_type', required: true },
   ssh_auth_type: { input: 'select', options: ['key', 'password'], labelKey: 'field.ssh_auth_type', helpKey: 'help.ssh_auth_type', required: true },
   token: { input: 'password', helpKey: 'help.token' },
+  argo_token: { input: 'password', labelKey: 'field.token', helpKey: 'help.argo_token' },
   insecure_skip_verify: { input: 'checkbox', helpKey: 'help.insecure_skip_verify' },
   kubeconfig_secret_ref: { required: true, helpKey: 'help.kubeconfig_secret_ref', placeholder: 'assops/test/namespace-reader' },
   service_account: { helpKey: 'help.service_account', placeholder: 'system:serviceaccount:ns:assops-reader' },

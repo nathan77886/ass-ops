@@ -2884,6 +2884,20 @@ func mapFromAny(value any) map[string]any {
 	if typed, ok := value.(map[string]any); ok {
 		return typed
 	}
+	if typed, ok := value.([]byte); ok {
+		var decoded map[string]any
+		if err := json.Unmarshal(typed, &decoded); err == nil && decoded != nil {
+			return decoded
+		}
+		return map[string]any{}
+	}
+	if typed, ok := value.(string); ok {
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(typed), &decoded); err == nil && decoded != nil {
+			return decoded
+		}
+		return map[string]any{}
+	}
 	return map[string]any{}
 }
 

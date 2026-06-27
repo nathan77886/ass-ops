@@ -68,7 +68,24 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("authorization") != "Bearer smoke-token":
                 self.send_json({"error": "unauthorized"}, 401)
                 return
-            self.send_json({"queued": 0, "running": 0})
+            self.send_json({"queued_jobs": 0, "running_jobs": 0})
+            return
+        if self.headers.get("authorization") != "Bearer smoke-token":
+            self.send_json({"error": "unauthorized"}, 401)
+            return
+        if self.path == "/api/assets/graph":
+            self.send_json({"nodes": [], "edges": []})
+            return
+        item_paths = {
+            "/api/assets",
+            "/api/operations",
+            "/api/repo-sync-runs",
+            "/api/repo-tag-runs",
+            "/api/operation-approvals",
+            "/api/ai-runtimes",
+        }
+        if self.path in item_paths:
+            self.send_json({"items": []})
             return
         self.send_json({"error": "not found"}, 404)
 

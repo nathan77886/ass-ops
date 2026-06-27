@@ -1,0 +1,49 @@
+# Private test overlay example.
+# Copy this file outside the repository or into an environment-managed values
+# location, then replace image tags, registry pull Secret name, and any storage
+# settings before running helm-test preflight or helm upgrade.
+
+gatewayURL: http://assops-web.assops-test.svc.cluster.local
+
+secret:
+  create: false
+  name: assops-test-secret
+
+image:
+  registry: registry.example.com
+  pullPolicy: IfNotPresent
+  pullSecrets:
+    - name: assops-registry-pull
+  gateway:
+    repository: nathan77886/assops-gateway
+    tag: test-YYYYMMDDHHMMSS
+  worker:
+    repository: nathan77886/assops-worker
+    tag: test-YYYYMMDDHHMMSS
+  nodeWorker:
+    repository: nathan77886/assops-node-worker
+    tag: test-YYYYMMDDHHMMSS
+  web:
+    repository: nathan77886/assops-web
+    tag: test-YYYYMMDDHHMMSS
+
+postgres:
+  enabled: true
+  # Must match the password encoded in the external assops-test-secret
+  # DATABASE_URL when using the chart-managed test PostgreSQL.
+  password: change-me-test-postgres
+  storageSize: 10Gi
+
+env:
+  version: test-YYYYMMDDHHMMSS
+  commit: reviewed-test-commit
+  buildTime: reviewed-test-build-time
+  providerReviewExecutionEnabled: "false"
+  providerReviewMutationArmed: "false"
+  kubernetesLogsEnabled: "true"
+  kubernetesLogPreviewEnabled: "false"
+  kubernetesRestartsEnabled: "true"
+
+persistence:
+  kubeconfigs:
+    existingSecretName: assops-kubeconfigs

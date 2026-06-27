@@ -10,6 +10,8 @@ data:
   ASSOPS_CONTEXT_DIR: /var/lib/assops/context
   ASSOPS_LOCAL_BARE_BASE_DIRS: {{ .Values.env.localBareBaseDirs | quote }}
   ASSOPS_CONFIG_GIT_LOCAL_BARE_WRITES_ENABLED: {{ .Values.env.configGitLocalBareWritesEnabled | quote }}
+  ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION: {{ .Values.env.providerReviewExecutionEnabled | quote }}
+  ASSOPS_ARM_PROVIDER_REVIEW_MUTATION: {{ .Values.env.providerReviewMutationArmed | quote }}
   ASSOPS_APPROVAL_WEBHOOK_URL: {{ .Values.env.approvalWebhookURL | quote }}
   ASSOPS_VERSION: {{ .Values.env.version | quote }}
   ASSOPS_COMMIT: {{ .Values.env.commit | quote }}

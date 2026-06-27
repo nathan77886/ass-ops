@@ -11,8 +11,12 @@ x-assops-env: &assops-env
   ASSOPS_WEBHOOK_SECRET_KEY: ${ASSOPS_WEBHOOK_SECRET_KEY:-dev-assops-webhook-change-me}
   ASSOPS_APPROVAL_WEBHOOK_URL: ${ASSOPS_APPROVAL_WEBHOOK_URL:-}
   ASSOPS_APPROVAL_WEBHOOK_TOKEN: ${ASSOPS_APPROVAL_WEBHOOK_TOKEN:-}
+  ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION: ${ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION:-false}
+  ASSOPS_ARM_PROVIDER_REVIEW_MUTATION: ${ASSOPS_ARM_PROVIDER_REVIEW_MUTATION:-false}
   ASSOPS_ADMIN_EMAIL: ${ASSOPS_ADMIN_EMAIL:-admin@assops.local}
   ASSOPS_ADMIN_PASSWORD: ${ASSOPS_ADMIN_PASSWORD:-admin1234}
+  ASSOPS_GITHUB_TEMPLATE_TOKEN: ${ASSOPS_GITHUB_TEMPLATE_TOKEN:-}
+  ASSOPS_GITEA_TEMPLATE_TOKEN: ${ASSOPS_GITEA_TEMPLATE_TOKEN:-}
   ASSOPS_GITHUB_ACTIONS_READ_TOKEN: ${ASSOPS_GITHUB_ACTIONS_READ_TOKEN:-}
   ASSOPS_ARGO_READ_TOKEN: ${ASSOPS_ARGO_READ_TOKEN:-}
   ASSOPS_KUBERNETES_LOGS_ENABLED: ${ASSOPS_KUBERNETES_LOGS_ENABLED:-false}
@@ -59,6 +63,7 @@ services:
       - ../backend/migrations/021_kubernetes_environments.sql:/docker-entrypoint-initdb.d/021_kubernetes_environments.sql:ro
       - ../backend/migrations/022_github_repository_labels.sql:/docker-entrypoint-initdb.d/022_github_repository_labels.sql:ro
       - ../backend/migrations/023_kubernetes_pod_restart_access.sql:/docker-entrypoint-initdb.d/023_kubernetes_pod_restart_access.sql:ro
+      - ../backend/migrations/024_provider_review_live_execution.sql:/docker-entrypoint-initdb.d/024_provider_review_live_execution.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U assops -d assops"]
       interval: 5s

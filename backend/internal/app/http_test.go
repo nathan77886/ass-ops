@@ -15331,6 +15331,14 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 			"provider_api_call_made",
 			"provider_api_mutation",
 			"external_call_made",
+			"provider_status_class",
+			"provider_review_url",
+			"executed_at",
+			"cleanup_attempted",
+			"cleanup_succeeded",
+			"cleanup_required",
+			"claimed_at",
+			"claimed_by_user_id",
 		}).AddRow(
 			"44444444-4444-4444-4444-444444444444",
 			"open_review_request",
@@ -15347,6 +15355,14 @@ func TestProviderReviewAttemptLedgerForApprovalRedactsPersistedAttempts(t *testi
 			false,
 			"disabled",
 			false,
+			"",
+			"",
+			nil,
+			false,
+			false,
+			false,
+			nil,
+			nil,
 		))
 	summary, err := server.providerReviewAttemptLedgerForApproval(context.Background(), "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	if err != nil {
@@ -15486,6 +15502,14 @@ func TestProviderReviewAttemptLedgerForApprovalHandlesEmptyInputAndRows(t *testi
 			"provider_api_call_made",
 			"provider_api_mutation",
 			"external_call_made",
+			"provider_status_class",
+			"provider_review_url",
+			"executed_at",
+			"cleanup_attempted",
+			"cleanup_succeeded",
+			"cleanup_required",
+			"claimed_at",
+			"claimed_by_user_id",
 		}))
 	zeroSummary, err := server.providerReviewAttemptLedgerForApproval(context.Background(), "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	if err != nil {
@@ -15527,6 +15551,7 @@ func TestProviderReviewAttemptResponseDiagnosticSanitizers(t *testing.T) {
 		{"2xx", "2xx"},
 		{"4xx", "4xx"},
 		{"5xx", "5xx"},
+		{"unknown", "unknown"},
 		{"  4xx  ", "4xx"},
 		{"3xx", ""},
 		{"secret-token", ""},
@@ -15537,8 +15562,8 @@ func TestProviderReviewAttemptResponseDiagnosticSanitizers(t *testing.T) {
 			t.Fatalf("safeProviderReviewStatusClass(%q) = %q, want %q", item.input, got, item.want)
 		}
 	}
-	classes := safeProviderReviewStatusClasses([]string{"5xx", "4xx", "5xx", "3xx", "secret-token", "2xx"})
-	if len(classes) != 3 || classes[0] != "5xx" || classes[1] != "4xx" || classes[2] != "2xx" {
+	classes := safeProviderReviewStatusClasses([]string{"5xx", "4xx", "5xx", "3xx", "secret-token", "unknown", "2xx"})
+	if len(classes) != 4 || classes[0] != "5xx" || classes[1] != "4xx" || classes[2] != "unknown" || classes[3] != "2xx" {
 		t.Fatalf("safeProviderReviewStatusClasses mixed = %#v", classes)
 	}
 	if got := safeProviderReviewStatusClasses(nil); len(got) != 0 {
@@ -15799,6 +15824,95 @@ func TestProviderReviewAttemptDependencySanitizers(t *testing.T) {
 	} {
 		if got := safeProviderReviewAttemptDependencyName(item.input); got != item.want {
 			t.Fatalf("safeProviderReviewAttemptDependencyName(%q) = %q, want %q", item.input, got, item.want)
+		}
+	}
+}
+
+func TestProviderReviewAttemptLiveExecutionDiagnosticsExposeRetryAndCleanupOnly(t *testing.T) {
+	attempt := map[string]any{
+		"response_diagnostics": map[string]any{
+			"mode":                   "raw_attempt_response_diagnostics",
+			"endpoint_key":           "github.create_branch_ref",
+			"status":                 "ready",
+			"provider_api_call_made": true,
+			"contains_token":         true,
+			"token":                  "secret-token",
+			"url":                    "https://api.github.example.test/repos/acme/secret-repo",
+		},
+	}
+	result := reviewBranchExecutionResult{
+		ExecutionPhase:      "commit_starter_files",
+		ProviderStatusClass: "5xx",
+		Retryable:           false,
+		ManualCleanupHint:   "review_branch_delete_required",
+		ExternalCallMade:    true,
+		ProviderAPIMutation: true,
+		CleanupAttempted:    true,
+		CleanupRequired:     true,
+	}
+	diagnostics := providerReviewAttemptLiveExecutionDiagnostics(attempt, "failed", "5xx", result)
+	if diagnostics["status"] != "failed" ||
+		diagnostics["live_execution_phase"] != "commit_starter_files" ||
+		diagnostics["live_execution_retryable"] != false ||
+		diagnostics["manual_cleanup_hint"] != "review_branch_delete_required" ||
+		diagnostics["cleanup_required"] != true ||
+		diagnostics["contains_token"] != false ||
+		diagnostics["contains_provider_url"] != false ||
+		diagnostics["contains_repository_ref"] != false ||
+		diagnostics["contains_branch_name"] != false ||
+		diagnostics["contains_file_content"] != false {
+		t.Fatalf("unexpected live execution diagnostics: %#v", diagnostics)
+	}
+	encoded, _ := json.Marshal(diagnostics)
+	for _, leak := range []string{"secret-token", "api.github.example.test", "secret-repo", "raw_attempt_response_diagnostics"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("live execution diagnostics leaked %q: %s", leak, encoded)
+		}
+	}
+}
+
+func TestProviderReviewAttemptLiveCleanupResponseStaysSanitized(t *testing.T) {
+	attempt := map[string]any{
+		"id":                                 "attempt-1",
+		"operation_approval_id":              "approval-1",
+		"operation_name":                     "create_branch_ref",
+		"endpoint_key":                       "github.create_branch_ref",
+		"status":                             "failed",
+		"provider_type":                      "github",
+		"provider_api_mutation":              "enabled",
+		"live_execution_manual_cleanup_hint": "review_branch_delete_required",
+		"cleanup_attempted":                  true,
+		"cleanup_succeeded":                  true,
+		"cleanup_required":                   false,
+		"response_diagnostics": map[string]any{
+			"token":          "secret-token",
+			"provider_url":   "https://api.github.example.test/repos/acme/secret-repo",
+			"repository_ref": "refs/heads/assops/template/secret",
+		},
+	}
+	result := reviewBranchExecutionResult{
+		ExecutionPhase:      "cleanup_review_branch",
+		ProviderStatusClass: "2xx",
+		Retryable:           false,
+		ExternalCallMade:    true,
+		ProviderAPIMutation: true,
+		CleanupAttempted:    true,
+		CleanupSucceeded:    true,
+		CleanupRequired:     false,
+	}
+	response := providerReviewAttemptLiveCleanupResponse(attempt, providerReviewAttemptLedgerSummary([]map[string]any{attempt}), true, "success", "2xx", result)
+	if response["live_cleanup_state"] != "cleanup_completed" ||
+		response["live_cleanup_success"] != true ||
+		response["cleanup_required"] != false ||
+		response["contains_token"] != false ||
+		response["contains_repository_ref"] != false ||
+		response["contains_branch_name"] != false {
+		t.Fatalf("unexpected cleanup response: %#v", response)
+	}
+	encoded, _ := json.Marshal(response)
+	for _, leak := range []string{"secret-token", "api.github.example.test", "secret-repo", "refs/heads/assops/template/secret"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("live cleanup response leaked %q: %s", leak, encoded)
 		}
 	}
 }
@@ -36636,6 +36750,12 @@ func providerReviewAttemptRows() *sqlmock.Rows {
 		"provider_api_call_made",
 		"provider_api_mutation",
 		"external_call_made",
+		"provider_status_class",
+		"provider_review_url",
+		"executed_at",
+		"cleanup_attempted",
+		"cleanup_succeeded",
+		"cleanup_required",
 		"claimed_at",
 		"claimed_by_user_id",
 	})
@@ -36661,6 +36781,12 @@ func addProviderReviewAttemptRow(rows *sqlmock.Rows, row providerReviewAttemptMo
 		providerReviewAttemptResponseDiagnosticsJSON(row.Endpoint),
 		false,
 		"disabled",
+		false,
+		"",
+		"",
+		nil,
+		false,
+		false,
 		false,
 		row.ClaimedAt,
 		nil,
@@ -37136,6 +37262,12 @@ func expectProviderReviewAttemptLocalResultUpdate(mock sqlmock.Sqlmock, attemptS
 		false,
 		"disabled",
 		false,
+		"",
+		"",
+		nil,
+		false,
+		false,
+		false,
 		claimedAt,
 		nil,
 	)
@@ -37167,6 +37299,12 @@ func expectProviderReviewAttemptLedgerQuery(mock sqlmock.Sqlmock, approvalID str
 		"provider_api_call_made",
 		"provider_api_mutation",
 		"external_call_made",
+		"provider_status_class",
+		"provider_review_url",
+		"executed_at",
+		"cleanup_attempted",
+		"cleanup_succeeded",
+		"cleanup_required",
 		"claimed_at",
 		"claimed_by_user_id",
 	})
@@ -37186,6 +37324,12 @@ func expectProviderReviewAttemptLedgerQuery(mock sqlmock.Sqlmock, approvalID str
 			providerReviewAttemptResponseDiagnosticsJSON(item.Endpoint),
 			false,
 			"disabled",
+			false,
+			"",
+			"",
+			nil,
+			false,
+			false,
 			false,
 			item.ClaimedAt,
 			nil,
@@ -39670,6 +39814,10 @@ func TestProviderReviewAttemptsMigrationAndFreshInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read claim migration: %v", err)
 	}
+	liveExecutionMigration, err := os.ReadFile("../../migrations/024_provider_review_live_execution.sql")
+	if err != nil {
+		t.Fatalf("read live execution migration: %v", err)
+	}
 	for _, token := range []string{
 		"CREATE TABLE IF NOT EXISTS provider_review_attempts",
 		"operation_approval_id UUID NOT NULL REFERENCES operation_approvals",
@@ -39709,6 +39857,27 @@ func TestProviderReviewAttemptsMigrationAndFreshInit(t *testing.T) {
 			t.Fatalf("claim migration missing %q", token)
 		}
 	}
+	for _, token := range []string{
+		"pg_advisory_xact_lock",
+		"ADD COLUMN IF NOT EXISTS provider_status_class",
+		"ADD COLUMN IF NOT EXISTS provider_review_url",
+		"ADD COLUMN IF NOT EXISTS executed_at",
+		"ADD COLUMN IF NOT EXISTS live_execution_phase",
+		"ADD COLUMN IF NOT EXISTS live_execution_retryable",
+		"ADD COLUMN IF NOT EXISTS live_execution_manual_cleanup_hint",
+		"ADD COLUMN IF NOT EXISTS cleanup_required",
+		"provider_review_attempts_live_execution_phase_check",
+		"provider_review_attempts_live_execution_manual_cleanup_hint_check",
+		"provider_review_attempts_live_call_requires_enabled_mutation",
+		"provider_review_attempts_external_call_requires_enabled_mutation",
+		"provider_review_attempts_idempotency_hash_requires_enabled_mutation",
+		"idx_provider_review_attempts_live_execution",
+		"idx_provider_review_attempts_cleanup_required",
+	} {
+		if !strings.Contains(string(liveExecutionMigration), token) {
+			t.Fatalf("live execution migration missing %q", token)
+		}
+	}
 	for _, path := range []string{"../../../deploy/docker-compose.yml", "../../../deploy/compose.prod.yml"} {
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -39722,6 +39891,9 @@ func TestProviderReviewAttemptsMigrationAndFreshInit(t *testing.T) {
 		}
 		if !strings.Contains(string(content), "019_provider_review_attempt_claims.sql") {
 			t.Fatalf("%s missing 019_provider_review_attempt_claims.sql init mount", path)
+		}
+		if !strings.Contains(string(content), "024_provider_review_live_execution.sql") {
+			t.Fatalf("%s missing 024_provider_review_live_execution.sql init mount", path)
 		}
 	}
 }

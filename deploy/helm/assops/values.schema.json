@@ -19,6 +19,17 @@
           "type": "string",
           "enum": ["Always", "IfNotPresent", "Never"]
         },
+        "pullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
         "gateway": { "$ref": "#/definitions/imageRef" },
         "worker": { "$ref": "#/definitions/imageRef" },
         "nodeWorker": { "$ref": "#/definitions/imageRef" },
@@ -40,7 +51,9 @@
         "adminPassword": { "type": "string", "minLength": 1 },
         "approvalWebhookToken": { "type": "string" },
         "githubActionsReadToken": { "type": "string" },
-        "argoReadToken": { "type": "string" }
+        "argoReadToken": { "type": "string" },
+        "githubTemplateToken": { "type": "string" },
+        "giteaTemplateToken": { "type": "string" }
       },
       "allOf": [
         {
@@ -87,7 +100,19 @@
           "type": "string",
           "enum": ["true", "false"]
         },
+        "providerReviewExecutionEnabled": {
+          "type": "string",
+          "enum": ["true", "false"]
+        },
+        "providerReviewMutationArmed": {
+          "type": "string",
+          "enum": ["true", "false"]
+        },
         "kubernetesLogsEnabled": {
+          "type": "string",
+          "enum": ["true", "false"]
+        },
+        "kubernetesLogPreviewEnabled": {
           "type": "string",
           "enum": ["true", "false"]
         },

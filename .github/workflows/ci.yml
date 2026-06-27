@@ -112,18 +112,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate local compose
-        run: docker compose -f deploy/docker-compose.yml config
-
-      - name: Validate production compose
-        env:
-          ASSOPS_POSTGRES_PASSWORD: ci-postgres-password
-          ASSOPS_GATEWAY_URL: http://localhost:8080
-          ASSOPS_JWT_SECRET: ci-jwt-secret-change-me
-          ASSOPS_WEBHOOK_SECRET_KEY: ci-webhook-secret-change-me
-          ASSOPS_ADMIN_EMAIL: admin@example.test
-          ASSOPS_ADMIN_PASSWORD: ci-admin-password
-        run: docker compose -f deploy/compose.prod.yml config
+      - name: Validate compose manifests and migration mounts
+        run: make compose-config-check
 
   smoke-scripts:
     name: Smoke Scripts
@@ -138,8 +128,14 @@ jobs:
       - name: Run Helm test preflight self-test
         run: make helm-test-preflight-self-test
 
+      - name: Run Helm image preflight self-test
+        run: make helm-test-image-preflight-self-test
+
       - name: Run Helm test smoke self-test
         run: make helm-test-smoke-self-test
+
+      - name: Run release image script self-test
+        run: make release-images-self-test
 
   db-rehearsal:
     name: DB Rehearsal
@@ -271,6 +267,19 @@ jobs:
           helm template assops deploy/helm/assops \
             -f deploy/helm/assops/values.test.example.yaml \
             >/tmp/assops-test-rendered.yaml
+
+      - name: Lint private test overlay example
+        run: |
+          helm lint deploy/helm/assops \
+            -f deploy/helm/assops/values.test.example.yaml \
+            -f deploy/helm/assops/values.test.private.example.yaml
+
+      - name: Render private test overlay example
+        run: |
+          helm template assops deploy/helm/assops \
+            -f deploy/helm/assops/values.test.example.yaml \
+            -f deploy/helm/assops/values.test.private.example.yaml \
+            >/tmp/assops-private-test-rendered.yaml
 
       - name: Generate test readiness plan
         run: |

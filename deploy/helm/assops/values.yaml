@@ -3,6 +3,7 @@ replicaCount: 1
 image:
   registry: ""
   pullPolicy: IfNotPresent
+  pullSecrets: []
   gateway:
     repository: assops/gateway
     tag: local
@@ -31,6 +32,8 @@ secret:
   approvalWebhookToken: ""
   githubActionsReadToken: ""
   argoReadToken: ""
+  githubTemplateToken: ""
+  giteaTemplateToken: ""
 
 env:
   approvalWebhookURL: ""
@@ -40,6 +43,8 @@ env:
   workerIntervalSeconds: "3"
   localBareBaseDirs: /var/lib/assops/bare-repos
   configGitLocalBareWritesEnabled: "false"
+  providerReviewExecutionEnabled: "false"
+  providerReviewMutationArmed: "false"
   kubernetesLogsEnabled: "false"
   kubernetesLogPreviewEnabled: "false"
   kubernetesRestartsEnabled: "false"
