@@ -156,6 +156,19 @@ docker run -d --name "${project}-gateway" --network "$network" --network-alias g
   "${common_env[@]}" "${common_volumes[@]}" \
   --entrypoint gateway "${project}-runtime:local" >/dev/null
 
+for _ in $(seq 1 30); do
+  if docker exec "${project}-gateway" wget -qO- http://localhost:8080/healthz >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+if ! docker exec "${project}-gateway" wget -qO- http://localhost:8080/healthz >/dev/null 2>&1; then
+  echo "gateway did not become healthy before node-worker start" >&2
+  docker logs "${project}-gateway" >&2 || true
+  exit 1
+fi
+
 docker run -d --name "${project}-worker" --network "$network" \
   "${common_env[@]}" -e "ASSOPS_WORKER_HEALTH_ADDR=:8081" "${common_volumes[@]}" \
   --entrypoint worker "${project}-runtime:local" >/dev/null
