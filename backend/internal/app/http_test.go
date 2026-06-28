@@ -345,6 +345,91 @@ func TestUpdateAndDeleteSSHMachineHandlers(t *testing.T) {
 	}
 }
 
+func TestCreateGitRemoteAcceptsHTTPSCredential(t *testing.T) {
+	store := newGormFixtureStore(t)
+	migrateGormFixture(t, store, &GormProject{}, &GormProjectGitRepository{}, &GormConnectionCredential{}, &GormGitRemote{}, &GormAsset{}, &GormAssetRelation{}, &sqliteAssetStatusSnapshotFixture{})
+	server := &Server{store: store}
+	admin := &User{ID: "user-admin", Email: "admin@example.test", Role: "admin"}
+	project := GormProject{Name: "Demo", Slug: "demo"}
+	if err := store.Gorm.Create(&project).Error; err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	repo := GormProjectGitRepository{ProjectID: project.ID, Name: "service", RepoKey: "service", DisplayName: "Service", RepoRole: "service"}
+	if err := store.Gorm.Create(&repo).Error; err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+	gitCredential := GormConnectionCredential{ProjectID: validNullString(project.ID), Name: "gitea token", Kind: "git_https_token", SecretCiphertext: "encrypted", PublicValue: "deploy-bot", Metadata: JSONValue{Data: map[string]any{}}}
+	if err := store.Gorm.Create(&gitCredential).Error; err != nil {
+		t.Fatalf("create git credential: %v", err)
+	}
+	argoCredential := GormConnectionCredential{ProjectID: validNullString(project.ID), Name: "argo token", Kind: "argo_token", SecretCiphertext: "encrypted", Metadata: JSONValue{Data: map[string]any{}}}
+	if err := store.Gorm.Create(&argoCredential).Error; err != nil {
+		t.Fatalf("create argo credential: %v", err)
+	}
+	body := strings.NewReader(fmt.Sprintf(`{"name":"gitea","remote_key":"gitea","provider_type":"gitea","remote_url":"https://gitea.example.test/acme/service.git","credential_id":%q}`, gitCredential.ID))
+	req := withRouteParam(httptest.NewRequest(http.MethodPost, "/api/git-repositories/"+repo.ID+"/remotes", body), "id", repo.ID)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, admin))
+	rr := httptest.NewRecorder()
+	server.createGitRemote(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body: %s", rr.Code, rr.Body.String())
+	}
+	var remote GormGitRemote
+	if err := store.Gorm.First(&remote, &GormGitRemote{Name: "gitea"}).Error; err != nil {
+		t.Fatalf("load remote: %v", err)
+	}
+	if remote.CredentialID.String != gitCredential.ID {
+		t.Fatalf("credential id = %q, want %q", remote.CredentialID.String, gitCredential.ID)
+	}
+
+	badBody := strings.NewReader(fmt.Sprintf(`{"name":"bad","remote_key":"bad","provider_type":"gitea","remote_url":"https://gitea.example.test/acme/bad.git","credential_id":%q}`, argoCredential.ID))
+	badReq := withRouteParam(httptest.NewRequest(http.MethodPost, "/api/git-repositories/"+repo.ID+"/remotes", badBody), "id", repo.ID)
+	badReq = badReq.WithContext(context.WithValue(badReq.Context(), userContextKey{}, admin))
+	badRR := httptest.NewRecorder()
+	server.createGitRemote(badRR, badReq)
+	if badRR.Code != http.StatusBadRequest {
+		t.Fatalf("bad credential status = %d, body: %s", badRR.Code, badRR.Body.String())
+	}
+}
+
+func TestCreateConnectionCredentialValidatesGitHTTPSCredential(t *testing.T) {
+	store := newGormFixtureStore(t)
+	migrateGormFixture(t, store, &GormProject{}, &GormConnectionCredential{})
+	server := &Server{store: store}
+	admin := &User{ID: "user-admin", Email: "admin@example.test", Role: "admin"}
+	project := GormProject{Name: "Demo", Slug: "demo"}
+	if err := store.Gorm.Create(&project).Error; err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	body := strings.NewReader(`{"name":"gitea token","kind":"git_https_token","public_value":"deploy-bot","secret_value":"token-value"}`)
+	req := withRouteParam(httptest.NewRequest(http.MethodPost, "/api/projects/"+project.ID+"/connection-credentials", body), "id", project.ID)
+	req = req.WithContext(context.WithValue(req.Context(), userContextKey{}, admin))
+	rr := httptest.NewRecorder()
+	server.createConnectionCredential(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body: %s", rr.Code, rr.Body.String())
+	}
+
+	badBody := strings.NewReader(`{"name":"bad","kind":"git_https_token","public_value":"deploy-bot","secret_value":"-----BEGIN PRIVATE KEY-----"}`)
+	badReq := withRouteParam(httptest.NewRequest(http.MethodPost, "/api/projects/"+project.ID+"/connection-credentials", badBody), "id", project.ID)
+	badReq = badReq.WithContext(context.WithValue(badReq.Context(), userContextKey{}, admin))
+	badRR := httptest.NewRecorder()
+	server.createConnectionCredential(badRR, badReq)
+	if badRR.Code != http.StatusBadRequest {
+		t.Fatalf("private key status = %d, body: %s", badRR.Code, badRR.Body.String())
+	}
+
+	missingUserBody := strings.NewReader(`{"name":"missing-user","kind":"git_https_password","secret_value":"password-value"}`)
+	missingUserReq := withRouteParam(httptest.NewRequest(http.MethodPost, "/api/projects/"+project.ID+"/connection-credentials", missingUserBody), "id", project.ID)
+	missingUserReq = missingUserReq.WithContext(context.WithValue(missingUserReq.Context(), userContextKey{}, admin))
+	missingUserRR := httptest.NewRecorder()
+	server.createConnectionCredential(missingUserRR, missingUserReq)
+	if missingUserRR.Code != http.StatusBadRequest {
+		t.Fatalf("missing username status = %d, body: %s", missingUserRR.Code, missingUserRR.Body.String())
+	}
+}
+
 func TestDeleteProjectHandlerRemovesScopedRows(t *testing.T) {
 	store := newGormFixtureStore(t)
 	migrateGormFixture(
@@ -20183,7 +20268,6 @@ func TestWorkerQueueBackendSummaryDocumentsPostgresOnlyMode(t *testing.T) {
 	for key, want := range map[string]string{
 		"backend":          "postgres",
 		"claiming":         "select_for_update_skip_locked",
-		"redis_locking":    "disabled",
 		"pubsub":           "disabled",
 		"log_fanout":       "sse_polling",
 		"websocket_fanout": "deferred",
@@ -20192,8 +20276,8 @@ func TestWorkerQueueBackendSummaryDocumentsPostgresOnlyMode(t *testing.T) {
 			t.Fatalf("workerQueueBackendSummary[%s] = %q, want %q", key, got, want)
 		}
 	}
-	if summary["redis_enabled"] != false || summary["pubsub_enabled"] != false {
-		t.Fatalf("workerQueueBackendSummary should keep Redis/pubsub disabled: %#v", summary)
+	if summary["pubsub_enabled"] != false {
+		t.Fatalf("workerQueueBackendSummary should keep pubsub disabled: %#v", summary)
 	}
 	activeComponents := stringSliceFromAny(summary["active_components"])
 	if len(activeComponents) != 3 {
@@ -20205,17 +20289,17 @@ func TestWorkerQueueBackendSummaryDocumentsPostgresOnlyMode(t *testing.T) {
 		}
 	}
 	deferredBackends := stringSliceFromAny(summary["deferred_backends"])
-	if len(deferredBackends) != 3 {
+	if len(deferredBackends) != 1 {
 		t.Fatalf("workerQueueBackendSummary deferred_backends length = %d: %#v", len(deferredBackends), deferredBackends)
 	}
-	for _, backend := range []string{"redis_locking", "redis_pubsub", "websocket_fanout"} {
+	for _, backend := range []string{"websocket_fanout"} {
 		if !containsString(deferredBackends, backend) {
 			t.Fatalf("workerQueueBackendSummary deferred_backends missing %q: %#v", backend, deferredBackends)
 		}
 	}
 	message, _ := summary["message"].(string)
-	if !strings.Contains(message, "PostgreSQL") || !strings.Contains(message, "Redis") {
-		t.Fatalf("workerQueueBackendSummary message should document PostgreSQL/Redis boundary: %q", message)
+	if !strings.Contains(message, "PostgreSQL") || !strings.Contains(message, "SSE") {
+		t.Fatalf("workerQueueBackendSummary message should document PostgreSQL/SSE mode: %q", message)
 	}
 }
 

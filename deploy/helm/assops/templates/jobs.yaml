@@ -47,7 +47,7 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          command: ["assops-tool", "db", "migrate"]
+          command: ["assops-tool", "db", "automigrate"]
           envFrom:
             - configMapRef:
                 name: {{ include "assops.fullname" . }}-config

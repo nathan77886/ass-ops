@@ -112,7 +112,7 @@ services:
       target: go-runtime
     environment:
       <<: *assops-env
-    command: ["assops-tool", "db", "migrate"]
+    command: ["assops-tool", "db", "automigrate"]
     volumes:
       - assops_backups:/backups
     depends_on:

@@ -116,7 +116,7 @@ go run ./backend/cmd/assops-tool plan validate
 Database operations:
 
 ```bash
-go run ./backend/cmd/assops-tool db migrate
+go run ./backend/cmd/assops-tool db automigrate
 go run ./backend/cmd/assops-tool db sync-assets
 go run ./backend/cmd/assops-tool db backup-retain .assops/backups 3
 go run ./backend/cmd/assops-tool db rehearse-restore .assops/backups/assops-YYYYMMDD-HHMMSS.dump 'postgres://localhost:5432/assops_restore_test?user=USER&sslmode=disable' .assops/release-notes/restore-rehearsal.json
@@ -298,6 +298,6 @@ Not yet first-class:
 - Asset dependency paths, manual graph edges, saved graph views, and cross-project graph search exist, and direct project/repository/remote/RepoSyncAsset lifecycle/run queue plus operation-run enqueue/status/cancel writes, worker-status/repo-tag writes and stale worker recovery, provider-account management, webhook-connection/delivery-health writes, webhook-event delivery read-model writes, approval request/rule lifecycle writes, AI-runtime and agent-task management, worker-node registration/heartbeat, Argo sync status/read-model writes, SSH/manual-relation create/delete, template-worker project creation/completion/retry writes, and GitHub Actions pipeline read-model writes now sync the canonical ledger in transaction. Canonical sync also prunes stale derived relations while preserving manual operator-curated edges and reports remaining graph repair counts, but transactionally maintained canonical writes across every asset-producing path are still deferred.
 - External Gitea/GitHub project-template repository provisioning is first-pass only; provider accounts cover basic account selection, manual token-env rotation with due/soon/fresh visibility, account-level rotation planning, automated ready-candidate token-env execution, manual token/API health checks, protected-branch push avoidance, protected-branch strategy diagnostics, provider review readiness gates, approval-gated provider review execution requests with explicit execution guardrails, redacted starter-file staging summaries, redacted provider API request plans, provider review credential preflight reconciliation, redacted adapter contracts, redacted branch policy plans, redacted live adapter contract plans, redacted adapter rehearsal, explicit mutation arming config, redacted adapter execution blueprints, sanitized failure diagnostics, structured repository reconciliation guidance, operator-triggered provisioning retry, and the guarded GitHub-only manual atomic PR path. Gitea PR/MR execution and the generic stepwise provider adapter remain disabled.
 - Production Kubernetes rollout/TLS/storage-class hardening.
-- WebSocket/Redis-backed log fanout.
+- WebSocket log fanout.
 - Codex CLI process execution for AI tasks.
 - Fully automated disaster-recovery rehearsal operations for production backups; the protected workflow now has an opt-in weekly schedule and offline schedule-readiness plan, but retained backup storage publication and environment-specific secret/runner wiring are still environment-owned.

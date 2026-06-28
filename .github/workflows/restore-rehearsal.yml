@@ -69,7 +69,7 @@ jobs:
 
       - name: Migrate and seed source database
         run: |
-          bin/assops-tool db migrate
+          bin/assops-tool db automigrate
           bin/assops-tool db seed-demo
 
       - name: Backup and rehearse restore

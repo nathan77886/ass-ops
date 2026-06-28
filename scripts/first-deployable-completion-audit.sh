@@ -142,7 +142,7 @@ report="$tmpdir/first-deployable-completion-audit.md"
 cat >"$report" <<'EOF'
 # ASSOPS First Deployable Completion Audit
 
-Generated locally. This audit only checks repository evidence and known external blockers. It does not call GitHub, registries, Kubernetes, Argo, PostgreSQL, Redis, MQ, provider APIs, SSH, or Codex CLI.
+Generated locally. This audit only checks repository evidence and known external blockers. It does not call GitHub, registries, Kubernetes, Argo, PostgreSQL, MQ, provider APIs, SSH, or Codex CLI.
 
 ## Local Evidence Present
 

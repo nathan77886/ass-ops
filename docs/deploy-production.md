@@ -78,7 +78,7 @@ Run the local completion audit when deciding whether the deployable goal can be 
 make first-deployable-completion-audit
 ```
 
-The audit checks the repository evidence and prints the external proof still required before completion. It is intentionally local only: it does not call GitHub, registries, Kubernetes, Argo, PostgreSQL, Redis, MQ, provider APIs, SSH, or Codex CLI.
+The audit checks the repository evidence and prints the external proof still required before completion. It is intentionally local only: it does not call GitHub, registries, Kubernetes, Argo, PostgreSQL, MQ, provider APIs, SSH, or Codex CLI.
 
 Validate Compose expansion:
 

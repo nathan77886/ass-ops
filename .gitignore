@@ -10,3 +10,4 @@ web/dist/
 web/tsconfig.tsbuildinfo
 backend/bin/
 assops-tool
+Agent.md

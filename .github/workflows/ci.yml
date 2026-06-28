@@ -188,7 +188,7 @@ jobs:
 
       - name: Migrate and seed source database
         run: |
-          go run ./backend/cmd/assops-tool db migrate
+          go run ./backend/cmd/assops-tool db automigrate
           go run ./backend/cmd/assops-tool db seed-demo
 
       - name: Backup and rehearse restore

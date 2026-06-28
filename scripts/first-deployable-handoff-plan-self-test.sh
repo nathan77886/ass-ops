@@ -38,7 +38,7 @@ test -s "$out_dir/external-evidence-status.example.json"
 test -s "$out_dir/manifest.json"
 
 grep -q "ASSOPS First Deployable Handoff" "$out_dir/README.md"
-grep -q "No GitHub, registry, Kubernetes, Argo, database, Redis, MQ, or provider API mutation" "$out_dir/README.md"
+grep -q "No GitHub, registry, Kubernetes, Argo, database, MQ, or provider API mutation" "$out_dir/README.md"
 grep -q "External Actions Still Required" "$out_dir/README.md"
 grep -q "Repository administrator applies and verifies the GitHub ruleset" "$out_dir/README.md"
 grep -q "Protected environment owner runs restore rehearsal against a disposable database" "$out_dir/README.md"

@@ -9237,9 +9237,9 @@ func (s *Server) createGitRemote(w http.ResponseWriter, r *http.Request) {
 	credentialID := cleanOptionalID(req.CredentialID)
 	var credential *GormConnectionCredential
 	if credentialID != "" {
-		credential, err = s.connectionCredentialForProjectOrGlobal(r.Context(), projectID, credentialID, "ssh_key")
+		credential, err = s.gitRemoteConnectionCredential(r.Context(), projectID, credentialID)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "credential_id must reference an SSH key credential in this project")
+			writeError(w, http.StatusBadRequest, "credential_id must reference a Git remote credential in this project")
 			return
 		}
 	}
@@ -12199,15 +12199,13 @@ func workerQueueBackendSummary() map[string]any {
 	return map[string]any{
 		"backend":           "postgres",
 		"claiming":          "select_for_update_skip_locked",
-		"redis_locking":     "disabled",
-		"redis_enabled":     false,
 		"pubsub":            "disabled",
 		"pubsub_enabled":    false,
 		"log_fanout":        "sse_polling",
 		"websocket_fanout":  "deferred",
 		"active_components": []string{"postgres_polling", "row_lock_claiming", "sse_polling_log_fanout"},
-		"deferred_backends": []string{"redis_locking", "redis_pubsub", "websocket_fanout"},
-		"message":           "Worker jobs use PostgreSQL polling and row locks; Redis-backed locking and pub/sub fanout are deferred.",
+		"deferred_backends": []string{"websocket_fanout"},
+		"message":           "Worker jobs use PostgreSQL polling and row locks; log fanout uses SSE polling.",
 	}
 }
 
@@ -22251,6 +22249,9 @@ func (s *Server) connectionCredentialsForGitRemotes(ctx context.Context, remotes
 	out := make(map[string]*GormConnectionCredential, len(credentials))
 	for i := range credentials {
 		credential := credentials[i]
+		if !isGitRemoteCredentialKind(credential.Kind) {
+			continue
+		}
 		out[credential.ID] = &credential
 	}
 	return out, nil
@@ -22396,6 +22397,8 @@ func gitRemoteMap(remote GormGitRemote, credential *GormConnectionCredential, pr
 		"created_at":                remote.CreatedAt,
 		"updated_at":                remote.UpdatedAt,
 		"credential_configured":     false,
+		"credential_name":           "",
+		"credential_kind":           "",
 	}
 	if credential != nil {
 		item["credential_name"] = credential.Name
@@ -24504,6 +24507,14 @@ func (s *Server) createConnectionCredentialForProject(w http.ResponseWriter, r *
 		writeError(w, http.StatusBadRequest, "ssh_key secret_value must be a private key")
 		return
 	}
+	if (req.Kind == "git_https_password" || req.Kind == "git_https_token") && req.PublicValue == "" {
+		writeError(w, http.StatusBadRequest, "git HTTPS credentials require public_value username")
+		return
+	}
+	if (req.Kind == "git_https_password" || req.Kind == "git_https_token") && strings.Contains(req.SecretValue, "PRIVATE KEY") {
+		writeError(w, http.StatusBadRequest, "git HTTPS secret_value must not be a private key")
+		return
+	}
 	if projectID == "" && req.Kind != "provider_token" && req.Kind != "ai_provider_api_key" {
 		writeError(w, http.StatusBadRequest, "global credentials must use provider_token or ai_provider_api_key kind")
 		return
@@ -24577,11 +24588,38 @@ func connectionCredentialMap(credential GormConnectionCredential) map[string]any
 
 func cleanConnectionCredentialKind(kind string) string {
 	switch strings.TrimSpace(kind) {
-	case "ssh_key", "ssh_password", "argo_token", "provider_token", "ai_provider_api_key":
+	case "ssh_key", "ssh_password", "git_https_password", "git_https_token", "argo_token", "provider_token", "ai_provider_api_key":
 		return strings.TrimSpace(kind)
 	default:
 		return ""
 	}
+}
+
+func isGitRemoteCredentialKind(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "ssh_key", "git_https_password", "git_https_token":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) gitRemoteConnectionCredential(ctx context.Context, projectID, credentialID string) (*GormConnectionCredential, error) {
+	credential, err := s.connectionCredentialByID(ctx, credentialID)
+	if err != nil {
+		return nil, err
+	}
+	if credential == nil || credential.SecretCiphertext == "" {
+		return nil, ErrNotFound
+	}
+	if !isGitRemoteCredentialKind(credential.Kind) {
+		return nil, ErrNotFound
+	}
+	projectID = cleanOptionalID(projectID)
+	if credential.ProjectID.Valid && cleanOptionalID(credential.ProjectID.String) != projectID {
+		return nil, ErrNotFound
+	}
+	return credential, nil
 }
 
 func connectionCredentialKindForSSHAuth(authType string) string {

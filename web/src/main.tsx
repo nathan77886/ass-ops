@@ -429,9 +429,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.auth_type': 'Credential type the worker should use. Argo uses token; SSH uses key or password.',
     'help.argo_auth_type': 'Argo CD connection authentication mode. The first deployable version supports bearer token only.',
     'help.ssh_auth_type': 'SSH authentication mode prepared for the worker. Use key when the worker has an approved key reference; use password only for controlled test environments.',
-    'help.credential_kind': 'Credential type available to Argo connections and SSH machines.',
+    'help.credential_kind': 'Credential type available to Git remotes, Argo connections, SSH machines, and AI runtimes.',
     'help.secret_value': 'Stored encrypted by the API and never returned by list endpoints.',
-    'help.public_value': 'Optional public key or non-secret note for operators.',
+    'help.public_value': 'Optional public key or non-secret note. For Git HTTPS credentials, enter the username.',
     'help.credential_id': 'Select a credential previously configured for this project.',
     'help.token': 'Argo bearer token. It is sent to the gateway and should be scoped for the target environment.',
     'help.insecure_skip_verify': 'Only use for test clusters with self-signed TLS. Do not enable in production.',
@@ -851,6 +851,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.password': 'Password',
     'option.ssh_key': 'SSH key pair',
     'option.ssh_password': 'SSH password',
+    'option.git_https_password': 'Git HTTPS username/password',
+    'option.git_https_token': 'Git HTTPS username/token',
     'option.argo_token': 'Argo token',
     'option.provider_token': 'Provider token',
     'option.ai_provider_api_key': 'AI provider API key',
@@ -1693,9 +1695,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'help.auth_type': 'Worker 使用的凭证类型。Argo 使用 token，SSH 使用 key 或 password。',
     'help.argo_auth_type': 'Argo CD 连接的认证方式。首个可部署版本仅支持 bearer token。',
     'help.ssh_auth_type': 'Worker 连接 SSH 主机时准备使用的认证方式。Worker 已有审查过的 key 引用时选 key；password 仅用于受控测试环境。',
-    'help.credential_kind': '可供 Argo 连接和 SSH 主机选择的凭据类型。',
+    'help.credential_kind': '可供 Git 远端、Argo 连接、SSH 主机和 AI 运行时选择的凭据类型。',
     'help.secret_value': 'API 加密保存，列表接口永不返回该值。',
-    'help.public_value': '可选公钥或非敏感备注，方便操作者识别。',
+    'help.public_value': '可选公钥或非敏感备注；Git HTTPS 凭据这里填写用户名。',
     'help.credential_id': '选择当前项目已配置的凭据。',
     'help.token': 'Argo bearer token，会提交给 gateway，应限制在目标环境权限内。',
     'help.insecure_skip_verify': '仅用于自签 TLS 的测试集群；生产环境不要启用。',
@@ -2115,6 +2117,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'option.password': '密码',
     'option.ssh_key': 'SSH 密钥对',
     'option.ssh_password': 'SSH 密码',
+    'option.git_https_password': 'Git HTTPS 用户名/密码',
+    'option.git_https_token': 'Git HTTPS 用户名/Token',
     'option.argo_token': 'Argo Token',
     'option.provider_token': '提供方 Token',
     'option.ai_provider_api_key': 'AI 供应商 API Key',
@@ -6970,7 +6974,8 @@ function GitRemotes() {
   const remotes = useLoad(() => repo ? api(`/api/git-repositories/${repo.id}/remotes`) : Promise.resolve({ items: [] }), [repo?.id]);
   const remoteRows = remotes.data?.items || [];
   const credentials = useLoad(() => project ? api(`/api/projects/${project.id}/connection-credentials`) : Promise.resolve({ items: [] }), [project?.id]);
-  const gitCredentialOptions = (credentials.data?.items || []).filter((row: AnyRow) => row.kind === 'ssh_key').map((row: AnyRow) => ({ value: row.id, label: `${row.name || row.id} · ${row.secret_configured ? t('common.configured') : t('common.missing')}` }));
+  const gitCredentialKinds = ['ssh_key', 'git_https_password', 'git_https_token'];
+  const gitCredentialOptions = (credentials.data?.items || []).filter((row: AnyRow) => gitCredentialKinds.includes(row.kind)).map((row: AnyRow) => ({ value: row.id, label: `${row.name || row.id} · ${t(`option.${row.kind}`)} · ${row.secret_configured ? t('common.configured') : t('common.missing')}` }));
   const sourcePick = useSelectedRow(remoteRows);
   const sourceRemote = sourcePick.selected;
   const targetPick = useSelectedRow(remoteRows.filter((row: AnyRow) => row.id !== sourcePick.selectedID));
@@ -9168,7 +9173,6 @@ function WorkerNodes() {
               <Space size={[8, 8]} wrap>
                 <Tag color="blue">backend: {backend.backend}</Tag>
                 <Tag color="geekblue">claiming: {backend.claiming}</Tag>
-                <Tag color="orange">redis locks: {backend.redis_locking}</Tag>
                 <Tag color="orange">pub/sub: {backend.pubsub}</Tag>
                 <Tag color="cyan">logs: {backend.log_fanout}</Tag>
               </Space>
@@ -10847,7 +10851,7 @@ const fieldMeta: Record<string, FieldMeta> = {
   auth_type: { input: 'select', options: ['token', 'key', 'password'], helpKey: 'help.auth_type' },
   argo_auth_type: { input: 'select', options: ['token'], labelKey: 'field.argo_auth_type', helpKey: 'help.argo_auth_type', required: true },
   ssh_auth_type: { input: 'select', options: ['key', 'password'], labelKey: 'field.ssh_auth_type', helpKey: 'help.ssh_auth_type', required: true },
-  kind: { input: 'select', options: ['ssh_key', 'ssh_password', 'argo_token', 'provider_token', 'ai_provider_api_key'], helpKey: 'help.credential_kind', required: true },
+  kind: { input: 'select', options: ['ssh_key', 'ssh_password', 'git_https_password', 'git_https_token', 'argo_token', 'provider_token', 'ai_provider_api_key'], helpKey: 'help.credential_kind', required: true },
   secret_value: { input: 'textarea', helpKey: 'help.secret_value', required: true },
   public_value: { input: 'textarea', helpKey: 'help.public_value' },
   credential_id: { input: 'select', helpKey: 'help.credential_id', required: true },

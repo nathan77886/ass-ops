@@ -341,7 +341,7 @@ EOF
 cat >"$index_file" <<EOF
 # ASSOPS First Deployable Handoff
 
-Generated locally. No GitHub, registry, Kubernetes, Argo, database, Redis, MQ, or provider API mutation was performed by this handoff generator.
+Generated locally. No GitHub, registry, Kubernetes, Argo, database, MQ, or provider API mutation was performed by this handoff generator.
 
 ## Inputs
 
