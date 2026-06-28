@@ -24,7 +24,7 @@ func (m *GormBase) BeforeCreate(*gorm.DB) error {
 
 type GormUser struct {
 	GormBase
-	Email        string `gorm:"not null;uniqueIndex:users_email_key" json:"email"`
+	Email        string `gorm:"not null;unique" json:"email"`
 	Name         string `gorm:"not null;default:''" json:"name"`
 	PasswordHash string `gorm:"not null;default:''" json:"-"`
 	Role         string `gorm:"not null;default:'operator';index" json:"role"`
@@ -35,7 +35,7 @@ func (GormUser) TableName() string { return "users" }
 type GormProject struct {
 	GormBase
 	Name        string `gorm:"not null" json:"name"`
-	Slug        string `gorm:"not null;uniqueIndex:projects_slug_key" json:"slug"`
+	Slug        string `gorm:"not null;unique" json:"slug"`
 	Description string `gorm:"not null;default:''" json:"description"`
 }
 
@@ -43,8 +43,8 @@ func (GormProject) TableName() string { return "projects" }
 
 type GormProjectMember struct {
 	ID        string    `gorm:"type:uuid;primaryKey" json:"id"`
-	ProjectID string    `gorm:"type:uuid;not null;uniqueIndex:project_members_project_user_key" json:"project_id"`
-	UserID    string    `gorm:"type:uuid;not null;uniqueIndex:project_members_project_user_key" json:"user_id"`
+	ProjectID string    `gorm:"type:uuid;not null;index:project_members_project_user_key,unique" json:"project_id"`
+	UserID    string    `gorm:"type:uuid;not null;index:project_members_project_user_key,unique" json:"user_id"`
 	Role      string    `gorm:"not null;default:'viewer'" json:"role"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -60,9 +60,9 @@ func (m *GormProjectMember) BeforeCreate(*gorm.DB) error {
 
 type GormProjectGitRepository struct {
 	GormBase
-	ProjectID     string `gorm:"type:uuid;not null;uniqueIndex:project_git_repositories_project_repo_key_key" json:"project_id"`
+	ProjectID     string `gorm:"type:uuid;not null;index:project_git_repositories_project_repo_key_key,unique" json:"project_id"`
 	Name          string `gorm:"not null" json:"name"`
-	RepoKey       string `gorm:"not null;default:'';uniqueIndex:project_git_repositories_project_repo_key_key" json:"repo_key"`
+	RepoKey       string `gorm:"not null;default:'';index:project_git_repositories_project_repo_key_key,unique" json:"repo_key"`
 	DisplayName   string `gorm:"not null;default:''" json:"display_name"`
 	RepoRole      string `gorm:"not null;default:'service'" json:"repo_role"`
 	Status        string `gorm:"not null;default:'active';index" json:"status"`
@@ -86,7 +86,7 @@ func (GormConnectionCredential) TableName() string { return "connection_credenti
 
 type GormProviderAccount struct {
 	GormBase
-	Name         string         `gorm:"not null;uniqueIndex:provider_accounts_name_key" json:"name"`
+	Name         string         `gorm:"not null;unique" json:"name"`
 	ProviderType string         `gorm:"not null;index" json:"provider_type"`
 	APIBaseURL   string         `gorm:"not null;default:''" json:"api_base_url"`
 	WebBaseURL   string         `gorm:"not null;default:''" json:"web_base_url"`
@@ -102,8 +102,8 @@ func (GormProviderAccount) TableName() string { return "provider_accounts" }
 
 type GormGitRemote struct {
 	GormBase
-	ProjectGitRepositoryID string         `gorm:"type:uuid;not null;uniqueIndex:git_remotes_repo_name_key" json:"project_git_repository_id"`
-	Name                   string         `gorm:"not null;uniqueIndex:git_remotes_repo_name_key" json:"name"`
+	ProjectGitRepositoryID string         `gorm:"type:uuid;not null;index:git_remotes_repo_name_key,unique" json:"project_git_repository_id"`
+	Name                   string         `gorm:"not null;index:git_remotes_repo_name_key,unique" json:"name"`
 	Kind                   string         `gorm:"not null;default:'git'" json:"kind"`
 	RemoteKey              string         `gorm:"not null;default:'';index" json:"remote_key"`
 	ProviderType           string         `gorm:"not null;default:'git';index" json:"provider_type"`
@@ -187,7 +187,7 @@ func (GormOperationRun) TableName() string { return "operation_runs" }
 
 type GormWorkerNode struct {
 	GormBase
-	Name            string         `gorm:"not null;uniqueIndex:worker_nodes_name_key" json:"name"`
+	Name            string         `gorm:"not null;unique" json:"name"`
 	Kind            string         `gorm:"not null;default:'generic';index" json:"kind"`
 	Capabilities    pq.StringArray `gorm:"type:text[]" json:"capabilities"`
 	Status          string         `gorm:"not null;default:'unknown';index" json:"status"`
@@ -217,8 +217,8 @@ func (m *GormRepoSyncPolicy) BeforeCreate(*gorm.DB) error {
 
 type GormProjectVersion struct {
 	ID        string    `gorm:"type:uuid;primaryKey" json:"id"`
-	ProjectID string    `gorm:"type:uuid;not null;uniqueIndex:idx_project_versions_project_version" json:"project_id"`
-	Version   string    `gorm:"not null;uniqueIndex:idx_project_versions_project_version" json:"version"`
+	ProjectID string    `gorm:"type:uuid;not null;index:idx_project_versions_project_version,unique" json:"project_id"`
+	Version   string    `gorm:"not null;index:idx_project_versions_project_version,unique" json:"version"`
 	Source    string    `gorm:"not null;default:'manual'" json:"source"`
 	Metadata  JSONValue `gorm:"type:jsonb;not null" json:"metadata"`
 	CreatedAt time.Time `json:"created_at"`
@@ -470,9 +470,9 @@ func (m *GormAgentToolToken) BeforeCreate(*gorm.DB) error {
 type GormArgoApp struct {
 	GormBase
 	ProjectID          string         `gorm:"type:uuid;not null;index" json:"project_id"`
-	ArgoConnectionID   sql.NullString `gorm:"type:uuid;uniqueIndex:idx_argo_apps_conn_name" json:"argo_connection_id"`
+	ArgoConnectionID   sql.NullString `gorm:"type:uuid;index:idx_argo_apps_conn_name,unique" json:"argo_connection_id"`
 	DeploymentTargetID sql.NullString `gorm:"type:uuid;index" json:"deployment_target_id"`
-	Name               string         `gorm:"not null;uniqueIndex:idx_argo_apps_conn_name" json:"name"`
+	Name               string         `gorm:"not null;index:idx_argo_apps_conn_name,unique" json:"name"`
 	Namespace          string         `gorm:"not null;default:''" json:"namespace"`
 	Status             string         `gorm:"not null;default:'unknown';index" json:"status"`
 	Metadata           JSONValue      `gorm:"type:jsonb;not null" json:"metadata"`
@@ -509,11 +509,11 @@ func (m *GormSSHCommandRun) BeforeCreate(*gorm.DB) error {
 
 type GormDeploymentTarget struct {
 	GormBase
-	ProjectID        string         `gorm:"type:uuid;not null;uniqueIndex:deployment_targets_project_scope_key" json:"project_id"`
+	ProjectID        string         `gorm:"type:uuid;not null;index:deployment_targets_project_scope_key,unique" json:"project_id"`
 	Name             string         `gorm:"not null" json:"name"`
-	Environment      string         `gorm:"not null;default:'default';uniqueIndex:deployment_targets_project_scope_key" json:"environment"`
-	ClusterName      string         `gorm:"not null;default:'';uniqueIndex:deployment_targets_project_scope_key" json:"cluster_name"`
-	Namespace        string         `gorm:"not null;default:'';uniqueIndex:deployment_targets_project_scope_key" json:"namespace"`
+	Environment      string         `gorm:"not null;default:'default';index:deployment_targets_project_scope_key,unique" json:"environment"`
+	ClusterName      string         `gorm:"not null;default:'';index:deployment_targets_project_scope_key,unique" json:"cluster_name"`
+	Namespace        string         `gorm:"not null;default:'';index:deployment_targets_project_scope_key,unique" json:"namespace"`
 	Source           string         `gorm:"not null;default:'argocd'" json:"source"`
 	ArgoConnectionID sql.NullString `gorm:"type:uuid;index" json:"argo_connection_id"`
 	Status           string         `gorm:"not null;default:'unknown';index" json:"status"`
@@ -524,15 +524,15 @@ func (GormDeploymentTarget) TableName() string { return "deployment_targets" }
 
 type GormDeploymentRecord struct {
 	GormBase
-	ProjectID          string         `gorm:"type:uuid;not null;uniqueIndex:deployment_records_identity_key" json:"project_id"`
+	ProjectID          string         `gorm:"type:uuid;not null;index:deployment_records_identity_key,unique" json:"project_id"`
 	DeploymentTargetID sql.NullString `gorm:"type:uuid;index" json:"deployment_target_id"`
 	ArgoConnectionID   sql.NullString `gorm:"type:uuid;index" json:"argo_connection_id"`
 	ArgoAppID          sql.NullString `gorm:"type:uuid;index" json:"argo_app_id"`
-	Name               string         `gorm:"not null;uniqueIndex:deployment_records_identity_key" json:"name"`
-	Environment        string         `gorm:"not null;default:'';uniqueIndex:deployment_records_identity_key" json:"environment"`
-	Namespace          string         `gorm:"not null;default:'';uniqueIndex:deployment_records_identity_key" json:"namespace"`
-	ClusterName        string         `gorm:"not null;default:'';uniqueIndex:deployment_records_identity_key" json:"cluster_name"`
-	Source             string         `gorm:"not null;default:'argocd';uniqueIndex:deployment_records_identity_key" json:"source"`
+	Name               string         `gorm:"not null;index:deployment_records_identity_key,unique" json:"name"`
+	Environment        string         `gorm:"not null;default:'';index:deployment_records_identity_key,unique" json:"environment"`
+	Namespace          string         `gorm:"not null;default:'';index:deployment_records_identity_key,unique" json:"namespace"`
+	ClusterName        string         `gorm:"not null;default:'';index:deployment_records_identity_key,unique" json:"cluster_name"`
+	Source             string         `gorm:"not null;default:'argocd';index:deployment_records_identity_key,unique" json:"source"`
 	Status             string         `gorm:"not null;default:'unknown';index" json:"status"`
 	Revision           string         `gorm:"not null;default:''" json:"revision"`
 	ImageRefs          JSONValue      `gorm:"type:jsonb;not null" json:"image_refs"`
@@ -544,14 +544,14 @@ func (GormDeploymentRecord) TableName() string { return "deployment_records" }
 
 type GormRollbackPoint struct {
 	ID                 string         `gorm:"type:uuid;primaryKey" json:"id"`
-	ProjectID          string         `gorm:"type:uuid;not null;uniqueIndex:rollback_points_identity_key" json:"project_id"`
+	ProjectID          string         `gorm:"type:uuid;not null;index:rollback_points_identity_key,unique" json:"project_id"`
 	DeploymentRecordID sql.NullString `gorm:"type:uuid;index" json:"deployment_record_id"`
 	DeploymentTargetID sql.NullString `gorm:"type:uuid;index" json:"deployment_target_id"`
-	Name               string         `gorm:"not null;uniqueIndex:rollback_points_identity_key" json:"name"`
-	Environment        string         `gorm:"not null;default:'';uniqueIndex:rollback_points_identity_key" json:"environment"`
-	Revision           string         `gorm:"not null;default:'';uniqueIndex:rollback_points_identity_key" json:"revision"`
+	Name               string         `gorm:"not null;index:rollback_points_identity_key,unique" json:"name"`
+	Environment        string         `gorm:"not null;default:'';index:rollback_points_identity_key,unique" json:"environment"`
+	Revision           string         `gorm:"not null;default:'';index:rollback_points_identity_key,unique" json:"revision"`
 	ImageRefs          JSONValue      `gorm:"type:jsonb;not null" json:"image_refs"`
-	Source             string         `gorm:"not null;default:'argocd';uniqueIndex:rollback_points_identity_key" json:"source"`
+	Source             string         `gorm:"not null;default:'argocd';index:rollback_points_identity_key,unique" json:"source"`
 	Status             string         `gorm:"not null;default:'available';index" json:"status"`
 	Metadata           JSONValue      `gorm:"type:jsonb;not null" json:"metadata"`
 	CapturedAt         time.Time      `gorm:"not null;index" json:"captured_at"`
@@ -570,9 +570,9 @@ func (m *GormRollbackPoint) BeforeCreate(*gorm.DB) error {
 type GormAsset struct {
 	GormBase
 	ProjectID   sql.NullString `gorm:"type:uuid;index" json:"project_id"`
-	AssetType   string         `gorm:"not null;uniqueIndex:assets_source_key" json:"asset_type"`
-	SourceTable string         `gorm:"not null;default:'';uniqueIndex:assets_source_key" json:"source_table"`
-	SourceID    sql.NullString `gorm:"type:uuid;uniqueIndex:assets_source_key" json:"source_id"`
+	AssetType   string         `gorm:"not null;index:assets_source_key,unique" json:"asset_type"`
+	SourceTable string         `gorm:"not null;default:'';index:assets_source_key,unique" json:"source_table"`
+	SourceID    sql.NullString `gorm:"type:uuid;index:assets_source_key,unique" json:"source_id"`
 	Name        string         `gorm:"not null" json:"name"`
 	DisplayName string         `gorm:"not null;default:''" json:"display_name"`
 	Description string         `gorm:"not null;default:''" json:"description"`
@@ -589,9 +589,9 @@ func (GormAsset) TableName() string { return "assets" }
 type GormAssetRelation struct {
 	ID           string         `gorm:"type:uuid;primaryKey" json:"id"`
 	ProjectID    sql.NullString `gorm:"type:uuid;index" json:"project_id"`
-	FromAssetID  string         `gorm:"type:uuid;not null;uniqueIndex:asset_relations_unique_relation" json:"from_asset_id"`
-	ToAssetID    string         `gorm:"type:uuid;not null;uniqueIndex:asset_relations_unique_relation" json:"to_asset_id"`
-	RelationType string         `gorm:"not null;uniqueIndex:asset_relations_unique_relation" json:"relation_type"`
+	FromAssetID  string         `gorm:"type:uuid;not null;index:asset_relations_unique_relation,unique" json:"from_asset_id"`
+	ToAssetID    string         `gorm:"type:uuid;not null;index:asset_relations_unique_relation,unique" json:"to_asset_id"`
+	RelationType string         `gorm:"not null;index:asset_relations_unique_relation,unique" json:"relation_type"`
 	Metadata     JSONValue      `gorm:"type:jsonb;not null" json:"metadata"`
 	CreatedAt    time.Time      `json:"created_at"`
 }
@@ -626,7 +626,7 @@ func (m *GormAssetStatusSnapshot) BeforeCreate(*gorm.DB) error {
 
 type GormProjectTemplate struct {
 	GormBase
-	Slug        string    `gorm:"not null;uniqueIndex:project_templates_slug_key" json:"slug"`
+	Slug        string    `gorm:"not null;unique" json:"slug"`
 	Name        string    `gorm:"not null" json:"name"`
 	Description string    `gorm:"not null;default:''" json:"description"`
 	Version     string    `gorm:"not null;default:'v0.1'" json:"version"`
@@ -640,7 +640,7 @@ func (GormProjectTemplate) TableName() string { return "project_templates" }
 
 type GormProjectTemplateRun struct {
 	GormBase
-	OperationRunID    sql.NullString `gorm:"type:uuid;uniqueIndex" json:"operation_run_id"`
+	OperationRunID    sql.NullString `gorm:"type:uuid;unique" json:"operation_run_id"`
 	ProjectTemplateID sql.NullString `gorm:"type:uuid;index" json:"project_template_id"`
 	ProjectID         sql.NullString `gorm:"type:uuid;index" json:"project_id"`
 	RequestedBy       sql.NullString `gorm:"type:uuid;index" json:"requested_by"`
@@ -659,11 +659,11 @@ func (GormProjectTemplateRun) TableName() string { return "project_template_runs
 
 type GormProjectTemplateFile struct {
 	GormBase
-	ProjectTemplateRunID   sql.NullString `gorm:"type:uuid;uniqueIndex:project_template_files_run_path_key" json:"project_template_run_id"`
+	ProjectTemplateRunID   sql.NullString `gorm:"type:uuid;index:project_template_files_run_path_key,unique" json:"project_template_run_id"`
 	ProjectTemplateID      sql.NullString `gorm:"type:uuid;index" json:"project_template_id"`
 	ProjectID              sql.NullString `gorm:"type:uuid;index" json:"project_id"`
 	ProjectGitRepositoryID sql.NullString `gorm:"type:uuid;index" json:"project_git_repository_id"`
-	Path                   string         `gorm:"not null;uniqueIndex:project_template_files_run_path_key" json:"path"`
+	Path                   string         `gorm:"not null;index:project_template_files_run_path_key,unique" json:"path"`
 	Kind                   string         `gorm:"not null;default:'text'" json:"kind"`
 	Content                string         `gorm:"not null;default:''" json:"content"`
 	Status                 string         `gorm:"not null;default:'planned';index" json:"status"`
@@ -675,8 +675,8 @@ func (GormProjectTemplateFile) TableName() string { return "project_template_fil
 type GormRepoSyncAsset struct {
 	GormBase
 	ProjectID              string         `gorm:"type:uuid;not null;index" json:"project_id"`
-	ProjectGitRepositoryID string         `gorm:"type:uuid;not null;uniqueIndex:repo_sync_assets_repo_name_key" json:"project_git_repository_id"`
-	Name                   string         `gorm:"not null;uniqueIndex:repo_sync_assets_repo_name_key" json:"name"`
+	ProjectGitRepositoryID string         `gorm:"type:uuid;not null;index:repo_sync_assets_repo_name_key,unique" json:"project_git_repository_id"`
+	Name                   string         `gorm:"not null;index:repo_sync_assets_repo_name_key,unique" json:"name"`
 	SourceRemoteID         string         `gorm:"type:uuid;not null;index" json:"source_remote_id"`
 	TargetRemoteID         string         `gorm:"type:uuid;not null;index" json:"target_remote_id"`
 	TriggerMode            string         `gorm:"not null;default:'manual'" json:"trigger_mode"`
@@ -769,8 +769,8 @@ func (GormOperationApproval) TableName() string { return "operation_approvals" }
 
 type GormOperationApprovalRule struct {
 	GormBase
-	ResourceType          string         `gorm:"not null;default:'';uniqueIndex:operation_approval_rules_resource_action_key" json:"resource_type"`
-	Action                string         `gorm:"not null;uniqueIndex:operation_approval_rules_resource_action_key" json:"action"`
+	ResourceType          string         `gorm:"not null;default:'';index:operation_approval_rules_resource_action_key,unique" json:"resource_type"`
+	Action                string         `gorm:"not null;index:operation_approval_rules_resource_action_key,unique" json:"action"`
 	RequiredApproverRoles pq.StringArray `gorm:"type:text[]" json:"required_approver_roles"`
 	RequiredApprovalCount int            `gorm:"not null;default:1" json:"required_approval_count"`
 	ExpiresAfterMinutes   int            `gorm:"not null;default:1440" json:"expires_after_minutes"`
@@ -785,8 +785,8 @@ func (GormOperationApprovalRule) TableName() string { return "operation_approval
 
 type GormOperationApprovalDecision struct {
 	ID                  string         `gorm:"type:uuid;primaryKey" json:"id"`
-	OperationApprovalID string         `gorm:"type:uuid;not null;uniqueIndex:operation_approval_decisions_approval_user_key" json:"operation_approval_id"`
-	UserID              sql.NullString `gorm:"type:uuid;uniqueIndex:operation_approval_decisions_approval_user_key" json:"user_id"`
+	OperationApprovalID string         `gorm:"type:uuid;not null;index:operation_approval_decisions_approval_user_key,unique" json:"operation_approval_id"`
+	UserID              sql.NullString `gorm:"type:uuid;index:operation_approval_decisions_approval_user_key,unique" json:"user_id"`
 	Decision            string         `gorm:"not null" json:"decision"`
 	Reason              string         `gorm:"not null;default:''" json:"reason"`
 	DecidedAt           time.Time      `gorm:"not null;index" json:"decided_at"`
@@ -803,9 +803,9 @@ func (m *GormOperationApprovalDecision) BeforeCreate(*gorm.DB) error {
 
 type GormOperationApprovalDelegation struct {
 	ID                  string         `gorm:"type:uuid;primaryKey" json:"id"`
-	OperationApprovalID string         `gorm:"type:uuid;not null;uniqueIndex:operation_approval_delegations_approval_user_key" json:"operation_approval_id"`
+	OperationApprovalID string         `gorm:"type:uuid;not null;index:operation_approval_delegations_approval_user_key,unique" json:"operation_approval_id"`
 	FromUserID          sql.NullString `gorm:"type:uuid;index" json:"from_user_id"`
-	ToUserID            string         `gorm:"type:uuid;not null;uniqueIndex:operation_approval_delegations_approval_user_key" json:"to_user_id"`
+	ToUserID            string         `gorm:"type:uuid;not null;index:operation_approval_delegations_approval_user_key,unique" json:"to_user_id"`
 	Reason              string         `gorm:"not null;default:''" json:"reason"`
 	RevokedAt           sql.NullTime   `json:"revoked_at"`
 	CreatedAt           time.Time      `json:"created_at"`
@@ -841,8 +841,8 @@ func (m *GormOperationApprovalRuleAudit) BeforeCreate(*gorm.DB) error {
 
 type GormOperationApprovalView struct {
 	GormBase
-	UserID  string    `gorm:"type:uuid;not null;uniqueIndex:operation_approval_views_user_name_key" json:"user_id"`
-	Name    string    `gorm:"not null;uniqueIndex:operation_approval_views_user_name_key" json:"name"`
+	UserID  string    `gorm:"type:uuid;not null;index:operation_approval_views_user_name_key,unique" json:"user_id"`
+	Name    string    `gorm:"not null;index:operation_approval_views_user_name_key,unique" json:"name"`
 	Filters JSONValue `gorm:"type:jsonb;not null" json:"filters"`
 }
 
@@ -850,8 +850,8 @@ func (GormOperationApprovalView) TableName() string { return "operation_approval
 
 type GormAssetGraphView struct {
 	GormBase
-	UserID  string    `gorm:"type:uuid;not null;uniqueIndex:asset_graph_views_user_name_key" json:"user_id"`
-	Name    string    `gorm:"not null;uniqueIndex:asset_graph_views_user_name_key" json:"name"`
+	UserID  string    `gorm:"type:uuid;not null;index:asset_graph_views_user_name_key,unique" json:"user_id"`
+	Name    string    `gorm:"not null;index:asset_graph_views_user_name_key,unique" json:"name"`
 	Filters JSONValue `gorm:"type:jsonb;not null" json:"filters"`
 }
 
@@ -859,11 +859,11 @@ func (GormAssetGraphView) TableName() string { return "asset_graph_views" }
 
 type GormProviderReviewAttempt struct {
 	GormBase
-	OperationApprovalID            string         `gorm:"type:uuid;not null;uniqueIndex:provider_review_attempts_approval_operation_key" json:"operation_approval_id"`
+	OperationApprovalID            string         `gorm:"type:uuid;not null;index:provider_review_attempts_approval_operation_key,unique" json:"operation_approval_id"`
 	ProjectTemplateRunID           sql.NullString `gorm:"type:uuid;index" json:"project_template_run_id"`
 	ProviderType                   string         `gorm:"not null;default:'';index" json:"provider_type"`
 	ReviewKind                     string         `gorm:"not null;default:''" json:"review_kind"`
-	OperationName                  string         `gorm:"not null;uniqueIndex:provider_review_attempts_approval_operation_key" json:"operation_name"`
+	OperationName                  string         `gorm:"not null;index:provider_review_attempts_approval_operation_key,unique" json:"operation_name"`
 	EndpointKey                    string         `gorm:"not null;default:''" json:"endpoint_key"`
 	Status                         string         `gorm:"not null;default:'planned';index" json:"status"`
 	ReplayCheck                    string         `gorm:"not null;default:''" json:"replay_check"`
@@ -898,12 +898,12 @@ func (GormProviderReviewAttempt) TableName() string { return "provider_review_at
 type GormWebhookThresholdDecisionAudit struct {
 	ID                   string         `gorm:"type:uuid;primaryKey" json:"id"`
 	ProjectID            string         `gorm:"type:uuid;not null;index" json:"project_id"`
-	WebhookConnectionID  string         `gorm:"type:uuid;not null;uniqueIndex:webhook_threshold_decision_audits_once" json:"webhook_connection_id"`
+	WebhookConnectionID  string         `gorm:"type:uuid;not null;index:webhook_threshold_decision_audits_once,unique" json:"webhook_connection_id"`
 	Provider             string         `gorm:"not null;default:''" json:"provider"`
 	ThresholdReviewState string         `gorm:"not null;default:''" json:"threshold_review_state"`
-	DecisionState        string         `gorm:"not null;default:'';uniqueIndex:webhook_threshold_decision_audits_once" json:"decision_state"`
+	DecisionState        string         `gorm:"not null;default:'';index:webhook_threshold_decision_audits_once,unique" json:"decision_state"`
 	OperatorDecision     string         `gorm:"not null;default:''" json:"operator_decision"`
-	EvidenceWindow       string         `gorm:"not null;default:'7d';uniqueIndex:webhook_threshold_decision_audits_once" json:"evidence_window"`
+	EvidenceWindow       string         `gorm:"not null;default:'7d';index:webhook_threshold_decision_audits_once,unique" json:"evidence_window"`
 	Evidence             JSONValue      `gorm:"type:jsonb;not null" json:"evidence"`
 	CreatedBy            sql.NullString `gorm:"type:uuid;index" json:"created_by"`
 	CreatedAt            time.Time      `json:"created_at"`
@@ -923,13 +923,13 @@ func (m *GormWebhookThresholdDecisionAudit) BeforeCreate(*gorm.DB) error {
 type GormWebhookThresholdConfiguration struct {
 	ID                  string         `gorm:"type:uuid;primaryKey" json:"id"`
 	ProjectID           string         `gorm:"type:uuid;not null;index" json:"project_id"`
-	WebhookConnectionID string         `gorm:"type:uuid;not null;uniqueIndex:webhook_threshold_configurations_once" json:"webhook_connection_id"`
+	WebhookConnectionID string         `gorm:"type:uuid;not null;index:webhook_threshold_configurations_once,unique" json:"webhook_connection_id"`
 	Provider            string         `gorm:"not null;default:''" json:"provider"`
-	ThresholdKey        string         `gorm:"not null;uniqueIndex:webhook_threshold_configurations_once" json:"threshold_key"`
+	ThresholdKey        string         `gorm:"not null;index:webhook_threshold_configurations_once,unique" json:"threshold_key"`
 	WarningAt           int            `gorm:"not null" json:"warning_at"`
 	DangerAt            int            `gorm:"not null" json:"danger_at"`
 	Unit                string         `gorm:"not null;default:''" json:"unit"`
-	EvidenceWindow      string         `gorm:"not null;default:'7d';uniqueIndex:webhook_threshold_configurations_once" json:"evidence_window"`
+	EvidenceWindow      string         `gorm:"not null;default:'7d';index:webhook_threshold_configurations_once,unique" json:"evidence_window"`
 	SourceAuditID       sql.NullString `gorm:"type:uuid;index" json:"source_audit_id"`
 	Evidence            JSONValue      `gorm:"type:jsonb;not null" json:"evidence"`
 	AppliedBy           sql.NullString `gorm:"type:uuid;index" json:"applied_by"`
@@ -950,8 +950,8 @@ func (m *GormWebhookThresholdConfiguration) BeforeCreate(*gorm.DB) error {
 type GormGitHubActionArtifact struct {
 	ID                 string       `gorm:"type:uuid;primaryKey" json:"id"`
 	GitRemoteID        string       `gorm:"type:uuid;not null;index" json:"git_remote_id"`
-	GitHubActionRunID  string       `gorm:"column:github_action_run_id;type:uuid;not null;uniqueIndex:github_action_artifacts_run_external_key" json:"github_action_run_id"`
-	ExternalArtifactID string       `gorm:"not null;default:'';uniqueIndex:github_action_artifacts_run_external_key" json:"external_artifact_id"`
+	GitHubActionRunID  string       `gorm:"column:github_action_run_id;type:uuid;not null;index:github_action_artifacts_run_external_key,unique" json:"github_action_run_id"`
+	ExternalArtifactID string       `gorm:"not null;default:'';index:github_action_artifacts_run_external_key,unique" json:"external_artifact_id"`
 	Name               string       `gorm:"not null;default:'';index" json:"name"`
 	SizeInBytes        int64        `gorm:"not null;default:0" json:"size_in_bytes"`
 	Expired            bool         `gorm:"not null;default:false" json:"expired"`
@@ -973,11 +973,11 @@ func (m *GormGitHubActionArtifact) BeforeCreate(*gorm.DB) error {
 
 type GormKubernetesEnvironment struct {
 	GormBase
-	ProjectID                string    `gorm:"type:uuid;not null;uniqueIndex:kubernetes_environments_scope_key" json:"project_id"`
+	ProjectID                string    `gorm:"type:uuid;not null;index:kubernetes_environments_scope_key,unique" json:"project_id"`
 	Name                     string    `gorm:"not null" json:"name"`
-	Environment              string    `gorm:"not null;default:'';uniqueIndex:kubernetes_environments_scope_key" json:"environment"`
-	ClusterName              string    `gorm:"not null;default:'';uniqueIndex:kubernetes_environments_scope_key" json:"cluster_name"`
-	Namespace                string    `gorm:"not null;default:'';uniqueIndex:kubernetes_environments_scope_key" json:"namespace"`
+	Environment              string    `gorm:"not null;default:'';index:kubernetes_environments_scope_key,unique" json:"environment"`
+	ClusterName              string    `gorm:"not null;default:'';index:kubernetes_environments_scope_key,unique" json:"cluster_name"`
+	Namespace                string    `gorm:"not null;default:'';index:kubernetes_environments_scope_key,unique" json:"namespace"`
 	KubeconfigSecretRef      string    `gorm:"not null;default:''" json:"kubeconfig_secret_ref"`
 	ServiceAccount           string    `gorm:"not null;default:''" json:"service_account"`
 	TokenSubjectReviewStatus string    `gorm:"not null;default:'not_reviewed'" json:"token_subject_review_status"`
