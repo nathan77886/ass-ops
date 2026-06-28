@@ -1,17 +1,21 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+	sshagent "golang.org/x/crypto/ssh/agent"
+	"golang.org/x/crypto/ssh/knownhosts"
 	"gorm.io/gorm"
 )
 
@@ -20,14 +24,23 @@ type SSHExecutor struct {
 }
 
 type sshRunner interface {
-	Run(ctx context.Context, name string, args ...string) (string, string, int, error)
+	Run(ctx context.Context, request sshRunRequest) (string, string, int, error)
 }
 
-type sshEnvRunner interface {
-	RunWithEnv(ctx context.Context, env []string, name string, args ...string) (string, string, int, error)
-}
+type nativeSSHRunner struct{}
 
-type execSSHRunner struct{}
+type sshRunRequest struct {
+	Host                  string
+	Port                  int
+	Username              string
+	Command               string
+	AuthType              string
+	Password              string
+	KeyPath               string
+	KnownHostsPath        string
+	StrictHostKeyChecking string
+	ConnectTimeout        time.Duration
+}
 
 type SSHExecutionResult struct {
 	Stdout   string
@@ -37,41 +50,75 @@ type SSHExecutionResult struct {
 }
 
 func NewSSHExecutor() *SSHExecutor {
-	return &SSHExecutor{Runner: execSSHRunner{}}
+	return &SSHExecutor{Runner: nativeSSHRunner{}}
 }
 
-func (execSSHRunner) Run(ctx context.Context, name string, args ...string) (string, string, int, error) {
-	return runSSHCommand(ctx, nil, name, args...)
-}
-
-func (execSSHRunner) RunWithEnv(ctx context.Context, env []string, name string, args ...string) (string, string, int, error) {
-	return runSSHCommand(ctx, env, name, args...)
-}
-
-func runSSHCommand(ctx context.Context, env []string, name string, args ...string) (string, string, int, error) {
-	if name == "sshpass" {
-		if _, err := exec.LookPath("sshpass"); err != nil {
-			return "", "", 127, fmt.Errorf("sshpass is required for SSH password authentication but is not installed")
-		}
-	}
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Env = os.Environ()
-	if len(env) > 0 {
-		cmd.Env = append(cmd.Env, env...)
-	}
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	exitCode := 0
+func (nativeSSHRunner) Run(ctx context.Context, request sshRunRequest) (string, string, int, error) {
+	authMethods, cleanupAuth, err := sshAuthMethods(request)
 	if err != nil {
-		exitCode = 1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
+		return "", "", 1, err
 	}
-	return stdout.String(), stderr.String(), exitCode, err
+	defer cleanupAuth()
+	hostKeyCallback, err := sshHostKeyCallback(request.KnownHostsPath, request.StrictHostKeyChecking)
+	if err != nil {
+		return "", "", 1, err
+	}
+	timeout := request.ConnectTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	config := &ssh.ClientConfig{
+		User:            request.Username,
+		Auth:            authMethods,
+		HostKeyCallback: hostKeyCallback,
+		Timeout:         timeout,
+	}
+	address := net.JoinHostPort(request.Host, strconv.Itoa(request.Port))
+	dialer := net.Dialer{Timeout: timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return "", "", 1, err
+	}
+	if err := conn.SetDeadline(sshHandshakeDeadline(ctx, timeout)); err != nil {
+		_ = conn.Close()
+		return "", "", 1, err
+	}
+	clientConn, chans, reqs, err := ssh.NewClientConn(conn, address, config)
+	if err != nil {
+		_ = conn.Close()
+		return "", "", 1, err
+	}
+	_ = conn.SetDeadline(time.Time{})
+	client := ssh.NewClient(clientConn, chans, reqs)
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		return "", "", 1, err
+	}
+	defer session.Close()
+	var stdout, stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Run(request.Command)
+	}()
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		_ = session.Close()
+		return stdout.String(), stderr.String(), 1, ctx.Err()
+	case err := <-done:
+		exitCode := 0
+		if err != nil {
+			exitCode = 1
+			var exitErr *ssh.ExitError
+			if errors.As(err, &exitErr) {
+				exitCode = exitErr.ExitStatus()
+			}
+		}
+		return stdout.String(), stderr.String(), exitCode, err
+	}
 }
 
 func (e *SSHExecutor) Execute(ctx context.Context, db *gorm.DB, opID string) (*SSHExecutionResult, error) {
@@ -105,28 +152,17 @@ func (e *SSHExecutor) Execute(ctx context.Context, db *gorm.DB, opID string) (*S
 		return nil, err
 	}
 	machineInput := sshMachineMap(machine, nil)
-	args, env, err := sshCommandInvocation(ctx, db, machine, machineInput, command)
+	request, err := sshCommandInvocation(ctx, db, machine, machineInput, command)
 	if err != nil {
 		return nil, err
 	}
 	runner := e.Runner
 	if runner == nil {
-		runner = execSSHRunner{}
+		runner = nativeSSHRunner{}
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
-	name := "ssh"
-	if len(env) > 0 {
-		name = "sshpass"
-		args = append([]string{"-e", "ssh"}, args...)
-	}
-	var stdout, stderr string
-	var exitCode int
-	if envRunner, ok := runner.(sshEnvRunner); ok {
-		stdout, stderr, exitCode, err = envRunner.RunWithEnv(runCtx, env, name, args...)
-	} else {
-		stdout, stderr, exitCode, err = runner.Run(runCtx, name, args...)
-	}
+	stdout, stderr, exitCode, err := runner.Run(runCtx, request)
 	result := &SSHExecutionResult{
 		Stdout:   truncateOutput(sanitizeSSHOutput(stdout), 64*1024),
 		Stderr:   truncateOutput(sanitizeSSHOutput(stderr), 64*1024),
@@ -145,20 +181,20 @@ func (e *SSHExecutor) Execute(ctx context.Context, db *gorm.DB, opID string) (*S
 	return result, nil
 }
 
-func sshCommandInvocation(ctx context.Context, db *gorm.DB, machine GormSSHMachine, machineInput map[string]any, command string) ([]string, []string, error) {
-	args, err := sshCommandArgs(machineInput, command)
+func sshCommandInvocation(ctx context.Context, db *gorm.DB, machine GormSSHMachine, machineInput map[string]any, command string) (sshRunRequest, error) {
+	request, err := sshCommandRequest(machineInput, command)
 	if err != nil {
-		return nil, nil, err
+		return sshRunRequest{}, err
 	}
 	if strings.TrimSpace(machine.AuthType) != "password" {
-		return args, nil, nil
+		return request, nil
 	}
 	if db == nil {
-		return nil, nil, fmt.Errorf("database is not configured")
+		return sshRunRequest{}, fmt.Errorf("database is not configured")
 	}
 	credentialID := cleanOptionalID(machine.CredentialID.String)
 	if credentialID == "" {
-		return nil, nil, fmt.Errorf("SSH password credential is not configured")
+		return sshRunRequest{}, fmt.Errorf("SSH password credential is not configured")
 	}
 	var credential GormConnectionCredential
 	if err := db.WithContext(ctx).
@@ -166,21 +202,22 @@ func sshCommandInvocation(ctx context.Context, db *gorm.DB, machine GormSSHMachi
 		Where("id = ? AND project_id = ?", credentialID, machine.ProjectID).
 		First(&credential).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil, fmt.Errorf("SSH password credential is not configured")
+			return sshRunRequest{}, fmt.Errorf("SSH password credential is not configured")
 		}
-		return nil, nil, fmt.Errorf("loading SSH password credential: %w", err)
+		return sshRunRequest{}, fmt.Errorf("loading SSH password credential: %w", err)
 	}
 	if strings.TrimSpace(credential.SecretCiphertext) == "" {
-		return nil, nil, fmt.Errorf("SSH password credential is not configured")
+		return sshRunRequest{}, fmt.Errorf("SSH password credential is not configured")
 	}
 	password, err := decryptArgoCredentialSecret(credential.SecretCiphertext, argoCredentialSecretKeyMaterial())
 	if err != nil {
-		return nil, nil, fmt.Errorf("decrypting SSH password credential failed")
+		return sshRunRequest{}, fmt.Errorf("decrypting SSH password credential failed")
 	}
 	if strings.TrimSpace(password) == "" {
-		return nil, nil, fmt.Errorf("SSH password credential is empty")
+		return sshRunRequest{}, fmt.Errorf("SSH password credential is empty")
 	}
-	return args, []string{"SSHPASS=" + password}, nil
+	request.Password = password
+	return request, nil
 }
 
 func sshExecutionCommand(input map[string]any, storedCommand string) (string, int, bool, error) {
@@ -205,52 +242,229 @@ func sshExecutionCommand(input map[string]any, storedCommand string) (string, in
 	return command, timeout, verify, nil
 }
 
-func sshCommandArgs(machine map[string]any, command string) ([]string, error) {
+func sshCommandRequest(machine map[string]any, command string) (sshRunRequest, error) {
 	host := strings.TrimSpace(fmt.Sprint(machine["host"]))
 	username := strings.TrimSpace(fmt.Sprint(machine["username"]))
 	if host == "" || host == "<nil>" || username == "" || username == "<nil>" {
-		return nil, fmt.Errorf("SSH machine host and username are required")
+		return sshRunRequest{}, fmt.Errorf("SSH machine host and username are required")
 	}
 	port := strings.TrimSpace(fmt.Sprint(machine["port"]))
 	if port == "" || port == "<nil>" {
 		port = "22"
 	}
-	if _, err := strconv.Atoi(port); err != nil {
-		return nil, fmt.Errorf("invalid SSH port")
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber <= 0 || portNumber > 65535 {
+		return sshRunRequest{}, fmt.Errorf("invalid SSH port")
 	}
 	metadata := mapFromAny(machine["metadata"])
 	authType := strings.TrimSpace(fmt.Sprint(machine["auth_type"]))
-	batchMode := "yes"
-	if authType == "password" {
-		batchMode = "no"
-	}
-	args := []string{
-		"-o", "BatchMode=" + batchMode,
-		"-o", "ConnectTimeout=10",
-		"-p", port,
-	}
-	if authType == "password" {
-		args = append(args, "-o", "PreferredAuthentications=password,keyboard-interactive")
+	request := sshRunRequest{
+		Host:                  host,
+		Port:                  portNumber,
+		Username:              username,
+		Command:               command,
+		AuthType:              authType,
+		StrictHostKeyChecking: "accept-new",
+		ConnectTimeout:        10 * time.Second,
 	}
 	if knownHosts := strings.TrimSpace(fmt.Sprint(metadata["known_hosts_path"])); knownHosts != "" && knownHosts != "<nil>" {
 		if err := validateSSHPath(knownHosts, "ASSOPS_SSH_KNOWN_HOSTS_DIR", "/etc/assops/ssh"); err != nil {
-			return nil, fmt.Errorf("invalid known_hosts_path: %w", err)
+			return sshRunRequest{}, fmt.Errorf("invalid known_hosts_path: %w", err)
 		}
-		args = append(args, "-o", "UserKnownHostsFile="+knownHosts)
+		request.KnownHostsPath = knownHosts
 	}
 	strict := strings.TrimSpace(fmt.Sprint(metadata["strict_host_key_checking"]))
+	if strict != "" && strict != "<nil>" {
+		request.StrictHostKeyChecking = strict
+	}
+	if keyPath := strings.TrimSpace(fmt.Sprint(metadata["key_path"])); keyPath != "" && keyPath != "<nil>" {
+		if err := validateSSHPath(keyPath, "ASSOPS_SSH_KEY_DIR", "/etc/assops/ssh"); err != nil {
+			return sshRunRequest{}, fmt.Errorf("invalid key_path: %w", err)
+		}
+		request.KeyPath = keyPath
+	}
+	return request, nil
+}
+
+func sshAuthMethods(request sshRunRequest) ([]ssh.AuthMethod, func(), error) {
+	var methods []ssh.AuthMethod
+	var cleanup []func()
+	if strings.TrimSpace(request.Password) != "" {
+		methods = append(methods, ssh.Password(request.Password), ssh.KeyboardInteractive(func(_ string, _ string, questions []string, _ []bool) ([]string, error) {
+			answers := make([]string, len(questions))
+			for i := range answers {
+				answers[i] = request.Password
+			}
+			return answers, nil
+		}))
+	}
+	if strings.TrimSpace(request.KeyPath) != "" {
+		method, ok, err := sshPrivateKeyAuthMethod(request.KeyPath, true)
+		if err != nil {
+			return nil, noop, err
+		}
+		if ok {
+			methods = append(methods, method)
+		}
+	}
+	if agentMethod, agentCleanup := sshAgentAuthMethod(); agentMethod != nil {
+		methods = append(methods, agentMethod)
+		cleanup = append(cleanup, agentCleanup)
+	}
+	for _, identityPath := range defaultSSHIdentityPaths() {
+		method, ok, err := sshPrivateKeyAuthMethod(identityPath, false)
+		if err != nil {
+			return nil, joinedCleanup(cleanup), err
+		}
+		if ok {
+			methods = append(methods, method)
+		}
+	}
+	if len(methods) == 0 && request.AuthType == "password" {
+		return nil, joinedCleanup(cleanup), fmt.Errorf("SSH password credential is not configured")
+	}
+	if len(methods) == 0 {
+		return nil, joinedCleanup(cleanup), fmt.Errorf("SSH key_path, SSH agent, or default SSH identity is required for key authentication")
+	}
+	return methods, joinedCleanup(cleanup), nil
+}
+
+func sshPrivateKeyAuthMethod(path string, explicit bool) (ssh.AuthMethod, bool, error) {
+	key, err := os.ReadFile(path)
+	if err != nil {
+		if explicit {
+			return nil, false, fmt.Errorf("reading SSH key failed: %w", err)
+		}
+		return nil, false, nil
+	}
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		var passphraseErr *ssh.PassphraseMissingError
+		if explicit && errors.As(err, &passphraseErr) {
+			return nil, false, fmt.Errorf("SSH key passphrase is required for encrypted private key")
+		}
+		if errors.As(err, &passphraseErr) {
+			return nil, false, nil
+		}
+		if explicit {
+			return nil, false, fmt.Errorf("parsing SSH key failed: %w", err)
+		}
+		return nil, false, nil
+	}
+	return ssh.PublicKeys(signer), true, nil
+}
+
+func sshAgentAuthMethod() (ssh.AuthMethod, func()) {
+	socket := strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK"))
+	if socket == "" {
+		return nil, nil
+	}
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		return nil, nil
+	}
+	return ssh.PublicKeysCallback(sshagent.NewClient(conn).Signers), func() { _ = conn.Close() }
+}
+
+func defaultSSHIdentityPaths() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, ".ssh", "id_ed25519"),
+		filepath.Join(home, ".ssh", "id_ecdsa"),
+		filepath.Join(home, ".ssh", "id_rsa"),
+	}
+}
+
+func joinedCleanup(cleanups []func()) func() {
+	if len(cleanups) == 0 {
+		return noop
+	}
+	return func() {
+		for _, cleanup := range cleanups {
+			if cleanup != nil {
+				cleanup()
+			}
+		}
+	}
+}
+
+func noop() {
+}
+
+func sshHostKeyCallback(knownHostsPath, strict string) (ssh.HostKeyCallback, error) {
+	strict = strings.ToLower(strings.TrimSpace(strict))
 	if strict == "" || strict == "<nil>" {
 		strict = "accept-new"
 	}
-	args = append(args, "-o", "StrictHostKeyChecking="+strict)
-	if keyPath := strings.TrimSpace(fmt.Sprint(metadata["key_path"])); keyPath != "" && keyPath != "<nil>" {
-		if err := validateSSHPath(keyPath, "ASSOPS_SSH_KEY_DIR", "/etc/assops/ssh"); err != nil {
-			return nil, fmt.Errorf("invalid key_path: %w", err)
-		}
-		args = append(args, "-i", keyPath)
+	if strict == "no" || strict == "false" {
+		return ssh.InsecureIgnoreHostKey(), nil
 	}
-	args = append(args, username+"@"+host, command)
-	return args, nil
+	if knownHostsPath == "" {
+		knownHostsPath = defaultKnownHostsPath()
+	}
+	if knownHostsPath == "" {
+		if strict == "yes" || strict == "true" {
+			return nil, fmt.Errorf("known_hosts_path is required when strict host key checking is enabled")
+		}
+		return ssh.InsecureIgnoreHostKey(), nil
+	}
+	callback, err := knownhosts.New(knownHostsPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) && strict == "accept-new" {
+			return func(hostname string, _ net.Addr, key ssh.PublicKey) error {
+				return appendKnownHostKey(knownHostsPath, hostname, key)
+			}, nil
+		}
+		return nil, fmt.Errorf("loading known_hosts failed: %w", err)
+	}
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		err := callback(hostname, remote, key)
+		if err == nil {
+			return nil
+		}
+		var keyErr *knownhosts.KeyError
+		if errors.As(err, &keyErr) && len(keyErr.Want) == 0 && strict == "accept-new" {
+			return appendKnownHostKey(knownHostsPath, hostname, key)
+		}
+		return err
+	}, nil
+}
+
+func defaultKnownHostsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".ssh", "known_hosts")
+}
+
+func appendKnownHostKey(path, hostname string, key ssh.PublicKey) error {
+	if strings.TrimSpace(hostname) == "" {
+		return fmt.Errorf("known_hosts hostname is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("creating known_hosts directory failed: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return fmt.Errorf("opening known_hosts failed: %w", err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString(knownhosts.Line([]string{hostname}, key) + "\n"); err != nil {
+		return fmt.Errorf("writing known_hosts failed: %w", err)
+	}
+	return nil
+}
+
+func sshHandshakeDeadline(ctx context.Context, timeout time.Duration) time.Time {
+	deadline := time.Now().Add(timeout)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		return ctxDeadline
+	}
+	return deadline
 }
 
 func validateSSHPath(pathValue, envKey, fallbackDir string) error {
