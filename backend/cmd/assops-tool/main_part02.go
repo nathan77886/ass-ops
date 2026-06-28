@@ -250,6 +250,7 @@ func rehearseRestore(ctx context.Context, cfg app.Config, backupPath, targetData
 		"backup_object_counts": pgRestoreListObjectCounts(inspectOutput),
 		"restore_output_lines": countNonEmptyLines(restoreOutput),
 		"schema_update":        "gorm_auto_migrate",
+		"migrations":           []map[string]string{{"filename": "gorm_auto_migrate", "method": "gorm_auto_migrate"}},
 		"rehearsed_at":         time.Now().UTC().Format(time.RFC3339),
 	}
 	if reportPath != "" {
