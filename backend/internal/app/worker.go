@@ -1458,7 +1458,7 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, rawTx any, job
 		exitCode := nullableIntFromMap(result, "exit_code")
 		if err := w.store.Gorm.WithContext(ctx).Model(&GormSSHCommandRun{}).
 			Where(&GormSSHCommandRun{OperationRunID: validNullString(opID)}).
-			Updates(map[string]any{"status": "completed", "exit_code": exitCode, "stdout": stdout, "stderr": stderr, "finished_at": validNullTime(time.Now())}).Error; err != nil {
+			Updates(map[string]any{"status": "completed", "exit_code": exitCode, "stdout": stdout, "stderr": stderr, "error_message": "", "finished_at": validNullTime(time.Now())}).Error; err != nil {
 			return err
 		}
 		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {

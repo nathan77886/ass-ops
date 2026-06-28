@@ -1022,6 +1022,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.operationType': 'Type',
     'config.exit': 'Exit',
     'config.failureReason': 'Failure reason',
+    'config.failureReason': 'Failure reason',
     'config.finished': 'Finished',
     'config.selectArgoConnection': 'Select an Argo connection first',
     'config.selectSSHMachine': 'Select an SSH machine first',
@@ -2283,6 +2284,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.sshHostUser': '用户',
     'config.operationType': '类型',
     'config.exit': '退出码',
+    'config.failureReason': '失败原因',
     'config.failureReason': '失败原因',
     'config.finished': '完成时间',
     'config.selectArgoConnection': '请先选择 Argo 连接',
@@ -10643,6 +10645,7 @@ function ConfigPage() {
             { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{translatedValue(row.status, t)}</Tag> },
             { title: t('field.command'), dataIndex: 'command' },
             { title: t('config.exit'), dataIndex: 'exit_code' },
+            { title: t('config.failureReason'), render: (_, row) => <Typography.Text title={String(row.error_message || row.stderr || '')}>{shortText(row.error_message || row.stderr, 96)}</Typography.Text> },
             { title: t('config.failureReason'), render: (_, row) => <Typography.Text title={String(row.error_message || row.stderr || '')}>{shortText(row.error_message || row.stderr, 96)}</Typography.Text> },
             { title: t('common.created'), dataIndex: 'created_at' },
             { title: t('config.finished'), dataIndex: 'finished_at' }

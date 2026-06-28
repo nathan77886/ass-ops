@@ -23,6 +23,10 @@ type sshRunner interface {
 	Run(ctx context.Context, name string, args ...string) (string, string, int, error)
 }
 
+type sshEnvRunner interface {
+	RunWithEnv(ctx context.Context, env []string, name string, args ...string) (string, string, int, error)
+}
+
 type execSSHRunner struct{}
 
 type SSHExecutionResult struct {
@@ -37,7 +41,28 @@ func NewSSHExecutor() *SSHExecutor {
 }
 
 func (execSSHRunner) Run(ctx context.Context, name string, args ...string) (string, string, int, error) {
-	stdout, stderr, err := execCommandRunner{}.Run(ctx, "", name, args...)
+	return runSSHCommand(ctx, nil, name, args...)
+}
+
+func (execSSHRunner) RunWithEnv(ctx context.Context, env []string, name string, args ...string) (string, string, int, error) {
+	return runSSHCommand(ctx, env, name, args...)
+}
+
+func runSSHCommand(ctx context.Context, env []string, name string, args ...string) (string, string, int, error) {
+	if name == "sshpass" {
+		if _, err := exec.LookPath("sshpass"); err != nil {
+			return "", "", 127, fmt.Errorf("sshpass is required for SSH password authentication but is not installed")
+		}
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = os.Environ()
+	if len(env) > 0 {
+		cmd.Env = append(cmd.Env, env...)
+	}
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
 	exitCode := 0
 	if err != nil {
 		exitCode = 1
@@ -46,7 +71,7 @@ func (execSSHRunner) Run(ctx context.Context, name string, args ...string) (stri
 			exitCode = exitErr.ExitCode()
 		}
 	}
-	return stdout, stderr, exitCode, err
+	return stdout.String(), stderr.String(), exitCode, err
 }
 
 func (e *SSHExecutor) Execute(ctx context.Context, db *gorm.DB, opID string) (*SSHExecutionResult, error) {
@@ -79,7 +104,8 @@ func (e *SSHExecutor) Execute(ctx context.Context, db *gorm.DB, opID string) (*S
 	if err != nil {
 		return nil, err
 	}
-	args, err := sshCommandArgs(sshMachineMap(machine, nil), command)
+	machineInput := sshMachineMap(machine, nil)
+	args, env, err := sshCommandInvocation(ctx, db, machine, machineInput, command)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +115,18 @@ func (e *SSHExecutor) Execute(ctx context.Context, db *gorm.DB, opID string) (*S
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
-	stdout, stderr, exitCode, err := runner.Run(runCtx, "ssh", args...)
+	name := "ssh"
+	if len(env) > 0 {
+		name = "sshpass"
+		args = append([]string{"-e", "ssh"}, args...)
+	}
+	var stdout, stderr string
+	var exitCode int
+	if envRunner, ok := runner.(sshEnvRunner); ok {
+		stdout, stderr, exitCode, err = envRunner.RunWithEnv(runCtx, env, name, args...)
+	} else {
+		stdout, stderr, exitCode, err = runner.Run(runCtx, name, args...)
+	}
 	result := &SSHExecutionResult{
 		Stdout:   truncateOutput(sanitizeSSHOutput(stdout), 64*1024),
 		Stderr:   truncateOutput(sanitizeSSHOutput(stderr), 64*1024),
@@ -106,6 +143,44 @@ func (e *SSHExecutor) Execute(ctx context.Context, db *gorm.DB, opID string) (*S
 		return result, fmt.Errorf("ssh command failed with exit code %d: %w", exitCode, err)
 	}
 	return result, nil
+}
+
+func sshCommandInvocation(ctx context.Context, db *gorm.DB, machine GormSSHMachine, machineInput map[string]any, command string) ([]string, []string, error) {
+	args, err := sshCommandArgs(machineInput, command)
+	if err != nil {
+		return nil, nil, err
+	}
+	if strings.TrimSpace(machine.AuthType) != "password" {
+		return args, nil, nil
+	}
+	if db == nil {
+		return nil, nil, fmt.Errorf("database is not configured")
+	}
+	credentialID := cleanOptionalID(machine.CredentialID.String)
+	if credentialID == "" {
+		return nil, nil, fmt.Errorf("SSH password credential is not configured")
+	}
+	var credential GormConnectionCredential
+	if err := db.WithContext(ctx).
+		Where(&GormConnectionCredential{Kind: "ssh_password"}).
+		Where("id = ? AND project_id = ?", credentialID, machine.ProjectID).
+		First(&credential).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, fmt.Errorf("SSH password credential is not configured")
+		}
+		return nil, nil, fmt.Errorf("loading SSH password credential: %w", err)
+	}
+	if strings.TrimSpace(credential.SecretCiphertext) == "" {
+		return nil, nil, fmt.Errorf("SSH password credential is not configured")
+	}
+	password, err := decryptArgoCredentialSecret(credential.SecretCiphertext, argoCredentialSecretKeyMaterial())
+	if err != nil {
+		return nil, nil, fmt.Errorf("decrypting SSH password credential failed")
+	}
+	if strings.TrimSpace(password) == "" {
+		return nil, nil, fmt.Errorf("SSH password credential is empty")
+	}
+	return args, []string{"SSHPASS=" + password}, nil
 }
 
 func sshExecutionCommand(input map[string]any, storedCommand string) (string, int, bool, error) {
@@ -144,10 +219,18 @@ func sshCommandArgs(machine map[string]any, command string) ([]string, error) {
 		return nil, fmt.Errorf("invalid SSH port")
 	}
 	metadata := mapFromAny(machine["metadata"])
+	authType := strings.TrimSpace(fmt.Sprint(machine["auth_type"]))
+	batchMode := "yes"
+	if authType == "password" {
+		batchMode = "no"
+	}
 	args := []string{
-		"-o", "BatchMode=yes",
+		"-o", "BatchMode=" + batchMode,
 		"-o", "ConnectTimeout=10",
 		"-p", port,
+	}
+	if authType == "password" {
+		args = append(args, "-o", "PreferredAuthentications=password,keyboard-interactive")
 	}
 	if knownHosts := strings.TrimSpace(fmt.Sprint(metadata["known_hosts_path"])); knownHosts != "" && knownHosts != "<nil>" {
 		if err := validateSSHPath(knownHosts, "ASSOPS_SSH_KNOWN_HOSTS_DIR", "/etc/assops/ssh"); err != nil {
@@ -203,7 +286,7 @@ func truncateOutput(value string, limit int) string {
 	return value[:limit] + "\n[truncated]"
 }
 
-var sshAssignmentSecretPattern = regexp.MustCompile(`(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Z0-9_]*)\s*=\s*([^\s]+)`)
+var sshAssignmentSecretPattern = regexp.MustCompile(`(?i)\b(SSHPASS|[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Z0-9_]*)\s*=\s*([^\s]+)`)
 var sshBearerSecretPattern = regexp.MustCompile(`(?i)\b(Bearer)\s+[A-Za-z0-9._~+/=-]+`)
 var sshCLISecretPattern = regexp.MustCompile(`(?i)(--?(?:password|passwd|token|secret|api-key|access-key|private-key)\s+)([^\s]+)`)
 var sshBasicAuthPattern = regexp.MustCompile(`(?i)(-u\s+[^:\s]+:)([^\s]+)`)
