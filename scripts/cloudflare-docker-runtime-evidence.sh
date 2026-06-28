@@ -8,6 +8,7 @@ output="${ASSOPS_CLOUDFLARE_DOCKER_RUNTIME_EVIDENCE_OUTPUT:-.assops/release-note
 pg_container="${ASSOPS_PG18_CONTAINER:-pg1}"
 pg_user="${ASSOPS_PG18_ADMIN_USER:-nas}"
 pg_database="${ASSOPS_PG18_DATABASE:-assops}"
+require_project="${ASSOPS_CLOUDFLARE_DOCKER_RUNTIME_REQUIRE_PROJECT:-false}"
 
 need() {
   command -v "$1" >/dev/null || {
@@ -45,13 +46,13 @@ fi
 ASSOPS_GATEWAY_URL="$base_url" \
 ASSOPS_ADMIN_EMAIL="${ASSOPS_ADMIN_EMAIL:-admin@assops.local}" \
 ASSOPS_ADMIN_PASSWORD="${ASSOPS_ADMIN_PASSWORD:-admin1234}" \
-ASSOPS_API_SMOKE_REQUIRE_PROJECT=true \
+ASSOPS_API_SMOKE_REQUIRE_PROJECT="$require_project" \
   bash scripts/api-smoke.sh >/tmp/assops-cloudflare-docker-runtime-local-smoke.log
 
 ASSOPS_GATEWAY_URL="$cloudflare_url" \
 ASSOPS_ADMIN_EMAIL="${ASSOPS_ADMIN_EMAIL:-admin@assops.local}" \
 ASSOPS_ADMIN_PASSWORD="${ASSOPS_ADMIN_PASSWORD:-admin1234}" \
-ASSOPS_API_SMOKE_REQUIRE_PROJECT=true \
+ASSOPS_API_SMOKE_REQUIRE_PROJECT="$require_project" \
   bash scripts/api-smoke.sh >/tmp/assops-cloudflare-docker-runtime-public-smoke.log
 
 cf_meta="$(curl -sS -o /tmp/assops-cloudflare-docker-runtime-auth.body -w '%{http_code} %{content_type}' --max-time 20 \
@@ -82,7 +83,7 @@ if [[ "$worker_index_code" != "200" || "$worker_index_type" != text/html* ]]; th
 fi
 
 mkdir -p "$(dirname "$output")"
-python3 - "$output" "$base_url" "$cloudflare_url" "$worker_url" "$schema_table_count" "${containers[@]}" <<'PY'
+python3 - "$output" "$base_url" "$cloudflare_url" "$worker_url" "$schema_table_count" "$require_project" "${containers[@]}" <<'PY'
 import json
 import subprocess
 import sys
@@ -94,7 +95,8 @@ base_url = sys.argv[2]
 cloudflare_url = sys.argv[3]
 worker_url = sys.argv[4]
 schema_table_count = int(sys.argv[5])
-containers = sys.argv[6:]
+requires_seeded_project = sys.argv[6].lower() == "true"
+containers = sys.argv[7:]
 
 container_status = {}
 for name in containers:
@@ -127,7 +129,7 @@ data = {
     "smoke": {
         "local_api_smoke": "passed",
         "public_api_smoke": "passed",
-        "requires_seeded_project": True,
+        "requires_seeded_project": requires_seeded_project,
     },
     "postgres": {
         "container": "pg1",
