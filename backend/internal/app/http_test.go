@@ -17356,7 +17356,7 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`refreshCanonicalAssetsAfterOperation(ctx, job, opID, "failed")`,
 		`canonicalAssetsSyncedInAdapterTransaction(job)`,
 		`"repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag"`,
-		`"project.template_provision_retry", "agent.execute"`,
+		`"github.actions.sync", "github.labels.sync", "agent.execute"`,
 		`syncCanonicalAssetsGorm(ctx, tx)`,
 		`syncing canonical assets for running repo sync`,
 		`syncing canonical assets for completed repo sync`,
@@ -17381,10 +17381,6 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncing canonical assets for completed Argo pod restart`,
 		`syncing canonical assets for failed Argo pod restart`,
 		`"github.actions.sync", "github.labels.sync"`,
-		`syncing canonical assets for failed project template creation`,
-		`syncing canonical assets for completed project template creation`,
-		`syncing canonical assets for completed project template provision retry`,
-		`syncing canonical assets for failed project template provision retry`,
 		`syncing canonical assets for running agent execution`,
 		`syncing canonical assets for completed agent execution`,
 		`syncing canonical assets for failed agent execution`,
@@ -17392,7 +17388,6 @@ func TestCanonicalAssetRefreshHooksAreWired(t *testing.T) {
 		`syncing canonical assets for completed SSH command`,
 		`syncing canonical assets for failed SSH command`,
 		`failTimedOutOperationGorm(ctx, tx, opID)`,
-		`failTimedOutTemplateRunGorm(ctx, tx, op)`,
 	} {
 		if !strings.Contains(string(workerSource), token) {
 			t.Fatalf("worker.go missing canonical asset refresh hook %q", token)

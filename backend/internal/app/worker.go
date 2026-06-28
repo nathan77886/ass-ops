@@ -254,7 +254,7 @@ func (w *ControlWorker) refreshCanonicalAssetsAfterOperation(ctx context.Context
 func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 	tool, _ := job["tool_name"].(string)
 	switch tool {
-	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "repo.tag.lookup", "ssh.exec", "ssh.verify", "argo.apps.sync", "argo.pod_logs", "argo.pod_restart", "github.actions.sync", "github.labels.sync", "project.create_from_template", "project.template_provision_retry", "agent.execute", "config.git_commit", "project_version.validation_rerun":
+	case "repo.sync", "repo.sync_remote", "git.refs.refresh", "repo.tag", "repo.create_tag", "repo.tag.lookup", "ssh.exec", "ssh.verify", "argo.apps.sync", "argo.pod_logs", "argo.pod_restart", "github.actions.sync", "github.labels.sync", "agent.execute", "config.git_commit", "project_version.validation_rerun":
 		return true
 	default:
 		return false
@@ -945,17 +945,9 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 		mergeSSHExecutionResult(result, execution)
 		return result, err
 	case "project.create_from_template":
-		templateResult, err := w.executeProjectTemplateRun(ctx, opID)
-		for key, value := range templateResult {
-			result[key] = value
-		}
-		return result, err
+		return result, fmt.Errorf("project template flow is disabled; add repositories manually")
 	case "project.template_provision_retry":
-		templateResult, err := w.executeProjectTemplateProvisionRetry(ctx, opID)
-		for key, value := range templateResult {
-			result[key] = value
-		}
-		return result, err
+		return result, fmt.Errorf("project template flow is disabled; add repositories manually")
 	case "agent.execute":
 		return w.executeAgentTaskAudit(ctx, opID, result)
 	default:

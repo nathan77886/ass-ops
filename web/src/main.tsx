@@ -4423,49 +4423,7 @@ function Dashboard() {
 function Projects() {
   const { t } = useI18n();
 	const projects = useLoad(() => api('/api/projects'), []);
-	const templates = useLoad(() => api('/api/project-templates'), []);
-	const templateRuns = useLoad(() => api('/api/project-template-runs'), []);
 	const [open, setOpen] = useState(false);
-	const [templateOpen, setTemplateOpen] = useState(false);
-	const [templateDetailOpen, setTemplateDetailOpen] = useState(false);
-	const [requestingReviewID, setRequestingReviewID] = useState('');
-	const [selectedTemplate, setSelectedTemplate] = useState<AnyRow>();
-	async function createFromTemplate(values: AnyRow) {
-		if (!selectedTemplate) return;
-    const parameters = values.parameters || parseJSONField(values.parameters_json);
-		await api(`/api/project-templates/${selectedTemplate.id}/create-project`, {
-			method: 'POST',
-			body: JSON.stringify({
-				name: values.name,
-				slug: values.slug,
-				description: values.description,
-				parameters
-			})
-		});
-		message.success(t('template.operationQueued'));
-		templateRuns.reload();
-	}
-	async function retryTemplateProvision(row: AnyRow) {
-		try {
-			await api(`/api/project-template-runs/${row.id}/retry-provision`, { method: 'POST', body: '{}' });
-			message.success(t('template.retryQueued'));
-			templateRuns.reload();
-		} catch (error: any) {
-			message.error(error.message || t('template.retryFailed'));
-		}
-  }
-	async function requestProviderReviewExecution(row: AnyRow) {
-		setRequestingReviewID(row.id);
-		try {
-			await api(`/api/project-template-runs/${row.id}/request-provider-review-execution`, { method: 'POST', body: '{}' });
-			message.success(t('template.reviewApprovalRequested'));
-			templateRuns.reload();
-		} catch (error: any) {
-			message.error(error.message || t('template.reviewApprovalRequestFailed'));
-		} finally {
-			setRequestingReviewID('');
-		}
-  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="Projects" onCreate={() => setOpen(true)} />
@@ -4475,55 +4433,7 @@ function Projects() {
         { title: t('common.description'), dataIndex: 'description' },
         { title: t('common.created'), dataIndex: 'created_at' }
       ]} />
-      <Typography.Title level={3}>{t('title.projectTemplates')}</Typography.Title>
-      <Table<AnyRow> rowKey="id" dataSource={templates.data?.items || []} pagination={false} columns={[
-        { title: t('common.name'), dataIndex: 'name' },
-        { title: t('field.slug'), dataIndex: 'slug' },
-        { title: t('field.version'), dataIndex: 'version' },
-        { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'active' ? 'green' : 'blue'}>{translatedValue(row.status, t)}</Tag> },
-        { title: t('template.steps'), render: (_, row) => Array.isArray(row.steps) ? row.steps.length : 0 },
-        { title: t('common.updated'), dataIndex: 'updated_at' },
-        { title: t('common.action'), render: (_, row) => <Space><Button size="small" onClick={() => { setSelectedTemplate(row); setTemplateDetailOpen(true); }}>{t('template.details')}</Button><Button size="small" onClick={() => { setSelectedTemplate(row); setTemplateOpen(true); }}>{t('template.use')}</Button></Space> }
-      ]} />
-      <Typography.Title level={3}>{t('title.templateRuns')}</Typography.Title>
-      <Table<AnyRow>
-        rowKey="id"
-        dataSource={templateRuns.data?.items || []}
-        pagination={{ pageSize: 6 }}
-        expandable={{
-          expandedRowRender: (row) => <Tabs items={[
-            { key: 'result', label: t('template.result'), children: <JSONBlock value={row.result} /> },
-            { key: 'steps', label: t('template.steps'), children: <JSONBlock value={row.steps} /> },
-            { key: 'reconcile', label: t('template.reconcile'), children: templateProvisionGuidanceView(row, t) }
-          ]} />
-        }}
-        columns={[
-          { title: t('common.project'), dataIndex: 'project_name' },
-          { title: t('template.useTemplate'), dataIndex: 'template_name' },
-          { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : row.status === 'running' || row.status === 'provisioning' ? 'blue' : 'gold'}>{translatedValue(row.status, t)}</Tag> },
-          { title: t('common.repository'), render: (_, row) => row.result?.repository_id ? <Tag color="green">{t('common.created')}</Tag> : <Tag>{translatedValue('planned', t)}</Tag> },
-          { title: t('template.provision'), render: (_, row) => templateProvisionStatus(row, t) },
-          { title: t('template.reconcile'), render: (_, row) => templateProvisionGuidanceView(row, t, true) },
-          { title: t('template.repoSync'), render: (_, row) => row.result?.repo_sync_asset_id ? <Tag color="green">{t('common.created')}</Tag> : <Tag>{translatedValue('planned', t)}</Tag> },
-          { title: t('common.files'), render: (_, row) => Array.isArray(row.result?.template_file_ids) ? <Tag color="green">{row.result.template_file_ids.length}</Tag> : <Tag>{translatedValue('planned', t)}</Tag> },
-          { title: t('template.steps'), render: (_, row) => Array.isArray(row.steps) ? `${row.steps.filter((step: AnyRow) => step.status === 'completed').length}/${row.steps.length}` : '-' },
-          { title: t('common.error'), render: (_, row) => templateRunErrorText(row) },
-          { title: t('common.created'), dataIndex: 'created_at' },
-          { title: t('common.action'), render: (_, row) => {
-            const guidance = templateProvisionGuidance(row, t);
-            return (
-              <Space>
-                {canRetryTemplateProvision(row) ? <Button size="small" title={templateProvisionRetryTitle(row)} onClick={() => retryTemplateProvision(row)}>{t('template.retryProvision')}</Button> : null}
-                {guidance.executionRequestStatus === 'approval_ready' ? <Button size="small" loading={requestingReviewID === row.id} disabled={Boolean(requestingReviewID)} onClick={() => requestProviderReviewExecution(row)}>{t('template.requestReview')}</Button> : null}
-                {!canRetryTemplateProvision(row) && guidance.executionRequestStatus !== 'approval_ready' ? '-' : null}
-              </Space>
-            );
-          } }
-        ]}
-      />
       <CreateModal title="Create project" open={open} setOpen={setOpen} fields={['name', 'slug', 'description']} onSubmit={(v) => api('/api/projects', { method: 'POST', body: JSON.stringify(v) }).then(projects.reload)} />
-      <TemplateDetailModal template={selectedTemplate} open={templateDetailOpen} setOpen={setTemplateDetailOpen} />
-      <TemplateUseModal template={selectedTemplate} open={templateOpen} setOpen={setTemplateOpen} onSubmit={createFromTemplate} />
     </Space>
   );
 }
@@ -5891,115 +5801,6 @@ function templateRunErrorText(row: AnyRow) {
   return '-';
 }
 
-function TemplateDetailModal({ template, open, setOpen }: { template?: AnyRow; open: boolean; setOpen: (v: boolean) => void }) {
-  const { t } = useI18n();
-  const detail = useLoad(() => open && template ? api(`/api/project-templates/${template.id}`) : Promise.resolve({}), [open, template?.id]);
-  const row = detail.data || template;
-  return (
-    <Modal title={row?.name || t('title.projectTemplates')} open={open} onCancel={() => setOpen(false)} footer={null} width={900} destroyOnHidden>
-      {row && <Space direction="vertical" size={16} className="full">
-        <Space wrap>
-          <Tag>{row.slug}</Tag>
-          <Tag>{row.version}</Tag>
-          <Tag color={row.status === 'active' ? 'green' : 'default'}>{translatedValue(row.status, t)}</Tag>
-        </Space>
-        <Typography.Paragraph>{row.description}</Typography.Paragraph>
-        <Tabs items={[
-          { key: 'defaults', label: t('template.defaults'), children: <JSONBlock value={row.defaults} /> },
-          { key: 'steps', label: t('template.steps'), children: <JSONBlock value={row.steps} /> },
-          { key: 'metadata', label: t('common.metadata'), children: <JSONBlock value={row.metadata} /> }
-        ]} />
-      </Space>}
-    </Modal>
-  );
-}
-
-function TemplateUseModal({ template, open, setOpen, onSubmit }: { template?: AnyRow; open: boolean; setOpen: (v: boolean) => void; onSubmit: (values: AnyRow) => Promise<any> }) {
-  const { t } = useI18n();
-  const [form] = Form.useForm();
-  const [preview, setPreview] = useState<AnyRow>();
-  const [loading, setLoading] = useState(false);
-  const providerAccounts = useLoad(() => open ? api('/api/provider-accounts') : Promise.resolve({ items: [] }), [open]);
-  const providerRows = providerAccounts.data?.items || [];
-  const giteaAccounts = providerRows.filter((row: AnyRow) => row.provider_type === 'gitea' && row.enabled);
-  const githubAccounts = providerRows.filter((row: AnyRow) => row.provider_type === 'github' && row.enabled);
-  useEffect(() => {
-    if (open) {
-      form.resetFields();
-      setPreview(undefined);
-    }
-  }, [open, form]);
-  async function runPreview(values: AnyRow) {
-    if (!template) return;
-    setLoading(true);
-    try {
-      const parameters = templateParametersWithProviderAccounts(values, providerRows);
-      const data = await api(`/api/project-templates/${template.id}/preview`, {
-        method: 'POST',
-        body: JSON.stringify({ ...values, parameters })
-      });
-      setPreview(data);
-    } catch (error: any) {
-      message.error(error.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-  async function submitTemplate(values: AnyRow) {
-    try {
-      const parameters = templateParametersWithProviderAccounts(values, providerRows);
-      await onSubmit({ ...values, parameters });
-      setOpen(false);
-      setPreview(undefined);
-      form.resetFields();
-    } catch (error: any) {
-      message.error(error instanceof SyntaxError ? t('template.invalidParametersJson') : error.message);
-    }
-  }
-  return (
-    <Modal title={`${t('template.useTemplate')}${template ? `: ${template.name}` : ''}`} open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} width={980} destroyOnHidden>
-      <Space direction="vertical" size={16} className="full">
-        <Form form={form} layout="vertical" onFinish={submitTemplate}>
-          <Form.Item name="name" label={t('common.name')} rules={fieldRules('name')}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="slug" label={t('field.slug')}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="description" label={t('common.description')}>
-            <Input />
-          </Form.Item>
-          <Space size={12} className="full" wrap>
-            <Form.Item name="gitea_provider_account_id" label={t('template.giteaAccount')} className="templateAccountField">
-              <Select allowClear options={rowOptions(giteaAccounts)} placeholder={t('template.sourceAccount')} disabled={!giteaAccounts.length} />
-            </Form.Item>
-            <Form.Item name="github_provider_account_id" label={t('template.githubAccount')} className="templateAccountField">
-              <Select allowClear options={rowOptions(githubAccounts)} placeholder={t('template.mirrorAccount')} disabled={!githubAccounts.length} />
-            </Form.Item>
-          </Space>
-          <Form.Item name="parameters_json" label={t('template.parameters')}>
-            <Input.TextArea autoSize={{ minRows: 6, maxRows: 12 }} placeholder='{"remotes":[{"remote_key":"gitea","provider_type":"gitea","remote_url":"git@example.com:org/repo.git"}],"repo_sync":{"source_remote_key":"gitea","target_remote_key":"github"}}' />
-          </Form.Item>
-          <Button onClick={() => runPreview(form.getFieldsValue())} loading={loading}>{t('template.preview')}</Button>
-        </Form>
-        {preview && <Tabs items={[
-          { key: 'summary', label: t('common.summary'), children: <Space direction="vertical" size={8}>
-            <Typography.Text>{t('common.project')}: {preview.project?.name} / {preview.project?.slug}</Typography.Text>
-            <Typography.Text>{t('common.repository')}: {preview.repository?.repo_key} ({preview.repository?.default_branch})</Typography.Text>
-            <Typography.Text>{t('template.remotes')}: {Array.isArray(preview.remotes) ? preview.remotes.length : 0}</Typography.Text>
-            <Typography.Text>{t('template.repoSync')}: <Tag>{translatedValue(preview.repo_sync?.status, t)}</Tag> {preview.repo_sync?.reason}</Typography.Text>
-            <Typography.Text>{t('common.files')}: {Array.isArray(preview.files) ? preview.files.length : 0}</Typography.Text>
-          </Space> },
-          { key: 'files', label: t('common.files'), children: <JSONBlock value={preview.files} /> },
-          { key: 'steps', label: t('template.steps'), children: <JSONBlock value={preview.steps} /> },
-          { key: 'defaults', label: t('template.defaults'), children: <JSONBlock value={preview.defaults} /> },
-          { key: 'parameters', label: t('template.parameters'), children: <JSONBlock value={preview.parameters} /> }
-        ]} />}
-      </Space>
-    </Modal>
-  );
-}
-
 function ProviderAccounts() {
   const { t } = useI18n();
   const accounts = useLoad(() => api('/api/provider-accounts'), []);
@@ -6315,8 +6116,6 @@ function AssetCenter() {
 	}
 	const typeOptions = [
 		'project',
-		'project_template',
-		'template_file',
 		'repository',
 		'git_remote',
 		'repo_sync',
