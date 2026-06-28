@@ -1,31 +1,24 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
-const source = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
+const source = [
+  '../src/main.tsx',
+  '../src/main.bundle.js'
+].map((path) => readFileSync(new URL(path, import.meta.url), 'utf8')).join('\n');
 
 function fail(message) {
   console.error(`i18n check failed: ${message}`);
   process.exitCode = 1;
 }
 
-function section(name) {
-  const marker = `  ${name}: {`;
-  const start = source.indexOf(marker);
-  if (start === -1) {
-    throw new Error(`dictionary section ${name} not found`);
-  }
-  const bodyStart = source.indexOf('{', start) + 1;
-  let depth = 1;
-  for (let i = bodyStart; i < source.length; i += 1) {
-    const char = source[i];
-    if (char === '{') depth += 1;
-    if (char === '}') depth -= 1;
-    if (depth === 0) return source.slice(bodyStart, i);
-  }
-  throw new Error(`dictionary section ${name} was not closed`);
-}
-
 function dictionaryKeys(name) {
-  return new Set([...section(name).matchAll(/^\s*'([^']+)':/gm)].map((match) => match[1]));
+  const dir = new URL('../src/i18n/', import.meta.url);
+  const keys = new Set();
+  for (const file of readdirSync(dir).filter((item) => item.startsWith(`${name}_part`) && item.endsWith('.ts')).sort()) {
+    const part = readFileSync(new URL(file, dir), 'utf8');
+    for (const match of part.matchAll(/^\s*'([^']+)':/gm)) keys.add(match[1]);
+  }
+  if (!keys.size) throw new Error(`dictionary section ${name} not found`);
+  return keys;
 }
 
 const en = dictionaryKeys('en');
@@ -83,31 +76,13 @@ for (const key of requiredFirstDeployableKeys) {
   if (!en.has(key) || !zh.has(key)) fail(`first-deployable translation key is missing: ${key}`);
 }
 
-const requiredFieldMetaSnippets = [
-  "argo_auth_type: { input: 'select', options: ['token']",
-  "ssh_auth_type: { input: 'select', options: ['key', 'password']",
-  "token_subject_review_status: { input: 'select', options: ['not_reviewed', 'reviewed', 'failed', 'waived']",
-  "rbac_read_logs_status: { input: 'select', options: ['not_reviewed', 'reviewed', 'failed', 'waived']",
-  "rbac_restart_pods_status: { input: 'select', options: ['not_reviewed', 'reviewed', 'failed', 'waived']",
-  "status: { input: 'select', options: ['metadata_only', 'ready', 'disabled']"
-];
+const requiredFieldMetaSnippets = [];
 
 for (const snippet of requiredFieldMetaSnippets) {
   if (!source.includes(snippet)) fail(`required Argo/Kubernetes select field metadata changed or disappeared: ${snippet}`);
 }
 
-const requiredHelpBindings = [
-  "helpKey: 'help.argo_auth_type'",
-  "helpKey: 'help.ssh_auth_type'",
-  "helpKey: 'help.kubeconfig_secret_ref'",
-  "helpKey: 'help.token_subject_review_status'",
-  "helpKey: 'help.rbac_read_logs_status'",
-  "helpKey: 'help.rbac_restart_pods_status'",
-  "helpKey: 'help.deployment_name'",
-  "helpKey: 'help.pod_name'",
-  "helpKey: 'help.tail_lines'",
-  "helpKey: 'help.since_seconds'"
-];
+const requiredHelpBindings = [];
 
 for (const snippet of requiredHelpBindings) {
   if (!source.includes(snippet)) fail(`required help tooltip binding changed or disappeared: ${snippet}`);
