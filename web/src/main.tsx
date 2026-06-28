@@ -481,6 +481,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'project.contextGenerated': 'Context generated',
     'project.generateContext': 'Generate context',
     'project.noDescription': 'No description',
+    'project.deleteConfirm': 'Delete this project?',
+    'project.deleted': 'Project deleted',
     'template.operationQueued': 'Template operation queued',
     'template.retryQueued': 'Template provision retry queued',
     'template.retryFailed': 'Could not retry template provision',
@@ -1743,6 +1745,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'project.contextGenerated': '上下文已生成',
     'project.generateContext': '生成上下文',
     'project.noDescription': '暂无描述',
+    'project.deleteConfirm': '确认删除这个项目？',
+    'project.deleted': '项目已删除',
     'template.operationQueued': '模板操作已入队',
     'template.retryQueued': '模板制备重试已入队',
     'template.retryFailed': '无法重试模板制备',
@@ -4424,14 +4428,33 @@ function Projects() {
   const { t } = useI18n();
 	const projects = useLoad(() => api('/api/projects'), []);
 	const [open, setOpen] = useState(false);
+  function deleteProject(row: AnyRow) {
+    if (!row?.id) return;
+    Modal.confirm({
+      title: t('project.deleteConfirm'),
+      okText: t('common.delete'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await api(`/api/projects/${row.id}`, { method: 'DELETE' });
+          message.success(t('project.deleted'));
+          projects.reload();
+        } catch (error: any) {
+          message.error(error.message || t('common.requestFailed'));
+        }
+      }
+    });
+  }
   return (
     <Space direction="vertical" size={16} className="full">
       <Toolbar title="Projects" onCreate={() => setOpen(true)} />
-      <Table rowKey="id" dataSource={projects.data?.items || []} pagination={false} columns={[
+      <Table<AnyRow> rowKey="id" dataSource={projects.data?.items || []} pagination={false} columns={[
         { title: t('common.name'), dataIndex: 'name' },
         { title: t('field.slug'), dataIndex: 'slug' },
         { title: t('common.description'), dataIndex: 'description' },
-        { title: t('common.created'), dataIndex: 'created_at' }
+        { title: t('common.created'), dataIndex: 'created_at' },
+        { title: t('common.action'), render: (_, row) => <Button size="small" danger onClick={() => deleteProject(row)}>{t('common.delete')}</Button> }
       ]} />
       <CreateModal title="Create project" open={open} setOpen={setOpen} fields={['name', 'slug', 'description']} onSubmit={(v) => api('/api/projects', { method: 'POST', body: JSON.stringify(v) }).then(projects.reload)} />
     </Space>
@@ -10279,12 +10302,16 @@ function ConfigPage() {
       cancelText: t('common.cancel'),
       okButtonProps: { danger: true },
       onOk: async () => {
-        await api(`/api/ssh-machines/${row.id}`, { method: 'DELETE' });
-        message.success(t('config.sshMachineDeleted'));
-        if (sshPick.selectedID === row.id) sshPick.setSelectedID(undefined);
-        ssh.reload();
-        sshRuns.reload();
-        sshRehearsal.reload();
+        try {
+          await api(`/api/ssh-machines/${row.id}`, { method: 'DELETE' });
+          message.success(t('config.sshMachineDeleted'));
+          if (sshPick.selectedID === row.id) sshPick.setSelectedID(undefined);
+          ssh.reload();
+          sshRuns.reload();
+          sshRehearsal.reload();
+        } catch (error: any) {
+          message.error(error.message || t('common.requestFailed'));
+        }
       }
     });
   }
