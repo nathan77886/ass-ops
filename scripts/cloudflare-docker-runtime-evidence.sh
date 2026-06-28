@@ -25,7 +25,6 @@ containers=(
   assops-live-pg18-gateway
   assops-live-pg18-worker
   assops-live-pg18-node-worker
-  assops-live-pg18-web
 )
 
 for container in "${containers[@]}"; do

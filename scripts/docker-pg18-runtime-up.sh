@@ -4,8 +4,7 @@ set -euo pipefail
 project="${ASSOPS_DOCKER_RUNTIME_PROJECT:-assops-live-pg18}"
 network="${ASSOPS_DOCKER_RUNTIME_NETWORK:-dev_network}"
 runtime_base="${ASSOPS_DOCKER_RUNTIME_BASE_IMAGE:-assops-smoke-artifacts-gateway:latest}"
-web_base="${ASSOPS_DOCKER_RUNTIME_WEB_BASE_IMAGE:-nginx:1.27-alpine}"
-web_port="${ASSOPS_DOCKER_RUNTIME_WEB_PORT:-28082}"
+api_port="${ASSOPS_DOCKER_RUNTIME_API_PORT:-${ASSOPS_DOCKER_RUNTIME_WEB_PORT:-28082}}"
 pg_host="${ASSOPS_PG18_HOST:-pg1}"
 pg_container="${ASSOPS_PG18_CONTAINER:-pg1}"
 pg_admin_user="${ASSOPS_PG18_ADMIN_USER:-nas}"
@@ -15,7 +14,6 @@ db_password="${ASSOPS_DB_PASSWORD:-assops}"
 admin_email="${ASSOPS_ADMIN_EMAIL:-admin@assops.local}"
 admin_password="${ASSOPS_ADMIN_PASSWORD:-admin1234}"
 public_url="${ASSOPS_PUBLIC_URL:-https://ass-ops-api.4nathan.com}"
-web_dist="${ASSOPS_DOCKER_RUNTIME_WEB_DIST_DIR:-web/dist}"
 
 need() {
   command -v "$1" >/dev/null || {
@@ -28,17 +26,10 @@ need docker
 need go
 need python3
 
-if [[ ! -d "$web_dist" ]]; then
-  echo "$web_dist is required; run pnpm -C web build or make first-deployable-check first" >&2
+if ! docker image inspect "$runtime_base" >/dev/null 2>&1; then
+  echo "base image not found locally: $runtime_base" >&2
   exit 1
 fi
-
-for image in "$runtime_base" "$web_base"; do
-  if ! docker image inspect "$image" >/dev/null 2>&1; then
-    echo "base image not found locally: $image" >&2
-    exit 1
-  fi
-done
 
 if ! docker network inspect "$network" >/dev/null 2>&1; then
   docker network create "$network" >/dev/null
@@ -50,15 +41,12 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-mkdir -p "$tmpdir/bin" "$tmpdir/web" "$tmpdir/deploy"
+mkdir -p "$tmpdir/bin"
 
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/gateway" ./backend/cmd/gateway
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/worker" ./backend/cmd/worker
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/node-worker" ./backend/cmd/node-worker
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/assops-tool" ./backend/cmd/assops-tool
-
-cp -R "$web_dist" "$tmpdir/web/dist"
-cp deploy/nginx.conf "$tmpdir/deploy/nginx.conf"
 
 docker build --pull=false -q -t "${project}-runtime:local" -f- "$tmpdir" <<DOCKERFILE >/dev/null
 FROM ${runtime_base}
@@ -67,13 +55,6 @@ COPY bin/assops-tool /usr/local/bin/assops-tool
 COPY bin/gateway /usr/local/bin/gateway
 COPY bin/worker /usr/local/bin/worker
 COPY bin/node-worker /usr/local/bin/node-worker
-DOCKERFILE
-
-docker build --pull=false -q -t "${project}-web:local" -f- "$tmpdir" <<DOCKERFILE >/dev/null
-FROM ${web_base}
-COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
-COPY web/dist /usr/share/nginx/html
-EXPOSE 80
 DOCKERFILE
 
 if ! docker exec "$pg_container" psql -U "$pg_admin_user" -d "$pg_database" -v ON_ERROR_STOP=1 -tAc "SELECT 1" >/dev/null 2>&1; then
@@ -122,10 +103,11 @@ SQL
 for container in \
   "${project}-gateway" \
   "${project}-worker" \
-  "${project}-node-worker" \
-  "${project}-web"; do
+  "${project}-node-worker"; do
   docker rm -f "$container" >/dev/null 2>&1 || true
 done
+
+docker rm -f "${project}-web" >/dev/null 2>&1 || true
 
 docker volume create "${project}_context" >/dev/null
 docker volume create "${project}_bare_repos" >/dev/null
@@ -153,6 +135,7 @@ common_volumes=(
 )
 
 docker run -d --name "${project}-gateway" --network "$network" --network-alias gateway \
+  -p "${api_port}:8080" \
   "${common_env[@]}" "${common_volumes[@]}" \
   --entrypoint gateway "${project}-runtime:local" >/dev/null
 
@@ -181,16 +164,13 @@ docker run -d --name "${project}-node-worker" --network "$network" \
   --entrypoint node-worker "${project}-runtime:local" \
   -name live-pg18-node -kind local -capabilities echo,git,ssh,ai >/dev/null
 
-docker run -d --name "${project}-web" --network "$network" --network-alias web \
-  -p "${web_port}:80" "${project}-web:local" >/dev/null
-
 sleep 3
 
 docker exec "${project}-gateway" assops-tool db seed-demo >/tmp/assops-docker-pg18-runtime-seed-demo.log
 
-ASSOPS_DOCKER_RUNTIME_BASE_URL="http://127.0.0.1:${web_port}" \
+ASSOPS_DOCKER_RUNTIME_BASE_URL="http://127.0.0.1:${api_port}" \
 ASSOPS_ADMIN_EMAIL="$admin_email" \
 ASSOPS_ADMIN_PASSWORD="$admin_password" \
   bash scripts/docker-pg18-runtime-check.sh
 
-echo "docker PG18 runtime up at http://127.0.0.1:${web_port}"
+echo "docker PG18 runtime API up at http://127.0.0.1:${api_port}"

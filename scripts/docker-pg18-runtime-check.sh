@@ -22,8 +22,7 @@ need python3
 for container in \
   assops-live-pg18-gateway \
   assops-live-pg18-worker \
-  assops-live-pg18-node-worker \
-  assops-live-pg18-web; do
+  assops-live-pg18-node-worker; do
   state="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)"
   if [[ "$state" != "running" ]]; then
     echo "runtime container is not running: $container" >&2
@@ -58,4 +57,4 @@ else
   echo "cloudflare api route pending: $cf_code $cf_type"
 fi
 
-echo "docker PG18 runtime check passed for $base_url with GORM schema tables: $schema_table_count/12"
+echo "docker PG18 runtime API check passed for $base_url with GORM schema tables: $schema_table_count/12"
