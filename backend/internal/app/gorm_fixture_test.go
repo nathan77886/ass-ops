@@ -104,6 +104,7 @@ func TestSyncCanonicalAssetsUsesGormModels(t *testing.T) {
 		&GormProject{},
 		&GormProjectGitRepository{},
 		&GormGitRemote{},
+		&GormRepoSyncAsset{},
 		&GormAsset{},
 		&GormAssetRelation{},
 		&sqliteAssetStatusSnapshotFixture{},
@@ -138,18 +139,48 @@ func TestSyncCanonicalAssetsUsesGormModels(t *testing.T) {
 	if err := store.Gorm.Create(&remote).Error; err != nil {
 		t.Fatalf("create remote: %v", err)
 	}
+	syncAsset := GormRepoSyncAsset{
+		ProjectID:              project.ID,
+		ProjectGitRepositoryID: repo.ID,
+		Name:                   "origin mirror",
+		SourceRemoteID:         remote.ID,
+		TargetRemoteID:         remote.ID,
+		TriggerMode:            "manual",
+		SyncMode:               "selected_refs",
+		Transport:              "ssh",
+		Driver:                 "projectops_worker_git_ssh",
+		Refs:                   JSONValue{Data: map[string]any{"branches": []string{"main"}}},
+		Enabled:                false,
+		LastSyncStatus:         "never",
+		Metadata:               JSONValue{Data: map[string]any{}},
+	}
+	if err := store.Gorm.Create(&syncAsset).Error; err != nil {
+		t.Fatalf("create repo sync asset: %v", err)
+	}
 	result, err := store.SyncCanonicalAssets(t.Context())
 	if err != nil {
 		t.Fatalf("SyncCanonicalAssets: %v", err)
 	}
-	if result.SyncedAssets < 3 || result.InsertedRelations < 2 || result.InsertedStatusSnapshots < 3 {
+	if result.SyncedAssets < 4 || result.InsertedRelations < 3 || result.InsertedStatusSnapshots < 4 {
 		t.Fatalf("sync result too small: %+v", result)
 	}
 	var assets []GormAsset
-	if err := store.Gorm.Where(gormField("source_table", []string{"projects", "project_git_repositories", "git_remotes"})).Find(&assets).Error; err != nil {
+	if err := store.Gorm.Where(gormField("source_table", []string{"projects", "project_git_repositories", "git_remotes", "repo_sync_assets"})).Find(&assets).Error; err != nil {
 		t.Fatalf("load assets: %v", err)
 	}
-	if len(assets) != 3 {
-		t.Fatalf("asset count = %d, want 3", len(assets))
+	if len(assets) != 4 {
+		t.Fatalf("asset count = %d, want 4", len(assets))
+	}
+	var repoAsset GormAsset
+	if err := store.Gorm.Where(&GormAsset{AssetType: "repository", SourceTable: "project_git_repositories", SourceID: validNullString(repo.ID)}).First(&repoAsset).Error; err != nil {
+		t.Fatalf("load repository asset: %v", err)
+	}
+	var canonicalSyncAsset GormAsset
+	if err := store.Gorm.Where(&GormAsset{AssetType: "repo_sync", SourceTable: "repo_sync_assets", SourceID: validNullString(syncAsset.ID)}).First(&canonicalSyncAsset).Error; err != nil {
+		t.Fatalf("load repo sync asset: %v", err)
+	}
+	var relation GormAssetRelation
+	if err := store.Gorm.Where(&GormAssetRelation{FromAssetID: repoAsset.ID, ToAssetID: canonicalSyncAsset.ID, RelationType: "has_sync"}).First(&relation).Error; err != nil {
+		t.Fatalf("load repo sync relation: %v", err)
 	}
 }

@@ -203,6 +203,13 @@ func canonicalAssetSpecs(ctx context.Context, db *gorm.DB) ([]canonicalAssetSpec
 		relations = append(relations, canonicalRelationSpec{ProjectID: projectID, FromAssetType: "repository", FromTable: "project_git_repositories", FromID: remote.ProjectGitRepositoryID, ToAssetType: "git_remote", ToTable: "git_remotes", ToID: remote.ID, RelationType: "has_remote", Metadata: map[string]any{"source": "canonical_asset_sync"}, CreatedAt: remote.CreatedAt})
 	}
 
+	var repoSyncAssets []GormRepoSyncAsset
+	_ = db.WithContext(ctx).Find(&repoSyncAssets).Error
+	for _, asset := range repoSyncAssets {
+		assets = append(assets, canonicalAssetSpec{ProjectID: asset.ProjectID, AssetType: "repo_sync", SourceTable: "repo_sync_assets", SourceID: asset.ID, Name: asset.Name, DisplayName: asset.Name, Description: asset.SyncMode, Source: "local", ExternalID: asset.Name, Status: firstNonEmpty(asset.LastSyncStatus, "never"), RiskLevel: boolRisk(asset.Enabled), Metadata: map[string]any{"trigger_mode": asset.TriggerMode, "sync_mode": asset.SyncMode, "transport": asset.Transport, "driver": asset.Driver, "enabled": asset.Enabled}, CreatedAt: asset.CreatedAt, UpdatedAt: asset.UpdatedAt})
+		relations = append(relations, canonicalRelationSpec{ProjectID: asset.ProjectID, FromAssetType: "repository", FromTable: "project_git_repositories", FromID: asset.ProjectGitRepositoryID, ToAssetType: "repo_sync", ToTable: "repo_sync_assets", ToID: asset.ID, RelationType: "has_sync", Metadata: map[string]any{"source": "canonical_asset_sync"}, CreatedAt: asset.CreatedAt})
+	}
+
 	var argoConnections []GormArgoConnection
 	_ = db.WithContext(ctx).Find(&argoConnections).Error
 	for _, item := range argoConnections {

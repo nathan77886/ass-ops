@@ -227,6 +227,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.createArgoConnection': 'Create Argo connection',
     'form.createConnectionCredential': 'Create connection credential',
     'form.addKubernetesEnvironment': 'Add Kubernetes environment',
+    'form.importKubernetesFromSSH': 'Import K8s from SSH',
+    'form.importArgoFromKubernetes': 'Import Argo from K8s',
     'form.createSSHMachine': 'Create SSH machine',
     'form.runSSHCommand': 'Run SSH command',
     'form.podLogQuery': 'Pod log query',
@@ -1033,6 +1035,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.argoAppSyncFailed': 'Argo app sync failed',
     'config.argoSyncStillRunning': 'Argo app sync is still running. Refresh later to check progress.',
     'config.kubernetesEnvSaved': 'Kubernetes environment saved',
+    'config.kubernetesImportReady': 'Kubernetes discovery ready',
+    'config.kubernetesImportSaved': 'Kubernetes environment imported',
+    'config.argoImportReady': 'Argo discovery ready',
+    'config.argoImportSaved': 'Argo connection imported',
     'config.argoSyncQueued': 'Argo app sync queued',
     'config.argoConnectionSaved': 'Argo connection saved',
     'config.argoConnectionDeleted': 'Argo connection deleted',
@@ -1493,6 +1499,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'form.createArgoConnection': '创建 Argo 连接',
     'form.createConnectionCredential': '创建连接凭据',
     'form.addKubernetesEnvironment': '添加 Kubernetes 环境',
+    'form.importKubernetesFromSSH': '从 SSH 导入 K8s',
+    'form.importArgoFromKubernetes': '从 K8s 导入 Argo',
     'form.createSSHMachine': '创建 SSH 主机',
     'form.runSSHCommand': '执行 SSH 命令',
     'form.podLogQuery': 'Pod 日志查询',
@@ -2299,6 +2307,10 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.argoAppSyncFailed': 'Argo 应用同步失败',
     'config.argoSyncStillRunning': 'Argo 应用同步仍在运行，请稍后刷新查看进度。',
     'config.kubernetesEnvSaved': 'Kubernetes 环境已保存',
+    'config.kubernetesImportReady': 'Kubernetes 探测已完成',
+    'config.kubernetesImportSaved': 'Kubernetes 环境已导入',
+    'config.argoImportReady': 'Argo 探测已完成',
+    'config.argoImportSaved': 'Argo 连接已导入',
     'config.argoSyncQueued': 'Argo 应用同步已入队',
     'config.argoConnectionSaved': 'Argo 连接已保存',
     'config.argoConnectionDeleted': 'Argo 连接已删除',
@@ -9833,6 +9845,14 @@ function ConfigPage() {
   const selectedDeploymentTargetID = Form.useWatch('deployment_target_id', podLogForm);
   const [kubernetesEnvironmentOpen, setKubernetesEnvironmentOpen] = useState(false);
   const [kubernetesEnvironmentForm] = Form.useForm();
+  const [kubernetesImportOpen, setKubernetesImportOpen] = useState(false);
+  const [kubernetesImportForm] = Form.useForm();
+  const [kubernetesImportPreview, setKubernetesImportPreview] = useState<AnyRow>();
+  const [kubernetesImportLoading, setKubernetesImportLoading] = useState(false);
+  const [argoImportOpen, setArgoImportOpen] = useState(false);
+  const [argoImportForm] = Form.useForm();
+  const [argoImportPreview, setArgoImportPreview] = useState<AnyRow>();
+  const [argoImportLoading, setArgoImportLoading] = useState(false);
   const [deploymentExecutionGateLoadingID, setDeploymentExecutionGateLoadingID] = useState('');
   const [deploymentExecutionGateResults, setDeploymentExecutionGateResults] = useState<Record<string, AnyRow>>({});
   const [rollbackExecutionGateLoadingID, setRollbackExecutionGateLoadingID] = useState('');
@@ -9854,6 +9874,8 @@ function ConfigPage() {
   const argoPick = useSelectedRow(argoRows);
   const argoApps = useLoad(() => project ? api(`/api/projects/${project.id}/argo/apps`) : Promise.resolve({ items: [] }), [project?.id]);
   const kubernetesEnvironments = useLoad(() => project ? api(`/api/projects/${project.id}/kubernetes/environments`) : Promise.resolve({ items: [] }), [project?.id]);
+  const kubernetesEnvironmentRows = kubernetesEnvironments.data?.items || [];
+  const kubernetesEnvironmentPick = useSelectedRow(kubernetesEnvironmentRows);
   const deploymentTargets = useLoad(() => project ? api(`/api/projects/${project.id}/deployment-targets`) : Promise.resolve({ items: [] }), [project?.id]);
   const deploymentRecords = useLoad(() => project ? api(`/api/projects/${project.id}/deployment-records`) : Promise.resolve({ items: [] }), [project?.id]);
   const rollbackPoints = useLoad(() => project ? api(`/api/projects/${project.id}/rollback-points`) : Promise.resolve({ items: [] }), [project?.id]);
@@ -9899,7 +9921,11 @@ function ConfigPage() {
   useEffect(() => {
     setSSHSnapshotResult(undefined);
     setSSHProofResult(undefined);
+    setKubernetesImportPreview(undefined);
   }, [sshPick.selectedID]);
+  useEffect(() => {
+    setArgoImportPreview(undefined);
+  }, [kubernetesEnvironmentPick.selectedID]);
   useEffect(() => {
     setDeploymentExecutionGateLoadingID('');
     setDeploymentExecutionGateResults({});
@@ -10074,6 +10100,102 @@ function ConfigPage() {
         })
       });
       setPodLogPreview(refreshed);
+    }
+  }
+  async function openKubernetesImport() {
+    if (!sshPick.selectedID) {
+      message.error(t('config.selectSSHMachine'));
+      return;
+    }
+    setKubernetesImportOpen(true);
+    setKubernetesImportLoading(true);
+    setKubernetesImportPreview(undefined);
+    try {
+      const result = await api(`/api/ssh-machines/${sshPick.selectedID}/kubernetes/import-preview`, { method: 'POST', body: '{}' });
+      setKubernetesImportPreview(result);
+      kubernetesImportForm.setFieldsValue(result.suggested_environment || {});
+      if (result.status === 'ok') message.success(t('config.kubernetesImportReady'));
+      else message.warning((result.discovery?.blocked_reasons || []).join(', ') || t('common.requestFailed'));
+    } catch (error: any) {
+      setKubernetesImportPreview(error.payload || { status: 'failed', error: error.message });
+      message.error(error.message || t('common.requestFailed'));
+    } finally {
+      setKubernetesImportLoading(false);
+    }
+  }
+  async function importKubernetesFromSSH(values: AnyRow) {
+    if (!sshPick.selectedID) return;
+    setKubernetesImportLoading(true);
+    try {
+      const result = await api(`/api/ssh-machines/${sshPick.selectedID}/kubernetes/import`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: values.name,
+          environment: values.environment,
+          kubeconfig_secret_ref: values.kubeconfig_secret_ref,
+          service_account: values.service_account,
+          status: values.status || 'metadata_only'
+        })
+      });
+      setKubernetesImportPreview(result);
+      message.success(t('config.kubernetesImportSaved'));
+      setKubernetesImportOpen(false);
+      kubernetesImportForm.resetFields();
+      kubernetesEnvironments.reload();
+      deploymentTargets.reload();
+    } catch (error: any) {
+      setKubernetesImportPreview(error.payload || { status: 'failed', error: error.message, blocked_reasons: [error.message || t('common.requestFailed')] });
+      message.error(error.message || t('common.requestFailed'));
+    } finally {
+      setKubernetesImportLoading(false);
+    }
+  }
+  async function openArgoImport() {
+    if (!kubernetesEnvironmentPick.selectedID) {
+      message.error(t('form.addKubernetesEnvironment'));
+      return;
+    }
+    setArgoImportOpen(true);
+    setArgoImportLoading(true);
+    setArgoImportPreview(undefined);
+    try {
+      const result = await api(`/api/kubernetes/environments/${kubernetesEnvironmentPick.selectedID}/argo/import-preview`, { method: 'POST', body: '{}' });
+      setArgoImportPreview(result);
+      const candidates = Array.isArray(result.candidates) ? result.candidates : [];
+      const firstURL = candidates.find((item: AnyRow) => item.url)?.url || '';
+      argoImportForm.setFieldsValue({ name: `${kubernetesEnvironmentPick.selected?.name || 'Kubernetes'} Argo CD`, server_url: firstURL, credential_id: argoCredentialOptions[0]?.value, insecure_skip_verify: false });
+      if (result.status === 'ok') message.success(t('config.argoImportReady'));
+      else message.warning((result.blocked_reasons || []).join(', ') || t('common.requestFailed'));
+    } catch (error: any) {
+      setArgoImportPreview(error.payload || { status: 'failed', error: error.message });
+      message.error(error.message || t('common.requestFailed'));
+    } finally {
+      setArgoImportLoading(false);
+    }
+  }
+  async function importArgoFromKubernetes(values: AnyRow) {
+    if (!kubernetesEnvironmentPick.selectedID) return;
+    setArgoImportLoading(true);
+    try {
+      const result = await api(`/api/kubernetes/environments/${kubernetesEnvironmentPick.selectedID}/argo/import`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: values.name,
+          server_url: values.server_url,
+          credential_id: values.credential_id,
+          config: { insecure_skip_verify: values.insecure_skip_verify === true || values.insecure_skip_verify === 'true' }
+        })
+      });
+      setArgoImportPreview(result);
+      message.success(t('config.argoImportSaved'));
+      setArgoImportOpen(false);
+      argoImportForm.resetFields();
+      argoConnections.reload();
+    } catch (error: any) {
+      setArgoImportPreview(error.payload || { status: 'failed', error: error.message, blocked_reasons: [error.message || t('common.requestFailed')] });
+      message.error(error.message || t('common.requestFailed'));
+    } finally {
+      setArgoImportLoading(false);
     }
   }
   async function syncArgoApps() {
@@ -10422,6 +10544,7 @@ function ConfigPage() {
             <Button onClick={verifySSHMachine} disabled={!sshPick.selectedID}>{t('config.verify')}</Button>
             <Button type="primary" onClick={() => setCommandOpen(true)} disabled={!sshPick.selectedID}>{t('config.runCommand')}</Button>
             <Button onClick={() => { sshRuns.reload(); sshRehearsal.reload(); }} loading={sshRehearsal.loading} disabled={!project}>{t('config.refreshRuns')}</Button>
+            <Button onClick={openKubernetesImport} loading={kubernetesImportLoading} disabled={!sshPick.selectedID}>{t('form.importKubernetesFromSSH')}</Button>
             <Button onClick={recordSSHTargetEnvironmentProof} loading={sshProofLoading} disabled={!sshPick.selectedID || sshRehearsalView?.rehearsal_state !== 'ready' || !sshRehearsalView?.target_environment_attestation_ready}>{t('config.recordProof')}</Button>
             <Button onClick={recordSSHRehearsalSnapshot} loading={sshSnapshotLoading} disabled={!sshPick.selectedID || !sshRehearsalView?.target_environment_attestation_ready}>{t('config.recordSnapshot')}</Button>
           </Space>
@@ -10484,8 +10607,10 @@ function ConfigPage() {
           <Space>
             <Button type="primary" loading={Boolean(argoSyncOpID)} onClick={syncArgoApps} disabled={!argoPick.selectedID || Boolean(argoSyncOpID)}>{t('config.syncApps')}</Button>
             <Button onClick={() => setKubernetesEnvironmentOpen(true)} disabled={!project}>{t('form.addKubernetesEnvironment')}</Button>
+            <Button onClick={openArgoImport} loading={argoImportLoading} disabled={!kubernetesEnvironmentPick.selectedID}>{t('form.importArgoFromKubernetes')}</Button>
             <Button onClick={() => { argoConnections.reload(); argoApps.reload(); kubernetesEnvironments.reload(); deploymentTargets.reload(); deploymentRecords.reload(); rollbackPoints.reload(); }} disabled={!project}>{t('common.refresh')}</Button>
           </Space>
+          <EntitySelect label={t('config.kubernetesEnv')} rows={kubernetesEnvironmentRows} value={kubernetesEnvironmentPick.selectedID} onChange={kubernetesEnvironmentPick.setSelectedID} />
           <div className="metricGrid">
             <Card><Typography.Text type="secondary">{t('config.deploymentTargets')}</Typography.Text><Typography.Title level={3}>{deploymentPosture.targets}</Typography.Title></Card>
             <Card><Typography.Text type="secondary">{t('config.unhealthy')}</Typography.Text><Typography.Title level={3}>{deploymentPosture.unhealthy}</Typography.Title></Card>
@@ -10725,6 +10850,53 @@ function ConfigPage() {
             </Form.Item>
           ))}
         </Form>
+      </Modal>
+      <Modal title={t('form.importKubernetesFromSSH')} open={kubernetesImportOpen} onCancel={() => setKubernetesImportOpen(false)} onOk={() => kubernetesImportForm.submit()} confirmLoading={kubernetesImportLoading} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
+        <Space direction="vertical" size={12} className="full">
+          {kubernetesImportPreview ? (
+            <Alert
+              showIcon
+              type={kubernetesImportPreview.status === 'ok' || kubernetesImportPreview.imported ? 'success' : 'warning'}
+              message={translatedValue(kubernetesImportPreview.status || kubernetesImportPreview.discovery?.status || 'unknown', t)}
+              description={(kubernetesImportPreview.discovery?.blocked_reasons || kubernetesImportPreview.blocked_reasons || []).join(', ') || kubernetesImportPreview.error || undefined}
+            />
+          ) : null}
+          <Form form={kubernetesImportForm} layout="vertical" onFinish={importKubernetesFromSSH} initialValues={{ status: 'metadata_only' }}>
+            {['name', 'environment', 'kubeconfig_secret_ref', 'service_account', 'status'].map((field) => (
+              <Form.Item key={field} name={field} label={fieldLabel(field, t)} rules={fieldRules(field, t)} valuePropName={fieldValuePropName(field)}>
+                {fieldInput(field, t)}
+              </Form.Item>
+            ))}
+          </Form>
+          {kubernetesImportPreview ? <JSONBlock value={kubernetesImportPreview} /> : null}
+        </Space>
+      </Modal>
+      <Modal title={t('form.importArgoFromKubernetes')} open={argoImportOpen} onCancel={() => setArgoImportOpen(false)} onOk={() => argoImportForm.submit()} confirmLoading={argoImportLoading} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
+        <Space direction="vertical" size={12} className="full">
+          {argoImportPreview ? (
+            <Alert
+              showIcon
+              type={argoImportPreview.status === 'ok' || argoImportPreview.imported ? 'success' : 'warning'}
+              message={translatedValue(argoImportPreview.status || 'unknown', t)}
+              description={[...(argoImportPreview.blocked_reasons || []), ...(argoImportPreview.warnings || [])].join(', ') || argoImportPreview.error || undefined}
+            />
+          ) : null}
+          <Form form={argoImportForm} layout="vertical" onFinish={importArgoFromKubernetes} initialValues={{ insecure_skip_verify: false }}>
+            <Form.Item name="name" label={fieldLabel('name', t)} rules={fieldRules('name', t)}>{fieldInput('name', t)}</Form.Item>
+            <Form.Item name="server_url" label={fieldLabel('server_url', t)} rules={fieldRules('server_url', t)}>
+              {(Array.isArray(argoImportPreview?.candidates) && argoImportPreview.candidates.some((item: AnyRow) => item.url)) ? (
+                <Select options={argoImportPreview.candidates.filter((item: AnyRow) => item.url).map((item: AnyRow) => ({ value: item.url, label: `${item.url} · ${item.namespace}/${item.name} · ${item.reason}` }))} />
+              ) : fieldInput('server_url', t)}
+            </Form.Item>
+            <Form.Item name="credential_id" label={fieldLabel('credential_id', t)} rules={fieldRules('credential_id', t, { input: 'select', optionItems: argoCredentialOptions, required: true })}>
+              {fieldInput('credential_id', t, { input: 'select', optionItems: argoCredentialOptions, required: true })}
+            </Form.Item>
+            <Form.Item name="insecure_skip_verify" valuePropName="checked">
+              {fieldInput('insecure_skip_verify', t)}
+            </Form.Item>
+          </Form>
+          {argoImportPreview ? <JSONBlock value={argoImportPreview} /> : null}
+        </Space>
       </Modal>
       <CreateModal
         title="Create SSH machine"
