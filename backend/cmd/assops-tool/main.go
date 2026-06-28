@@ -253,6 +253,9 @@ func runDBCommand(cfg app.Config, args []string) error {
 		if err := store.AutoMigrate(ctx); err != nil {
 			return err
 		}
+		if err := store.SeedAdmin(ctx, cfg); err != nil {
+			return err
+		}
 		fmt.Println("schema automigrated")
 		return nil
 	case "seed-demo":
