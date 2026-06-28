@@ -1,0 +1,335 @@
+package app
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func assertSSHRehearsalPlansSafe(t *testing.T, preview map[string]any) {
+	t.Helper()
+	approvalPlan := mapFromAny(preview["approval_request_plan"])
+	if approvalPlan["mode"] != "ssh_rehearsal_approval_request_plan" ||
+		approvalPlan["request_ready"] != false ||
+		approvalPlan["request_ready_reason"] != "ssh_rehearsal_live_execution_disabled" ||
+		approvalPlan["operation_created"] != false ||
+		approvalPlan["approval_request_created"] != false ||
+		approvalPlan["worker_job_created"] != false ||
+		approvalPlan["runtime_auth_binding_queued"] != false ||
+		approvalPlan["ssh_process_started"] != false ||
+		approvalPlan["external_call_made"] != false {
+		t.Fatalf("ssh approval request plan should stay disabled and redacted: %#v", approvalPlan)
+	}
+	for _, reason := range []string{"ssh_rehearsal_operation_not_created", "approval_policy_not_applied", "runtime_auth_binding_not_approved", "ssh_process_backend_disabled"} {
+		if !containsString(stringSliceFromAny(approvalPlan["execution_blockers"]), reason) {
+			t.Fatalf("ssh approval execution blockers missing %q: %#v", reason, approvalPlan["execution_blockers"])
+		}
+		if !containsString(stringSliceFromAny(preview["execution_blockers"]), reason) {
+			t.Fatalf("ssh preview execution blockers missing %q: %#v", reason, preview["execution_blockers"])
+		}
+	}
+	for _, field := range []string{"operation_run_id", "ssh_machine_id", "operation_type", "host", "port", "username", "auth_type", "requested_by", "reason"} {
+		if !containsString(stringSliceFromAny(approvalPlan["required_approval_fields"]), field) {
+			t.Fatalf("ssh approval required fields missing %q: %#v", field, approvalPlan["required_approval_fields"])
+		}
+	}
+	for _, field := range []string{"private_key", "passphrase", "known_hosts_body", "command", "stdout", "stderr", "raw_error", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(approvalPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh approval suppressed_fields missing %q: %#v", field, approvalPlan["suppressed_fields"])
+		}
+	}
+	authPlan := mapFromAny(preview["auth_binding_plan"])
+	if authPlan["mode"] != "ssh_rehearsal_auth_binding_plan" ||
+		authPlan["runtime_auth_bound"] != false ||
+		authPlan["known_hosts_bound"] != false ||
+		authPlan["ssh_client_configured"] != false ||
+		authPlan["external_call_made"] != false ||
+		authPlan["contains_private_key"] != false ||
+		authPlan["contains_passphrase"] != false ||
+		authPlan["contains_known_hosts_body"] != false ||
+		authPlan["contains_runtime_secret"] != false {
+		t.Fatalf("ssh auth binding plan should stay disabled and redacted: %#v", authPlan)
+	}
+	if approvalPlan["metadata_ready"] == true && authPlan["binding_state"] != "planned" {
+		t.Fatalf("metadata-ready auth binding plan should be planned: %#v", authPlan)
+	}
+	if approvalPlan["metadata_ready"] != true && authPlan["binding_state"] != "blocked" {
+		t.Fatalf("metadata-blocked auth binding plan should be blocked: %#v", authPlan)
+	}
+	for _, backend := range []string{"runtime_auth_binding", "known_hosts_materialization", "ssh_client_configure"} {
+		if !containsString(stringSliceFromAny(authPlan["disabled_backends"]), backend) {
+			t.Fatalf("ssh auth binding disabled backend missing %q: %#v", backend, authPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"private_key", "passphrase", "known_hosts_body", "runtime_secret", "secret_env"} {
+		if !containsString(stringSliceFromAny(authPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh auth binding suppressed field missing %q: %#v", field, authPlan["suppressed_fields"])
+		}
+	}
+	verifyPlan := mapFromAny(preview["verify_execution_plan"])
+	if verifyPlan["mode"] != "ssh_rehearsal_verify_execution_plan" ||
+		verifyPlan["operation_enqueued"] != false ||
+		verifyPlan["worker_job_created"] != false ||
+		verifyPlan["ssh_process_started"] != false ||
+		verifyPlan["verify_command_executed"] != false ||
+		verifyPlan["exit_code_recorded"] != false ||
+		verifyPlan["external_call_made"] != false ||
+		verifyPlan["stdout_included"] != false ||
+		verifyPlan["stderr_included"] != false ||
+		verifyPlan["raw_error_included"] != false ||
+		verifyPlan["contains_private_key"] != false ||
+		verifyPlan["contains_runtime_secret"] != false {
+		t.Fatalf("ssh verify execution plan should stay disabled and redacted: %#v", verifyPlan)
+	}
+	if verifyPlan["completed_verify_evidence"] == true && verifyPlan["verify_state"] != "observed" {
+		t.Fatalf("completed verify evidence should mark verify plan observed: %#v", verifyPlan)
+	}
+	if verifyPlan["metadata_ready"] != true && verifyPlan["verify_state"] != "blocked" {
+		t.Fatalf("metadata-blocked verify plan should be blocked: %#v", verifyPlan)
+	}
+	for _, backend := range []string{"worker_job_create", "ssh_process_start", "ssh_verify_execute", "ssh_result_write"} {
+		if !containsString(stringSliceFromAny(verifyPlan["disabled_backends"]), backend) {
+			t.Fatalf("ssh verify disabled backend missing %q: %#v", backend, verifyPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"private_key", "passphrase", "known_hosts_body", "stdout", "stderr", "raw_error", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(verifyPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh verify suppressed field missing %q: %#v", field, verifyPlan["suppressed_fields"])
+		}
+	}
+	execPlan := mapFromAny(preview["exec_execution_plan"])
+	if execPlan["mode"] != "ssh_rehearsal_exec_execution_plan" ||
+		execPlan["operation_enqueued"] != false ||
+		execPlan["worker_job_created"] != false ||
+		execPlan["ssh_process_started"] != false ||
+		execPlan["command_reviewed"] != false ||
+		execPlan["command_executed"] != false ||
+		execPlan["exit_code_recorded"] != false ||
+		execPlan["external_call_made"] != false ||
+		execPlan["stdout_included"] != false ||
+		execPlan["stderr_included"] != false ||
+		execPlan["raw_error_included"] != false ||
+		execPlan["contains_command"] != false ||
+		execPlan["contains_private_key"] != false ||
+		execPlan["contains_runtime_secret"] != false {
+		t.Fatalf("ssh exec execution plan should stay disabled and redacted: %#v", execPlan)
+	}
+	if execPlan["completed_exec_evidence"] == true && execPlan["exec_state"] != "observed" {
+		t.Fatalf("completed exec evidence should mark exec plan observed: %#v", execPlan)
+	}
+	if execPlan["metadata_ready"] != true && execPlan["exec_state"] != "blocked" {
+		t.Fatalf("metadata-blocked exec plan should be blocked: %#v", execPlan)
+	}
+	for _, backend := range []string{"worker_job_create", "ssh_process_start", "ssh_exec_execute", "ssh_result_write"} {
+		if !containsString(stringSliceFromAny(execPlan["disabled_backends"]), backend) {
+			t.Fatalf("ssh exec disabled backend missing %q: %#v", backend, execPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"command", "stdout", "stderr", "raw_error", "private_key", "passphrase", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(execPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh exec suppressed field missing %q: %#v", field, execPlan["suppressed_fields"])
+		}
+	}
+	resultPlan := mapFromAny(preview["result_recording_plan"])
+	evidence := mapFromAny(preview["recent_evidence"])
+	hasLiveEvidence := boolOnlyFromAny(evidence["has_live_evidence"])
+	if resultPlan["mode"] != "ssh_rehearsal_result_recording_plan" ||
+		resultPlan["operation_log_written"] != false ||
+		resultPlan["canonical_asset_sync_queued"] != false ||
+		resultPlan["status_snapshot_write_eligible"] != false ||
+		resultPlan["status_snapshot_written"] != false ||
+		resultPlan["status_snapshot_written"] != resultPlan["status_snapshot_write_eligible"] ||
+		resultPlan["stdout_included"] != false ||
+		resultPlan["stderr_included"] != false ||
+		resultPlan["raw_error_included"] != false ||
+		resultPlan["private_key_included"] != false ||
+		resultPlan["known_hosts_included"] != false ||
+		resultPlan["authorization_header_included"] != false {
+		t.Fatalf("ssh result recording plan should stay disabled and redacted: %#v", resultPlan)
+	}
+	if hasLiveEvidence {
+		sanitizedResultRecorded := cleanPreviewString(evidence["evidence_state"]) == "recorded"
+		if resultPlan["recording_state"] != evidence["evidence_state"] ||
+			resultPlan["recording_ready"] != sanitizedResultRecorded ||
+			resultPlan["recording_enabled"] != sanitizedResultRecorded ||
+			resultPlan["result_written"] != sanitizedResultRecorded ||
+			resultPlan["auth_binding_recorded"] != sanitizedResultRecorded ||
+			resultPlan["recording_ready_reason"] == "ssh_rehearsal_execution_not_performed" {
+			t.Fatalf("ssh result recording plan should reflect sanitized evidence: result=%#v evidence=%#v", resultPlan, evidence)
+		}
+		if !sanitizedResultRecorded && !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), "sanitized_ssh_result_not_recorded") {
+			t.Fatalf("non-recorded ssh evidence should keep sanitized result blocker: %#v", resultPlan)
+		}
+	} else if resultPlan["recording_state"] != "blocked" ||
+		resultPlan["recording_ready"] != false ||
+		resultPlan["recording_ready_reason"] != "ssh_rehearsal_execution_not_performed" ||
+		resultPlan["recording_enabled"] != false ||
+		resultPlan["result_written"] != false ||
+		resultPlan["auth_binding_recorded"] != false ||
+		resultPlan["verify_result_recorded"] != false ||
+		resultPlan["exec_result_recorded"] != false {
+		t.Fatalf("ssh result recording plan should stay blocked without evidence: %#v", resultPlan)
+	}
+	for _, field := range []string{"operation_run_id", "ssh_machine_id", "operation_type", "status", "exit_code", "started_at", "finished_at", "auth_binding_status", "verify_result_status", "exec_result_status", "sanitization_status"} {
+		if !containsString(stringSliceFromAny(resultPlan["required_result_fields"]), field) {
+			t.Fatalf("ssh result required fields missing %q: %#v", field, resultPlan["required_result_fields"])
+		}
+	}
+	for _, field := range []string{"private_key", "passphrase", "known_hosts_body", "command", "stdout", "stderr", "raw_error", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(resultPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh result suppressed_fields missing %q: %#v", field, resultPlan["suppressed_fields"])
+		}
+	}
+	controlEvidence := mapFromAny(preview["live_rehearsal_control_evidence"])
+	if controlEvidence["mode"] != "ssh_live_rehearsal_control_evidence" ||
+		controlEvidence["external_call_made"] != false ||
+		controlEvidence["ssh_process_started"] != false ||
+		controlEvidence["command_executed"] != false ||
+		controlEvidence["contains_runbook_body"] != false ||
+		controlEvidence["contains_fixture_identifier"] != false ||
+		controlEvidence["contains_operator_identity"] != false ||
+		controlEvidence["contains_operator_note"] != false ||
+		controlEvidence["contains_private_key"] != false ||
+		controlEvidence["contains_known_hosts_body"] != false ||
+		controlEvidence["contains_stdout"] != false ||
+		controlEvidence["contains_stderr"] != false {
+		t.Fatalf("ssh live control evidence should stay disabled and redacted: %#v", controlEvidence)
+	}
+	for _, field := range []string{"live_rehearsal_runbook", "authorized_machine_fixture", "operator_approval_proof", "completed_ssh_verify", "completed_ssh_exec"} {
+		if !containsString(stringSliceFromAny(controlEvidence["required_evidence"]), field) {
+			t.Fatalf("ssh control required evidence missing %q: %#v", field, controlEvidence["required_evidence"])
+		}
+	}
+	for _, field := range []string{"live_rehearsal_runbook", "rehearsal_runbook", "runbook_url", "runbook_path", "runbook_body", "authorized_machine_fixture", "authorized_fixture_id", "fixture_id", "fixture_name", "operator_approved", "operator_approval_id", "operator_approved_by", "operator_approved_at", "operator_approval_note", "private_key", "passphrase", "known_hosts_body", "stdout", "stderr", "raw_error", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(controlEvidence["suppressed_fields"]), field) {
+			t.Fatalf("ssh control suppressed field missing %q: %#v", field, controlEvidence["suppressed_fields"])
+		}
+	}
+	environmentProofPlan := mapFromAny(preview["environment_proof_plan"])
+	if environmentProofPlan["mode"] != "ssh_rehearsal_environment_proof_plan" ||
+		environmentProofPlan["external_call_made"] != false ||
+		environmentProofPlan["ssh_process_started"] != false ||
+		environmentProofPlan["command_executed"] != false ||
+		environmentProofPlan["environment_probe_performed"] != false ||
+		environmentProofPlan["operator_identity_included"] != false ||
+		environmentProofPlan["operator_note_included"] != false ||
+		environmentProofPlan["fixture_identifier_included"] != false ||
+		environmentProofPlan["environment_identifier_included"] != false ||
+		environmentProofPlan["stdout_included"] != false ||
+		environmentProofPlan["stderr_included"] != false ||
+		environmentProofPlan["private_key_included"] != false ||
+		environmentProofPlan["known_hosts_included"] != false ||
+		environmentProofPlan["runtime_secret_included"] != false {
+		t.Fatalf("ssh environment proof plan should stay disabled and redacted: %#v", environmentProofPlan)
+	}
+	if preview["environment_proof_ready"] != environmentProofPlan["environment_proof_ready"] {
+		t.Fatalf("ssh preview environment proof flag should mirror plan: preview=%#v plan=%#v", preview["environment_proof_ready"], environmentProofPlan)
+	}
+	for _, field := range []string{"target_environment_reference", "authorized_machine_fixture", "operator_approval_proof", "operator_environment_proof", "completed_ssh_verify", "completed_ssh_exec", "sanitized_ssh_result_recorded"} {
+		if !containsString(stringSliceFromAny(environmentProofPlan["required_evidence"]), field) {
+			t.Fatalf("ssh environment proof required evidence missing %q: %#v", field, environmentProofPlan["required_evidence"])
+		}
+	}
+	for _, backend := range []string{"environment_probe", "ssh_process_start", "ssh_verify_execute", "ssh_exec_execute", "raw_output_recording", "operator_identity_recording"} {
+		if !containsString(stringSliceFromAny(environmentProofPlan["disabled_backends"]), backend) {
+			t.Fatalf("ssh environment proof disabled backend missing %q: %#v", backend, environmentProofPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"live_rehearsal_environment", "rehearsal_environment", "authorized_environment", "target_environment", "environment_id", "authorized_machine_fixture", "authorized_fixture_id", "fixture_id", "fixture_name", "operator_approved_by", "operator_approval_note", "operator_environment_approval_id", "operator_environment_approved_at", "operator_environment_proof_id", "environment_proof_id", "environment_proof_recorded_at", "private_key", "passphrase", "known_hosts_body", "stdout", "stderr", "raw_error", "runtime_secret"} {
+		if !containsString(stringSliceFromAny(environmentProofPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh environment proof suppressed field missing %q: %#v", field, environmentProofPlan["suppressed_fields"])
+		}
+	}
+	if boolOnlyFromAny(environmentProofPlan["environment_proof_ready"]) {
+		if environmentProofPlan["environment_proof_state"] != "ready" ||
+			environmentProofPlan["target_environment_reference_recorded"] != true ||
+			environmentProofPlan["authorized_fixture_recorded"] != true ||
+			environmentProofPlan["operator_approval_recorded"] != true ||
+			environmentProofPlan["operator_environment_proof_recorded"] != true ||
+			environmentProofPlan["completed_verify_evidence"] != true ||
+			environmentProofPlan["completed_exec_evidence"] != true ||
+			environmentProofPlan["sanitized_result_recorded"] != true ||
+			len(stringSliceFromAny(environmentProofPlan["missing_evidence"])) != 0 {
+			t.Fatalf("ready ssh environment proof should include all boolean evidence: %#v", environmentProofPlan)
+		}
+	} else if environmentProofPlan["environment_proof_state"] == "ready" {
+		t.Fatalf("ssh environment proof cannot be ready without environment_proof_ready: %#v", environmentProofPlan)
+	}
+	attestationPlan := mapFromAny(preview["target_environment_attestation_plan"])
+	if attestationPlan["mode"] != "ssh_target_environment_attestation_plan" ||
+		attestationPlan["environment_probe_performed"] != false ||
+		attestationPlan["ssh_process_started"] != false ||
+		attestationPlan["ssh_verify_executed"] != false ||
+		attestationPlan["ssh_exec_executed"] != false ||
+		attestationPlan["raw_output_recorded"] != false ||
+		attestationPlan["operator_identity_recorded"] != false ||
+		attestationPlan["key_material_included"] != false ||
+		attestationPlan["external_call_made"] != false {
+		t.Fatalf("ssh target environment attestation should stay disabled and redacted: %#v", attestationPlan)
+	}
+	if preview["target_environment_attestation_ready"] != attestationPlan["attestation_ready_for_review"] {
+		t.Fatalf("ssh preview attestation flag should mirror plan: preview=%#v plan=%#v", preview["target_environment_attestation_ready"], attestationPlan)
+	}
+	for _, field := range []string{"runbook_reference", "authorized_machine_fixture", "operator_approval_proof", "target_environment_proof", "completed_verify", "completed_exec", "sanitized_result_recording"} {
+		if !containsString(stringSliceFromAny(attestationPlan["required_attestation_fields"]), field) {
+			t.Fatalf("ssh attestation required field missing %q: %#v", field, attestationPlan["required_attestation_fields"])
+		}
+	}
+	for _, backend := range []string{"environment_probe", "ssh_process_start", "ssh_verify_execute", "ssh_exec_execute", "raw_output_recording", "operator_identity_recording"} {
+		if !containsString(stringSliceFromAny(attestationPlan["disabled_backends"]), backend) {
+			t.Fatalf("ssh attestation disabled backend missing %q: %#v", backend, attestationPlan["disabled_backends"])
+		}
+	}
+	for _, field := range []string{"runbook_url", "runbook_path", "environment_identifier", "fixture_identifier", "operator_identity", "operator_notes", "ssh_host", "ssh_user", "ssh_key_material", "command", "stdout", "stderr", "raw_output", "known_hosts"} {
+		if !containsString(stringSliceFromAny(attestationPlan["suppressed_fields"]), field) {
+			t.Fatalf("ssh attestation suppressed field missing %q: %#v", field, attestationPlan["suppressed_fields"])
+		}
+	}
+	if boolOnlyFromAny(attestationPlan["attestation_ready_for_review"]) {
+		if attestationPlan["attestation_state"] != "ready_for_operator_review" ||
+			attestationPlan["runbook_reference_observed"] != true ||
+			attestationPlan["authorized_machine_fixture_observed"] != true ||
+			attestationPlan["operator_approval_proof_observed"] != true ||
+			attestationPlan["target_environment_proof_observed"] != true ||
+			attestationPlan["verify_result_observed"] != true ||
+			attestationPlan["exec_result_observed"] != true ||
+			attestationPlan["sanitized_result_recorded"] != true ||
+			len(stringSliceFromAny(attestationPlan["blocked_reasons"])) != 0 {
+			t.Fatalf("ready ssh target environment attestation should include all boolean evidence: %#v", attestationPlan)
+		}
+	} else if attestationPlan["attestation_state"] == "ready_for_operator_review" {
+		t.Fatalf("ssh target environment attestation cannot be ready without review readiness: %#v", attestationPlan)
+	}
+	if boolOnlyFromAny(controlEvidence["controls_ready"]) {
+		if controlEvidence["control_state"] != "ready" ||
+			controlEvidence["runbook_reference_recorded"] != true ||
+			controlEvidence["fixture_reference_recorded"] != true ||
+			controlEvidence["operator_approval_recorded"] != true ||
+			controlEvidence["completed_verify_evidence"] != true ||
+			controlEvidence["completed_exec_evidence"] != true ||
+			len(stringSliceFromAny(controlEvidence["missing_evidence"])) != 0 {
+			t.Fatalf("ready ssh live controls should include all boolean evidence: %#v", controlEvidence)
+		}
+	} else if controlEvidence["control_state"] == "ready" {
+		t.Fatalf("ssh live controls cannot be ready without controls_ready: %#v", controlEvidence)
+	}
+	if !hasLiveEvidence {
+		for _, reason := range []string{"ssh_rehearsal_execution_not_performed", "sanitized_ssh_result_not_recorded", "canonical_asset_sync_not_performed"} {
+			if !containsString(stringSliceFromAny(resultPlan["blocked_reasons"]), reason) {
+				t.Fatalf("ssh result blocked reasons missing %q: %#v", reason, resultPlan["blocked_reasons"])
+			}
+		}
+	}
+	if !hasLiveEvidence && !strings.Contains(cleanPreviewString(resultPlan["message"]), "not recorded") {
+		t.Fatalf("ssh result recording message should not imply recorded output: %#v", resultPlan["message"])
+	}
+	if hasLiveEvidence && !strings.Contains(cleanPreviewString(resultPlan["message"]), "sanitized") {
+		t.Fatalf("ssh result recording message should mention sanitized evidence: %#v", resultPlan["message"])
+	}
+	encoded, _ := json.Marshal(preview)
+	for _, forbidden := range []string{"BEGIN OPENSSH PRIVATE KEY", "secret output", "secret error", "known-hosts-secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("ssh rehearsal plan leaked %q: %s", forbidden, encoded)
+		}
+	}
+}

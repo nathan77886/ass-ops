@@ -1,0 +1,443 @@
+package app
+
+import (
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestProviderReviewAttemptAdapterResponsePlan(t *testing.T) {
+	for _, item := range []struct {
+		name                 string
+		operationName        string
+		endpointKey          string
+		order                int
+		handler              string
+		status               string
+		unlockOperation      string
+		dependencyStatus     string
+		requiresDependency   bool
+		expectedResponseMode string
+	}{
+		{
+			name:                 "create branch unlocks commit",
+			operationName:        "create_branch_ref",
+			endpointKey:          "github.create_branch_ref",
+			order:                10,
+			handler:              "handle_branch_ref_response",
+			status:               "pending",
+			unlockOperation:      "commit_starter_files",
+			dependencyStatus:     "dependency_satisfied",
+			requiresDependency:   true,
+			expectedResponseMode: "redacted_attempt_adapter_response_plan",
+		},
+		{
+			name:                 "commit unlocks review",
+			operationName:        "commit_starter_files",
+			endpointKey:          "github.commit_files",
+			order:                20,
+			handler:              "handle_commit_files_response",
+			status:               "retryable",
+			unlockOperation:      "open_review_request",
+			dependencyStatus:     "dependency_satisfied",
+			requiresDependency:   true,
+			expectedResponseMode: "redacted_attempt_adapter_response_plan",
+		},
+		{
+			name:                 "review request has no next dependency",
+			operationName:        "open_review_request",
+			endpointKey:          "gitea.open_review",
+			order:                30,
+			handler:              "handle_review_request_response",
+			status:               "success",
+			unlockOperation:      "",
+			dependencyStatus:     "",
+			requiresDependency:   false,
+			expectedResponseMode: "redacted_attempt_adapter_response_plan",
+		},
+		{
+			name:                 "gitea branch ref response",
+			operationName:        "create_branch_ref",
+			endpointKey:          "gitea.create_branch_ref",
+			order:                10,
+			handler:              "handle_branch_ref_response",
+			status:               "pending",
+			unlockOperation:      "commit_starter_files",
+			dependencyStatus:     "dependency_satisfied",
+			requiresDependency:   true,
+			expectedResponseMode: "redacted_attempt_adapter_response_plan",
+		},
+		{
+			name:                 "gitea commit response",
+			operationName:        "commit_starter_files",
+			endpointKey:          "gitea.commit_files",
+			order:                20,
+			handler:              "handle_commit_files_response",
+			status:               "retryable",
+			unlockOperation:      "open_review_request",
+			dependencyStatus:     "dependency_satisfied",
+			requiresDependency:   true,
+			expectedResponseMode: "redacted_attempt_adapter_response_plan",
+		},
+		{
+			name:                 "gitea review response",
+			operationName:        "open_review_request",
+			endpointKey:          "gitea.open_review",
+			order:                30,
+			handler:              "handle_review_request_response",
+			status:               "success",
+			unlockOperation:      "",
+			dependencyStatus:     "",
+			requiresDependency:   false,
+			expectedResponseMode: "redacted_attempt_adapter_response_plan",
+		},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			responsePlan := providerReviewAttemptAdapterResponsePlan(
+				map[string]any{
+					"name":            item.operationName,
+					"endpoint_key":    item.endpointKey,
+					"operation_order": item.order,
+				},
+				map[string]any{
+					"response_handler": item.handler,
+				},
+				map[string]any{
+					"status": item.status,
+				},
+			)
+			if responsePlan["mode"] != item.expectedResponseMode ||
+				responsePlan["response_recording_state"] != "blocked" ||
+				responsePlan["response_recording_ready"] != false ||
+				responsePlan["operation_name"] != item.operationName ||
+				responsePlan["endpoint_key"] != item.endpointKey ||
+				responsePlan["operation_order"] != item.order ||
+				responsePlan["response_handler"] != item.handler ||
+				responsePlan["response_status"] != item.status ||
+				responsePlan["success_attempt_status"] != "completed" ||
+				responsePlan["retry_attempt_status"] != "planned" ||
+				responsePlan["failure_attempt_status"] != "failed" ||
+				responsePlan["dependency_unlocks_operation"] != item.unlockOperation ||
+				responsePlan["dependency_update_status"] != item.dependencyStatus ||
+				responsePlan["requires_dependency_update"] != item.requiresDependency ||
+				len(mapFromAny(responsePlan["result_recording_plan"])) == 0 ||
+				responsePlan["provider_api_call_made"] != false ||
+				responsePlan["provider_api_mutation"] != "disabled" ||
+				responsePlan["response_body_included"] != false ||
+				responsePlan["headers_included"] != false ||
+				responsePlan["provider_request_id_included"] != false ||
+				responsePlan["contains_token"] != false ||
+				responsePlan["contains_provider_url"] != false ||
+				responsePlan["contains_repository_ref"] != false ||
+				responsePlan["contains_branch_name"] != false ||
+				responsePlan["contains_file_content"] != false ||
+				responsePlan["response_boundary_redacted"] != true {
+				t.Fatalf("providerReviewAttemptAdapterResponsePlan() = %#v", responsePlan)
+			}
+			if got := stringSliceFromAny(responsePlan["expected_success_classes"]); !reflect.DeepEqual(got, []string{"2xx"}) {
+				t.Fatalf("response plan success classes = %#v", got)
+			}
+			if got := stringSliceFromAny(responsePlan["retryable_status_classes"]); !reflect.DeepEqual(got, []string{"5xx"}) {
+				t.Fatalf("response plan retry classes = %#v", got)
+			}
+			if got := stringSliceFromAny(responsePlan["terminal_failure_status_classes"]); !reflect.DeepEqual(got, []string{"4xx"}) {
+				t.Fatalf("response plan failure classes = %#v", got)
+			}
+			resultPlan := mapFromAny(responsePlan["result_recording_plan"])
+			if resultPlan["mode"] != "redacted_attempt_adapter_result_recording_plan" ||
+				resultPlan["result_recording_state"] != "blocked" ||
+				resultPlan["result_recording_ready"] != false ||
+				resultPlan["result_recording_ready_reason"] != "provider_review_result_recording_not_armed" ||
+				resultPlan["result_recording_metadata_ready"] != true ||
+				resultPlan["operation_name"] != item.operationName ||
+				resultPlan["endpoint_key"] != item.endpointKey ||
+				resultPlan["operation_order"] != item.order ||
+				resultPlan["response_status"] != item.status ||
+				resultPlan["success_attempt_status"] != "completed" ||
+				resultPlan["retry_attempt_status"] != "planned" ||
+				resultPlan["failure_attempt_status"] != "failed" ||
+				resultPlan["dependency_unlocks_operation"] != item.unlockOperation ||
+				resultPlan["dependency_update_status"] != item.dependencyStatus ||
+				resultPlan["requires_response_handler"] != true ||
+				resultPlan["requires_response_diagnostics"] != true ||
+				resultPlan["requires_transaction_boundary"] != true ||
+				resultPlan["requires_dependency_update"] != item.requiresDependency ||
+				resultPlan["requires_mutation_arming"] != true ||
+				resultPlan["result_recorded"] != false ||
+				resultPlan["response_classified"] != false ||
+				resultPlan["attempt_status_mapped"] != false ||
+				resultPlan["attempt_result_persisted"] != false ||
+				resultPlan["dependency_update_staged"] != false ||
+				resultPlan["provider_request_id_recorded"] != false ||
+				resultPlan["provider_response_status_recorded"] != false ||
+				resultPlan["provider_response_body_recorded"] != false ||
+				resultPlan["provider_response_headers_recorded"] != false ||
+				resultPlan["external_call_made"] != false ||
+				resultPlan["provider_api_call_made"] != false ||
+				resultPlan["provider_api_mutation"] != "disabled" ||
+				resultPlan["response_body_included"] != false ||
+				resultPlan["headers_included"] != false ||
+				resultPlan["provider_request_id_included"] != false ||
+				resultPlan["provider_response_status_included"] != false ||
+				resultPlan["provider_url_included"] != false ||
+				resultPlan["idempotency_key_included"] != false ||
+				resultPlan["contains_token"] != false ||
+				resultPlan["contains_provider_url"] != false ||
+				resultPlan["contains_repository_ref"] != false ||
+				resultPlan["contains_branch_name"] != false ||
+				resultPlan["contains_file_content"] != false ||
+				resultPlan["result_recording_boundary_redacted"] != true {
+				t.Fatalf("result recording plan = %#v", resultPlan)
+			}
+			resultSequence := stringSliceFromAny(resultPlan["result_recording_sequence"])
+			if len(resultSequence) != 5 ||
+				resultSequence[0] != "classify_provider_response" ||
+				resultSequence[1] != "map_attempt_status" ||
+				resultSequence[2] != "stage_dependency_update" ||
+				resultSequence[3] != "record_redacted_result" ||
+				resultSequence[4] != "persist_attempt_result" {
+				t.Fatalf("result recording sequence = %#v", resultSequence)
+			}
+			resultDiagnosticFields := stringSliceFromAny(resultPlan["result_recording_diagnostic_fields"])
+			if len(resultDiagnosticFields) != 4 ||
+				resultDiagnosticFields[0] != "status_class" ||
+				resultDiagnosticFields[1] != "retry_class" ||
+				resultDiagnosticFields[2] != "dependency_update_required" ||
+				resultDiagnosticFields[3] != "provider_request_id_present" {
+				t.Fatalf("result recording diagnostic fields = %#v", resultDiagnosticFields)
+			}
+			resultPersistedFields := stringSliceFromAny(resultPlan["result_recording_persisted_fields"])
+			if len(resultPersistedFields) != 4 ||
+				resultPersistedFields[0] != "attempt_status" ||
+				resultPersistedFields[3] != "retry_class" {
+				t.Fatalf("result recording persisted fields = %#v", resultPersistedFields)
+			}
+			resultSuppressedFields := stringSliceFromAny(resultPlan["result_recording_suppressed_fields"])
+			if len(resultSuppressedFields) != 9 ||
+				resultSuppressedFields[0] != "provider_request_id" ||
+				resultSuppressedFields[8] != "file_content" {
+				t.Fatalf("result recording suppressed fields = %#v", resultSuppressedFields)
+			}
+			resultBlockedReasons := stringSliceFromAny(resultPlan["blocked_reasons"])
+			if len(resultBlockedReasons) != 4 ||
+				resultBlockedReasons[0] != "provider_review_result_recording_not_armed" ||
+				resultBlockedReasons[1] != "provider_api_call_not_made" ||
+				resultBlockedReasons[2] != "provider_review_adapter_not_implemented" ||
+				resultBlockedReasons[3] != "provider_review_mutation_not_armed" {
+				t.Fatalf("result recording blocked reasons = %#v", resultBlockedReasons)
+			}
+			encoded, _ := json.Marshal(responsePlan)
+			for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+				if strings.Contains(string(encoded), leak) {
+					t.Fatalf("response plan leaked %q: %s", leak, encoded)
+				}
+			}
+		})
+	}
+	t.Run("empty operation returns empty plan", func(t *testing.T) {
+		if got := providerReviewAttemptAdapterResponsePlan(nil, nil, nil); len(got) != 0 {
+			t.Fatalf("empty operation response plan = %#v", got)
+		}
+	})
+	t.Run("redacts invalid operation name even with known endpoint", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResponsePlan(
+			map[string]any{
+				"name":         "raw_operation",
+				"endpoint_key": "github.create_branch_ref",
+			},
+			map[string]any{
+				"response_handler": "raw_handler",
+			},
+			map[string]any{
+				"status": "raw_status",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("invalid operation response plan should be empty: %#v", got)
+		}
+	})
+	t.Run("rejects mismatched response handler", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResponsePlan(
+			map[string]any{
+				"name":         "commit_starter_files",
+				"endpoint_key": "github.commit_files",
+			},
+			map[string]any{
+				"response_handler": "handle_branch_ref_response",
+			},
+			map[string]any{
+				"status": "pending",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("mismatched response handler plan should be empty: %#v", got)
+		}
+	})
+	t.Run("rejects gitea mismatched response handler", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResponsePlan(
+			map[string]any{
+				"name":         "commit_starter_files",
+				"endpoint_key": "gitea.commit_files",
+			},
+			map[string]any{
+				"response_handler": "handle_branch_ref_response",
+			},
+			map[string]any{
+				"status": "pending",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("gitea mismatched response handler plan should be empty: %#v", got)
+		}
+	})
+	t.Run("rejects mismatched endpoint", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResponsePlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.commit_files",
+			},
+			map[string]any{
+				"response_handler": "handle_branch_ref_response",
+			},
+			map[string]any{
+				"status": "pending",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("mismatched endpoint response plan should be empty: %#v", got)
+		}
+	})
+	t.Run("rejects generic response handler default", func(t *testing.T) {
+		for _, item := range []struct {
+			operation string
+			endpoint  string
+		}{
+			{operation: "create_branch_ref", endpoint: "github.create_branch_ref"},
+			{operation: "commit_starter_files", endpoint: "github.commit_files"},
+			{operation: "open_review_request", endpoint: "github.open_review"},
+		} {
+			got := providerReviewAttemptAdapterResponsePlan(
+				map[string]any{
+					"name":         item.operation,
+					"endpoint_key": item.endpoint,
+				},
+				map[string]any{
+					"response_handler": "raw_handler",
+				},
+				map[string]any{
+					"status": "pending",
+				},
+			)
+			if len(got) != 0 {
+				t.Fatalf("generic response handler plan should be empty for %s: %#v", item.operation, got)
+			}
+		}
+	})
+	t.Run("nil request summary returns empty response plan", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResponsePlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.create_branch_ref",
+			},
+			nil,
+			map[string]any{
+				"status": "pending",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("nil request summary response plan should be empty: %#v", got)
+		}
+	})
+	t.Run("empty request summary returns empty response plan", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResponsePlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.create_branch_ref",
+			},
+			map[string]any{},
+			map[string]any{
+				"status": "pending",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("empty request summary response plan should be empty: %#v", got)
+		}
+	})
+	t.Run("result recording plan rejects mismatched response mode", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResultRecordingPlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.create_branch_ref",
+			},
+			map[string]any{
+				"mode": "raw_response_plan",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("mismatched response mode result plan should be empty: %#v", got)
+		}
+	})
+	t.Run("result recording plan rejects mismatched response identity", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResultRecordingPlan(
+			map[string]any{
+				"name":         "create_branch_ref",
+				"endpoint_key": "github.create_branch_ref",
+			},
+			map[string]any{
+				"mode":           providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name": "commit_starter_files",
+				"endpoint_key":   "github.commit_files",
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("mismatched response identity result plan should be empty: %#v", got)
+		}
+	})
+	t.Run("result recording plan rejects invalid response contract", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResultRecordingPlan(
+			map[string]any{
+				"name":            "create_branch_ref",
+				"endpoint_key":    "github.create_branch_ref",
+				"operation_order": 10,
+			},
+			map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "create_branch_ref",
+				"endpoint_key":                 "github.create_branch_ref",
+				"success_attempt_status":       "failed",
+				"retry_attempt_status":         "completed",
+				"failure_attempt_status":       "planned",
+				"dependency_unlocks_operation": "open_review_request",
+				"dependency_update_status":     "dependency_failed",
+				"requires_dependency_update":   true,
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("invalid response contract result plan should be empty: %#v", got)
+		}
+	})
+	t.Run("result recording plan rejects raw unlock on terminal operation", func(t *testing.T) {
+		got := providerReviewAttemptAdapterResultRecordingPlan(
+			map[string]any{
+				"name":            "open_review_request",
+				"endpoint_key":    "github.open_review",
+				"operation_order": 30,
+			},
+			map[string]any{
+				"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+				"operation_name":               "open_review_request",
+				"endpoint_key":                 "github.open_review",
+				"success_attempt_status":       "completed",
+				"retry_attempt_status":         "planned",
+				"failure_attempt_status":       "failed",
+				"dependency_unlocks_operation": "raw-operation-secret",
+				"dependency_update_status":     "",
+				"requires_dependency_update":   false,
+			},
+		)
+		if len(got) != 0 {
+			t.Fatalf("terminal response contract with raw unlock should be empty: %#v", got)
+		}
+	})
+}

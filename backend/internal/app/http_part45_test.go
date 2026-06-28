@@ -1,0 +1,342 @@
+package app
+
+import (
+	"encoding/json"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func TestProviderReviewAttemptAdapterProviderSendPlan(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		provider     string
+		operation    string
+		endpoint     string
+		order        int
+		method       string
+		payloadShape string
+		authScheme   string
+	}{
+		{
+			name:         "github branch ref",
+			provider:     "github",
+			operation:    "create_branch_ref",
+			endpoint:     "github.create_branch_ref",
+			order:        10,
+			method:       "POST",
+			payloadShape: "ref_from_target_branch",
+			authScheme:   "bearer_token",
+		},
+		{
+			name:         "github starter files",
+			provider:     "github",
+			operation:    "commit_starter_files",
+			endpoint:     "github.commit_files",
+			order:        20,
+			method:       "PUT",
+			payloadShape: "content_redacted_file_batch",
+			authScheme:   "bearer_token",
+		},
+		{
+			name:         "gitea review request",
+			provider:     "gitea",
+			operation:    "open_review_request",
+			endpoint:     "gitea.open_review",
+			order:        30,
+			method:       "POST",
+			payloadShape: "review_request",
+			authScheme:   "token",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			operation := map[string]any{
+				"name":            tt.operation,
+				"endpoint_key":    tt.endpoint,
+				"operation_order": tt.order,
+			}
+			requestPlan := map[string]any{"request_materialization_ready": false}
+			credentialPlan := map[string]any{"credential_binding_ready": false}
+			runtimePlan := map[string]any{"runtime_ready": false}
+			transportPlan := providerReviewAttemptAdapterTransportPlan(tt.provider, tt.operation)
+
+			plan := providerReviewAttemptAdapterProviderSendPlan(operation, requestPlan, credentialPlan, runtimePlan, transportPlan)
+			if plan["mode"] != "redacted_attempt_adapter_provider_send_plan" ||
+				plan["provider_send_state"] != "blocked" ||
+				plan["provider_send_ready"] != false ||
+				plan["provider_send_ready_reason"] != "provider_request_send_not_armed" ||
+				plan["provider_send_metadata_ready"] != false ||
+				plan["provider_type"] != tt.provider ||
+				plan["operation_name"] != tt.operation ||
+				plan["endpoint_key"] != tt.endpoint ||
+				plan["operation_order"] != tt.order ||
+				plan["method"] != tt.method ||
+				plan["payload_shape"] != tt.payloadShape ||
+				plan["auth_scheme"] != tt.authScheme ||
+				plan["content_type"] != "application/json" ||
+				plan["timeout_seconds"] != 15 ||
+				plan["request_materialization_ready"] != false ||
+				plan["credential_binding_ready"] != false ||
+				plan["adapter_runtime_ready"] != false ||
+				plan["transport_metadata_ready"] != true ||
+				plan["provider_request_sent"] != false ||
+				plan["provider_response_received"] != false ||
+				plan["external_call_made"] != false ||
+				plan["provider_api_call_made"] != false ||
+				plan["provider_api_mutation"] != "disabled" ||
+				plan["request_body_included"] != false ||
+				plan["response_body_included"] != false ||
+				plan["headers_included"] != false ||
+				plan["authorization_header_included"] != false ||
+				plan["provider_url_included"] != false ||
+				plan["idempotency_key_included"] != false ||
+				plan["provider_request_id_included"] != false ||
+				plan["contains_token"] != false ||
+				plan["contains_provider_url"] != false ||
+				plan["contains_repository_ref"] != false ||
+				plan["contains_branch_name"] != false ||
+				plan["contains_file_content"] != false ||
+				plan["provider_send_boundary_redacted"] != true {
+				t.Fatalf("provider send plan = %#v", plan)
+			}
+			sendSequence := stringSliceFromAny(plan["provider_send_sequence"])
+			if !reflect.DeepEqual(sendSequence, []string{"bind_provider_client", "apply_redacted_transport_metadata", "verify_mutation_arming", "stage_provider_request", "send_provider_request", "handoff_to_response_handler"}) {
+				t.Fatalf("provider send sequence = %#v", sendSequence)
+			}
+			sendSuppressedFields := stringSliceFromAny(plan["provider_send_suppressed_fields"])
+			for _, field := range []string{"request_url", "request_path", "request_body", "request_headers", "authorization_header", "token", "idempotency_key", "repository_ref", "branch_name", "file_content"} {
+				if !slices.Contains(sendSuppressedFields, field) {
+					t.Fatalf("provider send suppressed fields missing %q: %#v", field, sendSuppressedFields)
+				}
+			}
+			blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
+			for _, reason := range []string{"provider_request_send_not_armed", "provider_request_not_materialized", "provider_credential_runtime_binding_not_armed", "provider_review_adapter_runtime_not_bound", "provider_review_mutation_not_armed"} {
+				if !slices.Contains(blockedReasons, reason) {
+					t.Fatalf("provider send blocked reasons missing %q: %#v", reason, blockedReasons)
+				}
+			}
+
+			retryBackoffPlan := mapFromAny(plan["retry_backoff_plan"])
+			if retryBackoffPlan["mode"] != "redacted_attempt_adapter_retry_backoff_plan" ||
+				retryBackoffPlan["operation_name"] != tt.operation ||
+				retryBackoffPlan["endpoint_key"] != tt.endpoint ||
+				retryBackoffPlan["provider_api_call_made"] != false ||
+				retryBackoffPlan["provider_api_mutation"] != "disabled" {
+				t.Fatalf("retry backoff plan = %#v", retryBackoffPlan)
+			}
+
+			encoded, _ := json.Marshal(plan)
+			for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+				if strings.Contains(string(encoded), leak) {
+					t.Fatalf("provider send plan leaked %q: %s", leak, encoded)
+				}
+			}
+		})
+	}
+
+	if got := providerReviewAttemptAdapterProviderSendPlan(nil, nil, nil, nil, nil); len(got) != 0 {
+		t.Fatalf("empty provider send plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterProviderSendPlan(
+		map[string]any{"name": "raw_operation", "endpoint_key": "github.create_branch_ref"},
+		nil,
+		nil,
+		nil,
+		nil,
+	); len(got) != 0 {
+		t.Fatalf("invalid operation provider send plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterProviderSendPlan(
+		map[string]any{"name": "create_branch_ref", "endpoint_key": "github.commit_files"},
+		nil,
+		nil,
+		nil,
+		nil,
+	); len(got) != 0 {
+		t.Fatalf("mismatched operation endpoint provider send plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterProviderSendPlan(
+		map[string]any{"name": "commit_starter_files", "endpoint_key": "github.open_review"},
+		nil,
+		nil,
+		nil,
+		nil,
+	); len(got) != 0 {
+		t.Fatalf("commit operation review endpoint provider send plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterProviderSendPlan(
+		map[string]any{"name": "commit_starter_files", "endpoint_key": "gitea.create_branch_ref"},
+		nil,
+		nil,
+		nil,
+		nil,
+	); len(got) != 0 {
+		t.Fatalf("gitea commit operation branch endpoint provider send plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterProviderSendPlan(
+		map[string]any{"name": "create_branch_ref", "endpoint_key": "unknown.create_branch_ref"},
+		nil,
+		nil,
+		nil,
+		nil,
+	); len(got) != 0 {
+		t.Fatalf("unknown endpoint provider send plan = %#v", got)
+	}
+
+	readyOperation := map[string]any{"name": "create_branch_ref", "endpoint_key": "github.create_branch_ref", "operation_order": 10}
+	readyPlan := providerReviewAttemptAdapterProviderSendPlan(
+		readyOperation,
+		map[string]any{
+			"mode":                          providerReviewAttemptAdapterRequestMaterializationPlanMode,
+			"operation_name":                "create_branch_ref",
+			"endpoint_key":                  "github.create_branch_ref",
+			"request_materialization_ready": true,
+		},
+		map[string]any{
+			"mode":                     "redacted_attempt_adapter_credential_binding_plan",
+			"operation_name":           "create_branch_ref",
+			"endpoint_key":             "github.create_branch_ref",
+			"credential_binding_ready": true,
+		},
+		map[string]any{
+			"mode":           "redacted_attempt_adapter_runtime_plan",
+			"operation_name": "create_branch_ref",
+			"endpoint_key":   "github.create_branch_ref",
+			"runtime_ready":  true,
+		},
+		providerReviewAttemptAdapterTransportPlan("github", "create_branch_ref"),
+	)
+	if readyPlan["provider_send_metadata_ready"] != true ||
+		readyPlan["request_materialization_ready"] != true ||
+		readyPlan["credential_binding_ready"] != true ||
+		readyPlan["adapter_runtime_ready"] != true ||
+		readyPlan["transport_metadata_ready"] != true ||
+		readyPlan["provider_send_ready"] != false ||
+		readyPlan["provider_send_ready_reason"] != "provider_request_send_not_armed" ||
+		readyPlan["provider_api_call_made"] != false ||
+		readyPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("ready metadata provider send plan = %#v", readyPlan)
+	}
+	mismatchedRequestPlan := providerReviewAttemptAdapterProviderSendPlan(
+		readyOperation,
+		map[string]any{
+			"mode":                          providerReviewAttemptAdapterRequestMaterializationPlanMode,
+			"operation_name":                "commit_starter_files",
+			"endpoint_key":                  "github.commit_files",
+			"request_materialization_ready": true,
+		},
+		map[string]any{
+			"mode":                     "redacted_attempt_adapter_credential_binding_plan",
+			"operation_name":           "create_branch_ref",
+			"endpoint_key":             "github.create_branch_ref",
+			"credential_binding_ready": true,
+		},
+		map[string]any{
+			"mode":           "redacted_attempt_adapter_runtime_plan",
+			"operation_name": "create_branch_ref",
+			"endpoint_key":   "github.create_branch_ref",
+			"runtime_ready":  true,
+		},
+		providerReviewAttemptAdapterTransportPlan("github", "create_branch_ref"),
+	)
+	if mismatchedRequestPlan["provider_send_metadata_ready"] != false ||
+		mismatchedRequestPlan["request_materialization_ready"] != false ||
+		mismatchedRequestPlan["credential_binding_ready"] != true ||
+		mismatchedRequestPlan["adapter_runtime_ready"] != true ||
+		mismatchedRequestPlan["transport_metadata_ready"] != true {
+		t.Fatalf("mismatched request provider send plan = %#v", mismatchedRequestPlan)
+	}
+	mismatchedCredentialPlan := providerReviewAttemptAdapterProviderSendPlan(
+		readyOperation,
+		map[string]any{
+			"mode":                          providerReviewAttemptAdapterRequestMaterializationPlanMode,
+			"operation_name":                "create_branch_ref",
+			"endpoint_key":                  "github.create_branch_ref",
+			"request_materialization_ready": true,
+		},
+		map[string]any{
+			"mode":                     "redacted_attempt_adapter_credential_binding_plan",
+			"operation_name":           "commit_starter_files",
+			"endpoint_key":             "github.commit_files",
+			"credential_binding_ready": true,
+		},
+		map[string]any{
+			"mode":           "redacted_attempt_adapter_runtime_plan",
+			"operation_name": "create_branch_ref",
+			"endpoint_key":   "github.create_branch_ref",
+			"runtime_ready":  true,
+		},
+		providerReviewAttemptAdapterTransportPlan("github", "create_branch_ref"),
+	)
+	if mismatchedCredentialPlan["provider_send_metadata_ready"] != false ||
+		mismatchedCredentialPlan["request_materialization_ready"] != true ||
+		mismatchedCredentialPlan["credential_binding_ready"] != false ||
+		mismatchedCredentialPlan["adapter_runtime_ready"] != true ||
+		mismatchedCredentialPlan["transport_metadata_ready"] != true {
+		t.Fatalf("mismatched credential provider send plan = %#v", mismatchedCredentialPlan)
+	}
+	mismatchedRuntimePlan := providerReviewAttemptAdapterProviderSendPlan(
+		readyOperation,
+		map[string]any{
+			"mode":                          providerReviewAttemptAdapterRequestMaterializationPlanMode,
+			"operation_name":                "create_branch_ref",
+			"endpoint_key":                  "github.create_branch_ref",
+			"request_materialization_ready": true,
+		},
+		map[string]any{
+			"mode":                     "redacted_attempt_adapter_credential_binding_plan",
+			"operation_name":           "create_branch_ref",
+			"endpoint_key":             "github.create_branch_ref",
+			"credential_binding_ready": true,
+		},
+		map[string]any{
+			"mode":           "redacted_attempt_adapter_runtime_plan",
+			"operation_name": "commit_starter_files",
+			"endpoint_key":   "github.commit_files",
+			"runtime_ready":  true,
+		},
+		providerReviewAttemptAdapterTransportPlan("github", "create_branch_ref"),
+	)
+	if mismatchedRuntimePlan["provider_send_metadata_ready"] != false ||
+		mismatchedRuntimePlan["request_materialization_ready"] != true ||
+		mismatchedRuntimePlan["credential_binding_ready"] != true ||
+		mismatchedRuntimePlan["adapter_runtime_ready"] != false ||
+		mismatchedRuntimePlan["transport_metadata_ready"] != true {
+		t.Fatalf("mismatched runtime provider send plan = %#v", mismatchedRuntimePlan)
+	}
+	mismatchedTransportPlan := providerReviewAttemptAdapterProviderSendPlan(
+		readyOperation,
+		map[string]any{
+			"mode":                          providerReviewAttemptAdapterRequestMaterializationPlanMode,
+			"operation_name":                "create_branch_ref",
+			"endpoint_key":                  "github.create_branch_ref",
+			"request_materialization_ready": true,
+		},
+		map[string]any{
+			"mode":                     "redacted_attempt_adapter_credential_binding_plan",
+			"operation_name":           "create_branch_ref",
+			"endpoint_key":             "github.create_branch_ref",
+			"credential_binding_ready": true,
+		},
+		map[string]any{
+			"mode":           "redacted_attempt_adapter_runtime_plan",
+			"operation_name": "create_branch_ref",
+			"endpoint_key":   "github.create_branch_ref",
+			"runtime_ready":  true,
+		},
+		map[string]any{
+			"mode":            "redacted_attempt_adapter_transport_plan",
+			"operation_name":  "commit_starter_files",
+			"endpoint_key":    "github.commit_files",
+			"transport_ready": true,
+		},
+	)
+	if mismatchedTransportPlan["provider_send_metadata_ready"] != false ||
+		mismatchedTransportPlan["request_materialization_ready"] != true ||
+		mismatchedTransportPlan["credential_binding_ready"] != true ||
+		mismatchedTransportPlan["adapter_runtime_ready"] != true ||
+		mismatchedTransportPlan["transport_metadata_ready"] != false {
+		t.Fatalf("mismatched transport provider send plan = %#v", mismatchedTransportPlan)
+	}
+}

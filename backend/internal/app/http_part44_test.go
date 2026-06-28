@@ -1,0 +1,1041 @@
+package app
+
+import (
+	"encoding/json"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func TestProviderReviewAttemptAdapterInvocationPlan(t *testing.T) {
+	operation := map[string]any{
+		"name":            "create_branch_ref",
+		"endpoint_key":    "github.create_branch_ref",
+		"operation_order": 10,
+	}
+	claimPlan := map[string]any{
+		"mode":                 "redacted_attempt_execution_claim_plan",
+		"operation_name":       "create_branch_ref",
+		"endpoint_key":         "github.create_branch_ref",
+		"claim_metadata_ready": true,
+	}
+	requestPlan := map[string]any{"request_materialization_ready": false}
+	credentialPlan := map[string]any{"credential_binding_ready": false}
+	runtimePlan := map[string]any{"runtime_ready": false}
+	branchPolicyPlan := providerReviewAttemptBranchPolicyPlan(operation, map[string]any{
+		"mode":           providerReviewAttemptAdapterRequestMaterializationPlanMode,
+		"operation_name": "create_branch_ref",
+		"endpoint_key":   "github.create_branch_ref",
+	})
+	transportPlan := map[string]any{
+		"mode":                     "redacted_attempt_adapter_transport_plan",
+		"operation_name":           "create_branch_ref",
+		"endpoint_key":             "github.create_branch_ref",
+		"transport_ready":          true,
+		"retryable_status_classes": []string{"5xx"},
+	}
+	responsePlan := map[string]any{"response_recording_ready": false}
+	transactionPlan := map[string]any{
+		"mode":                       "redacted_attempt_adapter_transaction_plan",
+		"operation_name":             "create_branch_ref",
+		"endpoint_key":               "github.create_branch_ref",
+		"transaction_metadata_ready": true,
+	}
+	plan := providerReviewAttemptAdapterInvocationPlan(operation, claimPlan, requestPlan, credentialPlan, runtimePlan, branchPolicyPlan, transportPlan, responsePlan, transactionPlan)
+	if plan["mode"] != "redacted_attempt_adapter_invocation_plan" ||
+		plan["invocation_state"] != "blocked" ||
+		plan["invocation_ready"] != false ||
+		plan["invocation_ready_reason"] != "provider_api_invocation_not_armed" ||
+		plan["operation_name"] != "create_branch_ref" ||
+		plan["endpoint_key"] != "github.create_branch_ref" ||
+		plan["operation_order"] != 10 ||
+		plan["claim_metadata_ready"] != true ||
+		plan["execution_lock_metadata_ready"] != true ||
+		plan["adapter_activation_metadata_ready"] != false ||
+		plan["credential_binding_ready"] != false ||
+		plan["adapter_runtime_ready"] != false ||
+		plan["branch_policy_metadata_ready"] != true ||
+		plan["request_materialization_ready"] != false ||
+		plan["transport_metadata_ready"] != true ||
+		plan["provider_send_metadata_ready"] != false ||
+		plan["response_recording_ready"] != false ||
+		plan["transaction_metadata_ready"] != true ||
+		plan["claim_metadata_ready_reason"] != "ready" ||
+		plan["execution_lock_ready_reason"] != "ready" ||
+		plan["adapter_activation_ready_reason"] != "provider_review_activation_credential_binding_not_ready" ||
+		plan["adapter_runtime_ready_reason"] != "provider_review_adapter_runtime_not_ready" ||
+		plan["branch_policy_ready_reason"] != "provider_branch_policy_not_armed" ||
+		plan["transport_metadata_ready_reason"] != "ready" ||
+		plan["provider_send_ready_reason"] != "provider_request_send_not_armed" ||
+		plan["transaction_metadata_ready_reason"] != "ready" ||
+		plan["requires_attempt_claim"] != true ||
+		plan["requires_idempotency_claim"] != true ||
+		plan["requires_execution_lock"] != true ||
+		plan["requires_adapter_activation"] != true ||
+		plan["requires_credential_binding"] != true ||
+		plan["requires_adapter_runtime"] != true ||
+		plan["requires_branch_policy"] != true ||
+		plan["requires_request_materialization"] != true ||
+		plan["requires_transport"] != true ||
+		plan["requires_response_recording"] != true ||
+		plan["requires_transaction_boundary"] != true ||
+		plan["attempt_claim_recorded"] != false ||
+		plan["idempotency_claim_recorded"] != false ||
+		plan["execution_lock_acquired"] != false ||
+		plan["adapter_activation_approved"] != false ||
+		plan["duplicate_send_detected"] != false ||
+		plan["credential_bound"] != false ||
+		plan["adapter_runtime_bound"] != false ||
+		plan["branch_policy_verified"] != false ||
+		plan["request_materialized"] != false ||
+		plan["provider_request_sent"] != false ||
+		plan["response_recorded"] != false ||
+		plan["transaction_recorded"] != false ||
+		plan["dependency_update_recorded"] != false ||
+		plan["adapter_implemented"] != false ||
+		plan["mutation_armed"] != false ||
+		plan["external_call_made"] != false ||
+		plan["provider_api_call_made"] != false ||
+		plan["provider_api_mutation"] != "disabled" ||
+		plan["request_body_included"] != false ||
+		plan["response_body_included"] != false ||
+		plan["headers_included"] != false ||
+		plan["authorization_header_included"] != false ||
+		plan["provider_url_included"] != false ||
+		plan["idempotency_key_included"] != false ||
+		plan["contains_token"] != false ||
+		plan["contains_provider_url"] != false ||
+		plan["contains_repository_ref"] != false ||
+		plan["contains_branch_name"] != false ||
+		plan["contains_file_content"] != false ||
+		plan["invocation_boundary_redacted"] != true {
+		t.Fatalf("providerReviewAttemptAdapterInvocationPlan() = %#v", plan)
+	}
+	sequence := stringSliceFromAny(plan["invocation_sequence"])
+	if len(sequence) != 12 ||
+		sequence[0] != "claim_attempt" ||
+		sequence[2] != "claim_execution_lock" ||
+		sequence[3] != "evaluate_adapter_activation" ||
+		sequence[5] != "select_adapter_runtime" ||
+		sequence[6] != "verify_branch_policy" ||
+		sequence[10] != "record_transaction_boundary" ||
+		sequence[11] != "unlock_dependency" {
+		t.Fatalf("invocation sequence = %#v", sequence)
+	}
+	subplans := stringSliceFromAny(plan["required_subplans"])
+	if len(subplans) != 11 ||
+		subplans[0] != "claim_plan" ||
+		subplans[1] != "execution_lock_plan" ||
+		subplans[2] != "adapter_activation_plan" ||
+		subplans[5] != "branch_policy_plan" ||
+		subplans[8] != "provider_send_plan" ||
+		subplans[10] != "transaction_plan" {
+		t.Fatalf("invocation subplans = %#v", subplans)
+	}
+	gotBranchPolicyPlan := providerReviewAttemptBranchPolicyPlan(operation, map[string]any{
+		"mode":           providerReviewAttemptAdapterRequestMaterializationPlanMode,
+		"operation_name": "create_branch_ref",
+		"endpoint_key":   "github.create_branch_ref",
+	})
+	if gotBranchPolicyPlan["mode"] != "redacted_attempt_branch_policy_plan" ||
+		gotBranchPolicyPlan["branch_policy_state"] != "blocked" ||
+		gotBranchPolicyPlan["branch_policy_ready"] != false ||
+		gotBranchPolicyPlan["branch_policy_ready_reason"] != "provider_branch_policy_not_armed" ||
+		gotBranchPolicyPlan["branch_policy_metadata_ready"] != true ||
+		gotBranchPolicyPlan["operation_name"] != "create_branch_ref" ||
+		gotBranchPolicyPlan["endpoint_key"] != "github.create_branch_ref" ||
+		gotBranchPolicyPlan["operation_order"] != 10 ||
+		gotBranchPolicyPlan["target_branch_policy"] != "protected_default_branch_no_direct_write" ||
+		gotBranchPolicyPlan["review_branch_policy"] != "required_before_starter_file_commit" ||
+		gotBranchPolicyPlan["requires_review_branch"] != true ||
+		gotBranchPolicyPlan["requires_default_branch_protection"] != true ||
+		gotBranchPolicyPlan["requires_review_request"] != true ||
+		gotBranchPolicyPlan["default_branch_direct_write_allowed"] != false ||
+		gotBranchPolicyPlan["protected_branch_direct_write_allowed"] != false ||
+		gotBranchPolicyPlan["starter_file_commit_to_default"] != false ||
+		gotBranchPolicyPlan["review_branch_materialized"] != false ||
+		gotBranchPolicyPlan["default_branch_materialized"] != false ||
+		gotBranchPolicyPlan["protected_branch_rules_materialized"] != false ||
+		gotBranchPolicyPlan["branch_policy_verified"] != false ||
+		gotBranchPolicyPlan["external_call_made"] != false ||
+		gotBranchPolicyPlan["provider_api_call_made"] != false ||
+		gotBranchPolicyPlan["provider_api_mutation"] != "disabled" ||
+		gotBranchPolicyPlan["repository_ref_included"] != false ||
+		gotBranchPolicyPlan["branch_name_included"] != false ||
+		gotBranchPolicyPlan["protected_branch_rules_included"] != false ||
+		gotBranchPolicyPlan["contains_token"] != false ||
+		gotBranchPolicyPlan["contains_provider_url"] != false ||
+		gotBranchPolicyPlan["contains_repository_ref"] != false ||
+		gotBranchPolicyPlan["contains_branch_name"] != false ||
+		gotBranchPolicyPlan["contains_file_content"] != false ||
+		gotBranchPolicyPlan["branch_policy_boundary_redacted"] != true {
+		t.Fatalf("branch policy plan = %#v", gotBranchPolicyPlan)
+	}
+	branchPolicySequence := stringSliceFromAny(gotBranchPolicyPlan["branch_policy_sequence"])
+	if len(branchPolicySequence) != 5 ||
+		branchPolicySequence[0] != "verify_target_branch_policy" ||
+		branchPolicySequence[4] != "handoff_to_provider_adapter" {
+		t.Fatalf("branch policy sequence = %#v", branchPolicySequence)
+	}
+	branchPolicySuppressedFields := stringSliceFromAny(gotBranchPolicyPlan["branch_policy_suppressed_fields"])
+	if len(branchPolicySuppressedFields) != 10 ||
+		branchPolicySuppressedFields[0] != "default_branch" ||
+		branchPolicySuppressedFields[9] != "file_content" {
+		t.Fatalf("branch policy suppressed fields = %#v", branchPolicySuppressedFields)
+	}
+	branchPolicyBlockedReasons := stringSliceFromAny(gotBranchPolicyPlan["blocked_reasons"])
+	if len(branchPolicyBlockedReasons) != 4 ||
+		branchPolicyBlockedReasons[0] != "provider_branch_policy_not_armed" ||
+		branchPolicyBlockedReasons[1] != "protected_default_branch_direct_write_disabled" ||
+		branchPolicyBlockedReasons[2] != "provider_review_adapter_not_implemented" ||
+		branchPolicyBlockedReasons[3] != "provider_review_mutation_not_armed" {
+		t.Fatalf("branch policy blocked reasons = %#v", branchPolicyBlockedReasons)
+	}
+	executionLockPlan := mapFromAny(plan["execution_lock_plan"])
+	if executionLockPlan["mode"] != "redacted_attempt_adapter_execution_lock_plan" ||
+		executionLockPlan["execution_lock_state"] != "blocked" ||
+		executionLockPlan["execution_lock_ready"] != false ||
+		executionLockPlan["execution_lock_ready_reason"] != "provider_review_execution_lock_not_armed" ||
+		executionLockPlan["execution_lock_metadata_ready"] != true ||
+		executionLockPlan["execution_lock_metadata_ready_reason"] != "ready" ||
+		executionLockPlan["operation_name"] != "create_branch_ref" ||
+		executionLockPlan["endpoint_key"] != "github.create_branch_ref" ||
+		executionLockPlan["operation_order"] != 10 ||
+		executionLockPlan["claim_status_from"] != "planned" ||
+		executionLockPlan["claim_status_to"] != "running" ||
+		executionLockPlan["lock_scope"] != "provider_review_attempt_operation" ||
+		executionLockPlan["lock_key_kind"] != "attempt_operation_hash" ||
+		executionLockPlan["duplicate_send_policy"] != "block_duplicate_provider_send" ||
+		executionLockPlan["stale_running_policy"] != "manual_recovery_required" ||
+		executionLockPlan["requires_database_transaction"] != true ||
+		executionLockPlan["requires_attempt_claim"] != true ||
+		executionLockPlan["requires_attempt_status_planned"] != true ||
+		executionLockPlan["requires_dependency_ready"] != true ||
+		executionLockPlan["requires_optimistic_lock"] != true ||
+		executionLockPlan["requires_idempotency_claim"] != true ||
+		executionLockPlan["requires_mutation_arming"] != true ||
+		executionLockPlan["claim_metadata_ready"] != true ||
+		executionLockPlan["transaction_metadata_ready"] != true ||
+		executionLockPlan["attempt_claim_recorded"] != false ||
+		executionLockPlan["idempotency_claim_recorded"] != false ||
+		executionLockPlan["execution_lock_acquired"] != false ||
+		executionLockPlan["optimistic_lock_verified"] != false ||
+		executionLockPlan["duplicate_send_detected"] != false ||
+		executionLockPlan["stale_running_recovered"] != false ||
+		executionLockPlan["provider_request_sent"] != false ||
+		executionLockPlan["external_call_made"] != false ||
+		executionLockPlan["provider_api_call_made"] != false ||
+		executionLockPlan["provider_api_mutation"] != "disabled" ||
+		executionLockPlan["request_body_included"] != false ||
+		executionLockPlan["response_body_included"] != false ||
+		executionLockPlan["headers_included"] != false ||
+		executionLockPlan["authorization_header_included"] != false ||
+		executionLockPlan["provider_url_included"] != false ||
+		executionLockPlan["idempotency_key_included"] != false ||
+		executionLockPlan["provider_request_id_included"] != false ||
+		executionLockPlan["contains_token"] != false ||
+		executionLockPlan["contains_provider_url"] != false ||
+		executionLockPlan["contains_repository_ref"] != false ||
+		executionLockPlan["contains_branch_name"] != false ||
+		executionLockPlan["contains_file_content"] != false ||
+		executionLockPlan["execution_lock_boundary_redacted"] != true {
+		t.Fatalf("execution lock plan = %#v", executionLockPlan)
+	}
+	lockSequence := stringSliceFromAny(executionLockPlan["execution_lock_sequence"])
+	if len(lockSequence) != 6 ||
+		lockSequence[0] != "verify_attempt_status_planned" ||
+		lockSequence[1] != "verify_dependency_ready" ||
+		lockSequence[2] != "claim_attempt_running" ||
+		lockSequence[3] != "claim_idempotency_scope" ||
+		lockSequence[4] != "mark_duplicate_send_guard" ||
+		lockSequence[5] != "release_lock_after_transaction" {
+		t.Fatalf("execution lock sequence = %#v", lockSequence)
+	}
+	lockSuppressedFields := stringSliceFromAny(executionLockPlan["execution_lock_suppressed_fields"])
+	if len(lockSuppressedFields) != 9 ||
+		lockSuppressedFields[0] != "lock_key" ||
+		lockSuppressedFields[4] != "authorization_header" ||
+		lockSuppressedFields[8] != "file_content" {
+		t.Fatalf("execution lock suppressed fields = %#v", lockSuppressedFields)
+	}
+	lockBoundaries := stringSliceFromAny(executionLockPlan["execution_lock_transaction_boundaries"])
+	if len(lockBoundaries) != 4 ||
+		lockBoundaries[0] != "claim_attempt_start" ||
+		lockBoundaries[3] != "attempt_status_update" {
+		t.Fatalf("execution lock transaction boundaries = %#v", lockBoundaries)
+	}
+	lockBlockedReasons := stringSliceFromAny(executionLockPlan["blocked_reasons"])
+	if len(lockBlockedReasons) != 4 ||
+		lockBlockedReasons[0] != "provider_review_execution_lock_not_armed" ||
+		lockBlockedReasons[1] != "provider_review_attempt_claim_not_recorded" ||
+		lockBlockedReasons[2] != "provider_idempotency_ledger_not_claimed" ||
+		lockBlockedReasons[3] != "provider_review_mutation_not_armed" {
+		t.Fatalf("execution lock blocked reasons = %#v", lockBlockedReasons)
+	}
+	activationPlan := mapFromAny(plan["adapter_activation_plan"])
+	if activationPlan["mode"] != "redacted_attempt_adapter_activation_plan" ||
+		activationPlan["adapter_activation_state"] != "blocked" ||
+		activationPlan["adapter_activation_ready"] != false ||
+		activationPlan["adapter_activation_ready_reason"] != "provider_review_adapter_activation_not_armed" ||
+		activationPlan["adapter_activation_metadata_ready"] != false ||
+		activationPlan["adapter_activation_metadata_ready_reason"] != "provider_review_activation_credential_binding_not_ready" ||
+		activationPlan["operation_name"] != "create_branch_ref" ||
+		activationPlan["endpoint_key"] != "github.create_branch_ref" ||
+		activationPlan["operation_order"] != 10 ||
+		len(mapFromAny(activationPlan["live_adapter_plan"])) == 0 ||
+		activationPlan["activation_scope"] != "provider_review_attempt_operation" ||
+		activationPlan["activation_policy"] != "require_all_redacted_subplans_and_mutation_gate" ||
+		activationPlan["requires_live_adapter"] != true ||
+		activationPlan["requires_attempt_claim"] != true ||
+		activationPlan["requires_execution_lock"] != true ||
+		activationPlan["requires_credential_binding"] != true ||
+		activationPlan["requires_adapter_runtime"] != true ||
+		activationPlan["requires_request_materialization"] != true ||
+		activationPlan["requires_transport"] != true ||
+		activationPlan["requires_provider_send_plan"] != true ||
+		activationPlan["requires_response_recording"] != true ||
+		activationPlan["requires_transaction_boundary"] != true ||
+		activationPlan["requires_mutation_arming"] != true ||
+		activationPlan["claim_metadata_ready"] != true ||
+		activationPlan["execution_lock_metadata_ready"] != true ||
+		activationPlan["credential_binding_ready"] != false ||
+		activationPlan["adapter_runtime_ready"] != false ||
+		activationPlan["request_materialization_ready"] != false ||
+		activationPlan["transport_metadata_ready"] != true ||
+		activationPlan["provider_send_metadata_ready"] != false ||
+		activationPlan["response_recording_ready"] != false ||
+		activationPlan["transaction_metadata_ready"] != true ||
+		activationPlan["live_adapter_registered"] != true ||
+		activationPlan["adapter_implemented"] != false ||
+		activationPlan["live_adapter_implemented"] != false ||
+		activationPlan["adapter_activation_approved"] != false ||
+		activationPlan["mutation_gate_armed"] != false ||
+		activationPlan["provider_request_sent"] != false ||
+		activationPlan["external_call_made"] != false ||
+		activationPlan["provider_api_call_made"] != false ||
+		activationPlan["provider_api_mutation"] != "disabled" ||
+		activationPlan["request_body_included"] != false ||
+		activationPlan["response_body_included"] != false ||
+		activationPlan["headers_included"] != false ||
+		activationPlan["authorization_header_included"] != false ||
+		activationPlan["provider_url_included"] != false ||
+		activationPlan["idempotency_key_included"] != false ||
+		activationPlan["provider_request_id_included"] != false ||
+		activationPlan["contains_token"] != false ||
+		activationPlan["contains_provider_url"] != false ||
+		activationPlan["contains_repository_ref"] != false ||
+		activationPlan["contains_branch_name"] != false ||
+		activationPlan["contains_file_content"] != false ||
+		activationPlan["adapter_activation_boundary_redacted"] != true {
+		t.Fatalf("activation plan = %#v", activationPlan)
+	}
+	activationSequence := stringSliceFromAny(activationPlan["adapter_activation_sequence"])
+	if len(activationSequence) != 11 ||
+		activationSequence[0] != "verify_live_adapter_registry" ||
+		activationSequence[1] != "verify_claim_metadata" ||
+		activationSequence[2] != "verify_execution_lock_metadata" ||
+		activationSequence[10] != "verify_mutation_arming" {
+		t.Fatalf("activation sequence = %#v", activationSequence)
+	}
+	activationSuppressedFields := stringSliceFromAny(activationPlan["adapter_activation_suppressed_fields"])
+	if len(activationSuppressedFields) != 10 ||
+		activationSuppressedFields[0] != "provider_url" ||
+		activationSuppressedFields[9] != "lock_key" {
+		t.Fatalf("activation suppressed fields = %#v", activationSuppressedFields)
+	}
+	activationConfigGates := stringSliceFromAny(activationPlan["adapter_activation_required_config_gates"])
+	if len(activationConfigGates) != 2 ||
+		activationConfigGates[0] != "ASSOPS_ENABLE_PROVIDER_REVIEW_EXECUTION" ||
+		activationConfigGates[1] != "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION" {
+		t.Fatalf("activation config gates = %#v", activationConfigGates)
+	}
+	activationInterfaces := stringSliceFromAny(activationPlan["adapter_activation_required_interfaces"])
+	if len(activationInterfaces) != 6 ||
+		activationInterfaces[0] != "providerReviewAttemptLiveAdapter" ||
+		activationInterfaces[1] != "providerReviewAttemptAdapterRuntime" ||
+		activationInterfaces[5] != "providerReviewAttemptResponseHandler" {
+		t.Fatalf("activation interfaces = %#v", activationInterfaces)
+	}
+	activationStatusInputs := stringSliceFromAny(activationPlan["adapter_activation_required_status_inputs"])
+	if len(activationStatusInputs) != 9 ||
+		activationStatusInputs[0] != "claim_metadata_ready" ||
+		activationStatusInputs[8] != "transaction_metadata_ready" {
+		t.Fatalf("activation status inputs = %#v", activationStatusInputs)
+	}
+	activationCapabilities := stringSliceFromAny(activationPlan["adapter_activation_required_capabilities"])
+	if len(activationCapabilities) != 1 || activationCapabilities[0] != "repository_ref_write" {
+		t.Fatalf("activation capabilities = %#v", activationCapabilities)
+	}
+	activationBlockedReasons := stringSliceFromAny(activationPlan["blocked_reasons"])
+	if len(activationBlockedReasons) != 4 ||
+		activationBlockedReasons[0] != "provider_review_adapter_activation_not_armed" ||
+		activationBlockedReasons[1] != "provider_review_activation_metadata_not_ready" ||
+		activationBlockedReasons[2] != "provider_review_live_adapter_not_implemented" ||
+		activationBlockedReasons[3] != "provider_review_mutation_not_armed" {
+		t.Fatalf("activation blocked reasons = %#v", activationBlockedReasons)
+	}
+	liveAdapterPlan := mapFromAny(activationPlan["live_adapter_plan"])
+	if liveAdapterPlan["mode"] != "redacted_attempt_live_adapter_plan" ||
+		liveAdapterPlan["live_adapter_state"] != "blocked" ||
+		liveAdapterPlan["live_adapter_ready"] != false ||
+		liveAdapterPlan["live_adapter_ready_reason"] != "provider_review_live_adapter_not_implemented" ||
+		liveAdapterPlan["provider_type"] != "github" ||
+		liveAdapterPlan["operation_name"] != "create_branch_ref" ||
+		liveAdapterPlan["endpoint_key"] != "github.create_branch_ref" ||
+		liveAdapterPlan["adapter_name"] != "github_live_provider_review_adapter" ||
+		liveAdapterPlan["adapter_interface_registered"] != true ||
+		liveAdapterPlan["live_adapter_registered"] != true ||
+		liveAdapterPlan["live_adapter_implemented"] != false ||
+		liveAdapterPlan["requires_activation_plan"] != true ||
+		liveAdapterPlan["requires_execution_lock"] != true ||
+		liveAdapterPlan["requires_provider_client"] != true ||
+		liveAdapterPlan["requires_request_builder"] != true ||
+		liveAdapterPlan["requires_execute_method"] != true ||
+		liveAdapterPlan["requires_response_handler"] != true ||
+		liveAdapterPlan["requires_transaction_handler"] != true ||
+		liveAdapterPlan["requires_mutation_arming"] != true ||
+		liveAdapterPlan["activation_plan_verified"] != false ||
+		liveAdapterPlan["execution_lock_verified"] != false ||
+		liveAdapterPlan["provider_request_sent"] != false ||
+		liveAdapterPlan["external_call_made"] != false ||
+		liveAdapterPlan["provider_api_call_made"] != false ||
+		liveAdapterPlan["provider_api_mutation"] != "disabled" ||
+		liveAdapterPlan["request_body_included"] != false ||
+		liveAdapterPlan["response_body_included"] != false ||
+		liveAdapterPlan["headers_included"] != false ||
+		liveAdapterPlan["authorization_header_included"] != false ||
+		liveAdapterPlan["provider_url_included"] != false ||
+		liveAdapterPlan["idempotency_key_included"] != false ||
+		liveAdapterPlan["provider_request_id_included"] != false ||
+		liveAdapterPlan["contains_token"] != false ||
+		liveAdapterPlan["contains_provider_url"] != false ||
+		liveAdapterPlan["contains_repository_ref"] != false ||
+		liveAdapterPlan["contains_branch_name"] != false ||
+		liveAdapterPlan["contains_file_content"] != false ||
+		liveAdapterPlan["live_adapter_boundary_redacted"] != true {
+		t.Fatalf("live adapter plan = %#v", liveAdapterPlan)
+	}
+	liveAdapterMethods := stringSliceFromAny(liveAdapterPlan["live_adapter_required_methods"])
+	if len(liveAdapterMethods) != 6 ||
+		liveAdapterMethods[0] != "verify_activation" ||
+		liveAdapterMethods[5] != "record_attempt_transaction" {
+		t.Fatalf("live adapter methods = %#v", liveAdapterMethods)
+	}
+	liveAdapterSuppressedFields := stringSliceFromAny(liveAdapterPlan["live_adapter_suppressed_fields"])
+	if len(liveAdapterSuppressedFields) != 10 ||
+		liveAdapterSuppressedFields[0] != "provider_url" ||
+		liveAdapterSuppressedFields[9] != "lock_key" {
+		t.Fatalf("live adapter suppressed fields = %#v", liveAdapterSuppressedFields)
+	}
+	liveAdapterCapabilities := stringSliceFromAny(liveAdapterPlan["live_adapter_required_capabilities"])
+	if len(liveAdapterCapabilities) != 1 || liveAdapterCapabilities[0] != "repository_ref_write" {
+		t.Fatalf("live adapter capabilities = %#v", liveAdapterCapabilities)
+	}
+	liveAdapterBlockedReasons := stringSliceFromAny(liveAdapterPlan["blocked_reasons"])
+	if len(liveAdapterBlockedReasons) != 3 ||
+		liveAdapterBlockedReasons[0] != "provider_review_live_adapter_not_implemented" ||
+		liveAdapterBlockedReasons[2] != "provider_review_mutation_not_armed" {
+		t.Fatalf("live adapter blocked reasons = %#v", liveAdapterBlockedReasons)
+	}
+	providerSendPlan := mapFromAny(plan["provider_send_plan"])
+	if providerSendPlan["mode"] != "redacted_attempt_adapter_provider_send_plan" ||
+		providerSendPlan["provider_send_state"] != "blocked" ||
+		providerSendPlan["provider_send_ready"] != false ||
+		providerSendPlan["provider_send_ready_reason"] != "provider_request_send_not_armed" ||
+		providerSendPlan["provider_send_metadata_ready"] != false ||
+		providerSendPlan["provider_type"] != "github" ||
+		providerSendPlan["operation_name"] != "create_branch_ref" ||
+		providerSendPlan["endpoint_key"] != "github.create_branch_ref" ||
+		providerSendPlan["operation_order"] != 10 ||
+		providerSendPlan["method"] != "POST" ||
+		providerSendPlan["payload_shape"] != "ref_from_target_branch" ||
+		providerSendPlan["auth_scheme"] != "bearer_token" ||
+		providerSendPlan["content_type"] != "application/json" ||
+		providerSendPlan["timeout_seconds"] != 15 ||
+		len(mapFromAny(providerSendPlan["retry_backoff_plan"])) == 0 ||
+		providerSendPlan["requires_request_materialization"] != true ||
+		providerSendPlan["requires_credential_binding"] != true ||
+		providerSendPlan["requires_adapter_runtime"] != true ||
+		providerSendPlan["requires_transport"] != true ||
+		providerSendPlan["requires_retry_backoff_plan"] != true ||
+		providerSendPlan["requires_mutation_arming"] != true ||
+		providerSendPlan["request_materialization_ready"] != false ||
+		providerSendPlan["credential_binding_ready"] != false ||
+		providerSendPlan["adapter_runtime_ready"] != false ||
+		providerSendPlan["transport_metadata_ready"] != true ||
+		providerSendPlan["request_path_materialized"] != false ||
+		providerSendPlan["request_url_materialized"] != false ||
+		providerSendPlan["request_body_materialized"] != false ||
+		providerSendPlan["headers_materialized"] != false ||
+		providerSendPlan["authorization_header_materialized"] != false ||
+		providerSendPlan["provider_client_bound"] != false ||
+		providerSendPlan["credential_bound"] != false ||
+		providerSendPlan["runtime_bound"] != false ||
+		providerSendPlan["mutation_armed"] != false ||
+		providerSendPlan["send_attempted"] != false ||
+		providerSendPlan["provider_request_sent"] != false ||
+		providerSendPlan["provider_response_received"] != false ||
+		providerSendPlan["external_call_made"] != false ||
+		providerSendPlan["provider_api_call_made"] != false ||
+		providerSendPlan["provider_api_mutation"] != "disabled" ||
+		providerSendPlan["request_body_included"] != false ||
+		providerSendPlan["response_body_included"] != false ||
+		providerSendPlan["headers_included"] != false ||
+		providerSendPlan["authorization_header_included"] != false ||
+		providerSendPlan["provider_url_included"] != false ||
+		providerSendPlan["idempotency_key_included"] != false ||
+		providerSendPlan["provider_request_id_included"] != false ||
+		providerSendPlan["contains_token"] != false ||
+		providerSendPlan["contains_provider_url"] != false ||
+		providerSendPlan["contains_repository_ref"] != false ||
+		providerSendPlan["contains_branch_name"] != false ||
+		providerSendPlan["contains_file_content"] != false ||
+		providerSendPlan["provider_send_boundary_redacted"] != true {
+		t.Fatalf("provider send plan = %#v", providerSendPlan)
+	}
+	sendSequence := stringSliceFromAny(providerSendPlan["provider_send_sequence"])
+	if len(sendSequence) != 6 ||
+		sendSequence[0] != "bind_provider_client" ||
+		sendSequence[1] != "apply_redacted_transport_metadata" ||
+		sendSequence[2] != "verify_mutation_arming" ||
+		sendSequence[3] != "stage_provider_request" ||
+		sendSequence[4] != "send_provider_request" ||
+		sendSequence[5] != "handoff_to_response_handler" {
+		t.Fatalf("provider send sequence = %#v", sendSequence)
+	}
+	sendSuppressedFields := stringSliceFromAny(providerSendPlan["provider_send_suppressed_fields"])
+	if len(sendSuppressedFields) != 10 ||
+		sendSuppressedFields[0] != "request_url" ||
+		sendSuppressedFields[4] != "authorization_header" ||
+		sendSuppressedFields[9] != "file_content" {
+		t.Fatalf("provider send suppressed fields = %#v", sendSuppressedFields)
+	}
+	retryBackoffPlan := mapFromAny(providerSendPlan["retry_backoff_plan"])
+	if retryBackoffPlan["mode"] != "redacted_attempt_adapter_retry_backoff_plan" ||
+		retryBackoffPlan["retry_backoff_state"] != "blocked" ||
+		retryBackoffPlan["retry_backoff_ready"] != false ||
+		retryBackoffPlan["retry_backoff_ready_reason"] != "provider_retry_backoff_not_armed" ||
+		retryBackoffPlan["retry_backoff_metadata_ready"] != true ||
+		retryBackoffPlan["operation_name"] != "create_branch_ref" ||
+		retryBackoffPlan["endpoint_key"] != "github.create_branch_ref" ||
+		retryBackoffPlan["operation_order"] != 10 ||
+		retryBackoffPlan["retry_policy"] != "retry_only_after_response_diagnostics" ||
+		retryBackoffPlan["max_attempts"] != 3 ||
+		retryBackoffPlan["initial_backoff_seconds"] != 30 ||
+		retryBackoffPlan["max_backoff_seconds"] != 300 ||
+		retryBackoffPlan["jitter"] != "full" ||
+		retryBackoffPlan["requires_response_diagnostics"] != true ||
+		retryBackoffPlan["requires_idempotency_ledger"] != true ||
+		retryBackoffPlan["requires_attempt_ledger"] != true ||
+		retryBackoffPlan["requires_mutation_arming"] != true ||
+		retryBackoffPlan["retry_scheduled"] != false ||
+		retryBackoffPlan["retry_attempt_recorded"] != false ||
+		retryBackoffPlan["retry_after_value_recorded"] != false ||
+		retryBackoffPlan["retry_after_header_included"] != false ||
+		retryBackoffPlan["provider_rate_limit_value_included"] != false ||
+		retryBackoffPlan["provider_error_code_included"] != false ||
+		retryBackoffPlan["external_call_made"] != false ||
+		retryBackoffPlan["provider_api_call_made"] != false ||
+		retryBackoffPlan["provider_api_mutation"] != "disabled" ||
+		retryBackoffPlan["request_body_included"] != false ||
+		retryBackoffPlan["response_body_included"] != false ||
+		retryBackoffPlan["headers_included"] != false ||
+		retryBackoffPlan["authorization_header_included"] != false ||
+		retryBackoffPlan["provider_url_included"] != false ||
+		retryBackoffPlan["idempotency_key_included"] != false ||
+		retryBackoffPlan["contains_token"] != false ||
+		retryBackoffPlan["contains_provider_url"] != false ||
+		retryBackoffPlan["contains_repository_ref"] != false ||
+		retryBackoffPlan["contains_branch_name"] != false ||
+		retryBackoffPlan["contains_file_content"] != false ||
+		retryBackoffPlan["retry_backoff_boundary_redacted"] != true {
+		t.Fatalf("retry backoff plan = %#v", retryBackoffPlan)
+	}
+	retryClasses := stringSliceFromAny(retryBackoffPlan["retryable_status_classes"])
+	transportRetryClasses := stringSliceFromAny(retryBackoffPlan["transport_retryable_status_classes"])
+	if len(retryClasses) != 1 || retryClasses[0] != "5xx" || len(transportRetryClasses) != 1 || transportRetryClasses[0] != "5xx" {
+		t.Fatalf("retry classes = %#v / %#v", retryClasses, transportRetryClasses)
+	}
+	retrySequence := stringSliceFromAny(retryBackoffPlan["retry_backoff_sequence"])
+	if len(retrySequence) != 4 ||
+		retrySequence[0] != "classify_retryable_response" ||
+		retrySequence[1] != "verify_idempotency_ledger" ||
+		retrySequence[2] != "record_retry_decision" ||
+		retrySequence[3] != "schedule_backoff_retry" {
+		t.Fatalf("retry sequence = %#v", retrySequence)
+	}
+	retrySuppressedFields := stringSliceFromAny(retryBackoffPlan["retry_backoff_suppressed_fields"])
+	if len(retrySuppressedFields) != 12 ||
+		retrySuppressedFields[0] != "retry_after_value" ||
+		retrySuppressedFields[6] != "authorization_header" ||
+		retrySuppressedFields[11] != "file_content" {
+		t.Fatalf("retry suppressed fields = %#v", retrySuppressedFields)
+	}
+	retryBlockedReasons := stringSliceFromAny(retryBackoffPlan["blocked_reasons"])
+	if len(retryBlockedReasons) != 4 ||
+		retryBlockedReasons[0] != "provider_retry_backoff_not_armed" ||
+		retryBlockedReasons[1] != "provider_response_diagnostics_not_recorded" ||
+		retryBlockedReasons[2] != "provider_idempotency_ledger_not_claimed" ||
+		retryBlockedReasons[3] != "provider_review_mutation_not_armed" {
+		t.Fatalf("retry blocked reasons = %#v", retryBlockedReasons)
+	}
+	sendBlockedReasons := stringSliceFromAny(providerSendPlan["blocked_reasons"])
+	if len(sendBlockedReasons) != 5 ||
+		sendBlockedReasons[0] != "provider_request_send_not_armed" ||
+		sendBlockedReasons[1] != "provider_request_not_materialized" ||
+		sendBlockedReasons[2] != "provider_credential_runtime_binding_not_armed" ||
+		sendBlockedReasons[3] != "provider_review_adapter_runtime_not_bound" ||
+		sendBlockedReasons[4] != "provider_review_mutation_not_armed" {
+		t.Fatalf("provider send blocked reasons = %#v", sendBlockedReasons)
+	}
+	blockedReasons := stringSliceFromAny(plan["blocked_reasons"])
+	if len(blockedReasons) != 11 {
+		t.Fatalf("invocation blocked reasons = %#v", blockedReasons)
+	}
+	for _, reason := range []string{
+		"provider_review_attempt_claim_not_recorded",
+		"provider_review_execution_lock_not_acquired",
+		"provider_review_adapter_activation_not_armed",
+		"provider_credential_runtime_binding_not_armed",
+		"provider_review_adapter_runtime_not_bound",
+		"provider_branch_policy_not_armed",
+		"provider_request_not_materialized",
+		"provider_api_call_not_made",
+		"provider_review_transaction_not_recorded",
+		"provider_review_adapter_not_implemented",
+		"provider_review_mutation_not_armed",
+	} {
+		if !slices.Contains(blockedReasons, reason) {
+			t.Fatalf("invocation blocked reasons missing %q: %#v", reason, blockedReasons)
+		}
+	}
+	encoded, _ := json.Marshal(plan)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("invocation plan leaked %q: %s", leak, encoded)
+		}
+	}
+	encodedLockPlan, _ := json.Marshal(executionLockPlan)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+		if strings.Contains(string(encodedLockPlan), leak) {
+			t.Fatalf("execution lock plan leaked %q: %s", leak, encodedLockPlan)
+		}
+	}
+	encodedActivationPlan, _ := json.Marshal(activationPlan)
+	for _, leak := range []string{"https://", "secret-token", "secret-repo", "feature/secret", "file content", "Authorization"} {
+		if strings.Contains(string(encodedActivationPlan), leak) {
+			t.Fatalf("activation plan leaked %q: %s", leak, encodedActivationPlan)
+		}
+	}
+	if got := providerReviewAttemptAdapterInvocationPlan(nil, nil, nil, nil, nil, nil, nil, nil, nil); len(got) != 0 {
+		t.Fatalf("empty operation invocation plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterRetryBackoffPlan(operation, map[string]any{"mode": "raw_transport_plan"}); len(got) != 0 {
+		t.Fatalf("mismatched transport retry backoff plan = %#v", got)
+	}
+	if got := providerReviewAttemptAdapterExecutionLockPlan(
+		map[string]any{"name": "raw_operation", "endpoint_key": "github.create_branch_ref"},
+		claimPlan,
+		transactionPlan,
+	); len(got) != 0 {
+		t.Fatalf("invalid operation execution lock plan should be empty: %#v", got)
+	}
+	notReadyClaimLockPlan := providerReviewAttemptAdapterExecutionLockPlan(
+		operation,
+		map[string]any{"claim_metadata_ready": false},
+		transactionPlan,
+	)
+	if notReadyClaimLockPlan["execution_lock_metadata_ready"] != false ||
+		notReadyClaimLockPlan["execution_lock_metadata_ready_reason"] != "provider_review_execution_lock_claim_metadata_not_ready" ||
+		notReadyClaimLockPlan["claim_metadata_ready"] != false ||
+		notReadyClaimLockPlan["transaction_metadata_ready"] != true {
+		t.Fatalf("not ready claim execution lock plan = %#v", notReadyClaimLockPlan)
+	}
+	mismatchedClaimLockPlan := providerReviewAttemptAdapterExecutionLockPlan(
+		operation,
+		map[string]any{
+			"mode":                 "redacted_attempt_execution_claim_plan",
+			"operation_name":       "commit_starter_files",
+			"endpoint_key":         "github.commit_files",
+			"claim_metadata_ready": true,
+		},
+		transactionPlan,
+	)
+	if mismatchedClaimLockPlan["execution_lock_metadata_ready"] != false ||
+		mismatchedClaimLockPlan["execution_lock_metadata_ready_reason"] != "provider_review_execution_lock_claim_metadata_not_ready" ||
+		mismatchedClaimLockPlan["claim_metadata_ready"] != false ||
+		mismatchedClaimLockPlan["transaction_metadata_ready"] != true {
+		t.Fatalf("mismatched claim identity execution lock plan = %#v", mismatchedClaimLockPlan)
+	}
+	notReadyTransactionLockPlan := providerReviewAttemptAdapterExecutionLockPlan(
+		operation,
+		claimPlan,
+		map[string]any{"transaction_metadata_ready": false},
+	)
+	if notReadyTransactionLockPlan["execution_lock_metadata_ready"] != false ||
+		notReadyTransactionLockPlan["execution_lock_metadata_ready_reason"] != "provider_review_execution_lock_transaction_metadata_not_ready" ||
+		notReadyTransactionLockPlan["claim_metadata_ready"] != true ||
+		notReadyTransactionLockPlan["transaction_metadata_ready"] != false {
+		t.Fatalf("not ready transaction execution lock plan = %#v", notReadyTransactionLockPlan)
+	}
+	mismatchedTransactionLockPlan := providerReviewAttemptAdapterExecutionLockPlan(
+		operation,
+		claimPlan,
+		map[string]any{
+			"mode":                       "redacted_attempt_adapter_transaction_plan",
+			"operation_name":             "commit_starter_files",
+			"endpoint_key":               "github.commit_files",
+			"transaction_metadata_ready": true,
+		},
+	)
+	if mismatchedTransactionLockPlan["execution_lock_metadata_ready"] != false ||
+		mismatchedTransactionLockPlan["execution_lock_metadata_ready_reason"] != "provider_review_execution_lock_transaction_metadata_not_ready" ||
+		mismatchedTransactionLockPlan["claim_metadata_ready"] != true ||
+		mismatchedTransactionLockPlan["transaction_metadata_ready"] != false {
+		t.Fatalf("mismatched transaction identity execution lock plan = %#v", mismatchedTransactionLockPlan)
+	}
+	got := providerReviewAttemptAdapterInvocationPlan(
+		map[string]any{"name": "raw_operation", "endpoint_key": "github.create_branch_ref"},
+		claimPlan,
+		requestPlan,
+		credentialPlan,
+		runtimePlan,
+		branchPolicyPlan,
+		transportPlan,
+		responsePlan,
+		transactionPlan,
+	)
+	if len(got) != 0 {
+		t.Fatalf("invalid operation invocation plan should be empty: %#v", got)
+	}
+	got = providerReviewAttemptAdapterInvocationPlan(
+		map[string]any{"name": "create_branch_ref", "endpoint_key": "github.secret"},
+		claimPlan,
+		requestPlan,
+		credentialPlan,
+		runtimePlan,
+		branchPolicyPlan,
+		transportPlan,
+		responsePlan,
+		transactionPlan,
+	)
+	if len(got) != 0 {
+		t.Fatalf("invalid endpoint invocation plan should be empty: %#v", got)
+	}
+	notReadyTransportPlan := providerReviewAttemptAdapterInvocationPlan(
+		operation,
+		claimPlan,
+		requestPlan,
+		credentialPlan,
+		runtimePlan,
+		branchPolicyPlan,
+		map[string]any{"mode": "raw_transport_plan", "transport_ready": false},
+		responsePlan,
+		transactionPlan,
+	)
+	if notReadyTransportPlan["transport_metadata_ready"] != false ||
+		notReadyTransportPlan["transport_metadata_ready_reason"] != "provider_review_transport_metadata_not_ready" {
+		t.Fatalf("not ready transport invocation plan = %#v", notReadyTransportPlan)
+	}
+	mismatchedTransportPlan := providerReviewAttemptAdapterInvocationPlan(
+		operation,
+		claimPlan,
+		requestPlan,
+		credentialPlan,
+		runtimePlan,
+		branchPolicyPlan,
+		map[string]any{
+			"mode":            "redacted_attempt_adapter_transport_plan",
+			"operation_name":  "commit_starter_files",
+			"endpoint_key":    "github.commit_files",
+			"transport_ready": true,
+		},
+		responsePlan,
+		transactionPlan,
+	)
+	if mismatchedTransportPlan["transport_metadata_ready"] != false ||
+		mismatchedTransportPlan["transport_metadata_ready_reason"] != "provider_review_transport_metadata_not_ready" ||
+		mismatchedTransportPlan["provider_send_metadata_ready"] != false ||
+		mismatchedTransportPlan["adapter_activation_metadata_ready"] != false {
+		t.Fatalf("mismatched transport identity invocation plan = %#v", mismatchedTransportPlan)
+	}
+	mismatchedCredentialPlan := providerReviewAttemptAdapterInvocationPlan(
+		operation,
+		claimPlan,
+		map[string]any{
+			"mode":                          providerReviewAttemptAdapterRequestMaterializationPlanMode,
+			"operation_name":                "create_branch_ref",
+			"endpoint_key":                  "github.create_branch_ref",
+			"request_materialization_ready": true,
+		},
+		map[string]any{
+			"mode":                     "redacted_attempt_adapter_credential_binding_plan",
+			"operation_name":           "commit_starter_files",
+			"endpoint_key":             "github.commit_files",
+			"credential_binding_ready": true,
+		},
+		map[string]any{
+			"mode":           "redacted_attempt_adapter_runtime_plan",
+			"operation_name": "create_branch_ref",
+			"endpoint_key":   "github.create_branch_ref",
+			"runtime_ready":  true,
+		},
+		branchPolicyPlan,
+		transportPlan,
+		responsePlan,
+		transactionPlan,
+	)
+	if mismatchedCredentialPlan["credential_binding_ready"] != false ||
+		mismatchedCredentialPlan["request_materialization_ready"] != true ||
+		mismatchedCredentialPlan["adapter_runtime_ready"] != true ||
+		mismatchedCredentialPlan["provider_send_metadata_ready"] != false ||
+		mismatchedCredentialPlan["adapter_activation_metadata_ready"] != false ||
+		mismatchedCredentialPlan["adapter_activation_ready_reason"] != "provider_review_activation_credential_binding_not_ready" {
+		t.Fatalf("mismatched credential identity invocation plan = %#v", mismatchedCredentialPlan)
+	}
+	notReadyClaimPlan := providerReviewAttemptAdapterInvocationPlan(
+		operation,
+		map[string]any{"claim_metadata_ready": false},
+		requestPlan,
+		credentialPlan,
+		runtimePlan,
+		branchPolicyPlan,
+		transportPlan,
+		responsePlan,
+		transactionPlan,
+	)
+	if notReadyClaimPlan["claim_metadata_ready"] != false ||
+		notReadyClaimPlan["claim_metadata_ready_reason"] != "provider_review_claim_metadata_not_ready" ||
+		notReadyClaimPlan["execution_lock_metadata_ready"] != false ||
+		notReadyClaimPlan["execution_lock_ready_reason"] != "provider_review_execution_lock_claim_metadata_not_ready" ||
+		notReadyClaimPlan["adapter_activation_metadata_ready"] != false ||
+		notReadyClaimPlan["adapter_activation_ready_reason"] != "provider_review_activation_claim_metadata_not_ready" {
+		t.Fatalf("not ready claim invocation plan = %#v", notReadyClaimPlan)
+	}
+	mismatchedClaimPlan := providerReviewAttemptAdapterInvocationPlan(
+		operation,
+		map[string]any{
+			"mode":                 "redacted_attempt_execution_claim_plan",
+			"operation_name":       "commit_starter_files",
+			"endpoint_key":         "github.commit_files",
+			"claim_metadata_ready": true,
+		},
+		requestPlan,
+		credentialPlan,
+		runtimePlan,
+		branchPolicyPlan,
+		transportPlan,
+		responsePlan,
+		transactionPlan,
+	)
+	if mismatchedClaimPlan["claim_metadata_ready"] != false ||
+		mismatchedClaimPlan["claim_metadata_ready_reason"] != "provider_review_claim_metadata_not_ready" ||
+		mismatchedClaimPlan["execution_lock_metadata_ready"] != false ||
+		mismatchedClaimPlan["execution_lock_ready_reason"] != "provider_review_execution_lock_claim_metadata_not_ready" ||
+		mismatchedClaimPlan["adapter_activation_metadata_ready"] != false ||
+		mismatchedClaimPlan["adapter_activation_ready_reason"] != "provider_review_activation_claim_metadata_not_ready" {
+		t.Fatalf("mismatched claim identity invocation plan = %#v", mismatchedClaimPlan)
+	}
+	mismatchedClaimActivationPlan := providerReviewAttemptAdapterActivationPlan(
+		operation,
+		map[string]any{
+			"mode":                 "redacted_attempt_execution_claim_plan",
+			"operation_name":       "commit_starter_files",
+			"endpoint_key":         "github.commit_files",
+			"claim_metadata_ready": true,
+		},
+		executionLockPlan,
+		credentialPlan,
+		runtimePlan,
+		requestPlan,
+		transportPlan,
+		providerSendPlan,
+		responsePlan,
+		transactionPlan,
+	)
+	if mismatchedClaimActivationPlan["adapter_activation_metadata_ready"] != false ||
+		mismatchedClaimActivationPlan["adapter_activation_metadata_ready_reason"] != "provider_review_activation_claim_metadata_not_ready" ||
+		mismatchedClaimActivationPlan["claim_metadata_ready"] != false ||
+		mismatchedClaimActivationPlan["execution_lock_metadata_ready"] != true {
+		t.Fatalf("mismatched claim identity activation plan = %#v", mismatchedClaimActivationPlan)
+	}
+	activationReadyCredentialPlan := map[string]any{
+		"mode":                     "redacted_attempt_adapter_credential_binding_plan",
+		"operation_name":           "create_branch_ref",
+		"endpoint_key":             "github.create_branch_ref",
+		"credential_binding_ready": true,
+	}
+	activationReadyRuntimePlan := map[string]any{
+		"mode":           "redacted_attempt_adapter_runtime_plan",
+		"operation_name": "create_branch_ref",
+		"endpoint_key":   "github.create_branch_ref",
+		"runtime_ready":  true,
+	}
+	activationReadyRequestPlan := map[string]any{
+		"mode":                          providerReviewAttemptAdapterRequestMaterializationPlanMode,
+		"operation_name":                "create_branch_ref",
+		"endpoint_key":                  "github.create_branch_ref",
+		"request_materialization_ready": true,
+	}
+	activationReadyTransportPlan := map[string]any{
+		"mode":            "redacted_attempt_adapter_transport_plan",
+		"operation_name":  "create_branch_ref",
+		"endpoint_key":    "github.create_branch_ref",
+		"transport_ready": true,
+	}
+	activationReadyProviderSendPlan := map[string]any{
+		"mode":                         "redacted_attempt_adapter_provider_send_plan",
+		"operation_name":               "create_branch_ref",
+		"endpoint_key":                 "github.create_branch_ref",
+		"provider_send_metadata_ready": true,
+	}
+	activationReadyResponsePlan := map[string]any{
+		"mode":                         providerReviewAttemptAdapterResponsePlanMode,
+		"operation_name":               "create_branch_ref",
+		"endpoint_key":                 "github.create_branch_ref",
+		"success_attempt_status":       "completed",
+		"retry_attempt_status":         "planned",
+		"failure_attempt_status":       "failed",
+		"dependency_unlocks_operation": "commit_starter_files",
+		"dependency_update_status":     "dependency_satisfied",
+		"requires_dependency_update":   true,
+		"response_recording_ready":     true,
+	}
+	activationReadyTransactionPlan := map[string]any{
+		"mode":                       "redacted_attempt_adapter_transaction_plan",
+		"operation_name":             "create_branch_ref",
+		"endpoint_key":               "github.create_branch_ref",
+		"transaction_metadata_ready": true,
+	}
+	mismatchedTransportActivationPlan := providerReviewAttemptAdapterActivationPlan(
+		operation,
+		claimPlan,
+		executionLockPlan,
+		activationReadyCredentialPlan,
+		activationReadyRuntimePlan,
+		activationReadyRequestPlan,
+		map[string]any{
+			"mode":            "redacted_attempt_adapter_transport_plan",
+			"operation_name":  "commit_starter_files",
+			"endpoint_key":    "github.commit_files",
+			"transport_ready": true,
+		},
+		activationReadyProviderSendPlan,
+		activationReadyResponsePlan,
+		activationReadyTransactionPlan,
+	)
+	if mismatchedTransportActivationPlan["adapter_activation_metadata_ready"] != false ||
+		mismatchedTransportActivationPlan["adapter_activation_metadata_ready_reason"] != "provider_review_activation_transport_not_ready" ||
+		mismatchedTransportActivationPlan["transport_metadata_ready"] != false {
+		t.Fatalf("mismatched transport identity activation plan = %#v", mismatchedTransportActivationPlan)
+	}
+	mismatchedTransactionActivationPlan := providerReviewAttemptAdapterActivationPlan(
+		operation,
+		claimPlan,
+		executionLockPlan,
+		activationReadyCredentialPlan,
+		activationReadyRuntimePlan,
+		activationReadyRequestPlan,
+		activationReadyTransportPlan,
+		activationReadyProviderSendPlan,
+		activationReadyResponsePlan,
+		map[string]any{
+			"mode":                       "redacted_attempt_adapter_transaction_plan",
+			"operation_name":             "commit_starter_files",
+			"endpoint_key":               "github.commit_files",
+			"transaction_metadata_ready": true,
+		},
+	)
+	if mismatchedTransactionActivationPlan["adapter_activation_metadata_ready"] != false ||
+		mismatchedTransactionActivationPlan["adapter_activation_metadata_ready_reason"] != "provider_review_activation_transaction_not_ready" ||
+		mismatchedTransactionActivationPlan["transaction_metadata_ready"] != false {
+		t.Fatalf("mismatched transaction identity activation plan = %#v", mismatchedTransactionActivationPlan)
+	}
+	mismatchedCredentialActivationPlan := providerReviewAttemptAdapterActivationPlan(
+		operation,
+		claimPlan,
+		executionLockPlan,
+		map[string]any{
+			"mode":                     "redacted_attempt_adapter_credential_binding_plan",
+			"operation_name":           "commit_starter_files",
+			"endpoint_key":             "github.commit_files",
+			"credential_binding_ready": true,
+		},
+		activationReadyRuntimePlan,
+		activationReadyRequestPlan,
+		activationReadyTransportPlan,
+		activationReadyProviderSendPlan,
+		activationReadyResponsePlan,
+		activationReadyTransactionPlan,
+	)
+	if mismatchedCredentialActivationPlan["adapter_activation_metadata_ready"] != false ||
+		mismatchedCredentialActivationPlan["adapter_activation_metadata_ready_reason"] != "provider_review_activation_credential_binding_not_ready" ||
+		mismatchedCredentialActivationPlan["credential_binding_ready"] != false {
+		t.Fatalf("mismatched credential identity activation plan = %#v", mismatchedCredentialActivationPlan)
+	}
+	mismatchedProviderSendActivationPlan := providerReviewAttemptAdapterActivationPlan(
+		operation,
+		claimPlan,
+		executionLockPlan,
+		activationReadyCredentialPlan,
+		activationReadyRuntimePlan,
+		activationReadyRequestPlan,
+		activationReadyTransportPlan,
+		map[string]any{
+			"mode":                         "redacted_attempt_adapter_provider_send_plan",
+			"operation_name":               "commit_starter_files",
+			"endpoint_key":                 "github.commit_files",
+			"provider_send_metadata_ready": true,
+		},
+		activationReadyResponsePlan,
+		activationReadyTransactionPlan,
+	)
+	if mismatchedProviderSendActivationPlan["adapter_activation_metadata_ready"] != false ||
+		mismatchedProviderSendActivationPlan["adapter_activation_metadata_ready_reason"] != "provider_review_activation_provider_send_not_ready" ||
+		mismatchedProviderSendActivationPlan["provider_send_metadata_ready"] != false {
+		t.Fatalf("mismatched provider-send identity activation plan = %#v", mismatchedProviderSendActivationPlan)
+	}
+	notReadyTransactionPlan := providerReviewAttemptAdapterInvocationPlan(
+		operation,
+		claimPlan,
+		requestPlan,
+		credentialPlan,
+		runtimePlan,
+		branchPolicyPlan,
+		transportPlan,
+		responsePlan,
+		map[string]any{"transaction_metadata_ready": false},
+	)
+	if notReadyTransactionPlan["transaction_metadata_ready"] != false ||
+		notReadyTransactionPlan["transaction_metadata_ready_reason"] != "provider_review_transaction_metadata_not_ready" ||
+		notReadyTransactionPlan["execution_lock_metadata_ready"] != false ||
+		notReadyTransactionPlan["execution_lock_ready_reason"] != "provider_review_execution_lock_transaction_metadata_not_ready" ||
+		notReadyTransactionPlan["adapter_activation_metadata_ready"] != false ||
+		notReadyTransactionPlan["adapter_activation_ready_reason"] != "provider_review_activation_execution_lock_not_ready" {
+		t.Fatalf("not ready transaction invocation plan = %#v", notReadyTransactionPlan)
+	}
+	mismatchedTransactionPlan := providerReviewAttemptAdapterInvocationPlan(
+		operation,
+		claimPlan,
+		requestPlan,
+		credentialPlan,
+		runtimePlan,
+		branchPolicyPlan,
+		transportPlan,
+		responsePlan,
+		map[string]any{
+			"mode":                       "redacted_attempt_adapter_transaction_plan",
+			"operation_name":             "commit_starter_files",
+			"endpoint_key":               "github.commit_files",
+			"transaction_metadata_ready": true,
+		},
+	)
+	if mismatchedTransactionPlan["transaction_metadata_ready"] != false ||
+		mismatchedTransactionPlan["transaction_metadata_ready_reason"] != "provider_review_transaction_metadata_not_ready" ||
+		mismatchedTransactionPlan["execution_lock_metadata_ready"] != false ||
+		mismatchedTransactionPlan["execution_lock_ready_reason"] != "provider_review_execution_lock_transaction_metadata_not_ready" ||
+		mismatchedTransactionPlan["adapter_activation_metadata_ready"] != false ||
+		mismatchedTransactionPlan["adapter_activation_ready_reason"] != "provider_review_activation_execution_lock_not_ready" {
+		t.Fatalf("mismatched transaction identity invocation plan = %#v", mismatchedTransactionPlan)
+	}
+}

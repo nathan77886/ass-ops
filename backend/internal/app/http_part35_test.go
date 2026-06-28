@@ -1,0 +1,1022 @@
+package app
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestOperationApprovalPayloadAuditProviderReviewRedactsSensitiveFields(t *testing.T) {
+	approval := map[string]any{
+		"request_payload": map[string]any{
+			"kind":                    "project_template_provider_review_execute",
+			"project_template_run_id": "22222222-2222-2222-2222-222222222222",
+			"project_id":              "11111111-1111-1111-1111-111111111111",
+			"execution_request": map[string]any{
+				"status":          "approval_ready",
+				"approval_action": templateProviderReviewExecuteApprovalAction,
+				"resource_type":   "project_template_run",
+				"provider_type":   "github",
+				"review_kind":     "pull_request",
+				"source_branch":   "assops/template/demo-main",
+				"target_branch":   "main",
+				"token":           "secret-token",
+			},
+			"execution_guardrail": map[string]any{
+				"execution_mode":           "mutation_blocked",
+				"execution_enabled_config": true,
+				"provider_type":            "github",
+				"review_kind":              "pull_request",
+				"source_branch":            "assops/template/demo-main",
+				"target_branch":            "main",
+				"api_base_url":             "https://api.github.example.test",
+				"blocked_reasons":          []any{"provider_review_mutation_armed"},
+				"gates": []map[string]any{
+					{"gate": "provider_review_mutation_armed", "status": "blocked", "message": "mutation blocked", "token": "secret-token"},
+				},
+			},
+			"credential_strategy": map[string]any{
+				"mode":                      "provider_account_token_env",
+				"provider_account_attached": true,
+				"token_env_configured":      true,
+				"token_env_present":         true,
+				"token_stored":              true,
+				"external_call_made":        true,
+				"token_env":                 "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET",
+				"token":                     "secret-token",
+			},
+			"starter_file_payload": map[string]any{
+				"status":           "ready",
+				"file_count":       1,
+				"content_included": false,
+				"files": []map[string]any{
+					{"id": "33333333-3333-3333-3333-333333333333", "path": "README.md", "kind": "text", "status": "planned", "content": "do-not-include"},
+				},
+			},
+			"provider_api_request_plan": map[string]any{
+				"status":                "ready",
+				"mode":                  "redacted_request_plan",
+				"provider_type":         "github",
+				"review_kind":           "pull_request",
+				"source_branch":         "assops/template/demo-main",
+				"target_branch":         "main",
+				"file_count":            1,
+				"api_base_url":          "https://api.github.example.test",
+				"owner":                 "acme",
+				"repo":                  "secret-repo",
+				"provider_api_mutation": "enabled",
+				"operations": []map[string]any{
+					{"name": "commit_starter_files", "method": "PUT", "endpoint_key": "github.commit_files", "payload_shape": "content_redacted_file_batch", "file_count": 1, "url": "https://api.github.example.test/repos/acme/secret-repo", "content": "do-not-include", "api_call": true},
+				},
+			},
+			"provider_review_reconciliation": map[string]any{
+				"status":        "ready",
+				"mode":          "preflight_reconciliation",
+				"provider_type": "github",
+				"review_kind":   "pull_request",
+				"adapter_contract": map[string]any{
+					"status":                "ready",
+					"adapter_status":        "ready",
+					"contract_version":      "provider-review-v1",
+					"provider_api_mutation": "enabled",
+					"external_call_made":    true,
+					"contains_token":        true,
+					"contains_file_content": true,
+					"api_base_url":          "https://api.github.example.test",
+					"operations": []map[string]any{
+						{"name": "open_review_request", "endpoint_key": "github.open_review", "required_capability": "review_request_write", "required_scope": "pull_requests:write", "payload_shape": "pull_request", "adapter_status": "ready", "execution_status": "ready", "external_call_made": true, "provider_api_mutation": "enabled", "url": "https://api.github.example.test/repos/acme/secret-repo/pulls", "token": "secret-token", "content": "do-not-include"},
+					},
+					"request_envelopes": []map[string]any{
+						{
+							"name":                    "commit_starter_files",
+							"method":                  "PUT",
+							"endpoint_key":            "github.commit_files",
+							"payload_shape":           "content_redacted_file_batch",
+							"file_count":              1,
+							"payload_redacted":        false,
+							"contains_token":          true,
+							"contains_file_content":   true,
+							"contains_provider_url":   true,
+							"contains_repository_ref": true,
+							"api_call":                true,
+							"provider_api_mutation":   "enabled",
+							"execution_status":        "ready",
+							"blocked_reason":          "none",
+							"url":                     "https://api.github.example.test/repos/acme/secret-repo/contents/README.md",
+							"token":                   "secret-token",
+							"content":                 "do-not-include",
+							"readiness": []map[string]any{
+								{"evidence": "starter_file_payload_staged", "status": "ready", "content": "do-not-include"},
+							},
+						},
+					},
+					"response_diagnostics": map[string]any{
+						"status":                 "ready",
+						"mode":                   "raw_response_diagnostics",
+						"provider_type":          "github",
+						"review_kind":            "pull_request",
+						"adapter_status":         "ready",
+						"external_call_made":     true,
+						"provider_api_call_made": true,
+						"provider_api_mutation":  "enabled",
+						"response_body_included": true,
+						"headers_included":       true,
+						"contains_token":         true,
+						"contains_provider_url":  true,
+						"diagnostic_fields":      []any{"status_code_class", "provider_request_id_present"},
+						"response_body":          `{"token":"secret-token"}`,
+						"headers":                map[string]any{"Authorization": "Bearer secret-token"},
+						"url":                    "https://api.github.example.test/repos/acme/secret-repo",
+						"operations": []map[string]any{
+							{
+								"name":                     "commit_starter_files",
+								"endpoint_key":             "github.commit_files",
+								"status":                   "ready",
+								"success_status_class":     "2xx",
+								"retryable_status_classes": []any{"429", "5xx"},
+								"response_body_included":   true,
+								"headers_included":         true,
+								"contains_token":           true,
+								"contains_provider_url":    true,
+								"external_call_made":       true,
+								"provider_api_mutation":    "enabled",
+								"response_body":            `{"content":"do-not-include"}`,
+								"headers":                  map[string]any{"Authorization": "Bearer secret-token"},
+							},
+						},
+					},
+					"idempotency_plan": map[string]any{
+						"status":                     "ready",
+						"mode":                       "raw_idempotency_plan",
+						"provider_type":              "github",
+						"review_kind":                "pull_request",
+						"adapter_status":             "ready",
+						"external_call_made":         true,
+						"provider_api_call_made":     true,
+						"provider_api_mutation":      "enabled",
+						"contains_token":             true,
+						"contains_provider_url":      true,
+						"contains_repository_ref":    true,
+						"contains_branch_name":       true,
+						"contains_file_content":      true,
+						"idempotency_key_included":   true,
+						"idempotency_key_material":   "fake-repo:fake/namespace/fake-ref:fake-token",
+						"requires_persisted_attempt": true,
+						"retry_after_diagnostics":    true,
+						"operations": []map[string]any{
+							{
+								"name":                          "commit_starter_files",
+								"endpoint_key":                  "github.commit_files",
+								"status":                        "ready",
+								"idempotency_key_kind":          "raw_key",
+								"idempotency_key_included":      true,
+								"idempotency_key_material":      "fake-repo:fake/namespace/fake-ref:fake-token",
+								"replay_check":                  "detect_existing_commit_batch",
+								"conflict_policy":               "block_on_content_or_parent_conflict",
+								"retry_policy":                  "retry_only_after_response_diagnostics",
+								"requires_persisted_attempt":    true,
+								"contains_token":                true,
+								"contains_provider_url":         true,
+								"contains_repository_ref":       true,
+								"contains_branch_name":          true,
+								"contains_file_content":         true,
+								"external_call_made":            true,
+								"provider_api_call_made":        true,
+								"provider_api_mutation":         "enabled",
+								"response_diagnostics_required": true,
+								"branch":                        "assops/template/demo-main",
+								"repo":                          "secret-repo",
+								"token":                         "secret-token",
+							},
+						},
+					},
+				},
+				"adapter_status":        "ready",
+				"external_call_made":    true,
+				"provider_api_mutation": "enabled",
+				"api_base_url":          "https://api.github.example.test",
+				"blocked_reasons":       []any{"provider_review_mutation_armed"},
+				"gates":                 []map[string]any{{"gate": "provider_review_mutation_armed", "status": "blocked", "token": "secret-token"}},
+				"operations":            []map[string]any{{"name": "open_review_request", "endpoint_key": "github.open_review", "status": "ready", "url": "https://api.github.example.test/repos/acme/secret-repo/pulls", "external_call_made": true}},
+				"request_envelopes": []map[string]any{
+					{
+						"name":                    "open_review_request",
+						"method":                  "POST",
+						"endpoint_key":            "github.open_review",
+						"payload_shape":           "pull_request",
+						"file_count":              1,
+						"payload_redacted":        false,
+						"contains_token":          true,
+						"contains_file_content":   true,
+						"contains_provider_url":   true,
+						"contains_repository_ref": true,
+						"api_call":                true,
+						"provider_api_mutation":   "enabled",
+						"execution_status":        "ready",
+						"blocked_reason":          "none",
+						"url":                     "https://api.github.example.test/repos/acme/secret-repo/pulls",
+						"token":                   "secret-token",
+						"content":                 "do-not-include",
+						"readiness": []map[string]any{
+							{"evidence": "provider_api_request_plan_ready", "status": "ready", "token": "secret-token"},
+						},
+					},
+				},
+				"adapter_rehearsal": map[string]any{
+					"status":                    "ready",
+					"mode":                      "raw_adapter_rehearsal",
+					"provider_type":             "github",
+					"review_kind":               "pull_request",
+					"adapter_status":            "ready",
+					"operation_count":           99,
+					"ready_operation_count":     98,
+					"blocked_operation_count":   97,
+					"blocked_reasons":           []any{"provider_review_mutation_armed", "<script>alert(1)</script>"},
+					"mutation_arming_candidate": true,
+					"external_call_made":        true,
+					"provider_api_call_made":    true,
+					"provider_api_mutation":     "enabled",
+					"payload_redacted":          false,
+					"contains_token":            true,
+					"contains_provider_url":     true,
+					"contains_repository_ref":   true,
+					"contains_file_content":     true,
+					"token":                     "secret-token",
+					"url":                       "https://api.github.example.test/repos/acme/secret-repo/pulls",
+					"content":                   "do-not-include",
+					"operations": []map[string]any{
+						{
+							"name":                   "open_review_request",
+							"endpoint_key":           "github.open_review",
+							"status":                 "ready",
+							"blocked_reasons":        []any{"provider_review_mutation_armed", "raw_block"},
+							"external_call_made":     true,
+							"provider_api_call_made": true,
+							"provider_api_mutation":  "enabled",
+							"token":                  "secret-token",
+							"url":                    "https://api.github.example.test/repos/acme/secret-repo/pulls",
+							"content":                "do-not-include",
+						},
+					},
+				},
+				"mutation_arming_plan": map[string]any{
+					"status":                         "armed",
+					"mode":                           "raw_mutation_arming_plan",
+					"provider_type":                  "github",
+					"review_kind":                    "pull_request",
+					"required_config":                "SECRET_CONFIG",
+					"execution_enabled_config":       true,
+					"adapter_rehearsal_ready":        true,
+					"mutation_armed":                 true,
+					"blocked_reasons":                []any{"provider_review_mutation_armed", "provider_review_adapter_rehearsal", "<script>alert(1)</script>"},
+					"external_call_made":             true,
+					"provider_api_call_made":         true,
+					"provider_api_mutation":          "enabled",
+					"contains_token":                 true,
+					"contains_provider_url":          true,
+					"contains_repository_ref":        true,
+					"contains_file_content":          true,
+					"requires_operator_review":       false,
+					"requires_adapter_rehearsal":     false,
+					"adapter_mutation_currently_off": false,
+					"token":                          "secret-token",
+					"url":                            "https://api.github.example.test/repos/acme/secret-repo",
+					"content":                        "do-not-include",
+				},
+				"execution_blueprint": map[string]any{
+					"status":                   "ready_for_adapter_implementation",
+					"mode":                     "raw_adapter_execution_blueprint",
+					"provider_type":            "github",
+					"review_kind":              "pull_request",
+					"adapter_status":           "ready",
+					"operation_count":          99,
+					"execution_stage":          "raw_stage",
+					"live_adapter_implemented": true,
+					"external_call_made":       true,
+					"provider_api_call_made":   true,
+					"provider_api_mutation":    "enabled",
+					"payload_redacted":         false,
+					"contains_token":           true,
+					"contains_provider_url":    true,
+					"contains_repository_ref":  true,
+					"contains_branch_name":     true,
+					"contains_file_content":    true,
+					"token":                    "secret-token",
+					"url":                      "https://api.github.example.test/repos/acme/secret-repo",
+					"content":                  "do-not-include",
+					"operations": []map[string]any{
+						{
+							"name":                        "open_review_request",
+							"endpoint_key":                "github.open_review",
+							"method":                      "POST",
+							"payload_shape":               "pull_request",
+							"execution_status":            "ready_for_adapter_implementation",
+							"payload_builder":             "raw_builder",
+							"response_handler":            "raw_handler",
+							"idempotency_scope":           "raw_key",
+							"request_body_included":       true,
+							"response_body_included":      true,
+							"headers_included":            true,
+							"payload_redacted":            false,
+							"contains_token":              true,
+							"contains_provider_url":       true,
+							"contains_repository_ref":     true,
+							"contains_branch_name":        true,
+							"contains_file_content":       true,
+							"api_call":                    true,
+							"external_call_made":          true,
+							"provider_api_call_made":      true,
+							"provider_api_mutation":       "enabled",
+							"requires_provider_client":    false,
+							"requires_request_builder":    false,
+							"requires_response_handler":   false,
+							"requires_idempotency_ledger": false,
+							"token":                       "secret-token",
+							"url":                         "https://api.github.example.test/repos/acme/secret-repo/pulls",
+							"content":                     "do-not-include",
+						},
+					},
+				},
+				"response_diagnostics": map[string]any{
+					"status":                 "ready",
+					"mode":                   "raw_response_diagnostics",
+					"provider_type":          "github",
+					"review_kind":            "pull_request",
+					"adapter_status":         "ready",
+					"external_call_made":     true,
+					"provider_api_call_made": true,
+					"provider_api_mutation":  "enabled",
+					"response_body_included": true,
+					"headers_included":       true,
+					"contains_token":         true,
+					"contains_provider_url":  true,
+					"diagnostic_fields":      []any{"status_code_class"},
+					"response_body":          `{"url":"https://api.github.example.test/repos/acme/secret-repo"}`,
+					"headers":                map[string]any{"Authorization": "Bearer secret-token"},
+					"operations": []map[string]any{
+						{
+							"name":                     "open_review_request",
+							"endpoint_key":             "github.open_review",
+							"status":                   "ready",
+							"success_status_class":     "2xx_or_already_exists",
+							"retryable_status_classes": []any{"429", "5xx"},
+							"response_body_included":   true,
+							"headers_included":         true,
+							"contains_token":           true,
+							"contains_provider_url":    true,
+							"external_call_made":       true,
+							"provider_api_mutation":    "enabled",
+							"url":                      "https://api.github.example.test/repos/acme/secret-repo/pulls",
+						},
+					},
+				},
+				"idempotency_plan": map[string]any{
+					"status":                     "ready",
+					"mode":                       "raw_idempotency_plan",
+					"provider_type":              "github",
+					"review_kind":                "pull_request",
+					"adapter_status":             "ready",
+					"external_call_made":         true,
+					"provider_api_call_made":     true,
+					"provider_api_mutation":      "enabled",
+					"contains_token":             true,
+					"contains_provider_url":      true,
+					"contains_repository_ref":    true,
+					"contains_branch_name":       true,
+					"contains_file_content":      true,
+					"idempotency_key_included":   true,
+					"idempotency_key_material":   "fake-repo:fake/namespace/fake-ref:fake-token",
+					"requires_persisted_attempt": true,
+					"retry_after_diagnostics":    true,
+					"operations": []map[string]any{
+						{
+							"name":                          "open_review_request",
+							"endpoint_key":                  "github.open_review",
+							"status":                        "ready",
+							"idempotency_key_kind":          "raw_key",
+							"idempotency_key_included":      true,
+							"idempotency_key_material":      "fake-repo:fake/namespace/fake-ref:fake-token",
+							"replay_check":                  "detect_existing_open_review",
+							"conflict_policy":               "reuse_existing_review_request",
+							"retry_policy":                  "retry_only_after_response_diagnostics",
+							"requires_persisted_attempt":    true,
+							"contains_token":                true,
+							"contains_provider_url":         true,
+							"contains_repository_ref":       true,
+							"contains_branch_name":          true,
+							"contains_file_content":         true,
+							"external_call_made":            true,
+							"provider_api_call_made":        true,
+							"provider_api_mutation":         "enabled",
+							"response_diagnostics_required": true,
+							"branch":                        "assops/template/demo-main",
+							"repo":                          "secret-repo",
+							"token":                         "secret-token",
+						},
+					},
+				},
+			},
+			"provider_review_target_summary": map[string]any{
+				"status":                     "ready",
+				"mode":                       "raw_execution_target_summary",
+				"provider_type":              "github",
+				"review_kind":                "pull_request",
+				"source_branch":              "assops/template/demo-main",
+				"target_branch":              "main",
+				"branch_refs_ready":          true,
+				"starter_file_payload_ready": true,
+				"provider_api_request_ready": true,
+				"file_count":                 1,
+				"adapter_status":             "<script>alert(1)</script>",
+				"blocked_reasons":            []any{"provider_review_mutation_armed", "<script>alert(1)</script>", strings.Repeat("x", 140)},
+				"external_call_made":         true,
+				"provider_api_call_made":     true,
+				"provider_api_mutation":      "enabled",
+				"contains_token":             true,
+				"contains_provider_url":      true,
+				"contains_repository_ref":    true,
+				"contains_file_content":      true,
+				"idempotency_key_included":   true,
+				"url":                        "https://api.github.example.test/repos/acme/secret-repo",
+				"repo":                       "secret-repo",
+				"token":                      "secret-token",
+				"content":                    "do-not-include",
+				"operations": []map[string]any{
+					{"name": "open_review_request", "endpoint_key": "github.open_review", "payload_shape": "pull_request", "status": "ready", "api_call": true, "provider_api_mutation": "enabled", "contains_token": true, "contains_file_content": true, "url": "https://api.github.example.test/repos/acme/secret-repo/pulls", "token": "secret-token", "content": "do-not-include"},
+				},
+			},
+			"approval_result": map[string]any{
+				"execution_enabled":         true,
+				"provider_api_call_made":    true,
+				"provider_api_mutation":     "enabled",
+				"credential_strategy":       map[string]any{"token_stored": true, "external_call_made": true, "token_env": "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", "token": "secret-token"},
+				"starter_file_payload":      map[string]any{"files": []map[string]any{{"path": "README.md", "content": "do-not-include"}}},
+				"provider_api_request_plan": map[string]any{"operations": []map[string]any{{"url": "https://api.github.example.test", "content": "do-not-include", "api_call": true}}},
+				"provider_review_reconciliation": map[string]any{
+					"status":                "ready",
+					"adapter_status":        "ready",
+					"external_call_made":    true,
+					"provider_api_mutation": "enabled",
+					"operations":            []map[string]any{{"url": "https://api.github.example.test", "external_call_made": true}},
+				},
+				"provider_review_target_summary": map[string]any{
+					"status":                     "ready",
+					"mode":                       "raw_execution_target_summary",
+					"provider_type":              "github",
+					"review_kind":                "pull_request",
+					"source_branch":              "assops/template/demo-main",
+					"target_branch":              "main",
+					"branch_refs_ready":          true,
+					"starter_file_payload_ready": true,
+					"provider_api_request_ready": true,
+					"file_count":                 1,
+					"adapter_status":             "<script>alert(1)</script>",
+					"blocked_reasons":            []any{"provider_review_mutation_armed", "<script>alert(1)</script>", strings.Repeat("x", 140)},
+					"external_call_made":         true,
+					"provider_api_call_made":     true,
+					"provider_api_mutation":      "enabled",
+					"contains_token":             true,
+					"contains_provider_url":      true,
+					"contains_repository_ref":    true,
+					"contains_file_content":      true,
+					"idempotency_key_included":   true,
+					"operations": []map[string]any{
+						{"name": "open_review_request", "endpoint_key": "github.open_review", "payload_shape": "pull_request", "status": "ready", "api_call": true, "provider_api_mutation": "enabled", "contains_token": true, "contains_file_content": true, "url": "https://api.github.example.test/repos/acme/secret-repo/pulls", "token": "secret-token", "content": "do-not-include"},
+					},
+				},
+				"provider_review_attempt_ledger": map[string]any{
+					"status":                   "recorded",
+					"mode":                     "raw_attempt_ledger",
+					"attempt_count":            1,
+					"external_call_made":       true,
+					"provider_api_call_made":   true,
+					"provider_api_mutation":    "enabled",
+					"idempotency_key_included": true,
+					"contains_token":           true,
+					"contains_provider_url":    true,
+					"contains_repository_ref":  true,
+					"contains_branch_name":     true,
+					"contains_file_content":    true,
+					"orchestration": map[string]any{
+						"status":                     "<script>alert(1)</script>",
+						"mode":                       "raw_attempt_orchestration",
+						"next_operation":             "open_review_request",
+						"ready_count":                99,
+						"waiting_count":              98,
+						"blocked_count":              97,
+						"completed_count":            96,
+						"dependency_chain_status":    "ready",
+						"external_call_made":         true,
+						"provider_api_call_made":     true,
+						"provider_api_mutation":      "enabled",
+						"idempotency_key_included":   true,
+						"requires_operator_review":   false,
+						"requires_adapter_execution": false,
+						"token":                      "secret-token",
+					},
+					"operations": []map[string]any{
+						{
+							"id":                       "44444444-4444-4444-4444-444444444444",
+							"name":                     "open_review_request",
+							"endpoint_key":             "github.open_review",
+							"status":                   "planned",
+							"dependency_status":        "dependency_satisfied",
+							"replay_check":             "detect_existing_open_review",
+							"conflict_policy":          "reuse_existing_review_request",
+							"retry_policy":             "retry_only_after_response_diagnostics",
+							"external_call_made":       true,
+							"provider_api_call_made":   true,
+							"provider_api_mutation":    "enabled",
+							"idempotency_key_included": true,
+							"idempotency_key_material": "fake-repo:fake/namespace/fake-ref:fake-token",
+							"request_summary": map[string]any{
+								"mode":                     "raw_attempt_request_summary",
+								"operation_name":           "open_review_request",
+								"endpoint_key":             "github.open_review",
+								"payload_builder":          "raw_builder",
+								"response_handler":         "raw_handler",
+								"execution_status":         "ready",
+								"request_body_included":    true,
+								"headers_included":         true,
+								"idempotency_key_included": true,
+								"external_call_made":       true,
+								"provider_api_call_made":   true,
+								"provider_api_mutation":    "enabled",
+								"contains_token":           true,
+								"contains_provider_url":    true,
+								"contains_repository_ref":  true,
+								"contains_branch_name":     true,
+								"contains_file_content":    true,
+								"token":                    "secret-token",
+								"url":                      "https://api.github.example.test/repos/acme/secret-repo/pulls",
+								"repo":                     "secret-repo",
+								"content":                  "do-not-include",
+							},
+							"response_diagnostics": map[string]any{
+								"mode":                     "raw_attempt_response_diagnostics",
+								"endpoint_key":             "github.open_review",
+								"status":                   "ready",
+								"success_status_class":     "2xx",
+								"retryable_status_classes": []any{"5xx", "secret-token"},
+								"response_body_included":   true,
+								"headers_included":         true,
+								"external_call_made":       true,
+								"provider_api_call_made":   true,
+								"provider_api_mutation":    "enabled",
+								"contains_token":           true,
+								"contains_provider_url":    true,
+								"token":                    "secret-token",
+								"url":                      "https://api.github.example.test/repos/acme/secret-repo/pulls",
+								"body":                     "do-not-include",
+							},
+							"branch": "assops/template/demo-main",
+							"repo":   "secret-repo",
+							"token":  "secret-token",
+						},
+					},
+				},
+			},
+		},
+	}
+	audit := operationApprovalPayloadAudit(approval)
+	if audit["kind"] != "project_template_provider_review_execute" ||
+		audit["provider_api_call_made"] != false ||
+		audit["provider_api_mutation"] != "disabled" {
+		t.Fatalf("audit summary = %#v", audit)
+	}
+	result := mapFromAny(audit["approval_result"])
+	if result["execution_enabled"] != false || result["provider_api_call_made"] != false || result["provider_api_mutation"] != "disabled" {
+		t.Fatalf("approval result audit should force disabled/no-call: %#v", result)
+	}
+	reconciliation := mapFromAny(audit["provider_review_reconciliation"])
+	if reconciliation["external_call_made"] != false ||
+		reconciliation["mode"] != "preflight_reconciliation" ||
+		reconciliation["provider_api_mutation"] != "disabled" {
+		t.Fatalf("provider review reconciliation audit should force disabled/no-call: %#v", reconciliation)
+	}
+	apiPlan := mapFromAny(audit["provider_api_request_plan"])
+	if apiPlan["mode"] != "redacted_request_plan" ||
+		apiPlan["provider_api_call_made"] != false ||
+		apiPlan["provider_api_mutation"] != "disabled" {
+		t.Fatalf("api request plan audit should preserve plan mode and force disabled/no-call: %#v", apiPlan)
+	}
+	targetSummary := mapFromAny(audit["provider_review_target_summary"])
+	if targetSummary["mode"] != "redacted_execution_target_summary" ||
+		targetSummary["external_call_made"] != false ||
+		targetSummary["provider_api_call_made"] != false ||
+		targetSummary["provider_api_mutation"] != "disabled" ||
+		targetSummary["payload_redacted"] != true ||
+		targetSummary["contains_token"] != false ||
+		targetSummary["contains_provider_url"] != false ||
+		targetSummary["contains_repository_ref"] != false ||
+		targetSummary["contains_file_content"] != false ||
+		targetSummary["idempotency_key_included"] != false ||
+		targetSummary["requires_provider_api_adapter"] != true ||
+		targetSummary["adapter_status"] != "missing" {
+		t.Fatalf("target summary audit should be sanitized: %#v", targetSummary)
+	}
+	targetBlockedReasons := stringSliceFromAny(targetSummary["blocked_reasons"])
+	if len(targetBlockedReasons) != 1 || targetBlockedReasons[0] != "provider_review_mutation_armed" {
+		t.Fatalf("target summary blocked reasons should be allowlisted: %#v", targetBlockedReasons)
+	}
+	targetOperations := sliceOfMapsFromAny(targetSummary["operations"])
+	if len(targetOperations) != 1 ||
+		targetOperations[0]["api_call"] != false ||
+		targetOperations[0]["provider_api_mutation"] != "disabled" ||
+		targetOperations[0]["contains_token"] != false ||
+		targetOperations[0]["contains_file_content"] != false {
+		t.Fatalf("target summary operations should be sanitized: %#v", targetOperations)
+	}
+	for _, field := range []string{"url", "repo", "token", "content"} {
+		if _, ok := targetSummary[field]; ok {
+			t.Fatalf("target summary should not expose %s: %#v", field, targetSummary)
+		}
+		if _, ok := targetOperations[0][field]; ok {
+			t.Fatalf("target summary operation should not expose %s: %#v", field, targetOperations[0])
+		}
+	}
+	adapterContract := mapFromAny(reconciliation["adapter_contract"])
+	if adapterContract["external_call_made"] != false ||
+		adapterContract["provider_api_mutation"] != "disabled" ||
+		adapterContract["contains_token"] != false ||
+		adapterContract["contains_file_content"] != false {
+		t.Fatalf("adapter contract audit should force disabled/no-call/redacted flags: %#v", adapterContract)
+	}
+	adapterOperations := sliceOfMapsFromAny(adapterContract["operations"])
+	if len(adapterOperations) != 1 ||
+		adapterOperations[0]["external_call_made"] != false ||
+		adapterOperations[0]["provider_api_mutation"] != "disabled" ||
+		adapterOperations[0]["contains_token"] != false ||
+		adapterOperations[0]["contains_file_content"] != false {
+		t.Fatalf("adapter contract operations should be sanitized: %#v", adapterOperations)
+	}
+	contractRequestEnvelopes := sliceOfMapsFromAny(adapterContract["request_envelopes"])
+	if len(contractRequestEnvelopes) != 1 ||
+		contractRequestEnvelopes[0]["api_call"] != false ||
+		contractRequestEnvelopes[0]["provider_api_mutation"] != "disabled" ||
+		contractRequestEnvelopes[0]["contains_token"] != false ||
+		contractRequestEnvelopes[0]["contains_file_content"] != false ||
+		contractRequestEnvelopes[0]["contains_provider_url"] != false ||
+		contractRequestEnvelopes[0]["contains_repository_ref"] != false {
+		t.Fatalf("adapter contract request envelopes should be sanitized: %#v", contractRequestEnvelopes)
+	}
+	contractResponseDiagnostics := mapFromAny(adapterContract["response_diagnostics"])
+	if contractResponseDiagnostics["external_call_made"] != false ||
+		contractResponseDiagnostics["mode"] != "redacted_response_diagnostics" ||
+		contractResponseDiagnostics["provider_api_call_made"] != false ||
+		contractResponseDiagnostics["provider_api_mutation"] != "disabled" ||
+		contractResponseDiagnostics["response_body_included"] != false ||
+		contractResponseDiagnostics["headers_included"] != false ||
+		contractResponseDiagnostics["contains_token"] != false ||
+		contractResponseDiagnostics["contains_provider_url"] != false {
+		t.Fatalf("adapter contract response diagnostics should be sanitized: %#v", contractResponseDiagnostics)
+	}
+	contractResponseOperations := sliceOfMapsFromAny(contractResponseDiagnostics["operations"])
+	if len(contractResponseOperations) != 1 ||
+		contractResponseOperations[0]["response_body_included"] != false ||
+		contractResponseOperations[0]["headers_included"] != false ||
+		contractResponseOperations[0]["contains_token"] != false ||
+		contractResponseOperations[0]["contains_provider_url"] != false ||
+		contractResponseOperations[0]["external_call_made"] != false ||
+		contractResponseOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("adapter contract response diagnostic operations should be sanitized: %#v", contractResponseOperations)
+	}
+	contractIdempotencyPlan := mapFromAny(adapterContract["idempotency_plan"])
+	if contractIdempotencyPlan["external_call_made"] != false ||
+		contractIdempotencyPlan["mode"] != "redacted_idempotency_plan" ||
+		contractIdempotencyPlan["provider_api_call_made"] != false ||
+		contractIdempotencyPlan["provider_api_mutation"] != "disabled" ||
+		contractIdempotencyPlan["contains_token"] != false ||
+		contractIdempotencyPlan["contains_provider_url"] != false ||
+		contractIdempotencyPlan["contains_repository_ref"] != false ||
+		contractIdempotencyPlan["contains_branch_name"] != false ||
+		contractIdempotencyPlan["contains_file_content"] != false ||
+		contractIdempotencyPlan["idempotency_key_included"] != false ||
+		contractIdempotencyPlan["idempotency_key_material"] != "redacted_required_material_only" {
+		t.Fatalf("adapter contract idempotency plan should be sanitized: %#v", contractIdempotencyPlan)
+	}
+	contractIdempotencyOperations := sliceOfMapsFromAny(contractIdempotencyPlan["operations"])
+	if len(contractIdempotencyOperations) != 1 ||
+		contractIdempotencyOperations[0]["idempotency_key_included"] != false ||
+		contractIdempotencyOperations[0]["idempotency_key_kind"] != "operation_scope_hash" ||
+		contractIdempotencyOperations[0]["idempotency_key_material"] != "redacted_required_material_only" ||
+		contractIdempotencyOperations[0]["contains_repository_ref"] != false ||
+		contractIdempotencyOperations[0]["contains_branch_name"] != false ||
+		contractIdempotencyOperations[0]["contains_file_content"] != false ||
+		contractIdempotencyOperations[0]["external_call_made"] != false ||
+		contractIdempotencyOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("adapter contract idempotency operations should be sanitized: %#v", contractIdempotencyOperations)
+	}
+	for _, field := range []string{"branch", "repo", "token"} {
+		if _, ok := contractIdempotencyOperations[0][field]; ok {
+			t.Fatalf("adapter contract idempotency operation should not expose %s: %#v", field, contractIdempotencyOperations[0])
+		}
+	}
+	requestEnvelopes := sliceOfMapsFromAny(reconciliation["request_envelopes"])
+	if len(requestEnvelopes) != 1 ||
+		requestEnvelopes[0]["api_call"] != false ||
+		requestEnvelopes[0]["provider_api_mutation"] != "disabled" ||
+		requestEnvelopes[0]["contains_token"] != false ||
+		requestEnvelopes[0]["contains_file_content"] != false ||
+		requestEnvelopes[0]["contains_provider_url"] != false ||
+		requestEnvelopes[0]["contains_repository_ref"] != false {
+		t.Fatalf("request envelopes should be sanitized: %#v", requestEnvelopes)
+	}
+	requestReadiness := sliceOfMapsFromAny(requestEnvelopes[0]["readiness"])
+	if len(requestReadiness) != 1 || requestReadiness[0]["evidence"] != "provider_api_request_plan_ready" {
+		t.Fatalf("request envelope readiness should preserve safe evidence only: %#v", requestReadiness)
+	}
+	adapterRehearsal := mapFromAny(reconciliation["adapter_rehearsal"])
+	if adapterRehearsal["mode"] != "redacted_adapter_rehearsal" ||
+		adapterRehearsal["status"] != "ready" ||
+		adapterRehearsal["operation_count"] != 1 ||
+		adapterRehearsal["ready_operation_count"] != 1 ||
+		adapterRehearsal["blocked_operation_count"] != 0 ||
+		adapterRehearsal["external_call_made"] != false ||
+		adapterRehearsal["provider_api_call_made"] != false ||
+		adapterRehearsal["provider_api_mutation"] != "disabled" ||
+		adapterRehearsal["contains_token"] != false ||
+		adapterRehearsal["contains_provider_url"] != false ||
+		adapterRehearsal["contains_repository_ref"] != false ||
+		adapterRehearsal["contains_file_content"] != false ||
+		adapterRehearsal["adapter_mutation_currently_off"] != true {
+		t.Fatalf("adapter rehearsal should be sanitized: %#v", adapterRehearsal)
+	}
+	adapterRehearsalOperations := sliceOfMapsFromAny(adapterRehearsal["operations"])
+	if len(adapterRehearsalOperations) != 1 ||
+		adapterRehearsalOperations[0]["external_call_made"] != false ||
+		adapterRehearsalOperations[0]["provider_api_call_made"] != false ||
+		adapterRehearsalOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("adapter rehearsal operations should be sanitized: %#v", adapterRehearsalOperations)
+	}
+	mutationArmingPlan := mapFromAny(reconciliation["mutation_arming_plan"])
+	if mutationArmingPlan["mode"] != "redacted_mutation_arming_plan" ||
+		mutationArmingPlan["status"] != "ready_to_arm" ||
+		mutationArmingPlan["required_config"] != "ASSOPS_ARM_PROVIDER_REVIEW_MUTATION" ||
+		mutationArmingPlan["mutation_armed"] != false ||
+		mutationArmingPlan["external_call_made"] != false ||
+		mutationArmingPlan["provider_api_call_made"] != false ||
+		mutationArmingPlan["provider_api_mutation"] != "disabled" ||
+		mutationArmingPlan["contains_token"] != false ||
+		mutationArmingPlan["contains_provider_url"] != false ||
+		mutationArmingPlan["contains_repository_ref"] != false ||
+		mutationArmingPlan["contains_file_content"] != false ||
+		mutationArmingPlan["requires_operator_review"] != true ||
+		mutationArmingPlan["requires_adapter_rehearsal"] != true ||
+		mutationArmingPlan["adapter_mutation_currently_off"] != true {
+		t.Fatalf("mutation arming plan should be sanitized: %#v", mutationArmingPlan)
+	}
+	mutationArmingReasons := stringSliceFromAny(mutationArmingPlan["blocked_reasons"])
+	if !containsString(mutationArmingReasons, "provider_review_mutation_armed") ||
+		!containsString(mutationArmingReasons, "provider_review_adapter_rehearsal") ||
+		containsString(mutationArmingReasons, "<script>alert(1)</script>") {
+		t.Fatalf("mutation arming reasons should be allowlisted: %#v", mutationArmingReasons)
+	}
+	executionBlueprint := mapFromAny(reconciliation["execution_blueprint"])
+	if executionBlueprint["mode"] != "redacted_adapter_execution_blueprint" ||
+		executionBlueprint["status"] != "ready_for_adapter_implementation" ||
+		executionBlueprint["operation_count"] != 1 ||
+		executionBlueprint["execution_stage"] != "adapter_implementation_required" ||
+		executionBlueprint["live_adapter_implemented"] != false ||
+		executionBlueprint["requires_provider_client"] != true ||
+		executionBlueprint["requires_request_builder"] != true ||
+		executionBlueprint["requires_response_handler"] != true ||
+		executionBlueprint["requires_idempotency_ledger"] != true ||
+		executionBlueprint["provider_api_call_made"] != false ||
+		executionBlueprint["provider_api_mutation"] != "disabled" ||
+		executionBlueprint["payload_redacted"] != true ||
+		executionBlueprint["contains_token"] != false ||
+		executionBlueprint["contains_provider_url"] != false ||
+		executionBlueprint["contains_repository_ref"] != false ||
+		executionBlueprint["contains_branch_name"] != false ||
+		executionBlueprint["contains_file_content"] != false ||
+		executionBlueprint["adapter_mutation_currently_off"] != true {
+		t.Fatalf("execution blueprint should be sanitized: %#v", executionBlueprint)
+	}
+	executionBlueprintOperations := sliceOfMapsFromAny(executionBlueprint["operations"])
+	if len(executionBlueprintOperations) != 1 ||
+		executionBlueprintOperations[0]["payload_builder"] != "build_redacted_provider_request" ||
+		executionBlueprintOperations[0]["response_handler"] != "handle_provider_response" ||
+		executionBlueprintOperations[0]["request_body_included"] != false ||
+		executionBlueprintOperations[0]["headers_included"] != false ||
+		executionBlueprintOperations[0]["api_call"] != false ||
+		executionBlueprintOperations[0]["provider_api_mutation"] != "disabled" ||
+		executionBlueprintOperations[0]["contains_file_content"] != false ||
+		executionBlueprintOperations[0]["requires_idempotency_ledger"] != true {
+		t.Fatalf("execution blueprint operations should be sanitized: %#v", executionBlueprintOperations)
+	}
+	responseDiagnostics := mapFromAny(reconciliation["response_diagnostics"])
+	if responseDiagnostics["external_call_made"] != false ||
+		responseDiagnostics["mode"] != "redacted_response_diagnostics" ||
+		responseDiagnostics["provider_api_call_made"] != false ||
+		responseDiagnostics["provider_api_mutation"] != "disabled" ||
+		responseDiagnostics["response_body_included"] != false ||
+		responseDiagnostics["headers_included"] != false ||
+		responseDiagnostics["contains_token"] != false ||
+		responseDiagnostics["contains_provider_url"] != false {
+		t.Fatalf("response diagnostics should be sanitized: %#v", responseDiagnostics)
+	}
+	responseOperations := sliceOfMapsFromAny(responseDiagnostics["operations"])
+	if len(responseOperations) != 1 ||
+		responseOperations[0]["response_body_included"] != false ||
+		responseOperations[0]["headers_included"] != false ||
+		responseOperations[0]["contains_token"] != false ||
+		responseOperations[0]["contains_provider_url"] != false ||
+		responseOperations[0]["external_call_made"] != false ||
+		responseOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("response diagnostic operations should be sanitized: %#v", responseOperations)
+	}
+	idempotencyPlan := mapFromAny(reconciliation["idempotency_plan"])
+	if idempotencyPlan["external_call_made"] != false ||
+		idempotencyPlan["mode"] != "redacted_idempotency_plan" ||
+		idempotencyPlan["provider_api_call_made"] != false ||
+		idempotencyPlan["provider_api_mutation"] != "disabled" ||
+		idempotencyPlan["contains_token"] != false ||
+		idempotencyPlan["contains_provider_url"] != false ||
+		idempotencyPlan["contains_repository_ref"] != false ||
+		idempotencyPlan["contains_branch_name"] != false ||
+		idempotencyPlan["contains_file_content"] != false ||
+		idempotencyPlan["idempotency_key_included"] != false ||
+		idempotencyPlan["idempotency_key_material"] != "redacted_required_material_only" {
+		t.Fatalf("idempotency plan should be sanitized: %#v", idempotencyPlan)
+	}
+	idempotencyOperations := sliceOfMapsFromAny(idempotencyPlan["operations"])
+	if len(idempotencyOperations) != 1 ||
+		idempotencyOperations[0]["idempotency_key_included"] != false ||
+		idempotencyOperations[0]["idempotency_key_kind"] != "operation_scope_hash" ||
+		idempotencyOperations[0]["idempotency_key_material"] != "redacted_required_material_only" ||
+		idempotencyOperations[0]["contains_repository_ref"] != false ||
+		idempotencyOperations[0]["contains_branch_name"] != false ||
+		idempotencyOperations[0]["contains_file_content"] != false ||
+		idempotencyOperations[0]["external_call_made"] != false ||
+		idempotencyOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("idempotency operations should be sanitized: %#v", idempotencyOperations)
+	}
+	for _, field := range []string{"branch", "repo", "token"} {
+		if _, ok := idempotencyOperations[0][field]; ok {
+			t.Fatalf("idempotency operation should not expose %s: %#v", field, idempotencyOperations[0])
+		}
+	}
+	credential := mapFromAny(audit["credential_strategy"])
+	if credential["token_stored"] != false || credential["external_call_made"] != false || credential["token_env_present"] != true {
+		t.Fatalf("credential audit should force no stored token/no external call while preserving safe presence: %#v", credential)
+	}
+	injectedCredential := sanitizedProviderReviewCredentialStrategy(map[string]any{
+		"provider_account_attached": "yes",
+		"token_env_configured":      "true",
+		"token_env_present":         1,
+		"token_stored":              true,
+		"external_call_made":        true,
+	})
+	if injectedCredential["provider_account_attached"] != false ||
+		injectedCredential["token_env_configured"] != false ||
+		injectedCredential["token_env_present"] != false ||
+		injectedCredential["token_stored"] != false ||
+		injectedCredential["external_call_made"] != false {
+		t.Fatalf("credential sanitizer should only trust bool values and force safe flags: %#v", injectedCredential)
+	}
+	resultReconciliation := mapFromAny(result["provider_review_reconciliation"])
+	if resultReconciliation["external_call_made"] != false || resultReconciliation["provider_api_mutation"] != "disabled" {
+		t.Fatalf("approval result reconciliation audit should force disabled/no-call: %#v", resultReconciliation)
+	}
+	resultTargetSummary := mapFromAny(result["provider_review_target_summary"])
+	if resultTargetSummary["mode"] != "redacted_execution_target_summary" ||
+		resultTargetSummary["external_call_made"] != false ||
+		resultTargetSummary["provider_api_call_made"] != false ||
+		resultTargetSummary["provider_api_mutation"] != "disabled" ||
+		resultTargetSummary["contains_token"] != false ||
+		resultTargetSummary["contains_provider_url"] != false ||
+		resultTargetSummary["contains_repository_ref"] != false ||
+		resultTargetSummary["contains_file_content"] != false ||
+		resultTargetSummary["idempotency_key_included"] != false {
+		t.Fatalf("approval result target summary should be sanitized: %#v", resultTargetSummary)
+	}
+	resultTargetOperations := sliceOfMapsFromAny(resultTargetSummary["operations"])
+	if len(resultTargetOperations) != 1 ||
+		resultTargetOperations[0]["api_call"] != false ||
+		resultTargetOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("approval result target operations should be sanitized: %#v", resultTargetOperations)
+	}
+	resultAttemptLedger := mapFromAny(result["provider_review_attempt_ledger"])
+	if resultAttemptLedger["mode"] != "redacted_attempt_ledger" ||
+		resultAttemptLedger["external_call_made"] != false ||
+		resultAttemptLedger["provider_api_call_made"] != false ||
+		resultAttemptLedger["provider_api_mutation"] != "disabled" ||
+		resultAttemptLedger["idempotency_key_included"] != false ||
+		resultAttemptLedger["contains_token"] != false ||
+		resultAttemptLedger["contains_provider_url"] != false ||
+		resultAttemptLedger["contains_repository_ref"] != false ||
+		resultAttemptLedger["contains_branch_name"] != false ||
+		resultAttemptLedger["contains_file_content"] != false {
+		t.Fatalf("approval result attempt ledger should be sanitized: %#v", resultAttemptLedger)
+	}
+	resultAttemptOrchestration := mapFromAny(resultAttemptLedger["orchestration"])
+	if resultAttemptOrchestration["mode"] != "redacted_attempt_orchestration" ||
+		resultAttemptOrchestration["status"] != "not_recorded" ||
+		resultAttemptOrchestration["next_operation"] != "open_review_request" ||
+		resultAttemptOrchestration["ready_count"] != 1 ||
+		resultAttemptOrchestration["waiting_count"] != 0 ||
+		resultAttemptOrchestration["blocked_count"] != 0 ||
+		resultAttemptOrchestration["completed_count"] != 0 ||
+		resultAttemptOrchestration["dependency_chain_status"] != "ready" ||
+		resultAttemptOrchestration["external_call_made"] != false ||
+		resultAttemptOrchestration["provider_api_call_made"] != false ||
+		resultAttemptOrchestration["provider_api_mutation"] != "disabled" ||
+		resultAttemptOrchestration["idempotency_key_included"] != false ||
+		resultAttemptOrchestration["requires_operator_review"] != true ||
+		resultAttemptOrchestration["requires_adapter_execution"] != true {
+		t.Fatalf("approval result attempt orchestration should be sanitized: %#v", resultAttemptOrchestration)
+	}
+	resultAttemptChainPlan := mapFromAny(resultAttemptOrchestration["dependency_chain_plan"])
+	if resultAttemptChainPlan["mode"] != "redacted_attempt_dependency_chain_plan" ||
+		resultAttemptChainPlan["status"] != "ready" ||
+		resultAttemptChainPlan["next_operation"] != "open_review_request" ||
+		resultAttemptChainPlan["chain_ready_for_next_attempt"] != true ||
+		resultAttemptChainPlan["provider_api_call_made"] != false ||
+		resultAttemptChainPlan["provider_api_mutation"] != "disabled" ||
+		resultAttemptChainPlan["contains_token"] != false ||
+		resultAttemptChainPlan["contains_provider_url"] != false ||
+		resultAttemptChainPlan["contains_repository_ref"] != false ||
+		resultAttemptChainPlan["contains_branch_name"] != false ||
+		resultAttemptChainPlan["contains_file_content"] != false {
+		t.Fatalf("approval result attempt dependency chain plan should be sanitized: %#v", resultAttemptChainPlan)
+	}
+	resultAttemptCandidate := mapFromAny(resultAttemptOrchestration["execution_candidate"])
+	if resultAttemptCandidate["mode"] != "redacted_attempt_execution_candidate" ||
+		resultAttemptCandidate["status"] != "blocked" ||
+		resultAttemptCandidate["next_operation"] != "open_review_request" ||
+		resultAttemptCandidate["endpoint_key"] != "github.open_review" ||
+		resultAttemptCandidate["provider_api_call_made"] != false ||
+		resultAttemptCandidate["provider_api_mutation"] != "disabled" ||
+		resultAttemptCandidate["mutation_armed"] != false ||
+		resultAttemptCandidate["adapter_implemented"] != false {
+		t.Fatalf("approval result attempt candidate should be blocked/redacted: %#v", resultAttemptCandidate)
+	}
+	resultAttemptAdapterContract := mapFromAny(resultAttemptCandidate["adapter_contract"])
+	if resultAttemptAdapterContract["mode"] != "redacted_attempt_adapter_contract" ||
+		resultAttemptAdapterContract["operation_name"] != "open_review_request" ||
+		resultAttemptAdapterContract["endpoint_key"] != "github.open_review" ||
+		resultAttemptAdapterContract["payload_builder"] != "build_redacted_provider_request" ||
+		resultAttemptAdapterContract["response_handler"] != "handle_provider_response" ||
+		resultAttemptAdapterContract["adapter_call_state"] != "blocked" ||
+		resultAttemptAdapterContract["provider_api_call_made"] != false ||
+		resultAttemptAdapterContract["provider_api_mutation"] != "disabled" ||
+		resultAttemptAdapterContract["contains_token"] != false ||
+		resultAttemptAdapterContract["contains_provider_url"] != false ||
+		resultAttemptAdapterContract["contains_repository_ref"] != false ||
+		resultAttemptAdapterContract["contains_branch_name"] != false ||
+		resultAttemptAdapterContract["contains_file_content"] != false {
+		t.Fatalf("approval result attempt adapter contract should be blocked/redacted: %#v", resultAttemptAdapterContract)
+	}
+	resultAttemptRetryable := stringSliceFromAny(resultAttemptAdapterContract["retryable_status_classes"])
+	if len(resultAttemptRetryable) != 1 || resultAttemptRetryable[0] != "5xx" {
+		t.Fatalf("approval result attempt adapter contract retry classes should be redacted/allowlisted: %#v", resultAttemptRetryable)
+	}
+	resultAttemptOperations := sliceOfMapsFromAny(resultAttemptLedger["operations"])
+	if len(resultAttemptOperations) != 1 ||
+		resultAttemptOperations[0]["idempotency_key_included"] != false ||
+		resultAttemptOperations[0]["external_call_made"] != false ||
+		resultAttemptOperations[0]["provider_api_mutation"] != "disabled" {
+		t.Fatalf("approval result attempt operations should be sanitized: %#v", resultAttemptOperations)
+	}
+	resultAttemptRequestSummary := mapFromAny(resultAttemptOperations[0]["request_summary"])
+	if resultAttemptRequestSummary["mode"] != "redacted_attempt_request_summary" ||
+		resultAttemptRequestSummary["payload_builder"] != "build_redacted_provider_request" ||
+		resultAttemptRequestSummary["response_handler"] != "handle_provider_response" ||
+		resultAttemptRequestSummary["execution_status"] != "blocked" ||
+		resultAttemptRequestSummary["request_body_included"] != false ||
+		resultAttemptRequestSummary["headers_included"] != false ||
+		resultAttemptRequestSummary["provider_api_call_made"] != false ||
+		resultAttemptRequestSummary["provider_api_mutation"] != "disabled" ||
+		resultAttemptRequestSummary["idempotency_key_included"] != false ||
+		resultAttemptRequestSummary["contains_token"] != false ||
+		resultAttemptRequestSummary["contains_provider_url"] != false ||
+		resultAttemptRequestSummary["contains_repository_ref"] != false ||
+		resultAttemptRequestSummary["contains_branch_name"] != false ||
+		resultAttemptRequestSummary["contains_file_content"] != false {
+		t.Fatalf("approval result attempt request summary should be sanitized: %#v", resultAttemptRequestSummary)
+	}
+	resultAttemptResponseDiagnostics := mapFromAny(resultAttemptOperations[0]["response_diagnostics"])
+	if resultAttemptResponseDiagnostics["mode"] != "redacted_attempt_response_diagnostics" ||
+		resultAttemptResponseDiagnostics["status"] != "blocked" ||
+		resultAttemptResponseDiagnostics["success_status_class"] != "2xx" ||
+		resultAttemptResponseDiagnostics["response_body_included"] != false ||
+		resultAttemptResponseDiagnostics["headers_included"] != false ||
+		resultAttemptResponseDiagnostics["provider_api_call_made"] != false ||
+		resultAttemptResponseDiagnostics["provider_api_mutation"] != "disabled" ||
+		resultAttemptResponseDiagnostics["contains_token"] != false ||
+		resultAttemptResponseDiagnostics["contains_provider_url"] != false {
+		t.Fatalf("approval result attempt response diagnostics should be sanitized: %#v", resultAttemptResponseDiagnostics)
+	}
+	for _, field := range []string{"branch", "repo", "token", "idempotency_key_material"} {
+		if _, ok := resultAttemptOperations[0][field]; ok {
+			t.Fatalf("approval result attempt operation should not expose %s: %#v", field, resultAttemptOperations[0])
+		}
+	}
+	encoded, _ := json.Marshal(audit)
+	for _, leak := range []string{"secret-token", "do-not-include", "api.github.example.test", "secret-repo", "fake-repo", "fake-token", "fake/namespace/fake-ref", "ASSOPS_TEMPLATE_PROVIDER_TOKEN_GITHUB_SECRET", `"api_call":true`, `"enabled"`, "raw_execution_target_summary", "raw_idempotency_plan", "raw_adapter_rehearsal", "raw_mutation_arming_plan", "raw_adapter_execution_blueprint", "raw_attempt_response_diagnostics", "raw_builder", "raw_handler", "raw_stage", "SECRET_CONFIG", "raw_attempt_ledger", "raw_attempt_orchestration", "raw_key"} {
+		if strings.Contains(string(encoded), leak) {
+			t.Fatalf("approval payload audit leaked %q: %s", leak, encoded)
+		}
+	}
+}
