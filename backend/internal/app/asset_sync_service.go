@@ -92,6 +92,28 @@ func syncCanonicalAssetsGorm(ctx context.Context, db *gorm.DB) (AssetSyncResult,
 	return syncCanonicalAssetSpecs(ctx, db, assets, relations)
 }
 
+func deleteCanonicalAssetForSourceGorm(ctx context.Context, db *gorm.DB, assetType, sourceTable, sourceID string) error {
+	if db == nil {
+		return fmt.Errorf("gorm store is not initialized")
+	}
+	var assets []GormAsset
+	if err := db.WithContext(ctx).Where(&GormAsset{AssetType: assetType, SourceTable: sourceTable, SourceID: validNullString(sourceID)}).Find(&assets).Error; err != nil {
+		return fmt.Errorf("loading canonical asset for delete: %w", err)
+	}
+	for _, asset := range assets {
+		if err := db.WithContext(ctx).Where("from_asset_id = ? OR to_asset_id = ?", asset.ID, asset.ID).Delete(&GormAssetRelation{}).Error; err != nil {
+			return fmt.Errorf("deleting canonical asset relations: %w", err)
+		}
+		if err := db.WithContext(ctx).Where(&GormAssetStatusSnapshot{AssetID: asset.ID}).Delete(&GormAssetStatusSnapshot{}).Error; err != nil {
+			return fmt.Errorf("deleting canonical asset status snapshots: %w", err)
+		}
+		if err := db.WithContext(ctx).Delete(&asset).Error; err != nil {
+			return fmt.Errorf("deleting canonical asset: %w", err)
+		}
+	}
+	return nil
+}
+
 func syncWorkerNodeCanonicalAssetGorm(ctx context.Context, db *gorm.DB, workerNodeID string) (AssetSyncResult, error) {
 	if db == nil {
 		return AssetSyncResult{}, fmt.Errorf("gorm store is not initialized")

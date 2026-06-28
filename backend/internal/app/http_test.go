@@ -179,6 +179,172 @@ func TestSensitiveArgoConfigRequiresElevatedRole(t *testing.T) {
 	}
 }
 
+func TestUpdateAndDeleteArgoConnectionHandlers(t *testing.T) {
+	store := newGormFixtureStore(t)
+	migrateGormFixture(t, store, &GormUser{}, &GormProject{}, &GormConnectionCredential{}, &GormArgoConnection{}, &GormArgoApp{}, &GormDeploymentTarget{}, &GormDeploymentRecord{}, &GormRollbackPoint{}, &GormAsset{}, &GormAssetRelation{}, &sqliteAssetStatusSnapshotFixture{})
+	server := &Server{store: store}
+	admin := &User{ID: "user-admin", Email: "admin@example.test", Role: "admin"}
+	project := GormProject{Name: "Demo", Slug: "demo"}
+	if err := store.Gorm.Create(&project).Error; err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	credential := GormConnectionCredential{ProjectID: validNullString(project.ID), Name: "argo-token", Kind: "argo_token", SecretCiphertext: "encrypted", Metadata: JSONValue{Data: map[string]any{}}}
+	if err := store.Gorm.Create(&credential).Error; err != nil {
+		t.Fatalf("create credential: %v", err)
+	}
+	connection := GormArgoConnection{ProjectID: project.ID, Name: "old", ServerURL: "https://example.com", AuthType: "token", CredentialID: validNullString(credential.ID), Config: JSONValue{Data: map[string]any{"use_env_token": true, "insecure_skip_verify": false}}}
+	if err := store.Gorm.Create(&connection).Error; err != nil {
+		t.Fatalf("create argo connection: %v", err)
+	}
+	if _, err := store.SyncCanonicalAssets(t.Context()); err != nil {
+		t.Fatalf("sync assets: %v", err)
+	}
+	updateBody := strings.NewReader(fmt.Sprintf(`{"name":"new","server_url":"https://example.org","auth_type":"token","credential_id":%q,"config":{"insecure_skip_verify":false}}`, credential.ID))
+	updateReq := withRouteParam(httptest.NewRequest(http.MethodPatch, "/api/argo/connections/"+connection.ID, updateBody), "id", connection.ID)
+	updateReq = updateReq.WithContext(context.WithValue(updateReq.Context(), userContextKey{}, admin))
+	updateRR := httptest.NewRecorder()
+	server.updateArgoConnection(updateRR, updateReq)
+	if updateRR.Code != http.StatusOK {
+		t.Fatalf("update status = %d, body: %s", updateRR.Code, updateRR.Body.String())
+	}
+	var updated GormArgoConnection
+	if err := store.Gorm.First(&updated, &GormArgoConnection{GormBase: GormBase{ID: connection.ID}}).Error; err != nil {
+		t.Fatalf("load updated argo connection: %v", err)
+	}
+	if updated.Name != "new" || updated.ServerURL != "https://example.org" {
+		t.Fatalf("unexpected updated argo connection: %#v", updated)
+	}
+	updatedConfig := mapFromAny(updated.Config.Data)
+	if updatedConfig["use_env_token"] != true || updatedConfig["insecure_skip_verify"] != false {
+		t.Fatalf("argo config was not preserved: %#v", updatedConfig)
+	}
+	var asset GormAsset
+	if err := store.Gorm.First(&asset, &GormAsset{AssetType: "argo_connection", SourceTable: "argo_connections", SourceID: validNullString(connection.ID)}).Error; err != nil {
+		t.Fatalf("load argo asset: %v", err)
+	}
+	if asset.Name != "new" || asset.ExternalID != "https://example.org" {
+		t.Fatalf("asset not synced after update: %#v", asset)
+	}
+	target := GormDeploymentTarget{ProjectID: project.ID, Name: "cluster/ns", Environment: "test", ClusterName: "cluster", Namespace: "ns", Source: "argocd", ArgoConnectionID: validNullString(connection.ID), Metadata: JSONValue{Data: map[string]any{}}}
+	if err := store.Gorm.Create(&target).Error; err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	app := GormArgoApp{ProjectID: project.ID, ArgoConnectionID: validNullString(connection.ID), DeploymentTargetID: validNullString(target.ID), Name: "app", Metadata: JSONValue{Data: map[string]any{}}}
+	if err := store.Gorm.Create(&app).Error; err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	record := GormDeploymentRecord{ProjectID: project.ID, DeploymentTargetID: validNullString(target.ID), ArgoConnectionID: validNullString(connection.ID), ArgoAppID: validNullString(app.ID), Name: "app", Environment: "test", Namespace: "ns", ClusterName: "cluster", Source: "argocd", ImageRefs: JSONValue{Data: []string{}}, Metadata: JSONValue{Data: map[string]any{}}, ObservedAt: time.Now()}
+	if err := store.Gorm.Create(&record).Error; err != nil {
+		t.Fatalf("create record: %v", err)
+	}
+	rollback := GormRollbackPoint{ProjectID: project.ID, DeploymentRecordID: validNullString(record.ID), DeploymentTargetID: validNullString(target.ID), Name: "app", Environment: "test", Revision: "rev", Source: "argocd", ImageRefs: JSONValue{Data: []string{}}, Metadata: JSONValue{Data: map[string]any{}}, CapturedAt: time.Now()}
+	if err := store.Gorm.Create(&rollback).Error; err != nil {
+		t.Fatalf("create rollback: %v", err)
+	}
+	deleteReq := withRouteParam(httptest.NewRequest(http.MethodDelete, "/api/argo/connections/"+connection.ID, nil), "id", connection.ID)
+	deleteReq = deleteReq.WithContext(context.WithValue(deleteReq.Context(), userContextKey{}, admin))
+	deleteRR := httptest.NewRecorder()
+	server.deleteArgoConnection(deleteRR, deleteReq)
+	if deleteRR.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body: %s", deleteRR.Code, deleteRR.Body.String())
+	}
+	for name, model := range map[string]any{
+		"connections": &GormArgoConnection{},
+		"apps":        &GormArgoApp{},
+		"targets":     &GormDeploymentTarget{},
+		"records":     &GormDeploymentRecord{},
+		"rollbacks":   &GormRollbackPoint{},
+	} {
+		var count int64
+		if err := store.Gorm.Model(model).Count(&count).Error; err != nil {
+			t.Fatalf("count %s: %v", name, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count = %d, want 0", name, count)
+		}
+	}
+	var deletedAssetCount int64
+	if err := store.Gorm.Model(&GormAsset{}).Where(&GormAsset{AssetType: "argo_connection", SourceTable: "argo_connections", SourceID: validNullString(connection.ID)}).Count(&deletedAssetCount).Error; err != nil {
+		t.Fatalf("count deleted argo asset: %v", err)
+	}
+	if deletedAssetCount != 0 {
+		t.Fatalf("deleted argo asset count = %d, want 0", deletedAssetCount)
+	}
+}
+
+func TestUpdateAndDeleteSSHMachineHandlers(t *testing.T) {
+	store := newGormFixtureStore(t)
+	migrateGormFixture(t, store, &GormUser{}, &GormProject{}, &GormConnectionCredential{}, &GormSSHMachine{}, &GormSSHCommandRun{}, &GormAsset{}, &GormAssetRelation{}, &sqliteAssetStatusSnapshotFixture{})
+	server := &Server{store: store}
+	admin := &User{ID: "user-admin", Email: "admin@example.test", Role: "admin"}
+	project := GormProject{Name: "Demo", Slug: "demo"}
+	if err := store.Gorm.Create(&project).Error; err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	credential := GormConnectionCredential{ProjectID: validNullString(project.ID), Name: "ssh-key", Kind: "ssh_key", SecretCiphertext: "encrypted", Metadata: JSONValue{Data: map[string]any{}}}
+	if err := store.Gorm.Create(&credential).Error; err != nil {
+		t.Fatalf("create credential: %v", err)
+	}
+	machine := GormSSHMachine{ProjectID: project.ID, Name: "old", Host: "old.example.com", Port: 22, Username: "deploy", AuthType: "key", CredentialID: validNullString(credential.ID), Metadata: JSONValue{Data: map[string]any{"known_hosts_path": "/etc/assops/ssh/known_hosts/demo", "host_key_path": "/etc/assops/ssh/keys/demo.pub"}}}
+	if err := store.Gorm.Create(&machine).Error; err != nil {
+		t.Fatalf("create ssh machine: %v", err)
+	}
+	if _, err := store.SyncCanonicalAssets(t.Context()); err != nil {
+		t.Fatalf("sync assets: %v", err)
+	}
+	updateBody := strings.NewReader(fmt.Sprintf(`{"name":"new","host":"new.example.com","port":2222,"username":"ops","auth_type":"key","credential_id":%q,"metadata":{"team":"platform"}}`, credential.ID))
+	updateReq := withRouteParam(httptest.NewRequest(http.MethodPatch, "/api/ssh-machines/"+machine.ID, updateBody), "id", machine.ID)
+	updateReq = updateReq.WithContext(context.WithValue(updateReq.Context(), userContextKey{}, admin))
+	updateRR := httptest.NewRecorder()
+	server.updateSSHMachine(updateRR, updateReq)
+	if updateRR.Code != http.StatusOK {
+		t.Fatalf("update status = %d, body: %s", updateRR.Code, updateRR.Body.String())
+	}
+	var updated GormSSHMachine
+	if err := store.Gorm.First(&updated, &GormSSHMachine{GormBase: GormBase{ID: machine.ID}}).Error; err != nil {
+		t.Fatalf("load updated ssh machine: %v", err)
+	}
+	if updated.Name != "new" || updated.Host != "new.example.com" || updated.Port != 2222 || updated.Username != "ops" {
+		t.Fatalf("unexpected updated ssh machine: %#v", updated)
+	}
+	updatedMetadata := mapFromAny(updated.Metadata.Data)
+	if updatedMetadata["known_hosts_path"] != "/etc/assops/ssh/known_hosts/demo" || updatedMetadata["host_key_path"] != "/etc/assops/ssh/keys/demo.pub" {
+		t.Fatalf("ssh metadata was not preserved: %#v", updatedMetadata)
+	}
+	run := GormSSHCommandRun{SSHMachineID: validNullString(machine.ID), ProjectID: validNullString(project.ID), Command: "true", Status: "completed"}
+	if err := store.Gorm.Create(&run).Error; err != nil {
+		t.Fatalf("create ssh run: %v", err)
+	}
+	deleteReq := withRouteParam(httptest.NewRequest(http.MethodDelete, "/api/ssh-machines/"+machine.ID, nil), "id", machine.ID)
+	deleteReq = deleteReq.WithContext(context.WithValue(deleteReq.Context(), userContextKey{}, admin))
+	deleteRR := httptest.NewRecorder()
+	server.deleteSSHMachine(deleteRR, deleteReq)
+	if deleteRR.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body: %s", deleteRR.Code, deleteRR.Body.String())
+	}
+	var machineCount int64
+	if err := store.Gorm.Model(&GormSSHMachine{}).Count(&machineCount).Error; err != nil {
+		t.Fatalf("count machines: %v", err)
+	}
+	if machineCount != 0 {
+		t.Fatalf("machine count = %d, want 0", machineCount)
+	}
+	var deletedAssetCount int64
+	if err := store.Gorm.Model(&GormAsset{}).Where(&GormAsset{AssetType: "ssh_machine", SourceTable: "ssh_machines", SourceID: validNullString(machine.ID)}).Count(&deletedAssetCount).Error; err != nil {
+		t.Fatalf("count deleted ssh asset: %v", err)
+	}
+	if deletedAssetCount != 0 {
+		t.Fatalf("deleted ssh asset count = %d, want 0", deletedAssetCount)
+	}
+	var preserved GormSSHCommandRun
+	if err := store.Gorm.First(&preserved, &GormSSHCommandRun{ID: run.ID}).Error; err != nil {
+		t.Fatalf("load preserved run: %v", err)
+	}
+	if preserved.SSHMachineID.Valid {
+		t.Fatalf("ssh run machine id still linked: %#v", preserved.SSHMachineID)
+	}
+}
+
 func TestRollbackExecutionPlanReadOnly(t *testing.T) {
 	plan := rollbackExecutionPlan("previewable", "read_only_preview")
 	if plan["mode"] != "redacted_rollback_execution_plan" ||

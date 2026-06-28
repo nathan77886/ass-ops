@@ -237,6 +237,8 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/agent/tasks/{id}/execute", s.executePlan)
 		r.Post("/api/projects/{id}/argo/connections", s.createArgoConnection)
 		r.Get("/api/projects/{id}/argo/connections", s.listArgoConnections)
+		r.Patch("/api/argo/connections/{id}", s.updateArgoConnection)
+		r.Delete("/api/argo/connections/{id}", s.deleteArgoConnection)
 		r.Post("/api/argo/connections/{id}/apps/sync", s.syncArgoApps)
 		r.Get("/api/projects/{id}/argo/apps", s.listArgoApps)
 		r.Post("/api/projects/{id}/kubernetes/environments", s.createKubernetesEnvironment)
@@ -261,6 +263,8 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/webhook-events/{id}/replay", s.replayWebhookEvent)
 		r.Post("/api/projects/{id}/ssh-machines", s.createSSHMachine)
 		r.Get("/api/projects/{id}/ssh-machines", s.listSSHMachines)
+		r.Patch("/api/ssh-machines/{id}", s.updateSSHMachine)
+		r.Delete("/api/ssh-machines/{id}", s.deleteSSHMachine)
 		r.Get("/api/ssh-machines/{id}/rehearsal", s.getSSHMachineRehearsal)
 		r.Post("/api/ssh-machines/{id}/target-environment-proof", s.recordSSHMachineTargetEnvironmentProof)
 		r.Post("/api/ssh-machines/{id}/rehearsal-snapshot", s.recordSSHMachineRehearsalSnapshot)
@@ -24589,6 +24593,152 @@ func (s *Server) listArgoConnections(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": argoConnectionMaps(connections, credentials)})
 }
 
+func (s *Server) updateArgoConnection(w http.ResponseWriter, r *http.Request) {
+	connectionID := chi.URLParam(r, "id")
+	var current GormArgoConnection
+	if err := s.store.Gorm.WithContext(r.Context()).First(&current, &GormArgoConnection{GormBase: GormBase{ID: connectionID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "argo_connection", ID: connectionID, ProjectID: current.ProjectID}, "update") {
+		return
+	}
+	var req struct {
+		Name         *string        `json:"name"`
+		ServerURL    *string        `json:"server_url"`
+		AuthType     *string        `json:"auth_type"`
+		CredentialID *string        `json:"credential_id"`
+		Config       map[string]any `json:"config"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	next := current
+	if req.Name != nil {
+		next.Name = strings.TrimSpace(*req.Name)
+	}
+	if req.ServerURL != nil {
+		next.ServerURL = strings.TrimSpace(*req.ServerURL)
+	}
+	if req.AuthType != nil {
+		next.AuthType = strings.TrimSpace(*req.AuthType)
+	}
+	if next.AuthType == "" {
+		next.AuthType = "token"
+	}
+	if next.AuthType != "token" {
+		writeError(w, http.StatusBadRequest, "auth_type must be token")
+		return
+	}
+	if !validPublicHTTPURL(r.Context(), next.ServerURL) {
+		writeError(w, http.StatusBadRequest, "server_url must be a public http or https URL")
+		return
+	}
+	if req.Config != nil {
+		config := mapFromAny(next.Config.Data)
+		for key, value := range req.Config {
+			config[key] = value
+		}
+		next.Config = JSONValue{Data: config}
+	}
+	if (boolConfig(mapFromAny(next.Config.Data), "insecure_skip_verify") || boolConfig(mapFromAny(next.Config.Data), "use_env_token")) && !canUseSensitiveArgoConfig(currentUser(r)) {
+		writeError(w, http.StatusForbidden, "sensitive Argo connection config requires an owner role")
+		return
+	}
+	credentialID := cleanOptionalID(next.CredentialID.String)
+	if req.CredentialID != nil {
+		credentialID = cleanOptionalID(*req.CredentialID)
+		next.CredentialID = validNullString(credentialID)
+	}
+	credential, err := s.connectionCredentialForProjectOrGlobal(r.Context(), next.ProjectID, credentialID, "argo_token")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credential_id must reference an Argo token credential in this project")
+		return
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var locked GormArgoConnection
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, &GormArgoConnection{GormBase: GormBase{ID: connectionID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		next.GormBase = locked.GormBase
+		next.ProjectID = locked.ProjectID
+		if err := tx.Save(&next).Error; err != nil {
+			return err
+		}
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, argoConnectionMap(next, credential))
+}
+
+func (s *Server) deleteArgoConnection(w http.ResponseWriter, r *http.Request) {
+	connectionID := chi.URLParam(r, "id")
+	var connection GormArgoConnection
+	if err := s.store.Gorm.WithContext(r.Context()).First(&connection, &GormArgoConnection{GormBase: GormBase{ID: connectionID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "argo_connection", ID: connectionID, ProjectID: connection.ProjectID}, "delete") {
+		return
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var locked GormArgoConnection
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, &GormArgoConnection{GormBase: GormBase{ID: connectionID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		var targets []GormDeploymentTarget
+		if err := tx.Where(&GormDeploymentTarget{ArgoConnectionID: validNullString(connectionID)}).Find(&targets).Error; err != nil {
+			return err
+		}
+		targetIDs := make([]string, 0, len(targets))
+		for _, target := range targets {
+			targetIDs = append(targetIDs, target.ID)
+		}
+		var records []GormDeploymentRecord
+		if err := tx.Where(&GormDeploymentRecord{ArgoConnectionID: validNullString(connectionID)}).Find(&records).Error; err != nil {
+			return err
+		}
+		recordIDs := make([]string, 0, len(records))
+		for _, record := range records {
+			recordIDs = append(recordIDs, record.ID)
+		}
+		if len(recordIDs) > 0 {
+			if err := tx.Where("deployment_record_id IN ?", recordIDs).Delete(&GormRollbackPoint{}).Error; err != nil {
+				return err
+			}
+		}
+		if len(targetIDs) > 0 {
+			if err := tx.Where("deployment_target_id IN ?", targetIDs).Delete(&GormRollbackPoint{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where(&GormDeploymentRecord{ArgoConnectionID: validNullString(connectionID)}).Delete(&GormDeploymentRecord{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where(&GormArgoApp{ArgoConnectionID: validNullString(connectionID)}).Delete(&GormArgoApp{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where(&GormDeploymentTarget{ArgoConnectionID: validNullString(connectionID)}).Delete(&GormDeploymentTarget{}).Error; err != nil {
+			return err
+		}
+		if err := deleteCanonicalAssetForSourceGorm(r.Context(), tx, "argo_connection", "argo_connections", connectionID); err != nil {
+			return err
+		}
+		if err := tx.Delete(&locked).Error; err != nil {
+			return err
+		}
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": connectionID})
+}
+
 func (s *Server) syncArgoApps(w http.ResponseWriter, r *http.Request) {
 	connectionID := chi.URLParam(r, "id")
 	var connection GormArgoConnection
@@ -26832,6 +26982,128 @@ func (s *Server) listSSHMachines(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": sshMachineMaps(machines, credentials)})
+}
+
+func (s *Server) updateSSHMachine(w http.ResponseWriter, r *http.Request) {
+	machineID := chi.URLParam(r, "id")
+	var current GormSSHMachine
+	if err := s.store.Gorm.WithContext(r.Context()).First(&current, &GormSSHMachine{GormBase: GormBase{ID: machineID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "ssh_machine", ID: machineID, ProjectID: current.ProjectID}, "update") {
+		return
+	}
+	var req struct {
+		Name         *string        `json:"name"`
+		Host         *string        `json:"host"`
+		Port         *int           `json:"port"`
+		Username     *string        `json:"username"`
+		AuthType     *string        `json:"auth_type"`
+		CredentialID *string        `json:"credential_id"`
+		Metadata     map[string]any `json:"metadata"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	next := current
+	if req.Name != nil {
+		next.Name = strings.TrimSpace(*req.Name)
+	}
+	if req.Host != nil {
+		next.Host = strings.TrimSpace(*req.Host)
+	}
+	if req.Port != nil {
+		next.Port = *req.Port
+	}
+	if next.Port == 0 {
+		next.Port = 22
+	}
+	if next.Port < 1 || next.Port > 65535 {
+		writeError(w, http.StatusBadRequest, "port must be between 1 and 65535")
+		return
+	}
+	if req.Username != nil {
+		next.Username = strings.TrimSpace(*req.Username)
+	}
+	if req.AuthType != nil {
+		next.AuthType = strings.TrimSpace(*req.AuthType)
+	}
+	if next.AuthType == "" {
+		next.AuthType = "key"
+	}
+	credentialKind := connectionCredentialKindForSSHAuth(next.AuthType)
+	if credentialKind == "" {
+		writeError(w, http.StatusBadRequest, "auth_type must be key or password")
+		return
+	}
+	if req.Metadata != nil {
+		metadata := mapFromAny(next.Metadata.Data)
+		for key, value := range req.Metadata {
+			metadata[key] = value
+		}
+		next.Metadata = JSONValue{Data: metadata}
+	}
+	credentialID := cleanOptionalID(next.CredentialID.String)
+	if req.CredentialID != nil {
+		credentialID = cleanOptionalID(*req.CredentialID)
+		next.CredentialID = validNullString(credentialID)
+	}
+	credential, err := s.connectionCredentialForProjectOrGlobal(r.Context(), next.ProjectID, credentialID, credentialKind)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credential_id must reference a matching SSH credential in this project")
+		return
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var locked GormSSHMachine
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, &GormSSHMachine{GormBase: GormBase{ID: machineID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		next.GormBase = locked.GormBase
+		next.ProjectID = locked.ProjectID
+		if err := tx.Save(&next).Error; err != nil {
+			return err
+		}
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sshMachineMap(next, credential))
+}
+
+func (s *Server) deleteSSHMachine(w http.ResponseWriter, r *http.Request) {
+	machineID := chi.URLParam(r, "id")
+	var machine GormSSHMachine
+	if err := s.store.Gorm.WithContext(r.Context()).First(&machine, &GormSSHMachine{GormBase: GormBase{ID: machineID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "ssh_machine", ID: machineID, ProjectID: machine.ProjectID}, "delete") {
+		return
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var locked GormSSHMachine
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, &GormSSHMachine{GormBase: GormBase{ID: machineID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		if err := tx.Model(&GormSSHCommandRun{}).Where(&GormSSHCommandRun{SSHMachineID: validNullString(machineID)}).Update("ssh_machine_id", sql.NullString{}).Error; err != nil {
+			return err
+		}
+		if err := deleteCanonicalAssetForSourceGorm(r.Context(), tx, "ssh_machine", "ssh_machines", machineID); err != nil {
+			return err
+		}
+		if err := tx.Delete(&locked).Error; err != nil {
+			return err
+		}
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": machineID})
 }
 
 func (s *Server) getSSHMachineRehearsal(w http.ResponseWriter, r *http.Request) {

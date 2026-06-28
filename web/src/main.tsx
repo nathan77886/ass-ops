@@ -114,6 +114,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.archive': 'Archive',
     'common.remove': 'Remove',
     'common.edit': 'Edit',
+    'common.delete': 'Delete',
     'common.enable': 'Enable',
     'common.disable': 'Disable',
     'common.revoke': 'Revoke',
@@ -1020,6 +1021,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.sshHostUser': 'User',
     'config.operationType': 'Type',
     'config.exit': 'Exit',
+    'config.failureReason': 'Failure reason',
     'config.finished': 'Finished',
     'config.selectArgoConnection': 'Select an Argo connection first',
     'config.selectSSHMachine': 'Select an SSH machine first',
@@ -1028,6 +1030,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.argoSyncStillRunning': 'Argo app sync is still running. Refresh later to check progress.',
     'config.kubernetesEnvSaved': 'Kubernetes environment saved',
     'config.argoSyncQueued': 'Argo app sync queued',
+    'config.argoConnectionSaved': 'Argo connection saved',
+    'config.argoConnectionDeleted': 'Argo connection deleted',
+    'config.deleteArgoConnectionConfirm': 'Delete this Argo connection?',
     'config.deploymentGateBlocked': 'Deployment execution gate is blocked',
     'config.deploymentGateFailed': 'Could not check deployment execution gate',
     'config.rollbackGateBlocked': 'Rollback execution gate is blocked',
@@ -1042,6 +1047,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.approvalRequested': 'Approval requested',
     'config.sshCommandQueued': 'SSH command queued',
     'config.sshVerifyQueued': 'SSH verify queued',
+    'config.sshMachineSaved': 'SSH machine saved',
+    'config.sshMachineDeleted': 'SSH machine deleted',
+    'config.deleteSSHMachineConfirm': 'Delete this SSH machine?',
     'config.sshSnapshotNotReady': 'SSH rehearsal snapshot is not ready yet',
     'config.sshSnapshotRecorded': 'SSH rehearsal snapshot recorded',
     'config.sshSnapshotCurrent': 'SSH rehearsal snapshot already current',
@@ -1368,6 +1376,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'common.archive': '归档',
     'common.remove': '移除',
     'common.edit': '编辑',
+    'common.delete': '删除',
     'common.enable': '启用',
     'common.disable': '禁用',
     'common.revoke': '撤销',
@@ -2274,6 +2283,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.sshHostUser': '用户',
     'config.operationType': '类型',
     'config.exit': '退出码',
+    'config.failureReason': '失败原因',
     'config.finished': '完成时间',
     'config.selectArgoConnection': '请先选择 Argo 连接',
     'config.selectSSHMachine': '请先选择 SSH 主机',
@@ -2282,6 +2292,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.argoSyncStillRunning': 'Argo 应用同步仍在运行，请稍后刷新查看进度。',
     'config.kubernetesEnvSaved': 'Kubernetes 环境已保存',
     'config.argoSyncQueued': 'Argo 应用同步已入队',
+    'config.argoConnectionSaved': 'Argo 连接已保存',
+    'config.argoConnectionDeleted': 'Argo 连接已删除',
+    'config.deleteArgoConnectionConfirm': '确认删除这个 Argo 连接？',
     'config.deploymentGateBlocked': '部署执行门禁受阻',
     'config.deploymentGateFailed': '无法检查部署执行门禁',
     'config.rollbackGateBlocked': '回滚执行门禁受阻',
@@ -2296,6 +2309,9 @@ const dictionaries: Record<Language, Record<string, string>> = {
     'config.approvalRequested': '已请求审批',
     'config.sshCommandQueued': 'SSH 命令已入队',
     'config.sshVerifyQueued': 'SSH 验证已入队',
+    'config.sshMachineSaved': 'SSH 主机已保存',
+    'config.sshMachineDeleted': 'SSH 主机已删除',
+    'config.deleteSSHMachineConfirm': '确认删除这个 SSH 主机？',
     'config.sshSnapshotNotReady': 'SSH 演练快照尚未就绪',
     'config.sshSnapshotRecorded': 'SSH 演练快照已记录',
     'config.sshSnapshotCurrent': 'SSH 演练快照已是最新',
@@ -9972,6 +9988,7 @@ function ConfigPage() {
   const projectPick = useSelectedRow(projectRows);
   const project = projectPick.selected;
   const [argoOpen, setArgoOpen] = useState(false);
+  const [argoEdit, setArgoEdit] = useState<AnyRow | null>(null);
   const [credentialOpen, setCredentialOpen] = useState(false);
   const [argoSyncOpID, setArgoSyncOpID] = useState<string>();
   const [podLogForm] = Form.useForm();
@@ -9995,6 +10012,7 @@ function ConfigPage() {
   const [rollbackExecutionGateLoadingID, setRollbackExecutionGateLoadingID] = useState('');
   const [rollbackExecutionGateResults, setRollbackExecutionGateResults] = useState<Record<string, AnyRow>>({});
   const [sshOpen, setSSHOpen] = useState(false);
+  const [sshEdit, setSSHEdit] = useState<AnyRow | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [sshSnapshotLoading, setSSHSnapshotLoading] = useState(false);
   const [sshSnapshotResult, setSSHSnapshotResult] = useState<AnyRow>();
@@ -10136,6 +10154,48 @@ function ConfigPage() {
       })
     });
     argoConnections.reload();
+  }
+  async function updateArgoConnection(values: AnyRow) {
+    if (!argoEdit?.id) return;
+    await api(`/api/argo/connections/${argoEdit.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        name: values.name,
+        server_url: values.server_url,
+        auth_type: values.auth_type || values.argo_auth_type || 'token',
+        credential_id: values.credential_id,
+        config: {
+          ...(argoEdit.config || {}),
+          insecure_skip_verify: values.insecure_skip_verify === true || values.insecure_skip_verify === 'true'
+        }
+      })
+    });
+    message.success(t('config.argoConnectionSaved'));
+    setArgoEdit(null);
+    argoConnections.reload();
+    argoApps.reload();
+    deploymentTargets.reload();
+    deploymentRecords.reload();
+    rollbackPoints.reload();
+  }
+  async function deleteArgoConnection(row: AnyRow) {
+    if (!row?.id) return;
+    Modal.confirm({
+      title: t('config.deleteArgoConnectionConfirm'),
+      okText: t('common.delete'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await api(`/api/argo/connections/${row.id}`, { method: 'DELETE' });
+        message.success(t('config.argoConnectionDeleted'));
+        if (argoPick.selectedID === row.id) argoPick.setSelectedID(undefined);
+        argoConnections.reload();
+        argoApps.reload();
+        deploymentTargets.reload();
+        deploymentRecords.reload();
+        rollbackPoints.reload();
+      }
+    });
   }
   async function createConnectionCredential(values: AnyRow) {
     if (!project) return;
@@ -10377,6 +10437,58 @@ function ConfigPage() {
       setPodLogSnapshotLoading(false);
     }
   }
+  async function createSSHMachine(values: AnyRow) {
+    if (!project) return;
+    await api(`/api/projects/${project.id}/ssh-machines`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: values.name,
+        host: values.host,
+        port: Number(values.port || 22),
+        username: values.username,
+        auth_type: values.auth_type || values.ssh_auth_type || 'key',
+        credential_id: values.credential_id,
+        metadata: {}
+      })
+    });
+    ssh.reload();
+  }
+  async function updateSSHMachine(values: AnyRow) {
+    if (!sshEdit?.id) return;
+    await api(`/api/ssh-machines/${sshEdit.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        name: values.name,
+        host: values.host,
+        port: Number(values.port || 22),
+        username: values.username,
+        auth_type: values.auth_type || values.ssh_auth_type || 'key',
+        credential_id: values.credential_id,
+        metadata: sshEdit.metadata || {}
+      })
+    });
+    message.success(t('config.sshMachineSaved'));
+    setSSHEdit(null);
+    ssh.reload();
+    sshRehearsal.reload();
+  }
+  async function deleteSSHMachine(row: AnyRow) {
+    if (!row?.id) return;
+    Modal.confirm({
+      title: t('config.deleteSSHMachineConfirm'),
+      okText: t('common.delete'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await api(`/api/ssh-machines/${row.id}`, { method: 'DELETE' });
+        message.success(t('config.sshMachineDeleted'));
+        if (sshPick.selectedID === row.id) sshPick.setSelectedID(undefined);
+        ssh.reload();
+        sshRuns.reload();
+        sshRehearsal.reload();
+      }
+    });
+  }
   async function runSSHCommand(values: AnyRow) {
     if (!sshPick.selectedID) {
       message.error(t('config.selectSSHMachine'));
@@ -10523,13 +10635,15 @@ function ConfigPage() {
             { title: t('field.port'), dataIndex: 'port' },
             { title: t('config.sshHostUser'), dataIndex: 'username' },
             { title: t('common.auth'), render: (_, row) => translatedValue(row.auth_type, t) },
-            { title: t('common.credential'), render: (_, row) => row.credential_name ? <Tag color={row.credential_configured ? 'green' : 'gold'}>{row.credential_name}</Tag> : <Tag color="red">{t('common.missing')}</Tag> }
+            { title: t('common.credential'), render: (_, row) => row.credential_name ? <Tag color={row.credential_configured ? 'green' : 'gold'}>{row.credential_name}</Tag> : <Tag color="red">{t('common.missing')}</Tag> },
+            { title: t('common.action'), render: (_, row) => <Space><Button size="small" onClick={() => setSSHEdit(row)}>{t('common.edit')}</Button><Button size="small" danger onClick={() => deleteSSHMachine(row)}>{t('common.delete')}</Button></Space> }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={sshRuns.data?.items || []} pagination={{ pageSize: 6 }} columns={[
             { title: t('config.operationType'), render: (_, row) => <Tag color={row.operation_type === 'ssh.verify' ? 'cyan' : 'default'}>{row.operation_type || t('common.unknown')}</Tag> },
             { title: t('common.status'), render: (_, row) => <Tag color={row.status === 'completed' ? 'green' : row.status === 'failed' ? 'red' : 'blue'}>{translatedValue(row.status, t)}</Tag> },
             { title: t('field.command'), dataIndex: 'command' },
             { title: t('config.exit'), dataIndex: 'exit_code' },
+            { title: t('config.failureReason'), render: (_, row) => <Typography.Text title={String(row.error_message || row.stderr || '')}>{shortText(row.error_message || row.stderr, 96)}</Typography.Text> },
             { title: t('common.created'), dataIndex: 'created_at' },
             { title: t('config.finished'), dataIndex: 'finished_at' }
           ]} />
@@ -10691,7 +10805,8 @@ function ConfigPage() {
             { title: t('common.auth'), render: (_, row) => translatedValue(row.auth_type, t) },
             { title: t('common.credential'), render: (_, row) => row.credential_name ? <Tag color={row.credential_configured ? 'green' : 'gold'}>{row.credential_name}</Tag> : <Tag color="red">{t('common.missing')}</Tag> },
             { title: t('common.sync'), render: (_, row) => <Tag color={row.last_sync_status === 'completed' ? 'green' : row.last_sync_status === 'failed' ? 'red' : row.last_sync_status === 'running' ? 'blue' : 'default'}>{row.last_sync_status ? translatedValue(row.last_sync_status, t) : t('common.never')}</Tag> },
-            { title: t('common.created'), dataIndex: 'created_at' }
+            { title: t('common.created'), dataIndex: 'created_at' },
+            { title: t('common.action'), render: (_, row) => <Space><Button size="small" onClick={() => setArgoEdit(row)}>{t('common.edit')}</Button><Button size="small" danger onClick={() => deleteArgoConnection(row)}>{t('common.delete')}</Button></Space> }
           ]} />
           <Table<AnyRow> rowKey="id" dataSource={kubernetesEnvironments.data?.items || []} pagination={{ pageSize: 6 }} columns={[
             { title: t('config.kubernetesEnv'), dataIndex: 'name' },
@@ -10762,6 +10877,15 @@ function ConfigPage() {
         initialValues={{ auth_type: 'token', insecure_skip_verify: false }}
         onSubmit={createArgoConnection}
       />
+      <CreateModal
+        title="Argo Connections"
+        open={Boolean(argoEdit)}
+        setOpen={(open) => { if (!open) setArgoEdit(null); }}
+        descriptionKey="argo.connectionModalDescription"
+        fields={[{ name: 'name', helpKey: 'help.argo_connection_name' }, 'server_url', { name: 'auth_type', metaKey: 'argo_auth_type' }, { name: 'credential_id', input: 'select', optionItems: argoCredentialOptions, helpKey: 'help.credential_id', required: true }, 'insecure_skip_verify']}
+        initialValues={{ ...argoEdit, insecure_skip_verify: Boolean(argoEdit?.config?.insecure_skip_verify) }}
+        onSubmit={updateArgoConnection}
+      />
       <Modal title={t('form.addKubernetesEnvironment')} open={kubernetesEnvironmentOpen} onCancel={() => setKubernetesEnvironmentOpen(false)} onOk={() => kubernetesEnvironmentForm.submit()} destroyOnHidden okText={t('common.ok')} cancelText={t('common.cancel')}>
         <Form form={kubernetesEnvironmentForm} layout="vertical" onFinish={createKubernetesEnvironment} initialValues={{ token_subject_review_status: 'not_reviewed', rbac_read_logs_status: 'not_reviewed', rbac_restart_pods_status: 'not_reviewed', status: 'metadata_only' }}>
           <Typography.Paragraph type="secondary">{t('k8s.modalDescription')}</Typography.Paragraph>
@@ -10779,7 +10903,16 @@ function ConfigPage() {
         descriptionKey="ssh.machineModalDescription"
         fields={[{ name: 'name', helpKey: 'help.ssh_machine_name' }, 'host', 'port', 'username', { name: 'auth_type', metaKey: 'ssh_auth_type' }, { name: 'credential_id', input: 'select', optionItems: sshCredentialOptions, helpKey: 'help.credential_id', required: true }]}
         initialValues={{ port: 22, auth_type: 'key' }}
-        onSubmit={(v) => project ? api(`/api/projects/${project.id}/ssh-machines`, { method: 'POST', body: JSON.stringify({ ...v, port: Number(v.port || 22) }) }).then(ssh.reload) : Promise.resolve()}
+        onSubmit={createSSHMachine}
+      />
+      <CreateModal
+        title="SSH Machines"
+        open={Boolean(sshEdit)}
+        setOpen={(open) => { if (!open) setSSHEdit(null); }}
+        descriptionKey="ssh.machineModalDescription"
+        fields={[{ name: 'name', helpKey: 'help.ssh_machine_name' }, 'host', 'port', 'username', { name: 'auth_type', metaKey: 'ssh_auth_type' }, { name: 'credential_id', input: 'select', optionItems: sshCredentialOptions, helpKey: 'help.credential_id', required: true }]}
+        initialValues={{ ...sshEdit, port: Number(sshEdit?.port || 22), auth_type: sshEdit?.auth_type || 'key' }}
+        onSubmit={updateSSHMachine}
       />
       <CreateModal title="Run SSH command" open={commandOpen} setOpen={setCommandOpen} descriptionKey="ssh.commandModalDescription" fields={['command', 'timeout_seconds']} initialValues={{ timeout_seconds: 60 }} onSubmit={runSSHCommand} />
     </Space>
