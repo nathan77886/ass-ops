@@ -2,14 +2,14 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
 )
 
 type ConfigRepositoryGitWorkflowPromotionSnapshotOptions struct {
@@ -34,7 +34,7 @@ func (s *Server) recordConfigRepositoryGitWorkflowPromotionSnapshot(w http.Respo
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	projectID, err := s.projectIDForRepositoryGorm(r.Context(), repoID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -77,7 +77,7 @@ func (s *Server) recordConfigRepositoryRefRefreshSnapshot(w http.ResponseWriter,
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	projectID, err := s.projectIDForRepositoryGorm(r.Context(), repoID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -115,7 +115,7 @@ func RecordConfigRepositoryGitWorkflowPromotionSnapshot(ctx context.Context, sto
 	repo := opts.Repository
 	if len(repo) == 0 {
 		var err error
-		repo, err = queryOne(ctx, store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+		repo, err = configRepositorySnapshotRepo(ctx, store.Gorm, repoID)
 		if err != nil {
 			return nil, err
 		}
@@ -126,21 +126,21 @@ func RecordConfigRepositoryGitWorkflowPromotionSnapshot(ctx context.Context, sto
 	}
 	preview := opts.Preview
 	if len(preview) == 0 {
-		remotes, err := queryConfigRepositorySnapshotRemotes(ctx, store.DB, repoID)
+		remotes, err := queryConfigRepositorySnapshotRemotes(ctx, store.Gorm, repoID)
 		if err != nil {
 			return nil, fmt.Errorf("loading config remotes: %w", err)
 		}
-		versions, err := queryConfigRepositorySnapshotVersions(ctx, store.DB, projectID)
+		versions, err := queryConfigRepositorySnapshotVersions(ctx, store.Gorm, projectID)
 		if err != nil {
 			return nil, fmt.Errorf("loading project versions: %w", err)
 		}
-		workflowOperations, err := queryConfigRepositoryGitWorkflowOperations(ctx, store.DB, projectID, repoID)
+		workflowOperations, err := queryConfigRepositoryGitWorkflowOperationsGorm(ctx, store.Gorm, projectID, repoID)
 		if err != nil {
 			return nil, fmt.Errorf("loading config git workflow operations: %w", err)
 		}
 		preview = configRepositoryScaffoldPreview(repo, remotes, versions, workflowOperations)
 	}
-	assetID, assetErr := gitRepositoryAssetID(ctx, store.DB, repoID)
+	assetID, assetErr := gitRepositoryAssetID(ctx, store.Gorm, repoID)
 	if assetErr != nil && !errors.Is(assetErr, ErrNotFound) {
 		return nil, assetErr
 	}
@@ -199,51 +199,10 @@ func RecordConfigRepositoryGitWorkflowPromotionSnapshot(ctx context.Context, sto
 		return result, nil
 	}
 	status, health := configRepositoryGitWorkflowPromotionSnapshotStatusHealth(state)
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "config Git workflow promotion review snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting config Git workflow promotion snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording config Git workflow promotion snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, status); err != nil {
-		return nil, fmt.Errorf("locking config Git workflow promotion snapshot asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'config Git workflow promotion review snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting config Git workflow promotion snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing config Git workflow promotion snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = state
 	result["snapshot_status"] = status
 	result["snapshot_health"] = health
@@ -254,13 +213,6 @@ func RecordConfigRepositoryGitWorkflowPromotionSnapshot(ctx context.Context, sto
 		result["snapshots_skipped_as_duplicate"] = 1 - written
 		result["promotion_snapshot_written"] = written > 0
 		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["promotion_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
 	}
 	result["message"] = "Sanitized config Git workflow promotion snapshot recorded from local audit evidence."
 	return result, nil
@@ -274,7 +226,7 @@ func RecordConfigRepositoryRefRefreshSnapshot(ctx context.Context, store *Store,
 	repo := opts.Repository
 	if len(repo) == 0 {
 		var err error
-		repo, err = queryOne(ctx, store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+		repo, err = configRepositorySnapshotRepo(ctx, store.Gorm, repoID)
 		if err != nil {
 			return nil, err
 		}
@@ -285,25 +237,25 @@ func RecordConfigRepositoryRefRefreshSnapshot(ctx context.Context, store *Store,
 	}
 	preview := opts.Preview
 	if len(preview) == 0 {
-		remotes, err := queryConfigRepositorySnapshotRemotes(ctx, store.DB, repoID)
+		remotes, err := queryConfigRepositorySnapshotRemotes(ctx, store.Gorm, repoID)
 		if err != nil {
 			return nil, fmt.Errorf("loading config remotes: %w", err)
 		}
-		versions, err := queryConfigRepositorySnapshotVersions(ctx, store.DB, projectID)
+		versions, err := queryConfigRepositorySnapshotVersions(ctx, store.Gorm, projectID)
 		if err != nil {
 			return nil, fmt.Errorf("loading project versions: %w", err)
 		}
-		workflowOperations, err := queryConfigRepositoryGitWorkflowOperations(ctx, store.DB, projectID, repoID)
+		workflowOperations, err := queryConfigRepositoryGitWorkflowOperationsGorm(ctx, store.Gorm, projectID, repoID)
 		if err != nil {
 			return nil, fmt.Errorf("loading config git workflow operations: %w", err)
 		}
-		refRefreshOperations, err := queryConfigRepositoryRefRefreshOperations(ctx, store.DB, projectID, repoID)
+		refRefreshOperations, err := queryConfigRepositoryRefRefreshOperationsGorm(ctx, store.Gorm, projectID, repoID)
 		if err != nil {
 			return nil, fmt.Errorf("loading config ref refresh operations: %w", err)
 		}
 		preview = configRepositoryScaffoldPreview(repo, remotes, versions, workflowOperations, refRefreshOperations)
 	}
-	assetID, assetErr := gitRepositoryAssetID(ctx, store.DB, repoID)
+	assetID, assetErr := gitRepositoryAssetID(ctx, store.Gorm, repoID)
 	if assetErr != nil && !errors.Is(assetErr, ErrNotFound) {
 		return nil, assetErr
 	}
@@ -361,64 +313,10 @@ func RecordConfigRepositoryRefRefreshSnapshot(ctx context.Context, store *Store,
 		return result, nil
 	}
 	status, health := configRepositoryRefRefreshSnapshotStatusHealth(state)
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "config ref refresh evidence snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting config ref refresh snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording config ref refresh snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	lockedAssetID, err := gitRepositoryAssetIDForShare(ctx, tx, repoID)
-	if errors.Is(err, ErrNotFound) {
-		result["recording_state"] = "asset_missing"
-		result["recording_ready"] = false
-		result["recording_enabled"] = false
-		result["missing_evidence"] = []string{"git_repository_asset_missing"}
-		result["message"] = "Config ref refresh snapshot is ready, but the canonical git_repository asset disappeared before recording; run db sync-assets before retrying."
-		return result, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	assetID = lockedAssetID
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, status); err != nil {
-		return nil, fmt.Errorf("locking config ref refresh snapshot asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'config ref refresh evidence snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting config ref refresh snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing config ref refresh snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = state
 	result["snapshot_status"] = status
 	result["snapshot_health"] = health
@@ -430,69 +328,116 @@ func RecordConfigRepositoryRefRefreshSnapshot(ctx context.Context, store *Store,
 		result["ref_refresh_snapshot_written"] = written > 0
 		result["asset_status_snapshot_written"] = written > 0
 	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["ref_refresh_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
 	result["message"] = "Sanitized config ref refresh snapshot recorded from local operation evidence."
 	return result, nil
 }
 
-func queryConfigRepositorySnapshotRemotes(ctx context.Context, db sqlx.ExtContext, repoID string) ([]map[string]any, error) {
-	return queryMaps(ctx, db, `
-		SELECT id, name, remote_key, provider_type, remote_role, default_branch, latest_sha, last_sync_status
-		FROM git_remotes
-		WHERE project_git_repository_id=$1
-		ORDER BY created_at DESC`, repoID)
-}
-
-func queryConfigRepositorySnapshotVersions(ctx context.Context, db sqlx.ExtContext, projectID string) ([]map[string]any, error) {
-	return queryMaps(ctx, db, `
-		SELECT id, version, metadata, created_at
-		FROM project_versions
-		WHERE project_id=$1
-		ORDER BY created_at DESC
-		LIMIT 100`, projectID)
-}
-
-func gitRepositoryAssetID(ctx context.Context, db sqlx.ExtContext, repoID string) (string, error) {
-	var assetID string
-	if err := sqlx.GetContext(ctx, db, &assetID, `
-		SELECT id
-		FROM assets
-		WHERE asset_type='git_repository'
-			AND source_table='project_git_repositories'
-			AND source_id=$1
-		ORDER BY updated_at DESC, id DESC
-		LIMIT 1`, repoID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", ErrNotFound
+func configRepositorySnapshotRepo(ctx context.Context, db *gorm.DB, repoID string) (map[string]any, error) {
+	var repo GormProjectGitRepository
+	if err := db.WithContext(ctx).First(&repo, "id = ?", repoID).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, ErrNotFound
 		}
+		return nil, err
+	}
+	return gitRepositoryMap(repo), nil
+}
+
+func queryConfigRepositorySnapshotRemotes(ctx context.Context, db *gorm.DB, repoID string) ([]map[string]any, error) {
+	var remotes []GormGitRemote
+	if err := db.WithContext(ctx).Where(&GormGitRemote{ProjectGitRepositoryID: repoID}).Find(&remotes).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(remotes))
+	for _, remote := range remotes {
+		items = append(items, map[string]any{"id": remote.ID, "name": remote.Name, "remote_key": remote.RemoteKey, "provider_type": remote.ProviderType, "remote_role": remote.RemoteRole, "default_branch": remote.DefaultBranch, "latest_sha": remote.LatestSHA, "last_sync_status": remote.LastSyncStatus, "created_at": remote.CreatedAt})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return projectVersionTimeFromAny(items[i]["created_at"]).After(projectVersionTimeFromAny(items[j]["created_at"]))
+	})
+	return items, nil
+}
+
+func queryConfigRepositorySnapshotVersions(ctx context.Context, db *gorm.DB, projectID string) ([]map[string]any, error) {
+	var versions []GormProjectVersion
+	if err := db.WithContext(ctx).Where(&GormProjectVersion{ProjectID: projectID}).Find(&versions).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(versions))
+	for _, version := range versions {
+		items = append(items, map[string]any{"id": version.ID, "version": version.Version, "metadata": mapFromAny(version.Metadata.Data), "created_at": version.CreatedAt})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return projectVersionTimeFromAny(items[i]["created_at"]).After(projectVersionTimeFromAny(items[j]["created_at"]))
+	})
+	return limitMaps(items, 100), nil
+}
+
+func queryConfigRepositoryGitWorkflowOperationsGorm(ctx context.Context, db *gorm.DB, projectID, repoID string) ([]map[string]any, error) {
+	return queryConfigRepositoryOperationsGorm(ctx, db, projectID, repoID, "config.git_commit", func(input map[string]any) bool {
+		return strings.TrimSpace(fmt.Sprint(input["project_git_repository_id"])) == repoID
+	}, 20, true)
+}
+
+func queryConfigRepositoryRefRefreshOperationsGorm(ctx context.Context, db *gorm.DB, projectID, repoID string) ([]map[string]any, error) {
+	return queryConfigRepositoryOperationsGorm(ctx, db, projectID, repoID, "git.refs.refresh", func(input map[string]any) bool {
+		return strings.TrimSpace(fmt.Sprint(input["config_repository_id"])) == repoID && strings.TrimSpace(fmt.Sprint(input["refresh_kind"])) == "config_ref_validation_refresh"
+	}, 20, false)
+}
+
+func queryConfigRepositoryOperationsGorm(ctx context.Context, db *gorm.DB, projectID, repoID, operationType string, matchInput func(map[string]any) bool, limit int, includeLogCount bool) ([]map[string]any, error) {
+	var runs []GormOperationRun
+	if err := db.WithContext(ctx).Where(&GormOperationRun{OperationType: operationType}).Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	logCounts := map[string]int{}
+	if includeLogCount {
+		var logs []GormOperationLog
+		if err := db.WithContext(ctx).Find(&logs).Error; err != nil {
+			return nil, err
+		}
+		for _, log := range logs {
+			if log.OperationRunID.Valid {
+				logCounts[log.OperationRunID.String]++
+			}
+		}
+	}
+	items := []map[string]any{}
+	for _, run := range runs {
+		if run.ProjectID.Valid && run.ProjectID.String != projectID {
+			continue
+		}
+		input := mapFromAny(run.Input.Data)
+		if !matchInput(input) {
+			continue
+		}
+		item := map[string]any{"id": run.ID, "git_remote_id": nullableStringValue(run.GitRemoteID), "status": run.Status, "error": run.Error, "created_at": run.CreatedAt, "updated_at": run.UpdatedAt, "started_at": nullableTimeAny(run.StartedAt), "finished_at": nullableTimeAny(run.FinishedAt)}
+		if includeLogCount {
+			item["operation_log_count"] = logCounts[run.ID]
+		}
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return projectVersionTimeFromAny(items[i]["created_at"]).After(projectVersionTimeFromAny(items[j]["created_at"]))
+	})
+	return limitMaps(items, limit), nil
+}
+
+func gitRepositoryAssetID(ctx context.Context, db *gorm.DB, repoID string) (string, error) {
+	var assets []GormAsset
+	if err := db.WithContext(ctx).Where(&GormAsset{AssetType: "git_repository", SourceTable: "project_git_repositories", SourceID: validNullString(repoID)}).Find(&assets).Error; err != nil {
 		return "", fmt.Errorf("loading git repository asset: %w", err)
 	}
-	return assetID, nil
-}
-
-func gitRepositoryAssetIDForShare(ctx context.Context, db sqlx.ExtContext, repoID string) (string, error) {
-	var assetID string
-	if err := sqlx.GetContext(ctx, db, &assetID, `
-		SELECT id
-		FROM assets
-		WHERE asset_type='git_repository'
-			AND source_table='project_git_repositories'
-			AND source_id=$1
-		ORDER BY updated_at DESC, id DESC
-		LIMIT 1
-		FOR SHARE`, repoID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", ErrNotFound
-		}
-		return "", fmt.Errorf("locking git repository asset: %w", err)
+	if len(assets) == 0 {
+		return "", ErrNotFound
 	}
-	return assetID, nil
+	sort.SliceStable(assets, func(i, j int) bool {
+		if assets[i].UpdatedAt.Equal(assets[j].UpdatedAt) {
+			return assets[i].ID > assets[j].ID
+		}
+		return assets[i].UpdatedAt.After(assets[j].UpdatedAt)
+	})
+	return assets[0].ID, nil
 }
 
 func configRepositoryGitWorkflowPromotionSnapshotPayload(repo map[string]any, preview map[string]any, assetObserved bool) map[string]any {

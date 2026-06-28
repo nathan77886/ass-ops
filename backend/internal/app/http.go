@@ -33,9 +33,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -44,6 +45,13 @@ var approvalWebhookHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
 var errAgentPlanNotApproved = errors.New("agent task requires an approved plan before execution")
 var errProjectVersionRefreshAlreadyQueued = errors.New("project version refresh is already queued or running")
+var errProjectTemplateRunNotRetryable = errors.New("project template run is not retryable")
+var errAssetRelationNotManual = errors.New("asset relation is not manual")
+var errRepoSyncAssetDisabled = errors.New("repo sync asset is disabled")
+var errRepoSyncAssetArchived = errors.New("repo sync asset is archived")
+var errApprovalNotPending = errors.New("approval is not pending")
+
+var providerReviewLiveExecutionLocks sync.Map
 
 const (
 	contextDirMode  os.FileMode = 0o750
@@ -435,36 +443,21 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if req.Slug == "" {
 		req.Slug = slugify(req.Name)
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start transaction")
-		return
-	}
-	defer tx.Rollback()
-	project, err := queryOne(r.Context(), tx, `
-		INSERT INTO projects(name, slug, description)
-		VALUES ($1, $2, $3)
-		RETURNING *`, req.Name, req.Slug, req.Description)
-	if err != nil {
+	project := GormProject{Name: req.Name, Slug: req.Slug, Description: req.Description}
+	if err := s.store.Gorm.WithContext(r.Context()).Create(&project).Error; err != nil {
 		writeError(w, http.StatusBadRequest, "could not create project")
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `
-		INSERT INTO project_members(project_id, user_id, role)
-		VALUES ($1, $2, 'owner')
-		ON CONFLICT DO NOTHING`, project["id"], currentUser(r).ID)
-	if err != nil {
+	member := GormProjectMember{ProjectID: project.ID, UserID: currentUser(r).ID, Role: "owner"}
+	if err := s.store.Gorm.WithContext(r.Context()).Where(map[string]any{"project_id": member.ProjectID, "user_id": member.UserID}).FirstOrCreate(&member).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create project membership")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project.create") {
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync project asset")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit project")
-		return
-	}
-	writeJSON(w, http.StatusCreated, project)
+	writeJSON(w, http.StatusCreated, projectMap(project))
 }
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
@@ -472,15 +465,31 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := currentUser(r)
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT p.*
-		FROM projects p
-		WHERE $1 OR EXISTS (
-			SELECT 1 FROM project_members pm
-			WHERE pm.project_id=p.id AND pm.user_id=$2
-		)
-		ORDER BY p.created_at DESC`, userCanReadAllProjects(user), userIDOrNil(user))
-	writeQueryResult(w, items, err)
+	var projects []GormProject
+	query := s.store.Gorm.WithContext(r.Context()).Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true})
+	if !userCanReadAllProjects(user) {
+		var memberships []GormProjectMember
+		if err := s.store.Gorm.WithContext(r.Context()).Where(map[string]any{"user_id": userIDOrNil(user)}).Find(&memberships).Error; err != nil {
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		projectIDs := make([]string, 0, len(memberships))
+		for _, membership := range memberships {
+			projectIDs = append(projectIDs, membership.ProjectID)
+		}
+		if len(projectIDs) == 0 {
+			writeJSON(w, http.StatusOK, map[string]any{"items": []map[string]any{}})
+			return
+		}
+		query = query.Find(&projects, projectIDs)
+	} else {
+		query = query.Find(&projects)
+	}
+	if query.Error != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": projectMaps(projects)})
 }
 
 func (s *Server) recordDemoReadinessSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -555,30 +564,41 @@ func (s *Server) listProjectTemplates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT *
-		FROM project_templates
-		WHERE ($1='' OR status=$1)
-		ORDER BY updated_at DESC, name
-		LIMIT 100`, status)
-	writeQueryResult(w, items, err)
+	var templates []GormProjectTemplate
+	query := s.store.Gorm.WithContext(r.Context()).Order(gormOrderDesc("updated_at")).Order(gormOrderAsc("name")).Limit(100)
+	if status != "" {
+		query = query.Where(&GormProjectTemplate{Status: status})
+	}
+	if err := query.Find(&templates).Error; err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(templates))
+	for _, template := range templates {
+		items = append(items, projectTemplateMap(template))
+	}
+	writeQueryResult(w, items, nil)
 }
 
 func (s *Server) getProjectTemplate(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "project_template"}, "read") {
 		return
 	}
-	template, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM project_templates WHERE id=$1", chi.URLParam(r, "id"))
-	writeQueryOne(w, template, err)
+	var template GormProjectTemplate
+	if err := s.store.Gorm.WithContext(r.Context()).First(&template, &GormProjectTemplate{GormBase: GormBase{ID: chi.URLParam(r, "id")}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
+		return
+	}
+	writeQueryOne(w, projectTemplateMap(template), nil)
 }
 
 func (s *Server) previewProjectTemplate(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "project_template"}, "read") {
 		return
 	}
-	template, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM project_templates WHERE id=$1", chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var template GormProjectTemplate
+	if err := s.store.Gorm.WithContext(r.Context()).First(&template, &GormProjectTemplate{GormBase: GormBase{ID: chi.URLParam(r, "id")}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
 	var req struct {
@@ -599,7 +619,7 @@ func (s *Server) previewProjectTemplate(w http.ResponseWriter, r *http.Request) 
 		req.Slug = slugify(req.Name)
 	}
 	req.Slug = slugify(req.Slug)
-	writeJSON(w, http.StatusOK, projectTemplatePreview(template, req.Name, req.Slug, req.Description, req.Parameters))
+	writeJSON(w, http.StatusOK, projectTemplatePreview(projectTemplateMap(template), req.Name, req.Slug, req.Description, req.Parameters))
 }
 
 func (s *Server) createProjectFromTemplate(w http.ResponseWriter, r *http.Request) {
@@ -607,11 +627,12 @@ func (s *Server) createProjectFromTemplate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	templateID := chi.URLParam(r, "id")
-	template, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM project_templates WHERE id=$1 AND status='active'", templateID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var templateModel GormProjectTemplate
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormProjectTemplate{GormBase: GormBase{ID: templateID}, Status: "active"}).First(&templateModel).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
+	template := projectTemplateMap(templateModel)
 	var req struct {
 		Name        string         `json:"name"`
 		Slug        string         `json:"slug"`
@@ -641,55 +662,112 @@ func (s *Server) createProjectFromTemplate(w http.ResponseWriter, r *http.Reques
 		"description":         req.Description,
 		"parameters":          req.Parameters,
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start template operation")
-		return
-	}
-	defer tx.Rollback()
-	op, err := enqueueOperationTx(r.Context(), tx, "", "", "project.create_from_template", "create project "+req.Name+" from "+fmt.Sprint(template["name"]), input, []string{"template"}, "control-worker")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "could not enqueue template operation")
-		return
-	}
-	run, err := createProjectTemplateRunTx(r.Context(), tx, op, template, req.Name, req.Slug, req.Description, req.Parameters, currentUser(r).ID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "could not create template run")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project_template.create_operation") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit template operation")
+	var op map[string]any
+	var run map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		op, err = enqueueOperationGorm(r.Context(), tx, "", "", "project.create_from_template", "create project "+req.Name+" from "+fmt.Sprint(template["name"]), input, []string{"template"}, "control-worker")
+		if err != nil {
+			return err
+		}
+		run, err = createProjectTemplateRunGorm(r.Context(), tx, op, template, req.Name, req.Slug, req.Description, req.Parameters, currentUser(r).ID)
+		if err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, "could not create template operation")
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"operation": op, "run": run})
 }
 
-func createProjectTemplateRunTx(ctx context.Context, tx *sqlx.Tx, op, template map[string]any, projectName, projectSlug, description string, parameters map[string]any, actorID string) (map[string]any, error) {
-	inputJSON, err := jsonParam(map[string]any{"description": description, "parameters": parameters})
-	if err != nil {
+func createProjectTemplateRunGorm(ctx context.Context, tx *gorm.DB, op, template map[string]any, projectName, projectSlug, description string, parameters map[string]any, actorID string) (map[string]any, error) {
+	run := GormProjectTemplateRun{
+		OperationRunID:    validNullString(cleanOptionalID(fmt.Sprint(op["id"]))),
+		ProjectTemplateID: validNullString(cleanOptionalID(fmt.Sprint(template["id"]))),
+		RequestedBy:       validNullString(actorID),
+		Status:            "queued",
+		ProjectName:       projectName,
+		ProjectSlug:       projectSlug,
+		Input:             JSONValue{Data: map[string]any{"description": description, "parameters": parameters}},
+		Steps:             JSONValue{Data: templateRunSteps(template["steps"])},
+		Result:            JSONValue{Data: map[string]any{}},
+	}
+	if err := tx.WithContext(ctx).Create(&run).Error; err != nil {
 		return nil, err
 	}
-	stepsJSON, err := jsonParam(templateRunSteps(template["steps"]))
-	if err != nil {
+	return projectTemplateRunMap(run), nil
+}
+
+func projectTemplateNamesByID(ctx context.Context, db *gorm.DB, runs []GormProjectTemplateRun) (map[string]string, error) {
+	ids := make([]string, 0, len(runs))
+	seen := map[string]bool{}
+	for _, run := range runs {
+		id := cleanOptionalID(run.ProjectTemplateID.String)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var templates []GormProjectTemplate
+	if err := db.WithContext(ctx).Find(&templates, ids).Error; err != nil {
 		return nil, err
 	}
-	return queryOne(ctx, tx, `
-		INSERT INTO project_template_runs(
-			operation_run_id, project_template_id, requested_by, project_name, project_slug, input, steps
-		)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
-		RETURNING *`,
-		op["id"],
-		template["id"],
-		actorID,
-		projectName,
-		projectSlug,
-		inputJSON,
-		stepsJSON,
-	)
+	for _, template := range templates {
+		out[template.ID] = template.Name
+	}
+	return out, nil
+}
+
+func operationStatusesByID(ctx context.Context, db *gorm.DB, runs []GormProjectTemplateRun) (map[string]string, error) {
+	ids := make([]string, 0, len(runs))
+	seen := map[string]bool{}
+	for _, run := range runs {
+		id := cleanOptionalID(run.OperationRunID.String)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var ops []GormOperationRun
+	if err := db.WithContext(ctx).Find(&ops, ids).Error; err != nil {
+		return nil, err
+	}
+	for _, op := range ops {
+		out[op.ID] = op.Status
+	}
+	return out, nil
+}
+
+func userCanAccessProjectTemplateRun(ctx context.Context, db *gorm.DB, user *User, run GormProjectTemplateRun) (bool, error) {
+	if userCanReadAllProjects(user) {
+		return true, nil
+	}
+	if user == nil {
+		return false, nil
+	}
+	if cleanOptionalID(run.RequestedBy.String) == user.ID {
+		return true, nil
+	}
+	projectID := cleanOptionalID(run.ProjectID.String)
+	if projectID == "" {
+		return false, nil
+	}
+	var count int64
+	if err := db.WithContext(ctx).Model(&GormProjectMember{}).Where(&GormProjectMember{ProjectID: projectID, UserID: user.ID}).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func templateRunSteps(value any) []map[string]any {
@@ -712,6 +790,29 @@ func templateRunSteps(value any) []map[string]any {
 		steps = append(steps, step)
 	}
 	return steps
+}
+
+func projectTemplateMap(template GormProjectTemplate) map[string]any {
+	return map[string]any{
+		"id":          template.ID,
+		"slug":        template.Slug,
+		"name":        template.Name,
+		"description": template.Description,
+		"version":     template.Version,
+		"status":      template.Status,
+		"defaults":    template.Defaults.Data,
+		"steps":       template.Steps.Data,
+		"metadata":    template.Metadata.Data,
+		"created_at":  template.CreatedAt,
+		"updated_at":  template.UpdatedAt,
+	}
+}
+
+func gormNotFoundAsErrNotFound(err error) error {
+	if errorsIsRecordNotFound(err) {
+		return ErrNotFound
+	}
+	return err
 }
 
 func projectTemplatePreview(template map[string]any, projectName, projectSlug, description string, parameters map[string]any) map[string]any {
@@ -861,31 +962,49 @@ func (s *Server) listProjectTemplateRuns(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	user := currentUser(r)
-	var items []map[string]any
-	var err error
-	if userCanReadAllProjects(user) {
-		items, err = queryMaps(r.Context(), s.store.DB, `
-			SELECT ptr.*, pt.name AS template_name, op.status AS operation_status
-			FROM project_template_runs ptr
-			LEFT JOIN project_templates pt ON pt.id=ptr.project_template_id
-			LEFT JOIN operation_runs op ON op.id=ptr.operation_run_id
-			ORDER BY ptr.created_at DESC
-			LIMIT 100`)
-	} else {
-		items, err = queryMaps(r.Context(), s.store.DB, `
-			SELECT ptr.*, pt.name AS template_name, op.status AS operation_status
-			FROM project_template_runs ptr
-			LEFT JOIN project_templates pt ON pt.id=ptr.project_template_id
-			LEFT JOIN operation_runs op ON op.id=ptr.operation_run_id
-			WHERE ptr.requested_by=$1
-				OR EXISTS (
-					SELECT 1 FROM project_members pm
-					WHERE pm.project_id=ptr.project_id AND pm.user_id=$1
-				)
-			ORDER BY ptr.created_at DESC
-			LIMIT 100`, userIDOrNil(user))
+	var runs []GormProjectTemplateRun
+	if err := s.store.Gorm.WithContext(r.Context()).Order(gormOrderDesc("created_at")).Limit(100).Find(&runs).Error; err != nil {
+		writeQueryResult(w, nil, err)
+		return
 	}
-	writeQueryResult(w, items, err)
+	templateNames, err := projectTemplateNamesByID(r.Context(), s.store.Gorm, runs)
+	if err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	operationStatuses, err := operationStatusesByID(r.Context(), s.store.Gorm, runs)
+	if err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	memberProjects := map[string]bool{}
+	if !userCanReadAllProjects(user) && user != nil {
+		var memberships []GormProjectMember
+		if err := s.store.Gorm.WithContext(r.Context()).Where(&GormProjectMember{UserID: user.ID}).Find(&memberships).Error; err != nil {
+			writeQueryResult(w, nil, err)
+			return
+		}
+		for _, membership := range memberships {
+			memberProjects[membership.ProjectID] = true
+		}
+	}
+	items := make([]map[string]any, 0, len(runs))
+	for _, run := range runs {
+		if !userCanReadAllProjects(user) {
+			userID := ""
+			if user != nil {
+				userID = user.ID
+			}
+			if cleanOptionalID(run.RequestedBy.String) != userID && !memberProjects[cleanOptionalID(run.ProjectID.String)] {
+				continue
+			}
+		}
+		item := projectTemplateRunMap(run)
+		item["template_name"] = templateNames[cleanOptionalID(run.ProjectTemplateID.String)]
+		item["operation_status"] = operationStatuses[cleanOptionalID(run.OperationRunID.String)]
+		items = append(items, item)
+	}
+	writeQueryResult(w, items, nil)
 }
 
 func (s *Server) retryProjectTemplateProvision(w http.ResponseWriter, r *http.Request) {
@@ -893,78 +1012,70 @@ func (s *Server) retryProjectTemplateProvision(w http.ResponseWriter, r *http.Re
 		return
 	}
 	user := currentUser(r)
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start template provision retry")
-		return
-	}
-	defer tx.Rollback()
-	run, err := queryOne(r.Context(), tx, `
-		SELECT ptr.*, pt.name AS template_name
-		FROM project_template_runs ptr
-		LEFT JOIN project_templates pt ON pt.id=ptr.project_template_id
-		WHERE ptr.id=$1
-			AND ($2 OR ptr.requested_by=$3 OR EXISTS (
-				SELECT 1 FROM project_members pm
-				WHERE pm.project_id=ptr.project_id AND pm.user_id=$3
-			))
-		FOR UPDATE OF ptr`,
-		chi.URLParam(r, "id"),
-		userCanReadAllProjects(user),
-		userIDOrNil(user),
-	)
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	if !canRetryTemplateProvision(run) {
-		writeError(w, http.StatusConflict, "template run is not eligible for repository provisioning retry")
-		return
-	}
-	input := map[string]any{
-		"project_template_run_id":   run["id"],
-		"previous_operation_run_id": cleanOptionalID(fmt.Sprint(run["operation_run_id"])),
-	}
-	op, err := enqueueOperationTx(
-		r.Context(),
-		tx,
-		cleanOptionalID(fmt.Sprint(run["project_id"])),
-		"",
-		"project.template_provision_retry",
-		"retry template provisioning "+fmt.Sprint(run["project_name"]),
-		input,
-		[]string{"template"},
-		"control-worker",
-	)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "could not enqueue template provision retry")
-		return
-	}
-	retryRequested, err := jsonParam(map[string]any{
-		"retry_requested": map[string]any{
+	var op map[string]any
+	var run map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var runModel GormProjectTemplateRun
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&runModel, &GormProjectTemplateRun{GormBase: GormBase{ID: chi.URLParam(r, "id")}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		allowed, err := userCanAccessProjectTemplateRun(r.Context(), tx, user, runModel)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return ErrNotFound
+		}
+		run = projectTemplateRunMap(runModel)
+		if runModel.ProjectTemplateID.Valid {
+			var template GormProjectTemplate
+			if err := tx.First(&template, &GormProjectTemplate{GormBase: GormBase{ID: runModel.ProjectTemplateID.String}}).Error; err == nil {
+				run["template_name"] = template.Name
+			} else if !errorsIsRecordNotFound(err) {
+				return err
+			}
+		}
+		if !canRetryTemplateProvision(run) {
+			return errProjectTemplateRunNotRetryable
+		}
+		input := map[string]any{
+			"project_template_run_id":   run["id"],
+			"previous_operation_run_id": cleanOptionalID(fmt.Sprint(run["operation_run_id"])),
+		}
+		var opErr error
+		op, opErr = enqueueOperationGorm(
+			r.Context(),
+			tx,
+			cleanOptionalID(fmt.Sprint(run["project_id"])),
+			"",
+			"project.template_provision_retry",
+			"retry template provisioning "+fmt.Sprint(run["project_name"]),
+			input,
+			[]string{"template"},
+			"control-worker",
+		)
+		if opErr != nil {
+			return opErr
+		}
+		result := mapFromAny(runModel.Result.Data)
+		result["retry_requested"] = map[string]any{
 			"operation_run_id": op["id"],
 			"requested_by":     userIDOrNil(user),
 			"requested_at":     time.Now().UTC().Format(time.RFC3339),
-		},
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not record template provision retry")
-		return
-	}
-	if _, err := tx.ExecContext(r.Context(), `
-		UPDATE project_template_runs
-		SET status='queued',
-			result=result || $2::jsonb,
-			updated_at=now()
-		WHERE id=$1`, run["id"], retryRequested); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not record template provision retry")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project_template.retry_operation") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit template provision retry")
+		}
+		if err := tx.Model(&GormProjectTemplateRun{}).
+			Where(&GormProjectTemplateRun{GormBase: GormBase{ID: runModel.ID}}).
+			Updates(map[string]any{"status": "queued", "result": JSONValue{Data: result}}).Error; err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		if errors.Is(err, errProjectTemplateRunNotRetryable) {
+			writeError(w, http.StatusConflict, "template run is not eligible for repository provisioning retry")
+			return
+		}
+		writeQueryOne(w, nil, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"operation": op, "run": run})
@@ -975,19 +1086,7 @@ func (s *Server) requestProjectTemplateProviderReviewExecution(w http.ResponseWr
 		return
 	}
 	user := currentUser(r)
-	run, err := queryOne(r.Context(), s.store.DB, `
-		SELECT ptr.*, pt.name AS template_name
-		FROM project_template_runs ptr
-		LEFT JOIN project_templates pt ON pt.id=ptr.project_template_id
-		WHERE ptr.id=$1
-			AND ($2 OR ptr.requested_by=$3 OR EXISTS (
-				SELECT 1 FROM project_members pm
-				WHERE pm.project_id=ptr.project_id AND pm.user_id=$3
-			))`,
-		chi.URLParam(r, "id"),
-		userCanReadAllProjects(user),
-		userIDOrNil(user),
-	)
+	run, err := s.projectTemplateRunForProviderReviewGorm(r.Context(), chi.URLParam(r, "id"), user)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -1028,6 +1127,41 @@ func (s *Server) requestProjectTemplateProviderReviewExecution(w http.ResponseWr
 	}
 	delete(approval, "request_payload")
 	writeJSON(w, http.StatusAccepted, map[string]any{"approval": approval})
+}
+
+func (s *Server) projectTemplateRunForProviderReviewGorm(ctx context.Context, runID string, user *User) (map[string]any, error) {
+	var run GormProjectTemplateRun
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormProjectTemplateRun{GormBase: GormBase{ID: runID}}).First(&run).Error; err != nil {
+		return nil, gormNotFoundAsErrNotFound(err)
+	}
+	if !userCanReadAllProjects(user) {
+		userID := ""
+		if user != nil {
+			userID = strings.TrimSpace(user.ID)
+		}
+		allowed := cleanOptionalID(run.RequestedBy.String) == userID
+		projectID := cleanOptionalID(run.ProjectID.String)
+		if !allowed && projectID != "" && userID != "" {
+			var count int64
+			if err := s.store.Gorm.WithContext(ctx).Model(&GormProjectMember{}).Where(&GormProjectMember{ProjectID: projectID, UserID: userID}).Count(&count).Error; err != nil {
+				return nil, err
+			}
+			allowed = count > 0
+		}
+		if !allowed {
+			return nil, ErrNotFound
+		}
+	}
+	item := projectTemplateRunMap(run)
+	if templateID := cleanOptionalID(run.ProjectTemplateID.String); templateID != "" {
+		var template GormProjectTemplate
+		if err := s.store.Gorm.WithContext(ctx).Where(&GormProjectTemplate{GormBase: GormBase{ID: templateID}}).First(&template).Error; err == nil {
+			item["template_name"] = template.Name
+		} else if !errorsIsRecordNotFound(err) {
+			return nil, err
+		}
+	}
+	return item, nil
 }
 
 func projectTemplateProviderReviewApprovalPayload(run map[string]any) (map[string]any, error) {
@@ -1170,12 +1304,12 @@ func starterFilePayloadReady(payload map[string]any) bool {
 	return payload["status"] == "ready" && intFromAny(payload["file_count"], 0) > 0 && payload["content_included"] == false
 }
 
-func providerReviewStarterFilePayloadForExecution(ctx context.Context, tx *sqlx.Tx, payload map[string]any) map[string]any {
+func (s *Server) providerReviewStarterFilePayloadForExecution(ctx context.Context, payload map[string]any) map[string]any {
 	runID := cleanOptionalID(stringFromMap(payload, "project_template_run_id"))
-	if tx != nil && runID != "" {
-		run, err := queryOne(ctx, tx, "SELECT result FROM project_template_runs WHERE id=$1", runID)
-		if err == nil {
-			return projectTemplateStarterFilePayloadSummary(run)
+	if s != nil && s.store != nil && s.store.Gorm != nil && runID != "" {
+		var run GormProjectTemplateRun
+		if err := s.store.Gorm.WithContext(ctx).First(&run, &GormProjectTemplateRun{GormBase: GormBase{ID: runID}}).Error; err == nil {
+			return projectTemplateStarterFilePayloadSummary(projectTemplateRunMap(run))
 		}
 	}
 	return sanitizedStarterFilePayloadSummary(mapFromAny(payload["starter_file_payload"]))
@@ -1200,15 +1334,23 @@ func (s *Server) listProviderAccounts(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "provider_account"}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT pa.*, cc.name AS credential_name, cc.kind AS credential_kind,
-			(cc.secret_ciphertext <> '') AS credential_configured
-		FROM provider_accounts pa
-		LEFT JOIN connection_credentials cc ON cc.id=pa.credential_id
-		ORDER BY pa.provider_type, pa.name`)
+	var accounts []GormProviderAccount
+	err := s.store.Gorm.WithContext(r.Context()).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "provider_type"}}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "name"}}).
+		Find(&accounts).Error
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
+	}
+	credentials, err := s.connectionCredentialsForProviderAccounts(r.Context(), accounts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	items := make([]map[string]any, 0, len(accounts))
+	for _, account := range accounts {
+		items = append(items, providerAccountMap(account, credentials[account.CredentialID.String]))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":                  sanitizeProviderAccounts(items),
@@ -1221,17 +1363,17 @@ func (s *Server) getProviderAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "provider_account", ID: chi.URLParam(r, "id")}, "read") {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
-		SELECT pa.*, cc.name AS credential_name, cc.kind AS credential_kind,
-			(cc.secret_ciphertext <> '') AS credential_configured
-		FROM provider_accounts pa
-		LEFT JOIN connection_credentials cc ON cc.id=pa.credential_id
-		WHERE pa.id=$1`, chi.URLParam(r, "id"))
+	var account GormProviderAccount
+	if err := s.store.Gorm.WithContext(r.Context()).Where(map[string]any{"id": chi.URLParam(r, "id")}).First(&account).Error; err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	credential, err := s.connectionCredentialByID(r.Context(), account.CredentialID.String)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, sanitizeProviderAccount(item))
+	writeJSON(w, http.StatusOK, sanitizeProviderAccount(providerAccountMap(account, credential)))
 }
 
 func (s *Server) createProviderAccount(w http.ResponseWriter, r *http.Request) {
@@ -1266,68 +1408,47 @@ func (s *Server) createProviderAccount(w http.ResponseWriter, r *http.Request) {
 	if credentialID != "" && strings.TrimSpace(req.TokenEnv) == "" {
 		input.TokenEnv = ""
 	}
-	metadata, err := jsonParam(input.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid metadata")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start provider account transaction")
-		return
-	}
-	defer tx.Rollback()
+	var credential *GormConnectionCredential
 	if credentialID != "" {
-		if _, err := requireConnectionCredential(r.Context(), tx, "", credentialID, "provider_token"); err != nil {
+		credential, err = s.connectionCredentialForProjectOrGlobal(r.Context(), "", credentialID, "provider_token")
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "credential_id must reference a global provider token credential")
 			return
 		}
 	}
-	credentialArg := nullableIDArg(credentialID)
-	item, err := queryOne(r.Context(), tx, `
-		WITH inserted AS (
-			INSERT INTO provider_accounts(name, provider_type, api_base_url, web_base_url, token_env, credential_id, default_owner, visibility, enabled, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-			RETURNING *
-		)
-		SELECT inserted.*, cc.name AS credential_name, cc.kind AS credential_kind,
-			(cc.secret_ciphertext <> '') AS credential_configured
-		FROM inserted
-		LEFT JOIN connection_credentials cc ON cc.id=inserted.credential_id`,
-		input.Name,
-		input.ProviderType,
-		input.APIBaseURL,
-		input.WebBaseURL,
-		input.TokenEnv,
-		credentialArg,
-		input.DefaultOwner,
-		input.Visibility,
-		enabled,
-		metadata,
-	)
-	if err != nil {
+	account := GormProviderAccount{
+		Name:         input.Name,
+		ProviderType: input.ProviderType,
+		APIBaseURL:   input.APIBaseURL,
+		WebBaseURL:   input.WebBaseURL,
+		TokenEnv:     input.TokenEnv,
+		CredentialID: validNullString(credentialID),
+		DefaultOwner: input.DefaultOwner,
+		Visibility:   input.Visibility,
+		Enabled:      enabled,
+		Metadata:     JSONValue{Data: input.Metadata},
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Create(&account).Error; err != nil {
 		writeError(w, http.StatusBadRequest, "could not create provider account")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.create") {
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync provider account asset")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit provider account")
-		return
-	}
-	writeJSON(w, http.StatusCreated, sanitizeProviderAccount(item))
+	writeJSON(w, http.StatusCreated, sanitizeProviderAccount(providerAccountMap(account, credential)))
 }
 
 func (s *Server) updateProviderAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "provider_account", ID: chi.URLParam(r, "id")}, "update") {
 		return
 	}
-	current, err := loadProviderAccountConfigByID(r.Context(), s.store.DB, chi.URLParam(r, "id"))
-	if err != nil {
+	var currentAccount GormProviderAccount
+	if err := s.store.Gorm.WithContext(r.Context()).Where(map[string]any{"id": chi.URLParam(r, "id")}).First(&currentAccount).Error; err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
+	current := providerAccountConfigFromGorm(currentAccount)
 	var req struct {
 		Name         *string         `json:"name"`
 		ProviderType *string         `json:"provider_type"`
@@ -1363,83 +1484,61 @@ func (s *Server) updateProviderAccount(w http.ResponseWriter, r *http.Request) {
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	metadataJSON, err := jsonParam(input.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid metadata")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start provider account transaction")
-		return
-	}
-	defer tx.Rollback()
 	credentialID := stringPtrValue(req.CredentialID)
 	if req.CredentialID == nil {
 		credentialID = current.CredentialID
 	}
 	credentialID = cleanOptionalID(credentialID)
+	var credential *GormConnectionCredential
 	if credentialID != "" {
-		if _, err := requireConnectionCredential(r.Context(), tx, "", credentialID, "provider_token"); err != nil {
+		credential, err = s.connectionCredentialForProjectOrGlobal(r.Context(), "", credentialID, "provider_token")
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "credential_id must reference a global provider token credential")
 			return
 		}
 	}
-	credentialArg := nullableIDArg(credentialID)
-	item, err := queryOne(r.Context(), tx, `
-		WITH updated AS (
-			UPDATE provider_accounts
-			SET name=$2,
-				provider_type=$3,
-				api_base_url=$4,
-				web_base_url=$5,
-				token_env=$6,
-				credential_id=$7,
-				default_owner=$8,
-				visibility=$9,
-				enabled=$10,
-				metadata=$11::jsonb,
-				updated_at=now()
-			WHERE id=$1 AND token_env=$12
-			RETURNING *
-		)
-		SELECT updated.*, cc.name AS credential_name, cc.kind AS credential_kind,
-			(cc.secret_ciphertext <> '') AS credential_configured
-		FROM updated
-		LEFT JOIN connection_credentials cc ON cc.id=updated.credential_id`,
-		chi.URLParam(r, "id"),
-		input.Name,
-		input.ProviderType,
-		input.APIBaseURL,
-		input.WebBaseURL,
-		input.TokenEnv,
-		credentialArg,
-		input.DefaultOwner,
-		input.Visibility,
-		enabled,
-		metadataJSON,
-		current.TokenEnv,
-	)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusConflict, "provider account changed during update; retry")
-			return
-		}
+	updated := map[string]any{
+		"name":          input.Name,
+		"provider_type": input.ProviderType,
+		"api_base_url":  input.APIBaseURL,
+		"web_base_url":  input.WebBaseURL,
+		"token_env":     input.TokenEnv,
+		"credential_id": validNullString(credentialID),
+		"default_owner": input.DefaultOwner,
+		"visibility":    input.Visibility,
+		"enabled":       enabled,
+		"metadata":      JSONValue{Data: input.Metadata},
+	}
+	result := s.store.Gorm.WithContext(r.Context()).Model(&GormProviderAccount{}).
+		Where(map[string]any{"id": chi.URLParam(r, "id"), "token_env": current.TokenEnv}).
+		Updates(updated)
+	if result.Error != nil {
 		writeError(w, http.StatusBadRequest, "could not update provider account")
 		return
 	}
-	if err := refreshGitRemotesForProviderAccount(r.Context(), tx, input, chi.URLParam(r, "id")); err != nil {
+	if result.RowsAffected == 0 {
+		writeError(w, http.StatusConflict, "provider account changed during update; retry")
+		return
+	}
+	if err := s.refreshGitRemotesForProviderAccountGorm(r.Context(), input, chi.URLParam(r, "id")); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not refresh provider account remotes")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.update") {
+	currentAccount.Name = input.Name
+	currentAccount.ProviderType = input.ProviderType
+	currentAccount.APIBaseURL = input.APIBaseURL
+	currentAccount.WebBaseURL = input.WebBaseURL
+	currentAccount.TokenEnv = input.TokenEnv
+	currentAccount.CredentialID = validNullString(credentialID)
+	currentAccount.DefaultOwner = input.DefaultOwner
+	currentAccount.Visibility = input.Visibility
+	currentAccount.Enabled = enabled
+	currentAccount.Metadata = JSONValue{Data: input.Metadata}
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync provider account asset")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit provider account")
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeProviderAccount(item))
+	writeJSON(w, http.StatusOK, sanitizeProviderAccount(providerAccountMap(currentAccount, credential)))
 }
 
 func (s *Server) checkProviderAccount(w http.ResponseWriter, r *http.Request) {
@@ -1447,49 +1546,42 @@ func (s *Server) checkProviderAccount(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "provider_account", ID: accountID}, "update") {
 		return
 	}
-	account, err := loadProviderAccountConfigByID(r.Context(), s.store.DB, accountID)
+	accountModel, err := s.loadProviderAccountByID(r.Context(), accountID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	check := runProviderAccountCheck(r.Context(), account, newTemplateProviderHTTPClient())
-	checkJSON, err := jsonParam(check)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid provider account check")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start provider account check transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE provider_accounts
-		SET metadata=metadata || jsonb_build_object('provider_check', $2::jsonb),
-			updated_at=now()
-		WHERE id=$1 AND token_env=$3
-		RETURNING *`,
-		accountID,
-		checkJSON,
-		account.TokenEnv,
-	)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusConflict, "provider account changed during check; retry")
+	account := providerAccountConfigFromGorm(accountModel)
+	if account.CredentialID != "" {
+		credential, err := s.connectionCredentialForProjectOrGlobal(r.Context(), "", account.CredentialID, "provider_token")
+		if err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, gorm.ErrRecordNotFound) {
+			writeError(w, http.StatusInternalServerError, "could not load provider account credential")
 			return
 		}
+		if credential != nil {
+			account.CredentialCiphertext = credential.SecretCiphertext
+		}
+	}
+	check := runProviderAccountCheck(r.Context(), account, newTemplateProviderHTTPClient())
+	metadata := cloneMap(account.Metadata)
+	metadata["provider_check"] = check
+	result := s.store.Gorm.WithContext(r.Context()).Model(&GormProviderAccount{}).
+		Where(map[string]any{"id": accountID, "token_env": account.TokenEnv}).
+		Updates(map[string]any{"metadata": JSONValue{Data: metadata}})
+	if result.Error != nil {
 		writeError(w, http.StatusInternalServerError, "could not store provider account check")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.check") {
+	if result.RowsAffected == 0 {
+		writeError(w, http.StatusConflict, "provider account changed during check; retry")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit provider account check")
+	accountModel.Metadata = JSONValue{Data: metadata}
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync provider account asset")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"check": check, "account": sanitizeProviderAccount(item)})
+	writeJSON(w, http.StatusOK, map[string]any{"check": check, "account": sanitizeProviderAccount(providerAccountMap(accountModel, nil))})
 }
 
 func (s *Server) rotateProviderAccountTokenEnv(w http.ResponseWriter, r *http.Request) {
@@ -1497,11 +1589,12 @@ func (s *Server) rotateProviderAccountTokenEnv(w http.ResponseWriter, r *http.Re
 	if !s.requirePolicy(w, r, PolicyResource{Type: "provider_account", ID: accountID}, "update") {
 		return
 	}
-	account, err := loadProviderAccountConfigByID(r.Context(), s.store.DB, accountID)
+	accountModel, err := s.loadProviderAccountByID(r.Context(), accountID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
+	account := providerAccountConfigFromGorm(accountModel)
 	var req struct {
 		TokenEnv string `json:"token_env"`
 		Reason   string `json:"reason"`
@@ -1529,49 +1622,28 @@ func (s *Server) rotateProviderAccountTokenEnv(w http.ResponseWriter, r *http.Re
 		Metadata:     cloneMap(account.Metadata),
 	}
 	next.Metadata = providerAccountRotationMetadata(next.Metadata, account.TokenEnv, tokenEnv, strings.TrimSpace(req.Reason), currentUser(r))
-	metadataJSON, err := jsonParam(next.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid metadata")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start provider token rotation transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE provider_accounts
-		SET token_env=$2,
-			metadata=$3::jsonb,
-			updated_at=now()
-		WHERE id=$1 AND token_env=$4
-		RETURNING *`,
-		accountID,
-		tokenEnv,
-		metadataJSON,
-		account.TokenEnv,
-	)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusConflict, "provider account changed during token rotation; retry")
-			return
-		}
+	result := s.store.Gorm.WithContext(r.Context()).Model(&GormProviderAccount{}).
+		Where(map[string]any{"id": accountID, "token_env": account.TokenEnv}).
+		Updates(map[string]any{"token_env": tokenEnv, "metadata": JSONValue{Data: next.Metadata}})
+	if result.Error != nil {
 		writeError(w, http.StatusInternalServerError, "could not rotate provider token env")
 		return
 	}
-	if err := refreshGitRemotesForProviderAccount(r.Context(), tx, next, accountID); err != nil {
+	if result.RowsAffected == 0 {
+		writeError(w, http.StatusConflict, "provider account changed during token rotation; retry")
+		return
+	}
+	if err := s.refreshGitRemotesForProviderAccountGorm(r.Context(), next, accountID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not refresh provider account remotes")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.rotate_token_env") {
+	accountModel.TokenEnv = tokenEnv
+	accountModel.Metadata = JSONValue{Data: next.Metadata}
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync provider account asset")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit provider token rotation")
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeProviderAccount(item))
+	writeJSON(w, http.StatusOK, sanitizeProviderAccount(providerAccountMap(accountModel, nil)))
 }
 
 func (s *Server) executeProviderAccountTokenRotationPlan(w http.ResponseWriter, r *http.Request) {
@@ -1589,20 +1661,14 @@ func (s *Server) executeProviderAccountTokenRotationPlan(w http.ResponseWriter, 
 		reason = "automated rotation plan execution"
 	}
 	now := time.Now().UTC()
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start provider token rotation execution transaction")
-		return
-	}
-	defer tx.Rollback()
-	items, err := queryMaps(r.Context(), tx, `
-		SELECT *
-		FROM provider_accounts
-		ORDER BY provider_type, name
-		FOR UPDATE`)
-	if err != nil {
+	var accounts []GormProviderAccount
+	if err := s.store.Gorm.WithContext(r.Context()).Order(gormOrderAsc("provider_type")).Order(gormOrderAsc("name")).Find(&accounts).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load provider token rotation plan")
 		return
+	}
+	items := make([]map[string]any, 0, len(accounts))
+	for _, account := range accounts {
+		items = append(items, providerAccountMap(account, nil))
 	}
 	plan := providerAccountAutomatedRotationPlan(items, now)
 	candidates := providerAccountAutomatedRotationExecutionCandidates(items, now)
@@ -1611,11 +1677,20 @@ func (s *Server) executeProviderAccountTokenRotationPlan(w http.ResponseWriter, 
 		return
 	}
 
+	accountsByID := make(map[string]GormProviderAccount, len(accounts))
+	for _, account := range accounts {
+		accountsByID[account.ID] = account
+	}
 	rotated := make([]map[string]any, 0, len(candidates))
 	for _, candidate := range candidates {
 		account := candidate.account
 		accountID := rawStringFromMap(account, "id")
 		currentTokenEnv := rawStringFromMap(account, "token_env")
+		accountModel, ok := accountsByID[accountID]
+		if !ok {
+			writeError(w, http.StatusConflict, "provider account changed during token rotation execution; retry")
+			return
+		}
 		next := providerAccountInput{
 			Name:         rawStringFromMap(account, "name"),
 			ProviderType: rawStringFromMap(account, "provider_type"),
@@ -1627,42 +1702,27 @@ func (s *Server) executeProviderAccountTokenRotationPlan(w http.ResponseWriter, 
 			Metadata:     cloneMap(mapFromAny(account["metadata"])),
 		}
 		next.Metadata = providerAccountRotationMetadata(next.Metadata, currentTokenEnv, candidate.tokenEnv, reason, currentUser(r))
-		metadataJSON, err := jsonParam(next.Metadata)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid provider token rotation metadata")
-			return
-		}
-		item, err := queryOne(r.Context(), tx, `
-			UPDATE provider_accounts
-			SET token_env=$2,
-				metadata=$3::jsonb,
-				updated_at=now()
-			WHERE id=$1 AND token_env=$4
-			RETURNING *`,
-			accountID,
-			candidate.tokenEnv,
-			metadataJSON,
-			currentTokenEnv,
-		)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				writeError(w, http.StatusConflict, "provider account changed during token rotation execution; retry")
-				return
-			}
+		result := s.store.Gorm.WithContext(r.Context()).Model(&GormProviderAccount{}).
+			Where(map[string]any{"id": accountID, "token_env": currentTokenEnv}).
+			Updates(map[string]any{"token_env": candidate.tokenEnv, "metadata": JSONValue{Data: next.Metadata}})
+		if result.Error != nil {
 			writeError(w, http.StatusInternalServerError, "could not execute provider token rotation")
 			return
 		}
-		if err := refreshGitRemotesForProviderAccount(r.Context(), tx, next, accountID); err != nil {
+		if result.RowsAffected == 0 {
+			writeError(w, http.StatusConflict, "provider account changed during token rotation execution; retry")
+			return
+		}
+		if err := s.refreshGitRemotesForProviderAccountGorm(r.Context(), next, accountID); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not refresh provider account remotes")
 			return
 		}
-		rotated = append(rotated, item)
+		accountModel.TokenEnv = candidate.tokenEnv
+		accountModel.Metadata = JSONValue{Data: next.Metadata}
+		rotated = append(rotated, providerAccountMap(accountModel, nil))
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_account.execute_token_rotation_plan") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit provider token rotation execution")
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync provider account asset")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1765,7 +1825,7 @@ func defaultProviderAccountAPIBase(provider string) string {
 	return ""
 }
 
-func refreshGitRemotesForProviderAccount(ctx context.Context, db sqlx.ExtContext, input providerAccountInput, accountID string) error {
+func (s *Server) refreshGitRemotesForProviderAccountGorm(ctx context.Context, input providerAccountInput, accountID string) error {
 	metadataPatch := map[string]any{
 		"provider_account_id": accountID,
 		"api_base_url":        input.APIBaseURL,
@@ -1775,19 +1835,20 @@ func refreshGitRemotesForProviderAccount(ctx context.Context, db sqlx.ExtContext
 	if input.DefaultOwner != "" {
 		metadataPatch["owner"] = input.DefaultOwner
 	}
-	patchJSON, err := jsonParam(metadataPatch)
-	if err != nil {
+	var remotes []GormGitRemote
+	if err := s.store.Gorm.WithContext(ctx).Where(map[string]any{"source_account_id": accountID}).Find(&remotes).Error; err != nil {
 		return err
 	}
-	_, err = db.ExecContext(ctx, `
-		UPDATE git_remotes
-		SET metadata = metadata || $2::jsonb,
-			updated_at = now()
-		WHERE source_account_id=$1`,
-		accountID,
-		patchJSON,
-	)
-	return err
+	for _, remote := range remotes {
+		metadata := mapFromAny(remote.Metadata.Data)
+		for key, value := range metadataPatch {
+			metadata[key] = value
+		}
+		if err := s.store.Gorm.WithContext(ctx).Model(&remote).Update("metadata", JSONValue{Data: metadata}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func runProviderAccountCheck(ctx context.Context, account providerAccountConfig, client *http.Client) map[string]any {
@@ -1913,50 +1974,21 @@ type providerAccountConfig struct {
 	Metadata             map[string]any
 }
 
-func loadProviderAccountConfigByID(ctx context.Context, db sqlx.ExtContext, id string) (providerAccountConfig, error) {
-	return loadProviderAccountConfig(ctx, db, "id=$1", id)
+func (s *Server) loadProviderAccountByID(ctx context.Context, id string) (GormProviderAccount, error) {
+	return s.loadProviderAccount(ctx, "id", id)
 }
 
-func loadProviderAccountConfigByName(ctx context.Context, db sqlx.ExtContext, name string) (providerAccountConfig, error) {
-	return loadProviderAccountConfig(ctx, db, "name=$1", name)
+func (s *Server) loadProviderAccountByName(ctx context.Context, name string) (GormProviderAccount, error) {
+	return s.loadProviderAccount(ctx, "name", name)
 }
 
-func loadProviderAccountConfig(ctx context.Context, db sqlx.ExtContext, where string, arg any) (providerAccountConfig, error) {
-	var cfg providerAccountConfig
-	var metadataBytes []byte
-	query := `
-		SELECT pa.id::text, pa.name, pa.provider_type, pa.api_base_url, pa.web_base_url, pa.token_env,
-			COALESCE(pa.credential_id::text, ''), COALESCE(cc.secret_ciphertext, ''), pa.default_owner, pa.visibility, pa.enabled, pa.metadata
-		FROM provider_accounts pa
-		LEFT JOIN connection_credentials cc ON cc.id=pa.credential_id AND cc.kind='provider_token'
-		WHERE pa.` + where
-	err := db.QueryRowxContext(ctx, query, arg).Scan(
-		&cfg.ID,
-		&cfg.Name,
-		&cfg.ProviderType,
-		&cfg.APIBaseURL,
-		&cfg.WebBaseURL,
-		&cfg.TokenEnv,
-		&cfg.CredentialID,
-		&cfg.CredentialCiphertext,
-		&cfg.DefaultOwner,
-		&cfg.Visibility,
-		&cfg.Enabled,
-		&metadataBytes,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return cfg, ErrNotFound
+func (s *Server) loadProviderAccount(ctx context.Context, field, value string) (GormProviderAccount, error) {
+	var account GormProviderAccount
+	err := s.store.Gorm.WithContext(ctx).Where(map[string]any{field: value}).First(&account).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return account, ErrNotFound
 	}
-	if err != nil {
-		return cfg, err
-	}
-	if len(metadataBytes) > 0 {
-		_ = json.Unmarshal(metadataBytes, &cfg.Metadata)
-	}
-	if cfg.Metadata == nil {
-		cfg.Metadata = map[string]any{}
-	}
-	return cfg, nil
+	return account, err
 }
 
 func sanitizeProviderAccounts(items []map[string]any) []map[string]any {
@@ -1988,6 +2020,81 @@ func sanitizeProviderAccount(item map[string]any) map[string]any {
 	out["token_rotation_status"] = providerAccountTokenRotationStatus(item, time.Now().UTC())
 	out["token_rotation_candidate"] = providerAccountRotationCandidate(item)
 	return out
+}
+
+func providerAccountMap(account GormProviderAccount, credential *GormConnectionCredential) map[string]any {
+	item := map[string]any{
+		"id":            account.ID,
+		"name":          account.Name,
+		"provider_type": account.ProviderType,
+		"api_base_url":  account.APIBaseURL,
+		"web_base_url":  account.WebBaseURL,
+		"token_env":     account.TokenEnv,
+		"credential_id": nullableStringValue(account.CredentialID),
+		"default_owner": account.DefaultOwner,
+		"visibility":    account.Visibility,
+		"enabled":       account.Enabled,
+		"metadata":      mapFromAny(account.Metadata.Data),
+		"created_at":    account.CreatedAt,
+		"updated_at":    account.UpdatedAt,
+	}
+	if credential != nil {
+		item["credential_name"] = credential.Name
+		item["credential_kind"] = credential.Kind
+		item["credential_configured"] = credential.SecretCiphertext != ""
+	} else {
+		item["credential_configured"] = false
+	}
+	return item
+}
+
+func providerAccountConfigFromGorm(account GormProviderAccount) providerAccountConfig {
+	return providerAccountConfig{
+		ID:           account.ID,
+		Name:         account.Name,
+		ProviderType: account.ProviderType,
+		APIBaseURL:   account.APIBaseURL,
+		WebBaseURL:   account.WebBaseURL,
+		TokenEnv:     account.TokenEnv,
+		CredentialID: nullableStringFromNull(account.CredentialID),
+		DefaultOwner: account.DefaultOwner,
+		Visibility:   account.Visibility,
+		Enabled:      account.Enabled,
+		Metadata:     mapFromAny(account.Metadata.Data),
+	}
+}
+
+func nullableStringFromNull(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return cleanOptionalText(value.String)
+}
+
+func (s *Server) connectionCredentialsForProviderAccounts(ctx context.Context, accounts []GormProviderAccount) (map[string]*GormConnectionCredential, error) {
+	ids := make([]string, 0, len(accounts))
+	seen := map[string]bool{}
+	for _, account := range accounts {
+		id := cleanOptionalID(account.CredentialID.String)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return map[string]*GormConnectionCredential{}, nil
+	}
+	var credentials []GormConnectionCredential
+	if err := s.store.Gorm.WithContext(ctx).Find(&credentials, ids).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]*GormConnectionCredential, len(credentials))
+	for i := range credentials {
+		credential := credentials[i]
+		out[credential.ID] = &credential
+	}
+	return out, nil
 }
 
 func sanitizeProviderAccountMetadata(metadata map[string]any) map[string]any {
@@ -2313,8 +2420,12 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project", ID: projectID, ProjectID: projectID}, "read") {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM projects WHERE id=$1", projectID)
-	writeQueryOne(w, item, err)
+	project, err := s.projectByIDGorm(r.Context(), projectID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, projectMap(project))
 }
 
 func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
@@ -2330,41 +2441,29 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	project, err := s.projectByIDGorm(r.Context(), projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start project transaction")
+		writeQueryOne(w, nil, err)
 		return
 	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE projects
-		SET name=COALESCE(NULLIF($2,''), name),
-			slug=COALESCE(NULLIF($3,''), slug),
-			description=COALESCE($4, description),
-			updated_at=now()
-		WHERE id=$1
-		RETURNING *`,
-		projectID,
-		nullableString(req.Name),
-		nullableString(req.Slug),
-		nullableString(req.Description),
-	)
-	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not found")
-		return
+	if req.Name != nil && strings.TrimSpace(*req.Name) != "" {
+		project.Name = strings.TrimSpace(*req.Name)
 	}
-	if err != nil {
+	if req.Slug != nil && strings.TrimSpace(*req.Slug) != "" {
+		project.Slug = strings.TrimSpace(*req.Slug)
+	}
+	if req.Description != nil {
+		project.Description = *req.Description
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Save(&project).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project.update") {
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync project asset")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit project")
-		return
-	}
-	writeJSON(w, http.StatusOK, item)
+	writeJSON(w, http.StatusOK, projectMap(project))
 }
 
 func (s *Server) listProjectVersions(w http.ResponseWriter, r *http.Request) {
@@ -2372,12 +2471,12 @@ func (s *Server) listProjectVersions(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, project_id, version, source, metadata, created_at
-		FROM project_versions
-		WHERE project_id=$1
-		ORDER BY created_at DESC`, projectID)
-	writeQueryResult(w, items, err)
+	var versions []GormProjectVersion
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormProjectVersion{ProjectID: projectID}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}, Desc: true}}}).Find(&versions).Error; err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	writeQueryResult(w, projectVersionMaps(versions), nil)
 }
 
 func (s *Server) createProjectVersion(w http.ResponseWriter, r *http.Request) {
@@ -2405,125 +2504,70 @@ func (s *Server) createProjectVersion(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Source) == "" {
 		req.Source = "manual"
 	}
-	metadata, err := jsonParam(req.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "metadata must be valid json")
-		return
-	}
-	item, err := queryOne(r.Context(), s.store.DB, `
-		INSERT INTO project_versions(project_id, version, source, metadata)
-		VALUES ($1, $2, $3, $4::jsonb)
-		ON CONFLICT (project_id, version) DO UPDATE
-		SET source=EXCLUDED.source,
-			metadata=EXCLUDED.metadata
-		RETURNING id, project_id, version, source, metadata, created_at`,
-		projectID,
-		req.Version,
-		req.Source,
-		metadata,
-	)
-	if err != nil {
+	version := GormProjectVersion{ProjectID: projectID, Version: req.Version, Source: req.Source, Metadata: JSONValue{Data: nonNilMap(req.Metadata)}}
+	if err := s.store.Gorm.WithContext(r.Context()).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "project_id"}, {Name: "version"}}, DoUpdates: clause.AssignmentColumns([]string{"source", "metadata"})}).Create(&version).Error; err != nil {
 		writeError(w, http.StatusBadRequest, "could not create project version")
 		return
 	}
-	writeJSON(w, http.StatusCreated, item)
+	writeJSON(w, http.StatusCreated, projectVersionMap(version))
 }
 
 func (s *Server) getProjectVersion(w http.ResponseWriter, r *http.Request) {
 	versionID := chi.URLParam(r, "id")
-	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
+	version, err := projectVersionByIDGorm(r.Context(), s.store.Gorm, versionID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: projectID}, "read") {
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: version.ProjectID}, "read") {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
-		SELECT id, project_id, version, source, metadata, created_at
-		FROM project_versions
-		WHERE id=$1`, versionID)
-	writeQueryOne(w, item, err)
+	writeQueryOne(w, projectVersionMap(version), nil)
 }
 
 func (s *Server) getProjectVersionValidation(w http.ResponseWriter, r *http.Request) {
 	versionID := chi.URLParam(r, "id")
-	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
+	versionModel, err := projectVersionByIDGorm(r.Context(), s.store.Gorm, versionID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
+	projectID := versionModel.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: projectID}, "read") {
 		return
 	}
-	version, err := queryOne(r.Context(), s.store.DB, `
-		SELECT id, project_id, version, source, metadata, created_at
-		FROM project_versions
-		WHERE id=$1`, versionID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	remotes, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, gr.default_branch, r.repo_key, r.repo_role, r.name AS repository_name
-		FROM git_remotes gr
-		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-		WHERE r.project_id=$1`, projectID)
+	version := projectVersionMap(versionModel)
+	remotes, err := projectVersionRemoteMapsGorm(r.Context(), s.store.Gorm, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load version remotes")
 		return
 	}
-	tagRuns, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, project_git_repository_id, target_remote_id, git_remote_id, tag_name, target_sha, status, created_at, finished_at
-		FROM repo_tag_runs
-		WHERE project_id=$1
-		ORDER BY created_at DESC
-		LIMIT 500`, projectID)
+	tagRuns, err := projectVersionTagRunMapsGorm(r.Context(), s.store.Gorm, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load tag runs")
 		return
 	}
-	actionRuns, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, git_remote_id, run_id, workflow_name, branch, commit_sha, status, conclusion, started_at, updated_at
-		FROM github_action_runs
-		WHERE git_remote_id IN (
-			SELECT gr.id
-			FROM git_remotes gr
-			JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-			WHERE r.project_id=$1
-		)
-		ORDER BY updated_at DESC
-		LIMIT 500`, projectID)
+	actionRuns, err := projectVersionActionRunMapsGorm(r.Context(), s.store.Gorm, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load action runs")
 		return
 	}
-	argoApps, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, name, namespace, status, metadata, synced_at, updated_at
-		FROM argo_apps
-		WHERE project_id=$1
-		ORDER BY updated_at DESC
-		LIMIT 500`, projectID)
+	argoApps, err := projectVersionArgoAppMapsGorm(r.Context(), s.store.Gorm, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load Argo apps")
 		return
 	}
-	argoConnections, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, name, last_sync_status
-		FROM argo_connections
-		WHERE project_id=$1
-		ORDER BY updated_at DESC
-		LIMIT 100`, projectID)
+	argoConnections, err := projectVersionArgoConnectionMapsGorm(r.Context(), s.store.Gorm, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load Argo connections")
 		return
 	}
-	refreshOperations, err := queryProjectVersionRefreshOperations(r.Context(), s.store.DB, fmt.Sprint(version["id"]))
+	refreshOperations, err := queryProjectVersionRefreshOperationsGorm(r.Context(), s.store.Gorm, fmt.Sprint(version["id"]), projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load project version refresh operations")
 		return
 	}
-	backgroundOperations, err := queryProjectVersionValidationRerunOperations(r.Context(), s.store.DB, fmt.Sprint(version["id"]))
+	backgroundOperations, err := queryProjectVersionValidationRerunOperationsGorm(r.Context(), s.store.Gorm, fmt.Sprint(version["id"]), projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load project version validation rerun operations")
 		return
@@ -2533,15 +2577,16 @@ func (s *Server) getProjectVersionValidation(w http.ResponseWriter, r *http.Requ
 
 func (s *Server) refreshProjectVersionProviders(w http.ResponseWriter, r *http.Request) {
 	versionID := chi.URLParam(r, "id")
-	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
+	versionModel, err := projectVersionByIDGorm(r.Context(), s.store.Gorm, versionID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
+	projectID := versionModel.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: projectID}, "project_version.refresh") {
 		return
 	}
-	version, remotes, argoConnections, err := s.projectVersionRefreshInputs(r.Context(), versionID, projectID)
+	version, remotes, argoConnections, err := s.projectVersionRefreshInputsGorm(r.Context(), versionID, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load project version refresh inputs")
 		return
@@ -2550,26 +2595,21 @@ func (s *Server) refreshProjectVersionProviders(w http.ResponseWriter, r *http.R
 	repositories := mapSliceFromAny(metadata["repositories"])
 	refreshPlan := projectVersionProviderRefreshPlan(repositories, remotes, argoConnections)
 	steps := mapSliceFromAny(refreshPlan["steps"])
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start project version refresh transaction")
-		return
-	}
-	defer tx.Rollback()
-	result, err := s.enqueueProjectVersionRefreshOperationsTx(r.Context(), tx, version, steps, argoConnections, currentUser(r).ID)
-	if errors.Is(err, errProjectVersionRefreshAlreadyQueued) {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	if err != nil {
+	var result map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		result, err = s.enqueueProjectVersionRefreshOperationsGorm(r.Context(), tx, version, steps, argoConnections, currentUser(r).ID)
+		if err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		if errors.Is(err, errProjectVersionRefreshAlreadyQueued) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project_version.refresh") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit project version refresh")
 		return
 	}
 	writeJSON(w, http.StatusCreated, result)
@@ -2577,42 +2617,31 @@ func (s *Server) refreshProjectVersionProviders(w http.ResponseWriter, r *http.R
 
 func (s *Server) requestProjectVersionValidationRerun(w http.ResponseWriter, r *http.Request) {
 	versionID := chi.URLParam(r, "id")
-	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
+	versionModel, err := projectVersionByIDGorm(r.Context(), s.store.Gorm, versionID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
+	projectID := versionModel.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: projectID}, "project_version.refresh") {
 		return
 	}
-	version, err := queryOne(r.Context(), s.store.DB, `
-		SELECT id, project_id, version
-		FROM project_versions
-		WHERE id=$1`, versionID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start validation rerun transaction")
-		return
-	}
-	defer tx.Rollback()
-	result, err := s.enqueueProjectVersionValidationRerunTx(r.Context(), tx, version, currentUser(r).ID)
-	if errors.Is(err, errProjectVersionRefreshAlreadyQueued) {
-		writeError(w, http.StatusConflict, "project version validation rerun is already queued or running")
-		return
-	}
-	if err != nil {
+	version := projectVersionMap(versionModel)
+	var result map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		result, err = s.enqueueProjectVersionValidationRerunGorm(r.Context(), tx, version, currentUser(r).ID)
+		if err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		if errors.Is(err, errProjectVersionRefreshAlreadyQueued) {
+			writeError(w, http.StatusConflict, "project version validation rerun is already queued or running")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "could not enqueue validation rerun")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "project_version.validation_rerun") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit validation rerun request")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, result)
@@ -2620,11 +2649,12 @@ func (s *Server) requestProjectVersionValidationRerun(w http.ResponseWriter, r *
 
 func (s *Server) pinProjectVersionConfigCommit(w http.ResponseWriter, r *http.Request) {
 	versionID := chi.URLParam(r, "id")
-	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
+	version, err := projectVersionByIDGorm(r.Context(), s.store.Gorm, versionID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
+	projectID := version.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: projectID}, "update") {
 		return
 	}
@@ -2684,11 +2714,12 @@ func (s *Server) recordProjectVersionValidationRerunSnapshot(w http.ResponseWrit
 
 func (s *Server) recordProjectVersionValidationSnapshotWithOptions(w http.ResponseWriter, r *http.Request, requireRecordedRefresh bool) {
 	versionID := chi.URLParam(r, "id")
-	projectID, err := projectIDForProjectVersion(r.Context(), s.store.DB, versionID)
+	version, err := projectVersionByIDGorm(r.Context(), s.store.Gorm, versionID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
+	projectID := version.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "project_version", ID: versionID, ProjectID: projectID}, "update") {
 		return
 	}
@@ -2718,47 +2749,29 @@ func (s *Server) recordProjectVersionValidationSnapshotWithOptions(w http.Respon
 	writeJSON(w, http.StatusOK, result)
 }
 
-func (s *Server) projectVersionRefreshInputs(ctx context.Context, versionID, projectID string) (map[string]any, []map[string]any, []map[string]any, error) {
-	version, err := queryOne(ctx, s.store.DB, `
-		SELECT id, project_id, version, source, metadata, created_at
-		FROM project_versions
-		WHERE id=$1`, versionID)
+func (s *Server) projectVersionRefreshInputsGorm(ctx context.Context, versionID, projectID string) (map[string]any, []map[string]any, []map[string]any, error) {
+	version, err := projectVersionByIDGorm(ctx, s.store.Gorm, versionID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	remotes, err := queryMaps(ctx, s.store.DB, `
-		SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, gr.default_branch, r.repo_key, r.repo_role, r.name AS repository_name
-		FROM git_remotes gr
-		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-		WHERE r.project_id=$1`, projectID)
+	remotes, err := projectVersionRemoteMapsGorm(ctx, s.store.Gorm, projectID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	argoConnections, err := queryMaps(ctx, s.store.DB, `
-		SELECT id, name, last_sync_status
-		FROM argo_connections
-		WHERE project_id=$1
-		ORDER BY updated_at DESC
-		LIMIT 100`, projectID)
+	argoConnections, err := projectVersionArgoConnectionMapsGorm(ctx, s.store.Gorm, projectID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return version, remotes, argoConnections, nil
+	return projectVersionMap(version), remotes, argoConnections, nil
 }
 
-func (s *Server) enqueueProjectVersionRefreshOperationsTx(ctx context.Context, tx *sqlx.Tx, version map[string]any, steps, argoConnections []map[string]any, actorID string) (map[string]any, error) {
+func (s *Server) enqueueProjectVersionRefreshOperationsGorm(ctx context.Context, tx *gorm.DB, version map[string]any, steps, argoConnections []map[string]any, actorID string) (map[string]any, error) {
 	projectID := strings.TrimSpace(fmt.Sprint(version["project_id"]))
 	versionID := strings.TrimSpace(fmt.Sprint(version["id"]))
 	if projectID == "" || projectID == "<nil>" || versionID == "" || versionID == "<nil>" {
 		return nil, fmt.Errorf("project version metadata is incomplete")
 	}
-	existing, err := queryMaps(ctx, tx, `
-		SELECT id
-		FROM operation_runs
-		WHERE status IN ('queued', 'running')
-			AND operation_type IN ('git.refs.refresh', 'github.actions.sync', 'argo.apps.sync')
-			AND input->>'project_version_id'=$1
-		LIMIT 1`, versionID)
+	existing, err := projectVersionOperationRunsGorm(ctx, tx, versionID, []string{"git.refs.refresh", "github.actions.sync", "argo.apps.sync"}, []string{"queued", "running"}, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -2800,7 +2813,7 @@ func (s *Server) enqueueProjectVersionRefreshOperationsTx(ctx context.Context, t
 				"repo_key":           step["repo_key"],
 				"tag":                step["tag_name"],
 			}
-			op, err := enqueueOperationTx(ctx, tx, projectID, remoteID, "git.refs.refresh", "refresh Git refs for project version "+fmt.Sprint(version["version"]), input, []string{"git"}, "")
+			op, err := enqueueOperationGorm(ctx, tx, projectID, remoteID, "git.refs.refresh", "refresh Git refs for project version "+fmt.Sprint(version["version"]), input, []string{"git"}, "")
 			if err != nil {
 				return nil, err
 			}
@@ -2811,7 +2824,7 @@ func (s *Server) enqueueProjectVersionRefreshOperationsTx(ctx context.Context, t
 			if remoteID == "" || remoteID == "<nil>" || enqueuedKeys[key] {
 				continue
 			}
-			op, err := s.enqueueRemoteOperationRun(ctx, tx, remoteID, "github.actions.sync", map[string]any{
+			op, err := s.enqueueRemoteOperationRunGorm(ctx, tx, remoteID, "github.actions.sync", map[string]any{
 				"project_version_id": versionID,
 				"refresh_kind":       kind,
 			}, actorID)
@@ -2827,7 +2840,7 @@ func (s *Server) enqueueProjectVersionRefreshOperationsTx(ctx context.Context, t
 				if connectionID == "" || connectionID == "<nil>" || enqueuedKeys[key] {
 					continue
 				}
-				op, err := enqueueOperationTx(ctx, tx, projectID, "", "argo.apps.sync", "refresh Argo apps for project version "+fmt.Sprint(version["version"]), map[string]any{
+				op, err := enqueueOperationGorm(ctx, tx, projectID, "", "argo.apps.sync", "refresh Argo apps for project version "+fmt.Sprint(version["version"]), map[string]any{
 					"project_version_id": versionID,
 					"refresh_kind":       kind,
 					"argo_connection_id": connectionID,
@@ -2866,19 +2879,13 @@ func (s *Server) enqueueProjectVersionRefreshOperationsTx(ctx context.Context, t
 	}, nil
 }
 
-func (s *Server) enqueueProjectVersionValidationRerunTx(ctx context.Context, tx *sqlx.Tx, version map[string]any, actorID string) (map[string]any, error) {
+func (s *Server) enqueueProjectVersionValidationRerunGorm(ctx context.Context, tx *gorm.DB, version map[string]any, actorID string) (map[string]any, error) {
 	projectID := strings.TrimSpace(fmt.Sprint(version["project_id"]))
 	versionID := strings.TrimSpace(fmt.Sprint(version["id"]))
 	if projectID == "" || projectID == "<nil>" || versionID == "" || versionID == "<nil>" {
 		return nil, fmt.Errorf("project version metadata is incomplete")
 	}
-	existing, err := queryMaps(ctx, tx, `
-		SELECT id
-		FROM operation_runs
-		WHERE status IN ('queued', 'running')
-			AND operation_type='project_version.validation_rerun'
-			AND input->>'project_version_id'=$1
-		LIMIT 1`, versionID)
+	existing, err := projectVersionOperationRunsGorm(ctx, tx, versionID, []string{"project_version.validation_rerun"}, []string{"queued", "running"}, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -2897,7 +2904,7 @@ func (s *Server) enqueueProjectVersionValidationRerunTx(ctx context.Context, tx 
 		"raw_provider_response_recorded": false,
 		"actor_user_id":                  actorID,
 	}
-	op, err := enqueueOperationTx(ctx, tx, projectID, "", "project_version.validation_rerun", "rerun validation for project version "+fmt.Sprint(version["version"]), input, []string{"validation"}, "control-worker")
+	op, err := enqueueOperationGorm(ctx, tx, projectID, "", "project_version.validation_rerun", "rerun validation for project version "+fmt.Sprint(version["version"]), input, []string{"validation"}, "control-worker")
 	if err != nil {
 		return nil, err
 	}
@@ -2941,32 +2948,34 @@ func sanitizedProjectVersionRefreshStep(step map[string]any) map[string]any {
 	}
 }
 
-func queryProjectVersionRefreshOperations(ctx context.Context, db sqlx.ExtContext, versionID string) ([]map[string]any, error) {
+func projectVersionOperationRunsGorm(ctx context.Context, db *gorm.DB, versionID string, operationTypes, statuses []string, limit int) ([]map[string]any, error) {
 	versionID = strings.TrimSpace(versionID)
 	if versionID == "" || versionID == "<nil>" {
 		return nil, nil
 	}
-	return queryMaps(ctx, db, `
-		SELECT id, operation_type, status, error, input, started_at, finished_at, created_at, updated_at
-		FROM operation_runs
-		WHERE input->>'project_version_id'=$1
-			AND operation_type IN ('git.refs.refresh', 'github.actions.sync', 'argo.apps.sync')
-		ORDER BY created_at DESC
-		LIMIT 50`, versionID)
-}
-
-func queryProjectVersionValidationRerunOperations(ctx context.Context, db sqlx.ExtContext, versionID string) ([]map[string]any, error) {
-	versionID = strings.TrimSpace(versionID)
-	if versionID == "" || versionID == "<nil>" {
-		return nil, nil
+	var operations []GormOperationRun
+	query := db.WithContext(ctx).Where(map[string]any{"operation_type": operationTypes}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}, Desc: true}}})
+	if len(statuses) > 0 {
+		query = query.Where(map[string]any{"status": statuses})
 	}
-	return queryMaps(ctx, db, `
-		SELECT id, operation_type, status, error, input, result, started_at, finished_at, created_at, updated_at
-		FROM operation_runs
-		WHERE input->>'project_version_id'=$1
-			AND operation_type='project_version.validation_rerun'
-		ORDER BY created_at DESC
-		LIMIT 20`, versionID)
+	if limit > 0 {
+		query = query.Limit(limit * 5)
+	}
+	if err := query.Find(&operations).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(operations))
+	for _, operation := range operations {
+		input := mapFromAny(operation.Input.Data)
+		if strings.TrimSpace(fmt.Sprint(input["project_version_id"])) != versionID {
+			continue
+		}
+		items = append(items, operationRunGormMap(operation))
+		if limit > 0 && len(items) >= limit {
+			break
+		}
+	}
+	return items, nil
 }
 
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
@@ -2989,27 +2998,12 @@ func (s *Server) writeAssets(w http.ResponseWriter, r *http.Request, projectID s
 	if projectID != "" && !s.requireProjectPolicy(w, r, PolicyResource{Type: "asset", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, assetInventorySQL()+`
-		SELECT *
-		FROM asset_inventory
-		WHERE ($1='' OR project_id=$1)
-			AND ($2='' OR asset_type=$2)
-			AND ($5='' OR name ILIKE $5 ESCAPE '\' OR display_name ILIKE $5 ESCAPE '\' OR external_id ILIKE $5 ESCAPE '\' OR source_table ILIKE $5 ESCAPE '\')
-			AND (
-				$3 OR project_id='' OR EXISTS (
-					SELECT 1 FROM project_members pm
-					WHERE pm.project_id::text=asset_inventory.project_id AND pm.user_id=$4
-				)
-			)
-		ORDER BY updated_at DESC, name
-		LIMIT 500`,
-		projectID,
-		r.URL.Query().Get("asset_type"),
-		userCanReadAllProjects(user),
-		userIDOrNil(user),
-		likeContains(r.URL.Query().Get("q")),
-	)
-	writeQueryResult(w, items, err)
+	assets, err := s.visibleAssetsGorm(r.Context(), user, projectID, r.URL.Query().Get("asset_type"), r.URL.Query().Get("q"), 500)
+	if err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	writeQueryResult(w, assetMaps(assets), nil)
 }
 
 func (s *Server) listAssetGraph(w http.ResponseWriter, r *http.Request) {
@@ -3020,86 +3014,22 @@ func (s *Server) listAssetGraph(w http.ResponseWriter, r *http.Request) {
 	if projectID != "" && !s.requireProjectPolicy(w, r, PolicyResource{Type: "asset", ProjectID: projectID}, "read") {
 		return
 	}
-	user := currentUser(r)
 	limit := assetGraphLimit(r.URL.Query().Get("limit"))
-	nodes, err := queryMaps(r.Context(), s.store.DB, assetGraphNodesSQL(), projectID, r.URL.Query().Get("asset_type"), userCanReadAllProjects(user), userIDOrNil(user), likeContains(r.URL.Query().Get("q")), limit+1)
+	nodeAssets, err := s.visibleAssetsGorm(r.Context(), currentUser(r), projectID, r.URL.Query().Get("asset_type"), r.URL.Query().Get("q"), limit+1)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load asset graph nodes")
+		return
+	}
+	nodes, edges, err := s.assetGraphFromModels(r.Context(), nodeAssets, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load asset graph edges")
 		return
 	}
 	truncated := len(nodes) > limit
 	if truncated {
 		nodes = nodes[:limit]
 	}
-	ids := make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		ids = append(ids, fmt.Sprint(node["id"]))
-	}
-	edges := []map[string]any{}
-	if len(ids) > 0 {
-		edges, err = queryMaps(r.Context(), s.store.DB, assetRelationInventorySQL()+`
-			SELECT *
-			FROM asset_relation_inventory
-			WHERE from_asset_id = ANY($1)
-				AND to_asset_id = ANY($1)
-			ORDER BY relation_type, from_asset_id, to_asset_id
-			LIMIT 500`, pq.Array(ids))
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not load asset graph edges")
-			return
-		}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes, "edges": edges, "truncated": truncated})
-}
-
-func assetGraphNodesSQL() string {
-	return combinedAssetInventoryRelationSQL() + `,
-		relation_degree_endpoints AS (
-			SELECT from_asset_id AS asset_id, count(*)::int AS outgoing_relation_count, 0::int AS incoming_relation_count
-			FROM asset_relation_inventory
-			GROUP BY from_asset_id
-			UNION ALL
-			SELECT to_asset_id AS asset_id, 0::int AS outgoing_relation_count, count(*)::int AS incoming_relation_count
-			FROM asset_relation_inventory
-			GROUP BY to_asset_id
-		),
-		relation_degrees AS (
-			SELECT
-				asset_id,
-				sum(outgoing_relation_count)::int AS outgoing_relation_count,
-				sum(incoming_relation_count)::int AS incoming_relation_count,
-				(sum(outgoing_relation_count) + sum(incoming_relation_count))::int AS relation_count
-			FROM relation_degree_endpoints
-			GROUP BY asset_id
-		),
-		ranked_asset_inventory AS (
-			SELECT
-				ai.*,
-				COALESCE(rd.outgoing_relation_count, 0)::int AS outgoing_relation_count,
-				COALESCE(rd.incoming_relation_count, 0)::int AS incoming_relation_count,
-				COALESCE(rd.relation_count, 0)::int AS relation_count,
-				CASE
-					WHEN ai.risk_level='high' THEN 300
-					WHEN ai.risk_level='warning' THEN 200
-					WHEN ai.risk_level='normal' THEN 100
-					ELSE 0
-				END + LEAST(COALESCE(rd.relation_count, 0), 99)::int AS graph_rank
-			FROM asset_inventory ai
-			LEFT JOIN relation_degrees rd ON rd.asset_id=ai.id
-		)
-		SELECT *
-		FROM ranked_asset_inventory
-		WHERE ($1='' OR project_id=$1)
-			AND ($2='' OR asset_type=$2)
-			AND ($5='' OR name ILIKE $5 ESCAPE '\' OR display_name ILIKE $5 ESCAPE '\' OR external_id ILIKE $5 ESCAPE '\' OR source_table ILIKE $5 ESCAPE '\')
-			AND (
-				$3 OR project_id='' OR EXISTS (
-					SELECT 1 FROM project_members pm
-					WHERE pm.project_id::text=ranked_asset_inventory.project_id AND pm.user_id=$4
-				)
-			)
-		ORDER BY graph_rank DESC, relation_count DESC, updated_at DESC, project_id NULLS FIRST, asset_type, name
-		LIMIT $6`
 }
 
 func assetGraphLimit(raw string) int {
@@ -3120,13 +3050,12 @@ func (s *Server) listAssetGraphViews(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "asset"}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, user_id, name, filters, created_at, updated_at
-		FROM asset_graph_views
-		WHERE user_id=$1
-		ORDER BY updated_at DESC, name
-		LIMIT 200`, userIDOrNil(currentUser(r)))
-	writeQueryResult(w, items, err)
+	var views []GormAssetGraphView
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormAssetGraphView{UserID: currentUser(r).ID}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "updated_at"}, Desc: true}, {Column: clause.Column{Name: "name"}}}}).Limit(200).Find(&views).Error; err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	writeQueryResult(w, assetGraphViewMaps(views), nil)
 }
 
 func (s *Server) createAssetGraphView(w http.ResponseWriter, r *http.Request) {
@@ -3154,20 +3083,8 @@ func (s *Server) createAssetGraphView(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	payload, err := jsonParam(filters)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid filters")
-		return
-	}
-	item, err := queryOne(r.Context(), s.store.DB, `
-		INSERT INTO asset_graph_views(user_id, name, filters)
-		VALUES ($1, $2, $3::jsonb)
-		RETURNING id, user_id, name, filters, created_at, updated_at`,
-		userIDOrNil(currentUser(r)),
-		name,
-		payload,
-	)
-	if err != nil {
+	view := GormAssetGraphView{UserID: currentUser(r).ID, Name: name, Filters: JSONValue{Data: filters}}
+	if err := s.store.Gorm.WithContext(r.Context()).Create(&view).Error; err != nil {
 		if isUniqueViolation(err, "asset_graph_views_user_id_name_key") {
 			writeError(w, http.StatusBadRequest, "an asset graph view with this name already exists")
 			return
@@ -3175,7 +3092,7 @@ func (s *Server) createAssetGraphView(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "could not create asset graph view")
 		return
 	}
-	writeJSON(w, http.StatusCreated, item)
+	writeJSON(w, http.StatusCreated, assetGraphViewMap(view))
 }
 
 func (s *Server) updateAssetGraphView(w http.ResponseWriter, r *http.Request) {
@@ -3198,42 +3115,38 @@ func (s *Server) updateAssetGraphView(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is too long")
 		return
 	}
-	var payload any
+	var filters map[string]any
+	filtersProvided := false
 	if len(req.Filters) > 0 && string(req.Filters) != "null" {
 		var raw map[string]any
 		if err := json.Unmarshal(req.Filters, &raw); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid filters")
 			return
 		}
-		filters, err := sanitizeAssetGraphViewFilters(raw)
+		sanitized, err := sanitizeAssetGraphViewFilters(raw)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		encoded, err := jsonParam(filters)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid filters")
+		filtersProvided = true
+		filters = sanitized
+	}
+	var view GormAssetGraphView
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormAssetGraphView{GormBase: GormBase{ID: chi.URLParam(r, "id")}, UserID: currentUser(r).ID}).First(&view).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
-		payload = encoded
-	}
-	item, err := queryOne(r.Context(), s.store.DB, `
-		UPDATE asset_graph_views
-		SET name=COALESCE(NULLIF($3, ''), name),
-			filters=COALESCE($4::jsonb, filters),
-			updated_at=now()
-		WHERE id=$1 AND user_id=$2
-		RETURNING id, user_id, name, filters, created_at, updated_at`,
-		chi.URLParam(r, "id"),
-		userIDOrNil(currentUser(r)),
-		name,
-		payload,
-	)
-	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not found")
+		writeError(w, http.StatusBadRequest, "could not update asset graph view")
 		return
 	}
-	if err != nil {
+	if name != "" {
+		view.Name = name
+	}
+	if filtersProvided {
+		view.Filters = JSONValue{Data: filters}
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Save(&view).Error; err != nil {
 		if isUniqueViolation(err, "asset_graph_views_user_id_name_key") {
 			writeError(w, http.StatusBadRequest, "an asset graph view with this name already exists")
 			return
@@ -3241,29 +3154,19 @@ func (s *Server) updateAssetGraphView(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "could not update asset graph view")
 		return
 	}
-	writeJSON(w, http.StatusOK, item)
+	writeJSON(w, http.StatusOK, assetGraphViewMap(view))
 }
 
 func (s *Server) deleteAssetGraphView(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "asset"}, "read") {
 		return
 	}
-	result, err := s.store.DB.ExecContext(r.Context(), `
-		DELETE FROM asset_graph_views
-		WHERE id=$1 AND user_id=$2`,
-		chi.URLParam(r, "id"),
-		userIDOrNil(currentUser(r)),
-	)
-	if err != nil {
+	result := s.store.Gorm.WithContext(r.Context()).Where(&GormAssetGraphView{GormBase: GormBase{ID: chi.URLParam(r, "id")}, UserID: currentUser(r).ID}).Delete(&GormAssetGraphView{})
+	if result.Error != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete asset graph view")
 		return
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not delete asset graph view")
-		return
-	}
-	if count == 0 {
+	if result.RowsAffected == 0 {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
@@ -3275,25 +3178,12 @@ func (s *Server) listAssetRelations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := currentUser(r)
-	items, err := queryMaps(r.Context(), s.store.DB, assetRelationInventorySQL()+`
-		SELECT *
-		FROM asset_relation_inventory
-		WHERE ($1='' OR from_asset_id=$1 OR to_asset_id=$1)
-			AND ($2='' OR project_id=$2)
-			AND (
-				$3 OR project_id='' OR EXISTS (
-					SELECT 1 FROM project_members pm
-					WHERE pm.project_id::text=asset_relation_inventory.project_id AND pm.user_id=$4
-				)
-			)
-		ORDER BY relation_type, from_asset_id, to_asset_id
-		LIMIT 500`,
-		chi.URLParam(r, "id"),
-		r.URL.Query().Get("project_id"),
-		userCanReadAllProjects(user),
-		userIDOrNil(user),
-	)
-	writeQueryResult(w, items, err)
+	relations, err := s.visibleAssetRelationsGorm(r.Context(), user, chi.URLParam(r, "id"), r.URL.Query().Get("project_id"), 500)
+	if err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	writeQueryResult(w, assetRelationMaps(relations), nil)
 }
 
 func (s *Server) listAssetStatusSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -3301,25 +3191,21 @@ func (s *Server) listAssetStatusSnapshots(w http.ResponseWriter, r *http.Request
 		return
 	}
 	assetID := chi.URLParam(r, "id")
-	asset, err := queryOne(r.Context(), s.store.DB, `
-		SELECT id, project_id
-		FROM assets
-		WHERE id=$1`, assetID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var asset GormAsset
+	if err := s.store.Gorm.WithContext(r.Context()).First(&asset, &GormAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := strings.TrimSpace(fmt.Sprint(asset["project_id"]))
+	projectID := cleanOptionalID(asset.ProjectID.String)
 	if projectID != "" && projectID != "<nil>" && !s.requireProjectPolicy(w, r, PolicyResource{Type: "asset", ID: assetID, ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, asset_id, status, health, summary, raw, collected_at
-		FROM asset_status_snapshots
-		WHERE asset_id=$1
-		ORDER BY collected_at DESC, id DESC
-		LIMIT 50`, assetID)
-	writeQueryResult(w, items, err)
+	var snapshots []GormAssetStatusSnapshot
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormAssetStatusSnapshot{AssetID: assetID}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "collected_at"}, Desc: true}, {Column: clause.Column{Name: "id"}, Desc: true}}}).Limit(50).Find(&snapshots).Error; err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	writeQueryResult(w, assetStatusSnapshotMaps(snapshots), nil)
 }
 
 func (s *Server) createAssetRelation(w http.ResponseWriter, r *http.Request) {
@@ -3346,21 +3232,16 @@ func (s *Server) createAssetRelation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "from_asset_id and to_asset_id must differ")
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not create asset relation")
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync canonical assets")
 		return
 	}
-	defer tx.Rollback()
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.create") {
-		return
-	}
-	fromAsset, err := canonicalAssetForRelation(r.Context(), tx, req.FromAssetID)
+	fromAsset, err := canonicalAssetForRelationGorm(r.Context(), s.store.Gorm, req.FromAssetID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	toAsset, err := canonicalAssetForRelation(r.Context(), tx, req.ToAssetID)
+	toAsset, err := canonicalAssetForRelationGorm(r.Context(), s.store.Gorm, req.ToAssetID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -3379,98 +3260,412 @@ func (s *Server) createAssetRelation(w http.ResponseWriter, r *http.Request) {
 	}
 	metadata["source"] = "manual"
 	metadata["created_by"] = userIDOrNil(currentUser(r))
-	payload, err := jsonParam(metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid metadata")
-		return
-	}
-	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO asset_relations(project_id, from_asset_id, to_asset_id, relation_type, metadata)
-		VALUES ($1, $2, $3, $4, $5::jsonb)
-		ON CONFLICT (from_asset_id, to_asset_id, relation_type)
-		DO UPDATE SET metadata=asset_relations.metadata || EXCLUDED.metadata
-		RETURNING *`,
-		projectID,
-		fromAsset["id"],
-		toAsset["id"],
-		req.RelationType,
-		payload,
-	)
-	if err != nil {
+	var item map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var relation GormAssetRelation
+		err := tx.Where(&GormAssetRelation{FromAssetID: cleanOptionalID(fmt.Sprint(fromAsset["id"])), ToAssetID: cleanOptionalID(fmt.Sprint(toAsset["id"])), RelationType: req.RelationType}).First(&relation).Error
+		if err != nil && !errorsIsRecordNotFound(err) {
+			return err
+		}
+		merged := metadata
+		if !errorsIsRecordNotFound(err) {
+			merged = mapFromAny(relation.Metadata.Data)
+			for key, value := range metadata {
+				merged[key] = value
+			}
+		}
+		relation.ProjectID = validNullString(projectID)
+		relation.FromAssetID = cleanOptionalID(fmt.Sprint(fromAsset["id"]))
+		relation.ToAssetID = cleanOptionalID(fmt.Sprint(toAsset["id"]))
+		relation.RelationType = req.RelationType
+		relation.Metadata = JSONValue{Data: merged}
+		if err := tx.Save(&relation).Error; err != nil {
+			return err
+		}
+		item = assetRelationMap(relation)
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
 		writeError(w, http.StatusBadRequest, "could not create asset relation")
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit asset relation")
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
 }
 
-func canonicalAssetForRelation(ctx context.Context, db sqlx.ExtContext, assetID string) (map[string]any, error) {
+func canonicalAssetForRelationGorm(ctx context.Context, db *gorm.DB, assetID string) (map[string]any, error) {
 	assetID = strings.TrimSpace(assetID)
 	if assetID == "" {
 		return nil, ErrNotFound
 	}
-	if item, err := queryOne(ctx, db, "SELECT * FROM assets WHERE id::text=$1", assetID); err == nil {
-		return item, nil
-	} else if !errors.Is(err, ErrNotFound) {
+	var asset GormAsset
+	if err := db.WithContext(ctx).First(&asset, &GormAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+		return nil, gormNotFoundAsErrNotFound(err)
+	}
+	return assetMap(asset), nil
+}
+
+func assetMap(asset GormAsset) map[string]any {
+	return map[string]any{
+		"id":            asset.ID,
+		"project_id":    nullableStringValue(asset.ProjectID),
+		"asset_type":    asset.AssetType,
+		"source_table":  asset.SourceTable,
+		"source_id":     nullableStringValue(asset.SourceID),
+		"name":          asset.Name,
+		"display_name":  asset.DisplayName,
+		"description":   asset.Description,
+		"source":        asset.Source,
+		"external_id":   asset.ExternalID,
+		"status":        asset.Status,
+		"risk_level":    asset.RiskLevel,
+		"owner_user_id": nullableStringValue(asset.OwnerUserID),
+		"metadata":      mapFromAny(asset.Metadata.Data),
+		"created_at":    asset.CreatedAt,
+		"updated_at":    asset.UpdatedAt,
+	}
+}
+
+func assetMaps(assets []GormAsset) []map[string]any {
+	items := make([]map[string]any, 0, len(assets))
+	for _, asset := range assets {
+		items = append(items, assetMap(asset))
+	}
+	return items
+}
+
+func (s *Server) visibleAssetsGorm(ctx context.Context, user *User, projectID, assetType, queryText string, limit int) ([]GormAsset, error) {
+	allowedProjects, err := s.projectMembershipSetGorm(ctx, user)
+	if err != nil {
 		return nil, err
 	}
-	return queryOne(ctx, db, assetInventorySQL()+`
-		SELECT a.*
-		FROM asset_inventory ai
-		JOIN assets a ON a.source_table=ai.source_table
-			AND a.source_id::text=ai.source_id
-			AND a.asset_type=ai.asset_type
-		WHERE ai.id=$1
-		LIMIT 1`, assetID)
+	projectID = cleanOptionalID(projectID)
+	assetType = strings.TrimSpace(assetType)
+	queryText = strings.ToLower(strings.TrimSpace(queryText))
+	var assets []GormAsset
+	if err := s.store.Gorm.WithContext(ctx).Find(&assets).Error; err != nil {
+		return nil, err
+	}
+	filtered := make([]GormAsset, 0, len(assets))
+	for _, asset := range assets {
+		assetProjectID := cleanOptionalID(asset.ProjectID.String)
+		if projectID != "" && assetProjectID != projectID {
+			continue
+		}
+		if assetType != "" && asset.AssetType != assetType {
+			continue
+		}
+		if queryText != "" && !assetMatchesQuery(asset, queryText) {
+			continue
+		}
+		if !userCanReadAllProjects(user) && assetProjectID != "" && !allowedProjects[assetProjectID] {
+			continue
+		}
+		filtered = append(filtered, asset)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if !filtered[i].UpdatedAt.Equal(filtered[j].UpdatedAt) {
+			return filtered[i].UpdatedAt.After(filtered[j].UpdatedAt)
+		}
+		return filtered[i].Name < filtered[j].Name
+	})
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered, nil
+}
+
+func (s *Server) visibleAssetRelationsGorm(ctx context.Context, user *User, assetID, projectID string, limit int) ([]GormAssetRelation, error) {
+	allowedProjects, err := s.projectMembershipSetGorm(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	assetID = cleanOptionalID(assetID)
+	projectID = cleanOptionalID(projectID)
+	var relations []GormAssetRelation
+	if err := s.store.Gorm.WithContext(ctx).Find(&relations).Error; err != nil {
+		return nil, err
+	}
+	filtered := make([]GormAssetRelation, 0, len(relations))
+	for _, relation := range relations {
+		relationProjectID := cleanOptionalID(relation.ProjectID.String)
+		if assetID != "" && relation.FromAssetID != assetID && relation.ToAssetID != assetID {
+			continue
+		}
+		if projectID != "" && relationProjectID != projectID {
+			continue
+		}
+		if !userCanReadAllProjects(user) && relationProjectID != "" && !allowedProjects[relationProjectID] {
+			continue
+		}
+		filtered = append(filtered, relation)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].RelationType != filtered[j].RelationType {
+			return filtered[i].RelationType < filtered[j].RelationType
+		}
+		if filtered[i].FromAssetID != filtered[j].FromAssetID {
+			return filtered[i].FromAssetID < filtered[j].FromAssetID
+		}
+		return filtered[i].ToAssetID < filtered[j].ToAssetID
+	})
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered, nil
+}
+
+func (s *Server) assetGraphFromModels(ctx context.Context, assets []GormAsset, limit int) ([]map[string]any, []map[string]any, error) {
+	assetIDs := make(map[string]bool, len(assets))
+	for _, asset := range assets {
+		assetIDs[asset.ID] = true
+	}
+	var relations []GormAssetRelation
+	if len(assetIDs) > 0 {
+		if err := s.store.Gorm.WithContext(ctx).Find(&relations).Error; err != nil {
+			return nil, nil, err
+		}
+	}
+	outgoing := map[string]int{}
+	incoming := map[string]int{}
+	edges := make([]map[string]any, 0, len(relations))
+	for _, relation := range relations {
+		if !assetIDs[relation.FromAssetID] || !assetIDs[relation.ToAssetID] {
+			continue
+		}
+		outgoing[relation.FromAssetID]++
+		incoming[relation.ToAssetID]++
+		edges = append(edges, assetRelationMap(relation))
+		if len(edges) >= 500 {
+			break
+		}
+	}
+	nodes := make([]map[string]any, 0, len(assets))
+	for _, asset := range assets {
+		node := assetMap(asset)
+		relationCount := outgoing[asset.ID] + incoming[asset.ID]
+		node["outgoing_relation_count"] = outgoing[asset.ID]
+		node["incoming_relation_count"] = incoming[asset.ID]
+		node["relation_count"] = relationCount
+		node["graph_rank"] = assetRiskRank(asset.RiskLevel) + minInt(relationCount, 99)
+		nodes = append(nodes, node)
+	}
+	sort.SliceStable(nodes, func(i, j int) bool {
+		if intFromAny(nodes[i]["graph_rank"], 0) != intFromAny(nodes[j]["graph_rank"], 0) {
+			return intFromAny(nodes[i]["graph_rank"], 0) > intFromAny(nodes[j]["graph_rank"], 0)
+		}
+		if intFromAny(nodes[i]["relation_count"], 0) != intFromAny(nodes[j]["relation_count"], 0) {
+			return intFromAny(nodes[i]["relation_count"], 0) > intFromAny(nodes[j]["relation_count"], 0)
+		}
+		return projectVersionTimeFromAny(nodes[i]["updated_at"]).After(projectVersionTimeFromAny(nodes[j]["updated_at"]))
+	})
+	if limit > 0 && len(nodes) > limit+1 {
+		nodes = nodes[:limit+1]
+	}
+	return nodes, edges, nil
+}
+
+func (s *Server) assetDependencyPathsGorm(ctx context.Context, user *User, assetID, projectID, direction string, maxDepth, limit int) ([]map[string]any, error) {
+	relations, err := s.visibleAssetRelationsGorm(ctx, user, "", projectID, 0)
+	if err != nil {
+		return nil, err
+	}
+	startAssetID := cleanOptionalID(assetID)
+	if startAssetID == "" {
+		return []map[string]any{}, nil
+	}
+	startField := func(relation GormAssetRelation) string { return relation.FromAssetID }
+	nextField := func(relation GormAssetRelation) string { return relation.ToAssetID }
+	if direction == "upstream" {
+		startField = func(relation GormAssetRelation) string { return relation.ToAssetID }
+		nextField = func(relation GormAssetRelation) string { return relation.FromAssetID }
+	}
+	byStart := map[string][]GormAssetRelation{}
+	for _, relation := range relations {
+		byStart[startField(relation)] = append(byStart[startField(relation)], relation)
+	}
+	type pathState struct {
+		relation GormAssetRelation
+		depth    int
+		current  string
+		assets   []string
+		text     string
+	}
+	queue := []pathState{}
+	for _, relation := range byStart[startAssetID] {
+		next := nextField(relation)
+		queue = append(queue, pathState{relation: relation, depth: 1, current: next, assets: []string{relation.FromAssetID, relation.ToAssetID}, text: assetRelationPathText(relation)})
+	}
+	items := []map[string]any{}
+	for len(queue) > 0 && (limit <= 0 || len(items) < limit) {
+		state := queue[0]
+		queue = queue[1:]
+		items = append(items, map[string]any{
+			"id":               state.relation.ID,
+			"project_id":       nullableStringValue(state.relation.ProjectID),
+			"from_asset_id":    state.relation.FromAssetID,
+			"to_asset_id":      state.relation.ToAssetID,
+			"relation_type":    state.relation.RelationType,
+			"depth":            state.depth,
+			"path_assets":      append([]string(nil), state.assets...),
+			"current_asset_id": state.current,
+			"path_text":        state.text,
+			"created_at":       state.relation.CreatedAt,
+			"metadata":         mapFromAny(state.relation.Metadata.Data),
+		})
+		if state.depth >= maxDepth {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, id := range state.assets {
+			seen[id] = true
+		}
+		for _, relation := range byStart[state.current] {
+			next := nextField(relation)
+			if seen[next] {
+				continue
+			}
+			nextAssets := append(append([]string(nil), state.assets...), next)
+			queue = append(queue, pathState{relation: relation, depth: state.depth + 1, current: next, assets: nextAssets, text: state.text + " | " + assetRelationPathText(relation)})
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if intFromAny(items[i]["depth"], 0) != intFromAny(items[j]["depth"], 0) {
+			return intFromAny(items[i]["depth"], 0) < intFromAny(items[j]["depth"], 0)
+		}
+		return fmt.Sprint(items[i]["path_text"]) < fmt.Sprint(items[j]["path_text"])
+	})
+	return items, nil
+}
+
+func assetRelationPathText(relation GormAssetRelation) string {
+	return relation.FromAssetID + " --" + relation.RelationType + "--> " + relation.ToAssetID
+}
+
+func (s *Server) projectMembershipSetGorm(ctx context.Context, user *User) (map[string]bool, error) {
+	items := map[string]bool{}
+	if userCanReadAllProjects(user) || user == nil {
+		return items, nil
+	}
+	var memberships []GormProjectMember
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormProjectMember{UserID: user.ID}).Find(&memberships).Error; err != nil {
+		return nil, err
+	}
+	for _, membership := range memberships {
+		items[membership.ProjectID] = true
+	}
+	return items, nil
+}
+
+func assetMatchesQuery(asset GormAsset, queryText string) bool {
+	if queryText == "" {
+		return true
+	}
+	for _, value := range []string{asset.Name, asset.DisplayName, asset.ExternalID, asset.SourceTable} {
+		if strings.Contains(strings.ToLower(value), queryText) {
+			return true
+		}
+	}
+	return false
+}
+
+func assetRiskRank(riskLevel string) int {
+	switch riskLevel {
+	case "high":
+		return 300
+	case "warning":
+		return 200
+	case "normal":
+		return 100
+	default:
+		return 0
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func assetGraphViewMap(view GormAssetGraphView) map[string]any {
+	return map[string]any{"id": view.ID, "user_id": view.UserID, "name": view.Name, "filters": mapFromAny(view.Filters.Data), "created_at": view.CreatedAt, "updated_at": view.UpdatedAt}
+}
+
+func assetGraphViewMaps(views []GormAssetGraphView) []map[string]any {
+	items := make([]map[string]any, 0, len(views))
+	for _, view := range views {
+		items = append(items, assetGraphViewMap(view))
+	}
+	return items
+}
+
+func assetStatusSnapshotMap(snapshot GormAssetStatusSnapshot) map[string]any {
+	return map[string]any{"id": snapshot.ID, "asset_id": snapshot.AssetID, "status": snapshot.Status, "health": snapshot.Health, "summary": snapshot.Summary, "raw": mapFromAny(snapshot.Raw.Data), "collected_at": snapshot.CollectedAt}
+}
+
+func assetStatusSnapshotMaps(snapshots []GormAssetStatusSnapshot) []map[string]any {
+	items := make([]map[string]any, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		items = append(items, assetStatusSnapshotMap(snapshot))
+	}
+	return items
+}
+
+func assetRelationMap(relation GormAssetRelation) map[string]any {
+	return map[string]any{"id": relation.ID, "project_id": nullableStringValue(relation.ProjectID), "from_asset_id": relation.FromAssetID, "to_asset_id": relation.ToAssetID, "relation_type": relation.RelationType, "metadata": mapFromAny(relation.Metadata.Data), "created_at": relation.CreatedAt}
+}
+
+func assetRelationMaps(relations []GormAssetRelation) []map[string]any {
+	items := make([]map[string]any, 0, len(relations))
+	for _, relation := range relations {
+		items = append(items, assetRelationMap(relation))
+	}
+	return items
 }
 
 func (s *Server) deleteAssetRelation(w http.ResponseWriter, r *http.Request) {
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not delete asset relation")
+	relationID := chi.URLParam(r, "id")
+	var relation GormAssetRelation
+	if err := s.store.Gorm.WithContext(r.Context()).First(&relation, &GormAssetRelation{ID: relationID}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	defer tx.Rollback()
-	relation, err := queryOne(r.Context(), tx, "SELECT * FROM asset_relations WHERE id=$1 FOR UPDATE", chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	projectID := cleanOptionalID(fmt.Sprint(relation["project_id"]))
+	projectID := cleanOptionalID(relation.ProjectID.String)
 	if projectID == "" {
 		writeError(w, http.StatusBadRequest, "asset relation has no project")
 		return
 	}
-	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "asset_relation", ID: chi.URLParam(r, "id"), ProjectID: projectID}, "update") {
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "asset_relation", ID: relationID, ProjectID: projectID}, "update") {
 		return
 	}
-	metadata := mapFromAny(relation["metadata"])
-	if stringFromMap(metadata, "source") != "manual" {
+	if stringFromMap(mapFromAny(relation.Metadata.Data), "source") != "manual" {
 		writeError(w, http.StatusConflict, "only manual asset relations can be deleted")
 		return
 	}
-	result, err := tx.ExecContext(r.Context(), "DELETE FROM asset_relations WHERE id=$1", chi.URLParam(r, "id"))
-	if err != nil {
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var locked GormAssetRelation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, &GormAssetRelation{ID: relationID}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		if stringFromMap(mapFromAny(locked.Metadata.Data), "source") != "manual" {
+			return errAssetRelationNotManual
+		}
+		if err := tx.Delete(&locked).Error; err != nil {
+			return err
+		}
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		if errors.Is(err, errAssetRelationNotManual) {
+			writeError(w, http.StatusConflict, "only manual asset relations can be deleted")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete asset relation")
-		return
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not delete asset relation")
-		return
-	}
-	if count == 0 {
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "asset_relation.delete") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit asset relation delete")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -3521,23 +3716,7 @@ func (s *Server) listAssetDependencies(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "depth must be between 1 and 8")
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, assetDependencySQL(direction)+`
-		SELECT *
-		FROM asset_dependency_paths
-		WHERE (
-			$4 OR project_id='' OR EXISTS (
-				SELECT 1 FROM project_members pm
-				WHERE pm.project_id::text=asset_dependency_paths.project_id AND pm.user_id=$5
-			)
-		)
-		ORDER BY depth, path_text
-		LIMIT 501`,
-		chi.URLParam(r, "id"),
-		r.URL.Query().Get("project_id"),
-		depth,
-		userCanReadAllProjects(user),
-		userIDOrNil(user),
-	)
+	items, err := s.assetDependencyPathsGorm(r.Context(), user, chi.URLParam(r, "id"), r.URL.Query().Get("project_id"), direction, depth, 501)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -3578,37 +3757,25 @@ func (s *Server) createGitRepository(w http.ResponseWriter, r *http.Request) {
 	if req.Status == "" {
 		req.Status = "active"
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start git repository transaction")
-		return
+	repo := GormProjectGitRepository{
+		ProjectID:     projectID,
+		Name:          req.Name,
+		RepoKey:       req.RepoKey,
+		DisplayName:   req.DisplayName,
+		RepoRole:      req.RepoRole,
+		Status:        req.Status,
+		Description:   req.Description,
+		DefaultBranch: req.DefaultBranch,
 	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO project_git_repositories(project_id, name, repo_key, display_name, repo_role, status, description, default_branch)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING *`,
-		projectID,
-		req.Name,
-		req.RepoKey,
-		req.DisplayName,
-		req.RepoRole,
-		req.Status,
-		req.Description,
-		req.DefaultBranch,
-	)
-	if err != nil {
+	if err := s.store.Gorm.WithContext(r.Context()).Create(&repo).Error; err != nil {
 		writeError(w, http.StatusBadRequest, "could not create resource")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "git_repository.create") {
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync git repository asset")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit git repository")
-		return
-	}
-	writeJSON(w, http.StatusCreated, item)
+	writeJSON(w, http.StatusCreated, gitRepositoryMap(repo))
 }
 
 func (s *Server) listGitRepositories(w http.ResponseWriter, r *http.Request) {
@@ -3616,14 +3783,17 @@ func (s *Server) listGitRepositories(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_repository", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT * FROM project_git_repositories WHERE project_id=$1 ORDER BY created_at DESC`, projectID)
-	writeQueryResult(w, items, err)
+	var repos []GormProjectGitRepository
+	err := s.store.Gorm.WithContext(r.Context()).
+		Where(map[string]any{"project_id": projectID}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true}).
+		Find(&repos).Error
+	writeQueryResult(w, gitRepositoryMaps(repos), err)
 }
 
 func (s *Server) getGitRepository(w http.ResponseWriter, r *http.Request) {
 	repoID := chi.URLParam(r, "id")
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	projectID, err := s.projectIDForRepositoryGorm(r.Context(), repoID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -3631,13 +3801,17 @@ func (s *Server) getGitRepository(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_repository", ID: repoID, ProjectID: projectID}, "read") {
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
-	writeQueryOne(w, item, err)
+	repo, err := s.gitRepositoryByIDGorm(r.Context(), repoID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, gitRepositoryMap(repo))
 }
 
 func (s *Server) getConfigRepositoryScaffold(w http.ResponseWriter, r *http.Request) {
 	repoID := chi.URLParam(r, "id")
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	projectID, err := s.projectIDForRepositoryGorm(r.Context(), repoID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -3645,46 +3819,17 @@ func (s *Server) getConfigRepositoryScaffold(w http.ResponseWriter, r *http.Requ
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_repository", ID: repoID, ProjectID: projectID}, "read") {
 		return
 	}
-	repo, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+	_, _, _, preview, err := s.configRepositoryScaffoldPreviewForRequest(r.Context(), repoID, projectID)
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeError(w, http.StatusInternalServerError, "could not load config scaffold preview")
 		return
 	}
-	remotes, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, name, remote_key, provider_type, remote_role, default_branch, latest_sha, last_sync_status
-		FROM git_remotes
-		WHERE project_git_repository_id=$1
-		ORDER BY created_at DESC`, repoID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not load git remotes")
-		return
-	}
-	versions, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, version, metadata, created_at
-		FROM project_versions
-		WHERE project_id=$1
-		ORDER BY created_at DESC
-		LIMIT 100`, projectID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not load project versions")
-		return
-	}
-	workflowOperations, err := queryConfigRepositoryGitWorkflowOperations(r.Context(), s.store.DB, projectID, repoID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not load config git workflow operations")
-		return
-	}
-	refRefreshOperations, err := queryConfigRepositoryRefRefreshOperations(r.Context(), s.store.DB, projectID, repoID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not load config ref refresh operations")
-		return
-	}
-	writeJSON(w, http.StatusOK, configRepositoryScaffoldPreview(repo, remotes, versions, workflowOperations, refRefreshOperations))
+	writeJSON(w, http.StatusOK, preview)
 }
 
 func (s *Server) refreshConfigRepositoryRefs(w http.ResponseWriter, r *http.Request) {
 	repoID := chi.URLParam(r, "id")
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	projectID, err := s.projectIDForRepositoryGorm(r.Context(), repoID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -3693,12 +3838,12 @@ func (s *Server) refreshConfigRepositoryRefs(w http.ResponseWriter, r *http.Requ
 	if !s.requireProjectPolicy(w, r, resource, "git.refs.refresh") {
 		return
 	}
-	repo, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+	repoModel, err := s.gitRepositoryByIDGorm(r.Context(), repoID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	if strings.ToLower(strings.TrimSpace(stringFromMap(repo, "repo_role"))) != "config" {
+	if strings.ToLower(strings.TrimSpace(repoModel.RepoRole)) != "config" {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error":               "repository is not a config repository",
 			"blocked_reasons":     []string{"repository_role_is_not_config"},
@@ -3707,12 +3852,7 @@ func (s *Server) refreshConfigRepositoryRefs(w http.ResponseWriter, r *http.Requ
 		})
 		return
 	}
-	remote, err := queryOne(r.Context(), s.store.DB, `
-		SELECT id, name, remote_key, provider_type, remote_role, default_branch, latest_sha, last_sync_status
-		FROM git_remotes
-		WHERE project_git_repository_id=$1
-		ORDER BY CASE WHEN remote_role IN ('target', 'origin', 'config') THEN 0 ELSE 1 END, created_at DESC
-		LIMIT 1`, repoID)
+	remote, err := configRepositoryPrimaryRemoteGorm(r.Context(), s.store.Gorm, repoID)
 	if errors.Is(err, ErrNotFound) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error":               "config remote is required",
@@ -3726,63 +3866,48 @@ func (s *Server) refreshConfigRepositoryRefs(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "could not load config remote")
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start config ref refresh transaction")
-		return
-	}
-	defer tx.Rollback()
-	if _, err := queryOne(r.Context(), tx, `
-		SELECT id
-		FROM project_git_repositories
-		WHERE id=$1
-		FOR UPDATE`, repoID); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not lock config repository")
-		return
-	}
-	existing, err := queryMaps(r.Context(), tx, `
-		SELECT id, project_id, git_remote_id, operation_type, title, input, status, created_at, updated_at
-		FROM operation_runs
-		WHERE status IN ('queued', 'running')
-			AND operation_type='git.refs.refresh'
-			AND input->>'config_repository_id'=$1
-			AND input->>'refresh_kind'='config_ref_validation_refresh'
-		ORDER BY created_at DESC, id DESC
-		LIMIT 1`, repoID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not check config ref refresh queue")
-		return
-	}
-	idempotent := len(existing) > 0
 	var op map[string]any
-	if idempotent {
-		op = existing[0]
-	} else {
+	idempotent := false
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var locked GormProjectGitRepository
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, &GormProjectGitRepository{GormBase: GormBase{ID: repoID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		existing, err := queryConfigRepositoryRefRefreshOperationsGorm(r.Context(), tx, projectID, repoID)
+		if err != nil {
+			return err
+		}
+		for _, item := range existing {
+			status := strings.TrimSpace(fmt.Sprint(item["status"]))
+			if status == "queued" || status == "running" {
+				op = item
+				idempotent = true
+				return nil
+			}
+		}
 		remoteID := cleanOptionalID(fmt.Sprint(remote["id"]))
 		input := map[string]any{
 			"config_repository_id":   cleanOptionalID(repoID),
 			"config_remote_id":       remoteID,
 			"remote_id":              remoteID,
-			"repo_key":               cleanOptionalText(stringFromMap(repo, "repo_key")),
-			"default_branch_present": strings.TrimSpace(stringFromMap(remote, "default_branch")) != "" || strings.TrimSpace(stringFromMap(repo, "default_branch")) != "",
+			"repo_key":               cleanOptionalText(repoModel.RepoKey),
+			"default_branch_present": strings.TrimSpace(fmt.Sprint(remote["default_branch"])) != "" || strings.TrimSpace(repoModel.DefaultBranch) != "",
 			"refresh_kind":           "config_ref_validation_refresh",
 			"validation_scope":       "config_repository",
 			"git_write_performed":    false,
 			"file_content_included":  false,
 			"secret_included":        false,
 		}
-		title := "refresh config repository refs " + cleanOptionalText(stringFromMap(repo, "name"))
-		op, err = enqueueOperationTx(r.Context(), tx, projectID, remoteID, "git.refs.refresh", title, input, []string{"git"}, "")
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not enqueue config ref refresh")
-			return
+		title := "refresh config repository refs " + cleanOptionalText(repoModel.Name)
+		var opErr error
+		op, opErr = enqueueOperationGorm(r.Context(), tx, projectID, remoteID, "git.refs.refresh", title, input, []string{"git"}, "")
+		if opErr != nil {
+			return opErr
 		}
-		if !s.syncCanonicalAssetsInTransaction(w, r, tx, "config_ref_refresh.enqueue") {
-			return
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit config ref refresh")
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not enqueue config ref refresh")
 		return
 	}
 	refreshState := "queued"
@@ -3814,7 +3939,7 @@ func (s *Server) refreshConfigRepositoryRefs(w http.ResponseWriter, r *http.Requ
 
 func (s *Server) requestConfigRepositoryGitWorkflow(w http.ResponseWriter, r *http.Request) {
 	repoID := chi.URLParam(r, "id")
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	projectID, err := s.projectIDForRepositoryGorm(r.Context(), repoID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -3871,22 +3996,17 @@ func (s *Server) requestConfigRepositoryGitWorkflow(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusAccepted, map[string]any{"approval": approval, "decision": decision})
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start config git workflow transaction")
-		return
-	}
-	defer tx.Rollback()
-	op, err := enqueueConfigRepositoryGitWorkflowTx(r.Context(), tx, projectID, repo, remotes, preview, currentUser(r).ID)
-	if err != nil {
+	var op map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		op, err = enqueueConfigRepositoryGitWorkflowGorm(r.Context(), tx, projectID, repo, remotes, preview, currentUser(r).ID)
+		if err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not enqueue config git workflow")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "config_git_commit.enqueue") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit config git workflow request")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
@@ -3899,62 +4019,28 @@ func (s *Server) requestConfigRepositoryGitWorkflow(w http.ResponseWriter, r *ht
 }
 
 func (s *Server) configRepositoryScaffoldPreviewForRequest(ctx context.Context, repoID, projectID string) (map[string]any, []map[string]any, []map[string]any, map[string]any, error) {
-	repo, err := queryOne(ctx, s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+	repoModel, err := s.gitRepositoryByIDGorm(ctx, repoID)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	remotes, err := queryMaps(ctx, s.store.DB, `
-		SELECT id, name, remote_key, provider_type, remote_role, default_branch, latest_sha, last_sync_status
-		FROM git_remotes
-		WHERE project_git_repository_id=$1
-		ORDER BY created_at DESC`, repoID)
+	repo := gitRepositoryMap(repoModel)
+	remotes, err := queryConfigRepositorySnapshotRemotes(ctx, s.store.Gorm, repoID)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	versions, err := queryMaps(ctx, s.store.DB, `
-		SELECT id, version, metadata, created_at
-		FROM project_versions
-		WHERE project_id=$1
-		ORDER BY created_at DESC
-		LIMIT 100`, projectID)
+	versions, err := queryConfigRepositorySnapshotVersions(ctx, s.store.Gorm, projectID)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	workflowOperations, err := queryConfigRepositoryGitWorkflowOperations(ctx, s.store.DB, projectID, repoID)
+	workflowOperations, err := queryConfigRepositoryGitWorkflowOperationsGorm(ctx, s.store.Gorm, projectID, repoID)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	refRefreshOperations, err := queryConfigRepositoryRefRefreshOperations(ctx, s.store.DB, projectID, repoID)
+	refRefreshOperations, err := queryConfigRepositoryRefRefreshOperationsGorm(ctx, s.store.Gorm, projectID, repoID)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 	return repo, remotes, versions, configRepositoryScaffoldPreview(repo, remotes, versions, workflowOperations, refRefreshOperations), nil
-}
-
-func queryConfigRepositoryGitWorkflowOperations(ctx context.Context, db sqlx.ExtContext, projectID, repoID string) ([]map[string]any, error) {
-	return queryMaps(ctx, db, `
-		SELECT op.id, op.status, op.created_at, op.updated_at, op.started_at, op.finished_at,
-			COUNT(ol.id)::int AS operation_log_count
-		FROM operation_runs op
-		LEFT JOIN operation_logs ol ON ol.operation_run_id=op.id
-		WHERE op.project_id=$1
-			AND op.operation_type='config.git_commit'
-			AND op.input->>'project_git_repository_id'=$2
-		GROUP BY op.id, op.status, op.created_at, op.updated_at, op.started_at, op.finished_at
-		ORDER BY op.created_at DESC, op.id DESC
-		LIMIT 20`, projectID, repoID)
-}
-
-func queryConfigRepositoryRefRefreshOperations(ctx context.Context, db sqlx.ExtContext, projectID, repoID string) ([]map[string]any, error) {
-	return queryMaps(ctx, db, `
-		SELECT id, git_remote_id, status, created_at, updated_at, started_at, finished_at, error
-		FROM operation_runs
-		WHERE project_id=$1
-			AND operation_type='git.refs.refresh'
-			AND input->>'config_repository_id'=$2
-			AND input->>'refresh_kind'='config_ref_validation_refresh'
-		ORDER BY created_at DESC, id DESC
-		LIMIT 20`, projectID, repoID)
 }
 
 func configRepositoryOperationSummary(op map[string]any) map[string]any {
@@ -3968,11 +4054,45 @@ func configRepositoryOperationSummary(op map[string]any) map[string]any {
 	}
 }
 
+func configRepositoryPrimaryRemoteGorm(ctx context.Context, db *gorm.DB, repoID string) (map[string]any, error) {
+	var remotes []GormGitRemote
+	if err := db.WithContext(ctx).Where(&GormGitRemote{ProjectGitRepositoryID: repoID}).Find(&remotes).Error; err != nil {
+		return nil, err
+	}
+	if len(remotes) == 0 {
+		return nil, ErrNotFound
+	}
+	sort.SliceStable(remotes, func(i, j int) bool {
+		leftRank := configRemoteRoleRank(remotes[i].RemoteRole)
+		rightRank := configRemoteRoleRank(remotes[j].RemoteRole)
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		return remotes[i].CreatedAt.After(remotes[j].CreatedAt)
+	})
+	remote := remotes[0]
+	return map[string]any{"id": remote.ID, "name": remote.Name, "remote_key": remote.RemoteKey, "provider_type": remote.ProviderType, "remote_role": remote.RemoteRole, "default_branch": remote.DefaultBranch, "latest_sha": remote.LatestSHA, "last_sync_status": remote.LastSyncStatus}, nil
+}
+
+func configRemoteRoleRank(role string) int {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "target", "origin", "config":
+		return 0
+	default:
+		return 1
+	}
+}
+
 func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
 	repoID := chi.URLParam(r, "id")
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	repo, err := s.gitRepositoryByIDGorm(r.Context(), repoID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
+		return
+	}
+	projectID := repo.ProjectID
+	if cleanOptionalID(projectID) == "" {
+		writeQueryOne(w, nil, ErrNotFound)
 		return
 	}
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_repository", ID: repoID, ProjectID: projectID}, "update") {
@@ -3990,49 +4110,16 @@ func (s *Server) updateGitRepository(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start git repository transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE project_git_repositories
-		SET name=COALESCE(NULLIF($2,''), name),
-			repo_key=COALESCE(NULLIF($3,''), repo_key),
-			display_name=COALESCE($4, display_name),
-			repo_role=COALESCE(NULLIF($5,''), repo_role),
-			status=COALESCE(NULLIF($6,''), status),
-			description=COALESCE($7, description),
-			default_branch=COALESCE(NULLIF($8,''), default_branch),
-			updated_at=now()
-		WHERE id=$1
-		RETURNING *`,
-		repoID,
-		nullableString(req.Name),
-		nullableString(req.RepoKey),
-		nullableString(req.DisplayName),
-		nullableString(req.RepoRole),
-		nullableString(req.Status),
-		nullableString(req.Description),
-		nullableString(req.DefaultBranch),
-	)
-	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
-	if err != nil {
+	applyGitRepositoryPatch(&repo, req)
+	if err := s.store.Gorm.WithContext(r.Context()).Save(&repo).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "git_repository.update") {
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync git repository asset")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit git repository")
-		return
-	}
-	writeJSON(w, http.StatusOK, item)
+	writeJSON(w, http.StatusOK, gitRepositoryMap(repo))
 }
 
 func configRepositoryScaffoldPreview(repo map[string]any, remotes []map[string]any, optionalRows ...[]map[string]any) map[string]any {
@@ -4526,18 +4613,14 @@ func configRepositoryGitWorkflowInput(repo map[string]any, remotes []map[string]
 	}
 }
 
-func enqueueConfigRepositoryGitWorkflowTx(ctx context.Context, tx *sqlx.Tx, projectID string, repo map[string]any, remotes []map[string]any, preview map[string]any, actorID string) (map[string]any, error) {
+func enqueueConfigRepositoryGitWorkflowGorm(ctx context.Context, tx *gorm.DB, projectID string, repo map[string]any, remotes []map[string]any, preview map[string]any, actorID string) (map[string]any, error) {
 	input := configRepositoryGitWorkflowInput(repo, remotes, preview)
 	input["actor_user_id"] = cleanOptionalID(actorID)
 	title := "config git workflow " + cleanOptionalText(stringFromMap(repo, "name"))
 	if strings.TrimSpace(title) == "config git workflow" {
 		title = "config git workflow"
 	}
-	op, err := enqueueOperationTx(ctx, tx, projectID, cleanOptionalID(stringFromMap(input, "config_remote_id")), "config.git_commit", title, input, []string{"git", "config"}, "control-worker")
-	if err != nil {
-		return nil, err
-	}
-	return op, nil
+	return enqueueOperationGorm(ctx, tx, projectID, cleanOptionalID(stringFromMap(input, "config_remote_id")), "config.git_commit", title, input, []string{"git", "config"}, "control-worker")
 }
 
 func configRepositoryGitWorkflowRequestResult(op map[string]any) map[string]any {
@@ -5017,7 +5100,7 @@ func stringListContains(items []string, target string) bool {
 
 func (s *Server) createRepositorySync(w http.ResponseWriter, r *http.Request) {
 	repoID := chi.URLParam(r, "id")
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	projectID, err := s.projectIDForRepositoryGorm(r.Context(), repoID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -5038,19 +5121,20 @@ func (s *Server) createRepositorySync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "source_remote_id is required")
 		return
 	}
-	repo, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var repoModel GormProjectGitRepository
+	if err := s.store.Gorm.WithContext(r.Context()).First(&repoModel, &GormProjectGitRepository{GormBase: GormBase{ID: repoID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	source, err := remoteForRepository(r.Context(), s.store.DB, repoID, req.SourceRemoteID)
+	repo := gitRepositoryMap(repoModel)
+	source, err := remoteForRepositoryGorm(r.Context(), s.store.Gorm, repoID, req.SourceRemoteID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
 	targetIDs := req.TargetRemoteIDs
 	if len(targetIDs) == 0 {
-		targetIDs, err = defaultTargetRemoteIDs(r.Context(), s.store.DB, repoID, req.SourceRemoteID)
+		targetIDs, err = defaultTargetRemoteIDsGorm(r.Context(), s.store.Gorm, repoID, req.SourceRemoteID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not select target remotes")
 			return
@@ -5060,35 +5144,26 @@ func (s *Server) createRepositorySync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "target_remote_ids is required")
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start sync transaction")
-		return
-	}
-	defer tx.Rollback()
 	var runs []map[string]any
-	for _, targetID := range targetIDs {
-		if targetID == req.SourceRemoteID {
-			writeError(w, http.StatusBadRequest, "target_remote_ids cannot include source_remote_id")
-			return
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		for _, targetID := range targetIDs {
+			if targetID == req.SourceRemoteID {
+				return fmt.Errorf("target_remote_ids cannot include source_remote_id")
+			}
+			target, err := remoteForRepositoryGorm(r.Context(), tx, repoID, targetID)
+			if err != nil {
+				return fmt.Errorf("target remote not found in repository")
+			}
+			run, err := s.enqueueRepoSyncRunGorm(r.Context(), tx, repo, source, target, req.Refs, req.AllowForce, currentUser(r).ID, "")
+			if err != nil {
+				return fmt.Errorf("could not enqueue sync")
+			}
+			runs = append(runs, run)
 		}
-		target, err := remoteForRepository(r.Context(), tx, repoID, targetID)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "target remote not found in repository")
-			return
-		}
-		run, err := s.enqueueRepoSyncRun(r.Context(), tx, repo, source, target, req.Refs, req.AllowForce, currentUser(r).ID, "")
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "could not enqueue sync")
-			return
-		}
-		runs = append(runs, run)
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repository_sync.enqueue") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit sync runs")
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"items": runs})
@@ -5096,7 +5171,7 @@ func (s *Server) createRepositorySync(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createRepositoryTag(w http.ResponseWriter, r *http.Request) {
 	repoID := chi.URLParam(r, "id")
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	projectID, err := s.projectIDForRepositoryGorm(r.Context(), repoID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -5113,22 +5188,17 @@ func (s *Server) createRepositoryTag(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicyOrApproval(w, r, PolicyResource{Type: "git_repository", ID: repoID, ProjectID: projectID}, "repo.tag", "tag "+req.TagName, payload) {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start tag transaction")
-		return
-	}
-	defer tx.Rollback()
-	runs, err := s.enqueueRepositoryTagRuns(r.Context(), tx, repoID, req, currentUser(r).ID)
-	if err != nil {
+	var runs []map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		runs, err = s.enqueueRepositoryTagRunsGorm(r.Context(), tx, repoID, req, currentUser(r).ID)
+		if err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repository_tag.enqueue") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit tag runs")
 		return
 	}
 	runs = repoTagRunsWithRemoteRehearsal(runs)
@@ -5138,7 +5208,7 @@ func (s *Server) createRepositoryTag(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listRepoSyncAssets(w http.ResponseWriter, r *http.Request) {
 	repoID := chi.URLParam(r, "id")
 	includeArchived := boolQuery(r, "include_archived")
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+	projectID, err := s.projectIDForRepositoryGorm(r.Context(), repoID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -5146,29 +5216,13 @@ func (s *Server) listRepoSyncAssets(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_asset", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT rsa.*,
-			source.name AS source_remote_name,
-			target.name AS target_remote_name,
-			analytics.total_runs,
-			analytics.completed_runs,
-			analytics.failed_runs,
-			analytics.running_runs,
-			analytics.success_rate,
-			analytics.last_run_at,
-			analytics.last_success_at,
-			analytics.last_failure_at,
-			analytics.last_failure_message,
-			analytics.avg_duration_seconds
-		FROM repo_sync_assets rsa
-		JOIN git_remotes source ON source.id=rsa.source_remote_id
-		JOIN git_remotes target ON target.id=rsa.target_remote_id
-		LEFT JOIN LATERAL (`+repoSyncAssetAnalyticsSQL("rsa")+`) analytics ON true
-		WHERE rsa.project_git_repository_id=$1
-			AND ($2 OR rsa.archived_at IS NULL)
-		ORDER BY rsa.created_at DESC`, repoID, includeArchived)
+	items, err := s.repoSyncAssetListGorm(r.Context(), repoID, includeArchived)
+	if err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
 	annotateRepoSyncAssetRisks(items)
-	writeQueryResult(w, items, err)
+	writeQueryResult(w, items, nil)
 }
 
 func annotateRepoSyncAssetRisks(items []map[string]any) {
@@ -5214,45 +5268,164 @@ func repoSyncAssetRisk(asset map[string]any) (string, string) {
 	return "ok", "healthy"
 }
 
-func repoSyncAssetAnalyticsSQL(assetAlias string) string {
-	alias := strings.TrimSpace(assetAlias)
-	if alias == "" {
-		alias = "rsa"
+func (s *Server) repoSyncAssetListGorm(ctx context.Context, repoID string, includeArchived bool) ([]map[string]any, error) {
+	var assets []GormRepoSyncAsset
+	query := s.store.Gorm.WithContext(ctx).Where(&GormRepoSyncAsset{ProjectGitRepositoryID: repoID})
+	if !includeArchived {
+		query = query.Where(&GormRepoSyncAsset{ArchivedAt: sql.NullTime{Valid: false}})
 	}
-	return fmt.Sprintf(`
-		SELECT
-			count(rsr.id)::int AS total_runs,
-			count(*) FILTER (WHERE rsr.status='completed')::int AS completed_runs,
-			count(*) FILTER (WHERE rsr.status='failed')::int AS failed_runs,
-			count(*) FILTER (WHERE rsr.status IN ('queued', 'running', 'provisioning'))::int AS running_runs,
-			CASE
-				WHEN count(rsr.id)=0 THEN 0
-				ELSE round((count(*) FILTER (WHERE rsr.status='completed')::numeric / count(rsr.id)::numeric) * 100, 2)
-			END AS success_rate,
-			max(rsr.created_at) AS last_run_at,
-			max(rsr.finished_at) FILTER (WHERE rsr.status='completed') AS last_success_at,
-			max(rsr.finished_at) FILTER (WHERE rsr.status='failed') AS last_failure_at,
-			(
-				SELECT recent.error_message
-				FROM repo_sync_runs recent
-				WHERE recent.repo_sync_asset_id=%[1]s.id
-					AND recent.status='failed'
-					AND recent.error_message <> ''
-				ORDER BY recent.created_at DESC
-				LIMIT 1
-			) AS last_failure_message,
-			round(avg(EXTRACT(EPOCH FROM (rsr.finished_at - rsr.started_at))) FILTER (WHERE rsr.started_at IS NOT NULL AND rsr.finished_at IS NOT NULL), 2) AS avg_duration_seconds
-		FROM repo_sync_runs rsr
-		WHERE rsr.repo_sync_asset_id=%[1]s.id`, alias)
+	if err := query.Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}, Desc: true}}}).Find(&assets).Error; err != nil {
+		return nil, err
+	}
+	remoteNames, err := repoSyncRemoteNamesGorm(ctx, s.store.Gorm, assets)
+	if err != nil {
+		return nil, err
+	}
+	runsByAsset, err := repoSyncRunsByAssetGorm(ctx, s.store.Gorm, assets)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(assets))
+	for _, asset := range assets {
+		item := repoSyncAssetMap(asset)
+		item["source_remote_name"] = remoteNames[asset.SourceRemoteID]
+		item["target_remote_name"] = remoteNames[asset.TargetRemoteID]
+		for key, value := range repoSyncAssetAnalyticsFromRuns(runsByAsset[asset.ID]) {
+			item[key] = value
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func repoSyncRemoteNamesGorm(ctx context.Context, db *gorm.DB, assets []GormRepoSyncAsset) (map[string]string, error) {
+	ids := []string{}
+	seen := map[string]bool{}
+	for _, asset := range assets {
+		for _, id := range []string{asset.SourceRemoteID, asset.TargetRemoteID} {
+			if id != "" && !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return map[string]string{}, nil
+	}
+	var remotes []GormGitRemote
+	if err := db.WithContext(ctx).Find(&remotes, ids).Error; err != nil {
+		return nil, err
+	}
+	names := make(map[string]string, len(remotes))
+	for _, remote := range remotes {
+		names[remote.ID] = remote.Name
+	}
+	return names, nil
+}
+
+func repoSyncRunsByAssetGorm(ctx context.Context, db *gorm.DB, assets []GormRepoSyncAsset) (map[string][]GormRepoSyncRun, error) {
+	ids := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		ids = append(ids, asset.ID)
+	}
+	items := map[string][]GormRepoSyncRun{}
+	if len(ids) == 0 {
+		return items, nil
+	}
+	var runs []GormRepoSyncRun
+	if err := db.WithContext(ctx).Where(map[string]any{"repo_sync_asset_id": ids}).Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	for _, run := range runs {
+		if run.RepoSyncAssetID.Valid {
+			items[run.RepoSyncAssetID.String] = append(items[run.RepoSyncAssetID.String], run)
+		}
+	}
+	return items, nil
+}
+
+func repoSyncAssetAnalyticsFromRuns(runs []GormRepoSyncRun) map[string]any {
+	total := len(runs)
+	completed := 0
+	failed := 0
+	running := 0
+	var lastRunAt any
+	var lastSuccessAt any
+	var lastFailureAt any
+	lastFailureMessage := ""
+	durationTotal := 0.0
+	durationCount := 0
+	for _, run := range runs {
+		if lastRunAt == nil || run.CreatedAt.After(projectVersionTimeFromAny(lastRunAt)) {
+			lastRunAt = run.CreatedAt
+		}
+		switch run.Status {
+		case "completed":
+			completed++
+			if run.FinishedAt.Valid && (lastSuccessAt == nil || run.FinishedAt.Time.After(projectVersionTimeFromAny(lastSuccessAt))) {
+				lastSuccessAt = run.FinishedAt.Time
+			}
+		case "failed":
+			failed++
+			if run.FinishedAt.Valid && (lastFailureAt == nil || run.FinishedAt.Time.After(projectVersionTimeFromAny(lastFailureAt))) {
+				lastFailureAt = run.FinishedAt.Time
+			}
+			if strings.TrimSpace(run.ErrorMessage) != "" && (lastFailureAt == run.FinishedAt.Time || lastFailureMessage == "") {
+				lastFailureMessage = run.ErrorMessage
+			}
+		case "queued", "running", "provisioning":
+			running++
+		}
+		if run.StartedAt.Valid && run.FinishedAt.Valid {
+			durationTotal += run.FinishedAt.Time.Sub(run.StartedAt.Time).Seconds()
+			durationCount++
+		}
+	}
+	successRate := 0.0
+	if total > 0 {
+		successRate = float64(completed) / float64(total) * 100
+	}
+	avgDuration := 0.0
+	if durationCount > 0 {
+		avgDuration = durationTotal / float64(durationCount)
+	}
+	return map[string]any{"total_runs": total, "completed_runs": completed, "failed_runs": failed, "running_runs": running, "success_rate": successRate, "last_run_at": lastRunAt, "last_success_at": lastSuccessAt, "last_failure_at": lastFailureAt, "last_failure_message": lastFailureMessage, "avg_duration_seconds": avgDuration}
+}
+
+func (s *Server) repoSyncAssetDetailMapGorm(ctx context.Context, assetID string) (map[string]any, error) {
+	var asset GormRepoSyncAsset
+	if err := s.store.Gorm.WithContext(ctx).First(&asset, &GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+		return nil, gormNotFoundAsErrNotFound(err)
+	}
+	item := repoSyncAssetMap(asset)
+	var repo GormProjectGitRepository
+	if err := s.store.Gorm.WithContext(ctx).First(&repo, &GormProjectGitRepository{GormBase: GormBase{ID: asset.ProjectGitRepositoryID}}).Error; err == nil {
+		item["repository_name"] = repo.Name
+	}
+	remoteNames, err := repoSyncRemoteNamesGorm(ctx, s.store.Gorm, []GormRepoSyncAsset{asset})
+	if err != nil {
+		return nil, err
+	}
+	item["source_remote_name"] = remoteNames[asset.SourceRemoteID]
+	item["target_remote_name"] = remoteNames[asset.TargetRemoteID]
+	runsByAsset, err := repoSyncRunsByAssetGorm(ctx, s.store.Gorm, []GormRepoSyncAsset{asset})
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range repoSyncAssetAnalyticsFromRuns(runsByAsset[asset.ID]) {
+		item[key] = value
+	}
+	return item, nil
 }
 
 func (s *Server) createRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	repoID := chi.URLParam(r, "id")
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var repoModel GormProjectGitRepository
+	if err := s.store.Gorm.WithContext(r.Context()).First(&repoModel, &GormProjectGitRepository{GormBase: GormBase{ID: repoID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
+	projectID := repoModel.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_asset", ProjectID: projectID}, "create") {
 		return
 	}
@@ -5279,12 +5452,12 @@ func (s *Server) createRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "source and target remotes must differ")
 		return
 	}
-	source, err := remoteForRepository(r.Context(), s.store.DB, repoID, req.SourceRemoteID)
+	source, err := remoteForRepositoryGorm(r.Context(), s.store.Gorm, repoID, req.SourceRemoteID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "source remote not found in repository")
 		return
 	}
-	target, err := remoteForRepository(r.Context(), s.store.DB, repoID, req.TargetRemoteID)
+	target, err := remoteForRepositoryGorm(r.Context(), s.store.Gorm, repoID, req.TargetRemoteID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "target remote not found in repository")
 		return
@@ -5308,51 +5481,31 @@ func (s *Server) createRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	refs, err := jsonParam(req.Refs)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid refs")
-		return
-	}
-	metadata, err := jsonParam(req.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid metadata")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start repo sync asset transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO repo_sync_assets(
-			project_id, project_git_repository_id, name, source_remote_id, target_remote_id,
-			trigger_mode, sync_mode, transport, driver, refs, enabled, metadata
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb)
-		RETURNING *`,
-		projectID,
-		repoID,
-		req.Name,
-		req.SourceRemoteID,
-		req.TargetRemoteID,
-		req.TriggerMode,
-		req.SyncMode,
-		req.Transport,
-		req.Driver,
-		refs,
-		enabled,
-		metadata,
-	)
-	if err != nil {
+	var item map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		asset := GormRepoSyncAsset{
+			ProjectID:              projectID,
+			ProjectGitRepositoryID: repoID,
+			Name:                   req.Name,
+			SourceRemoteID:         cleanOptionalID(fmt.Sprint(source["id"])),
+			TargetRemoteID:         cleanOptionalID(fmt.Sprint(target["id"])),
+			TriggerMode:            req.TriggerMode,
+			SyncMode:               req.SyncMode,
+			Transport:              req.Transport,
+			Driver:                 req.Driver,
+			Refs:                   JSONValue{Data: req.Refs},
+			Enabled:                enabled,
+			LastSyncStatus:         "never",
+			Metadata:               JSONValue{Data: req.Metadata},
+		}
+		if err := tx.Create(&asset).Error; err != nil {
+			return err
+		}
+		item = repoSyncAssetMap(asset)
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
 		writeError(w, http.StatusBadRequest, "could not create resource")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.create") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit repo sync asset")
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
@@ -5360,34 +5513,7 @@ func (s *Server) createRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	assetID := chi.URLParam(r, "id")
-	user := currentUser(r)
-	asset, err := queryOne(r.Context(), s.store.DB, `
-		SELECT rsa.*,
-			pgr.name AS repository_name,
-			source.name AS source_remote_name,
-			target.name AS target_remote_name,
-			analytics.total_runs,
-			analytics.completed_runs,
-			analytics.failed_runs,
-			analytics.running_runs,
-			analytics.success_rate,
-			analytics.last_run_at,
-			analytics.last_success_at,
-			analytics.last_failure_at,
-			analytics.last_failure_message,
-			analytics.avg_duration_seconds
-		FROM repo_sync_assets rsa
-		JOIN project_git_repositories pgr ON pgr.id=rsa.project_git_repository_id
-		JOIN git_remotes source ON source.id=rsa.source_remote_id
-		JOIN git_remotes target ON target.id=rsa.target_remote_id
-		LEFT JOIN LATERAL (`+repoSyncAssetAnalyticsSQL("rsa")+`) analytics ON true
-		WHERE rsa.id=$1
-			AND (
-				$2 OR EXISTS (
-					SELECT 1 FROM project_members pm
-					WHERE pm.project_id=rsa.project_id AND pm.user_id=$3
-				)
-			)`, assetID, userCanReadAllProjects(user), userIDOrNil(user))
+	asset, err := s.repoSyncAssetDetailMapGorm(r.Context(), assetID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -5396,74 +5522,22 @@ func (s *Server) getRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_asset", ID: assetID, ProjectID: projectID}, "read") {
 		return
 	}
-	runs, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT rsr.id,
-			rsr.operation_run_id,
-			rsr.project_id,
-			rsr.project_git_repository_id,
-			rsr.repo_sync_asset_id,
-			rsr.source_remote_id,
-			rsr.target_remote_id,
-			rsr.ref,
-			rsr.before_sha,
-			rsr.after_sha,
-			rsr.status,
-			rsr.error_message,
-			rsr.started_at,
-			rsr.finished_at,
-			rsr.created_at,
-			op.operation_type,
-			op.title AS operation_title,
-			op.status AS operation_status,
-			op.error AS operation_error
-		FROM repo_sync_runs rsr
-		LEFT JOIN operation_runs op ON op.id=rsr.operation_run_id
-		WHERE rsr.repo_sync_asset_id=$1
-		ORDER BY rsr.created_at DESC
-		LIMIT 50`, assetID)
+	runs, err := s.repoSyncAssetRunMapsGorm(r.Context(), assetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list repo sync runs")
 		return
 	}
-	events, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id,
-			webhook_connection_id,
-			project_id,
-			provider,
-			event_type,
-			delivery_id,
-			signature_valid,
-			matched_repo_sync_asset_id,
-			operation_run_id,
-			status,
-			error_message,
-			received_at,
-			processed_at
-		FROM webhook_events
-		WHERE matched_repo_sync_asset_id=$1
-		ORDER BY received_at DESC
-		LIMIT 50`, assetID)
+	events, err := s.repoSyncAssetWebhookEventMapsGorm(r.Context(), assetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list webhook events")
 		return
 	}
-	logs, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT ol.id,
-			ol.operation_run_id,
-			ol.worker_job_id,
-			ol.level,
-			ol.message,
-			ol.created_at
-		FROM operation_logs ol
-		JOIN repo_sync_runs rsr ON rsr.operation_run_id=ol.operation_run_id
-		WHERE rsr.repo_sync_asset_id=$1
-		ORDER BY ol.created_at DESC
-		LIMIT 100`, assetID)
+	logs, err := s.repoSyncAssetOperationLogMapsGorm(r.Context(), assetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list operation logs")
 		return
 	}
-	trend, err := queryMaps(r.Context(), s.store.DB, repoSyncAssetTrendSQL(), assetID)
+	trend, err := s.repoSyncAssetTrendGorm(r.Context(), assetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load repo sync trend")
 		return
@@ -5483,79 +5557,325 @@ func (s *Server) getRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func repoSyncAssetTrendSQL() string {
-	return `
-		SELECT
-			to_char(day_bucket, 'YYYY-MM-DD') AS day,
-			count(*)::int AS total_runs,
-			count(*) FILTER (WHERE status='completed')::int AS completed_runs,
-			count(*) FILTER (WHERE status='failed')::int AS failed_runs,
-			count(*) FILTER (WHERE status IN ('queued', 'running', 'provisioning'))::int AS active_runs,
-			round(avg(EXTRACT(EPOCH FROM (finished_at - started_at))) FILTER (WHERE started_at IS NOT NULL AND finished_at IS NOT NULL), 2) AS avg_duration_seconds
-		FROM (
-			SELECT date_trunc('day', created_at) AS day_bucket, status, started_at, finished_at
-			FROM repo_sync_runs
-			WHERE repo_sync_asset_id=$1
-				AND created_at >= now() - interval '14 days'
-		) daily
-		GROUP BY day_bucket
-		ORDER BY day_bucket DESC
-		LIMIT 14`
+func (s *Server) repoSyncAssetRunMapsGorm(ctx context.Context, assetID string) ([]map[string]any, error) {
+	var runs []GormRepoSyncRun
+	if err := s.store.Gorm.WithContext(ctx).
+		Where("repo_sync_asset_id = ?", assetID).
+		Order("created_at DESC").
+		Limit(50).
+		Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	opIDs := make([]string, 0, len(runs))
+	for _, run := range runs {
+		if strings.TrimSpace(run.OperationRunID) != "" {
+			opIDs = append(opIDs, run.OperationRunID)
+		}
+	}
+	opsByID := make(map[string]GormOperationRun, len(opIDs))
+	if len(opIDs) > 0 {
+		var ops []GormOperationRun
+		if err := s.store.Gorm.WithContext(ctx).Where(gormField("id", opIDs)).Find(&ops).Error; err != nil {
+			return nil, err
+		}
+		for _, op := range ops {
+			opsByID[op.ID] = op
+		}
+	}
+	items := make([]map[string]any, 0, len(runs))
+	for _, run := range runs {
+		item := repoSyncRunMap(run)
+		if op, ok := opsByID[run.OperationRunID]; ok {
+			item["operation_type"] = op.OperationType
+			item["operation_title"] = op.Title
+			item["operation_status"] = op.Status
+			item["operation_error"] = op.Error
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *Server) repoSyncAssetWebhookEventMapsGorm(ctx context.Context, assetID string) ([]map[string]any, error) {
+	var events []GormWebhookEvent
+	if err := s.store.Gorm.WithContext(ctx).
+		Where("matched_repo_sync_asset_id = ?", assetID).
+		Order("received_at DESC").
+		Limit(50).
+		Find(&events).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(events))
+	for _, event := range events {
+		items = append(items, map[string]any{
+			"id":                         event.ID,
+			"webhook_connection_id":      nullableStringValue(event.WebhookConnectionID),
+			"project_id":                 nullableStringValue(event.ProjectID),
+			"provider":                   event.Provider,
+			"event_type":                 event.EventType,
+			"delivery_id":                event.DeliveryID,
+			"signature_valid":            event.SignatureValid,
+			"matched_repo_sync_asset_id": nullableStringValue(event.MatchedRepoSyncAssetID),
+			"operation_run_id":           nullableStringValue(event.OperationRunID),
+			"status":                     event.Status,
+			"error_message":              event.ErrorMessage,
+			"received_at":                event.ReceivedAt,
+			"processed_at":               nullableTimeAny(event.ProcessedAt),
+		})
+	}
+	return items, nil
+}
+
+func (s *Server) repoSyncAssetOperationLogMapsGorm(ctx context.Context, assetID string) ([]map[string]any, error) {
+	var runs []GormRepoSyncRun
+	if err := s.store.Gorm.WithContext(ctx).
+		Where("repo_sync_asset_id = ?", assetID).
+		Where("operation_run_id <> ''").
+		Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	opIDs := make([]string, 0, len(runs))
+	for _, run := range runs {
+		opID := strings.TrimSpace(run.OperationRunID)
+		if opID != "" {
+			opIDs = append(opIDs, opID)
+		}
+	}
+	if len(opIDs) == 0 {
+		return []map[string]any{}, nil
+	}
+	var logs []GormOperationLog
+	if err := s.store.Gorm.WithContext(ctx).
+		Where("operation_run_id IN ?", opIDs).
+		Order("created_at DESC").
+		Limit(100).
+		Find(&logs).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(logs))
+	for _, log := range logs {
+		items = append(items, operationLogMap(log))
+	}
+	return items, nil
+}
+
+func (s *Server) repoSyncAssetTrendGorm(ctx context.Context, assetID string) ([]map[string]any, error) {
+	since := time.Now().Add(-14 * 24 * time.Hour)
+	var runs []GormRepoSyncRun
+	if err := s.store.Gorm.WithContext(ctx).
+		Where("repo_sync_asset_id = ?", assetID).
+		Where("created_at >= ?", since).
+		Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	type bucket struct {
+		Day              string
+		TotalRuns        int
+		CompletedRuns    int
+		FailedRuns       int
+		ActiveRuns       int
+		DurationTotalSec float64
+		DurationCount    int
+	}
+	buckets := map[string]*bucket{}
+	for _, run := range runs {
+		day := run.CreatedAt.Format("2006-01-02")
+		b, ok := buckets[day]
+		if !ok {
+			b = &bucket{Day: day}
+			buckets[day] = b
+		}
+		b.TotalRuns++
+		switch run.Status {
+		case "completed":
+			b.CompletedRuns++
+		case "failed":
+			b.FailedRuns++
+		case "queued", "running", "provisioning":
+			b.ActiveRuns++
+		}
+		if run.StartedAt.Valid && run.FinishedAt.Valid {
+			b.DurationTotalSec += run.FinishedAt.Time.Sub(run.StartedAt.Time).Seconds()
+			b.DurationCount++
+		}
+	}
+	days := make([]string, 0, len(buckets))
+	for day := range buckets {
+		days = append(days, day)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(days)))
+	if len(days) > 14 {
+		days = days[:14]
+	}
+	items := make([]map[string]any, 0, len(days))
+	for _, day := range days {
+		b := buckets[day]
+		var avg any
+		if b.DurationCount > 0 {
+			avg = math.Round((b.DurationTotalSec/float64(b.DurationCount))*100) / 100
+		}
+		items = append(items, map[string]any{
+			"day":                  b.Day,
+			"total_runs":           b.TotalRuns,
+			"completed_runs":       b.CompletedRuns,
+			"failed_runs":          b.FailedRuns,
+			"active_runs":          b.ActiveRuns,
+			"avg_duration_seconds": avg,
+		})
+	}
+	return items, nil
 }
 
 func (s *Server) repoSyncAssetCapacitySignals(ctx context.Context, asset map[string]any) ([]map[string]any, error) {
 	assetID := strings.TrimSpace(fmt.Sprint(asset["id"]))
 	sourceID := strings.TrimSpace(fmt.Sprint(asset["source_remote_id"]))
 	targetID := strings.TrimSpace(fmt.Sprint(asset["target_remote_id"]))
-	raw, err := queryOne(ctx, s.store.DB, repoSyncAssetCapacitySQL(),
-		assetID,
-	)
+	raw, err := s.repoSyncAssetCapacityMapGorm(ctx, assetID, sourceID, targetID)
 	if err != nil {
 		return nil, err
 	}
-	thresholds, err := queryWebhookThresholdConfigurationOverrides(ctx, s.store.DB, sourceID, "7d")
+	thresholds, err := s.queryWebhookThresholdConfigurationOverridesGorm(ctx, sourceID, "7d")
 	if err != nil {
 		return nil, err
 	}
 	return repoSyncCapacitySignalsWithThresholds(asset, raw, sourceID, targetID, thresholds), nil
 }
 
-func repoSyncAssetCapacitySQL() string {
-	return `
-		SELECT
-			source.provider_type AS source_provider,
-			target.provider_type AS target_provider,
-			source.last_sync_status AS source_last_sync_status,
-			target.last_sync_status AS target_last_sync_status,
-			count(DISTINCT rsr.id) FILTER (WHERE rsr.status IN ('queued', 'running', 'provisioning'))::int AS active_runs,
-			count(DISTINCT rsr.id) FILTER (WHERE rsr.status='failed' AND rsr.created_at >= now() - interval '7 days')::int AS failed_runs_7d,
-			count(DISTINCT we.id) FILTER (WHERE we.status IN ('failed', 'rejected') AND we.received_at >= now() - interval '7 days')::int AS webhook_failures_7d,
-			count(DISTINCT gar.id) FILTER (WHERE gar.created_at >= now() - interval '24 hours')::int AS github_runs_24h,
-			COALESCE(pair_pressure.active_runs, 0)::int AS provider_pair_active_runs,
-			COALESCE(pair_pressure.runs_24h, 0)::int AS provider_pair_runs_24h,
-			COALESCE(pair_pressure.failed_runs_24h, 0)::int AS provider_pair_failed_runs_24h,
-			max(we.error_message) FILTER (WHERE we.status IN ('failed', 'rejected') AND we.error_message <> '') AS last_webhook_error
-		FROM repo_sync_assets rsa
-		JOIN git_remotes source ON source.id=rsa.source_remote_id
-		JOIN git_remotes target ON target.id=rsa.target_remote_id
-		LEFT JOIN repo_sync_runs rsr ON rsr.repo_sync_asset_id=rsa.id
-		LEFT JOIN webhook_events we ON we.matched_repo_sync_asset_id=rsa.id
-		LEFT JOIN github_action_runs gar ON gar.git_remote_id IN (rsa.source_remote_id, rsa.target_remote_id)
-		LEFT JOIN LATERAL (
-			SELECT
-				count(DISTINCT pair_runs.id) FILTER (WHERE pair_runs.status IN ('queued', 'running', 'provisioning'))::int AS active_runs,
-				count(DISTINCT pair_runs.id) FILTER (WHERE pair_runs.created_at >= now() - interval '24 hours')::int AS runs_24h,
-				count(DISTINCT pair_runs.id) FILTER (WHERE pair_runs.status='failed' AND pair_runs.created_at >= now() - interval '24 hours')::int AS failed_runs_24h
-			FROM repo_sync_assets pair_asset
-			JOIN git_remotes pair_source ON pair_source.id=pair_asset.source_remote_id
-			JOIN git_remotes pair_target ON pair_target.id=pair_asset.target_remote_id
-			LEFT JOIN repo_sync_runs pair_runs ON pair_runs.repo_sync_asset_id=pair_asset.id
-			WHERE pair_source.provider_type=source.provider_type
-				AND pair_target.provider_type=target.provider_type
-		) pair_pressure ON true
-		WHERE rsa.id=$1
-		GROUP BY source.provider_type, target.provider_type, source.last_sync_status, target.last_sync_status,
-			pair_pressure.active_runs, pair_pressure.runs_24h, pair_pressure.failed_runs_24h`
+func (s *Server) repoSyncAssetCapacityMapGorm(ctx context.Context, assetID, sourceID, targetID string) (map[string]any, error) {
+	now := time.Now()
+	sevenDaysAgo := now.Add(-7 * 24 * time.Hour)
+	twentyFourHoursAgo := now.Add(-24 * time.Hour)
+	raw := map[string]any{}
+	var source, target GormGitRemote
+	if err := s.store.Gorm.WithContext(ctx).First(&source, "id = ?", sourceID).Error; err != nil {
+		return nil, err
+	}
+	if err := s.store.Gorm.WithContext(ctx).First(&target, "id = ?", targetID).Error; err != nil {
+		return nil, err
+	}
+	raw["source_provider"] = source.ProviderType
+	raw["target_provider"] = target.ProviderType
+	raw["source_last_sync_status"] = source.LastSyncStatus
+	raw["target_last_sync_status"] = target.LastSyncStatus
+	var runs []GormRepoSyncRun
+	if err := s.store.Gorm.WithContext(ctx).Where(gormField("repo_sync_asset_id", assetID)).Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	activeRuns := 0
+	failedRuns7d := 0
+	for _, run := range runs {
+		if isActiveRepoSyncRunStatus(run.Status) {
+			activeRuns++
+		}
+		if run.Status == "failed" && !run.CreatedAt.Before(sevenDaysAgo) {
+			failedRuns7d++
+		}
+	}
+	raw["active_runs"] = activeRuns
+	raw["failed_runs_7d"] = failedRuns7d
+	var events []GormWebhookEvent
+	if err := s.store.Gorm.WithContext(ctx).Where(gormField("matched_repo_sync_asset_id", assetID)).Find(&events).Error; err != nil {
+		return nil, err
+	}
+	webhookFailures7d := 0
+	lastWebhookError := ""
+	lastWebhookErrorAt := time.Time{}
+	for _, event := range events {
+		if !isWebhookFailureStatus(event.Status) || event.ReceivedAt.Before(sevenDaysAgo) {
+			continue
+		}
+		webhookFailures7d++
+		if strings.TrimSpace(event.ErrorMessage) != "" && event.ReceivedAt.After(lastWebhookErrorAt) {
+			lastWebhookError = event.ErrorMessage
+			lastWebhookErrorAt = event.ReceivedAt
+		}
+	}
+	raw["webhook_failures_7d"] = webhookFailures7d
+	raw["last_webhook_error"] = lastWebhookError
+	var githubRuns []GormGitHubActionRun
+	if err := s.store.Gorm.WithContext(ctx).
+		Where("git_remote_id IN ?", []string{sourceID, targetID}).
+		Where("created_at >= ?", twentyFourHoursAgo).
+		Find(&githubRuns).Error; err != nil {
+		return nil, err
+	}
+	raw["github_runs_24h"] = len(githubRuns)
+	pairAssetIDs, err := s.repoSyncAssetIDsForProviderPairGorm(ctx, source.ProviderType, target.ProviderType)
+	if err != nil {
+		return nil, err
+	}
+	pairActiveRuns := 0
+	pairRuns24h := 0
+	pairFailedRuns24h := 0
+	if len(pairAssetIDs) > 0 {
+		var pairRuns []GormRepoSyncRun
+		if err := s.store.Gorm.WithContext(ctx).Where(gormField("repo_sync_asset_id", pairAssetIDs)).Find(&pairRuns).Error; err != nil {
+			return nil, err
+		}
+		for _, run := range pairRuns {
+			if isActiveRepoSyncRunStatus(run.Status) {
+				pairActiveRuns++
+			}
+			if !run.CreatedAt.Before(twentyFourHoursAgo) {
+				pairRuns24h++
+				if run.Status == "failed" {
+					pairFailedRuns24h++
+				}
+			}
+		}
+	}
+	raw["provider_pair_active_runs"] = pairActiveRuns
+	raw["provider_pair_runs_24h"] = pairRuns24h
+	raw["provider_pair_failed_runs_24h"] = pairFailedRuns24h
+	return raw, nil
+}
+
+func (s *Server) repoSyncAssetIDsForProviderPairGorm(ctx context.Context, sourceProvider, targetProvider string) ([]string, error) {
+	var assets []GormRepoSyncAsset
+	if err := s.store.Gorm.WithContext(ctx).Find(&assets).Error; err != nil {
+		return nil, err
+	}
+	remoteIDs := make([]string, 0, len(assets)*2)
+	for _, asset := range assets {
+		remoteIDs = append(remoteIDs, asset.SourceRemoteID, asset.TargetRemoteID)
+	}
+	remotesByID := map[string]GormGitRemote{}
+	if len(remoteIDs) > 0 {
+		var remotes []GormGitRemote
+		if err := s.store.Gorm.WithContext(ctx).Where(gormField("id", remoteIDs)).Find(&remotes).Error; err != nil {
+			return nil, err
+		}
+		for _, remote := range remotes {
+			remotesByID[remote.ID] = remote
+		}
+	}
+	assetIDs := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		source := remotesByID[asset.SourceRemoteID]
+		target := remotesByID[asset.TargetRemoteID]
+		if source.ProviderType == sourceProvider && target.ProviderType == targetProvider {
+			assetIDs = append(assetIDs, asset.ID)
+		}
+	}
+	return assetIDs, nil
+}
+
+func isActiveRepoSyncRunStatus(status string) bool {
+	switch status {
+	case "queued", "running", "provisioning":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWebhookFailureStatus(status string) bool {
+	switch status {
+	case "failed", "rejected":
+		return true
+	default:
+		return false
+	}
 }
 
 const (
@@ -5704,7 +6024,7 @@ type webhookThresholdConfiguration struct {
 	Applied        bool
 }
 
-func queryWebhookThresholdConfigurationOverrides(ctx context.Context, db sqlx.ExtContext, sourceRemoteID, evidenceWindow string) (map[string]webhookThresholdConfiguration, error) {
+func (s *Server) queryWebhookThresholdConfigurationOverridesGorm(ctx context.Context, sourceRemoteID, evidenceWindow string) (map[string]webhookThresholdConfiguration, error) {
 	sourceRemoteID = strings.TrimSpace(sourceRemoteID)
 	if sourceRemoteID == "" || sourceRemoteID == "<nil>" {
 		return nil, nil
@@ -5713,34 +6033,41 @@ func queryWebhookThresholdConfigurationOverrides(ctx context.Context, db sqlx.Ex
 	if evidenceWindow == "" {
 		evidenceWindow = "7d"
 	}
-	rows, err := queryMaps(ctx, db, `
-		SELECT DISTINCT ON (wtc.threshold_key)
-			wtc.threshold_key,
-			wtc.warning_at,
-			wtc.danger_at,
-			wtc.unit,
-			wtc.evidence_window,
-			wtc.applied_at
-		FROM webhook_threshold_configurations wtc
-		JOIN webhook_connections wc ON wc.id=wtc.webhook_connection_id
-		WHERE wc.source_remote_id=$1
-			AND wtc.evidence_window=$2
-		ORDER BY wtc.threshold_key, wtc.applied_at DESC`, sourceRemoteID, evidenceWindow)
-	if err != nil {
+	var connections []GormWebhookConnection
+	if err := s.store.Gorm.WithContext(ctx).Where(gormField("source_remote_id", sourceRemoteID)).Find(&connections).Error; err != nil {
 		return nil, err
 	}
-	thresholds := make(map[string]webhookThresholdConfiguration, len(rows))
-	for _, row := range rows {
-		key := cleanPreviewString(row["threshold_key"])
+	connectionIDs := make([]string, 0, len(connections))
+	for _, connection := range connections {
+		connectionIDs = append(connectionIDs, connection.ID)
+	}
+	if len(connectionIDs) == 0 {
+		return map[string]webhookThresholdConfiguration{}, nil
+	}
+	var configs []GormWebhookThresholdConfiguration
+	if err := s.store.Gorm.WithContext(ctx).
+		Where("webhook_connection_id IN ?", connectionIDs).
+		Where("evidence_window = ?", evidenceWindow).
+		Order("threshold_key ASC").
+		Order("applied_at DESC").
+		Find(&configs).Error; err != nil {
+		return nil, err
+	}
+	thresholds := make(map[string]webhookThresholdConfiguration, len(configs))
+	for _, config := range configs {
+		key := cleanPreviewString(config.ThresholdKey)
 		if key == "" {
 			continue
 		}
+		if _, exists := thresholds[key]; exists {
+			continue
+		}
 		thresholds[key] = webhookThresholdConfiguration{
-			WarningAt:      intFromAny(row["warning_at"], 0),
-			DangerAt:       intFromAny(row["danger_at"], 0),
-			Unit:           cleanPreviewString(row["unit"]),
+			WarningAt:      config.WarningAt,
+			DangerAt:       config.DangerAt,
+			Unit:           cleanPreviewString(config.Unit),
 			Source:         "webhook_threshold_configuration",
-			EvidenceWindow: cleanPreviewString(row["evidence_window"]),
+			EvidenceWindow: cleanPreviewString(config.EvidenceWindow),
 			Applied:        true,
 		}
 	}
@@ -5878,16 +6205,16 @@ func floatFromAny(value any, fallback float64) float64 {
 
 func (s *Server) updateRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	assetID := chi.URLParam(r, "id")
-	asset, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM repo_sync_assets WHERE id=$1", assetID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var assetModel GormRepoSyncAsset
+	if err := s.store.Gorm.WithContext(r.Context()).First(&assetModel, &GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := strings.TrimSpace(fmt.Sprint(asset["project_id"]))
+	projectID := assetModel.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_asset", ID: assetID, ProjectID: projectID}, "update") {
 		return
 	}
-	if repoSyncAssetArchived(asset) {
+	if assetModel.ArchivedAt.Valid {
 		writeError(w, http.StatusConflict, "repo sync asset is archived")
 		return
 	}
@@ -5904,58 +6231,55 @@ func (s *Server) updateRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	refs, err := jsonPatchParam(req.Refs)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid refs")
-		return
-	}
-	metadata, err := jsonPatchParam(req.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid metadata")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start repo sync asset transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE repo_sync_assets
-		SET name=COALESCE(NULLIF($2,''), name),
-			trigger_mode=COALESCE(NULLIF($3,''), trigger_mode),
-			sync_mode=COALESCE(NULLIF($4,''), sync_mode),
-			transport=COALESCE(NULLIF($5,''), transport),
-			driver=COALESCE(NULLIF($6,''), driver),
-			refs=CASE WHEN $7='null' THEN refs ELSE $7::jsonb END,
-			enabled=COALESCE($8, enabled),
-			metadata=CASE WHEN $9='null' THEN metadata ELSE $9::jsonb END,
-			updated_at=now()
-		WHERE id=$1 AND archived_at IS NULL
-		RETURNING *`,
-		assetID,
-		nullableString(req.Name),
-		nullableString(req.TriggerMode),
-		nullableString(req.SyncMode),
-		nullableString(req.Transport),
-		nullableString(req.Driver),
-		refs,
-		nullableBool(req.Enabled),
-		metadata,
-	)
-	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
-	if err != nil {
+	var item map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var asset GormRepoSyncAsset
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&asset, &GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		if asset.ArchivedAt.Valid {
+			return errRepoSyncAssetArchived
+		}
+		if req.Name != nil && strings.TrimSpace(*req.Name) != "" {
+			asset.Name = strings.TrimSpace(*req.Name)
+		}
+		if req.TriggerMode != nil && strings.TrimSpace(*req.TriggerMode) != "" {
+			asset.TriggerMode = strings.TrimSpace(*req.TriggerMode)
+		}
+		if req.SyncMode != nil && strings.TrimSpace(*req.SyncMode) != "" {
+			asset.SyncMode = strings.TrimSpace(*req.SyncMode)
+		}
+		if req.Transport != nil && strings.TrimSpace(*req.Transport) != "" {
+			asset.Transport = strings.TrimSpace(*req.Transport)
+		}
+		if req.Driver != nil && strings.TrimSpace(*req.Driver) != "" {
+			asset.Driver = strings.TrimSpace(*req.Driver)
+		}
+		if req.Refs != nil {
+			asset.Refs = JSONValue{Data: *req.Refs}
+		}
+		if req.Enabled != nil {
+			asset.Enabled = *req.Enabled
+		}
+		if req.Metadata != nil {
+			asset.Metadata = JSONValue{Data: *req.Metadata}
+		}
+		if err := tx.Save(&asset).Error; err != nil {
+			return err
+		}
+		item = repoSyncAssetMap(asset)
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		if errors.Is(err, errRepoSyncAssetArchived) {
+			writeError(w, http.StatusConflict, "repo sync asset is archived")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "update failed")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.update") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit repo sync asset")
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -5963,41 +6287,37 @@ func (s *Server) updateRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) archiveRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	assetID := chi.URLParam(r, "id")
-	asset, err := queryOne(r.Context(), s.store.DB, "SELECT project_id FROM repo_sync_assets WHERE id=$1", assetID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var assetModel GormRepoSyncAsset
+	if err := s.store.Gorm.WithContext(r.Context()).First(&assetModel, &GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := strings.TrimSpace(fmt.Sprint(asset["project_id"]))
+	projectID := assetModel.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_asset", ID: assetID, ProjectID: projectID}, "update") {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start repo sync asset transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE repo_sync_assets
-		SET enabled=false,
-			archived_at=COALESCE(archived_at, now()),
-			updated_at=now()
-		WHERE id=$1
-		RETURNING *`, assetID)
-	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
-	if err != nil {
+	var item map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var asset GormRepoSyncAsset
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&asset, &GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		asset.Enabled = false
+		if !asset.ArchivedAt.Valid {
+			asset.ArchivedAt = validNullTime(time.Now())
+		}
+		if err := tx.Save(&asset).Error; err != nil {
+			return err
+		}
+		item = repoSyncAssetMap(asset)
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "update failed")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.archive") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit repo sync asset")
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -6005,41 +6325,35 @@ func (s *Server) archiveRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) restoreRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	assetID := chi.URLParam(r, "id")
-	asset, err := queryOne(r.Context(), s.store.DB, "SELECT project_id FROM repo_sync_assets WHERE id=$1", assetID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var assetModel GormRepoSyncAsset
+	if err := s.store.Gorm.WithContext(r.Context()).First(&assetModel, &GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := strings.TrimSpace(fmt.Sprint(asset["project_id"]))
+	projectID := assetModel.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_asset", ID: assetID, ProjectID: projectID}, "update") {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start repo sync asset transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE repo_sync_assets
-		SET archived_at=NULL,
-			enabled=true,
-			updated_at=now()
-		WHERE id=$1
-		RETURNING *`, assetID)
-	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
-	if err != nil {
+	var item map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var asset GormRepoSyncAsset
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&asset, &GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		asset.ArchivedAt = sql.NullTime{}
+		asset.Enabled = true
+		if err := tx.Save(&asset).Error; err != nil {
+			return err
+		}
+		item = repoSyncAssetMap(asset)
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "update failed")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.restore") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit repo sync asset")
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -6047,67 +6361,62 @@ func (s *Server) restoreRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) runRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 	assetID := chi.URLParam(r, "id")
-	asset, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM repo_sync_assets WHERE id=$1", assetID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var assetModel GormRepoSyncAsset
+	if err := s.store.Gorm.WithContext(r.Context()).First(&assetModel, &GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := strings.TrimSpace(fmt.Sprint(asset["project_id"]))
+	projectID := assetModel.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_asset", ID: assetID, ProjectID: projectID}, "repo.sync") {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start sync transaction")
-		return
-	}
-	defer tx.Rollback()
-	lockedAsset, err := queryOne(r.Context(), tx, "SELECT * FROM repo_sync_assets WHERE id=$1 FOR UPDATE", assetID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	if enabled, ok := lockedAsset["enabled"].(bool); ok && !enabled {
-		writeError(w, http.StatusConflict, "repo sync asset is disabled")
-		return
-	}
-	if repoSyncAssetArchived(lockedAsset) {
-		writeError(w, http.StatusConflict, "repo sync asset is archived")
-		return
-	}
-	repoID := strings.TrimSpace(fmt.Sprint(lockedAsset["project_git_repository_id"]))
-	repo, err := queryOne(r.Context(), tx, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	sourceID := strings.TrimSpace(fmt.Sprint(lockedAsset["source_remote_id"]))
-	targetID := strings.TrimSpace(fmt.Sprint(lockedAsset["target_remote_id"]))
-	source, err := remoteForRepository(r.Context(), tx, repoID, sourceID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "source remote not found in repository")
-		return
-	}
-	target, err := remoteForRepository(r.Context(), tx, repoID, targetID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "target remote not found in repository")
-		return
-	}
-	refs := mapFromAny(lockedAsset["refs"])
-	run, err := s.enqueueRepoSyncRun(r.Context(), tx, repo, source, target, refs, false, currentUser(r).ID, assetID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "could not enqueue repo sync asset")
-		return
-	}
-	if _, err := tx.ExecContext(r.Context(), "UPDATE repo_sync_assets SET last_sync_status='queued', last_sync_run_id=$2, updated_at=now() WHERE id=$1", assetID, run["id"]); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update repo sync asset")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.run") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit repo sync asset run")
+	var run map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var lockedAsset GormRepoSyncAsset
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lockedAsset, &GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		if !lockedAsset.Enabled {
+			return errRepoSyncAssetDisabled
+		}
+		if lockedAsset.ArchivedAt.Valid {
+			return errRepoSyncAssetArchived
+		}
+		repoID := lockedAsset.ProjectGitRepositoryID
+		var repoModel GormProjectGitRepository
+		if err := tx.First(&repoModel, &GormProjectGitRepository{GormBase: GormBase{ID: repoID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		repo := gitRepositoryMap(repoModel)
+		source, err := remoteForRepositoryGorm(r.Context(), tx, repoID, lockedAsset.SourceRemoteID)
+		if err != nil {
+			return fmt.Errorf("source remote not found in repository")
+		}
+		target, err := remoteForRepositoryGorm(r.Context(), tx, repoID, lockedAsset.TargetRemoteID)
+		if err != nil {
+			return fmt.Errorf("target remote not found in repository")
+		}
+		run, err = s.enqueueRepoSyncRunGorm(r.Context(), tx, repo, source, target, mapFromAny(lockedAsset.Refs.Data), false, currentUser(r).ID, assetID)
+		if err != nil {
+			return fmt.Errorf("could not enqueue repo sync asset")
+		}
+		if err := tx.Model(&GormRepoSyncAsset{}).
+			Where(&GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).
+			Updates(map[string]any{"last_sync_status": "queued", "last_sync_run_id": validNullString(cleanOptionalID(fmt.Sprint(run["id"])))}).Error; err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		if errors.Is(err, errRepoSyncAssetDisabled) {
+			writeError(w, http.StatusConflict, "repo sync asset is disabled")
+			return
+		}
+		if errors.Is(err, errRepoSyncAssetArchived) {
+			writeError(w, http.StatusConflict, "repo sync asset is archived")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"run": run})
@@ -6115,93 +6424,89 @@ func (s *Server) runRepoSyncAsset(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) rerunRepoSyncRun(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "id")
-	run, err := queryOne(r.Context(), s.store.DB, `
-		SELECT rsr.id,
-			rsr.project_id,
-			rsr.project_git_repository_id,
-			rsr.repo_sync_asset_id,
-			rsr.source_remote_id,
-			rsr.target_remote_id,
-			rsr.ref,
-			rsa.project_id AS asset_project_id
-		FROM repo_sync_runs rsr
-		JOIN repo_sync_assets rsa ON rsa.id=rsr.repo_sync_asset_id
-		WHERE rsr.id=$1`, runID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var previousRun GormRepoSyncRun
+	if err := s.store.Gorm.WithContext(r.Context()).First(&previousRun, &GormRepoSyncRun{ID: runID}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	assetID := strings.TrimSpace(fmt.Sprint(run["repo_sync_asset_id"]))
-	projectID := strings.TrimSpace(fmt.Sprint(run["asset_project_id"]))
+	assetID := cleanOptionalID(previousRun.RepoSyncAssetID.String)
+	if assetID == "" {
+		writeQueryOne(w, nil, ErrNotFound)
+		return
+	}
+	var assetModel GormRepoSyncAsset
+	if err := s.store.Gorm.WithContext(r.Context()).First(&assetModel, &GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
+		return
+	}
+	projectID := assetModel.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_asset", ID: assetID, ProjectID: projectID}, "repo.sync") {
 		return
 	}
-	repoID := strings.TrimSpace(fmt.Sprint(run["project_git_repository_id"]))
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start rerun transaction")
-		return
-	}
-	defer tx.Rollback()
-	lockedAsset, err := queryOne(r.Context(), tx, "SELECT * FROM repo_sync_assets WHERE id=$1 FOR UPDATE", assetID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	if enabled, ok := lockedAsset["enabled"].(bool); ok && !enabled {
-		writeError(w, http.StatusConflict, "repo sync asset is disabled")
-		return
-	}
-	if repoSyncAssetArchived(lockedAsset) {
-		writeError(w, http.StatusConflict, "repo sync asset is archived")
-		return
-	}
-	repo, err := queryOne(r.Context(), tx, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	source, err := remoteForRepository(r.Context(), tx, repoID, strings.TrimSpace(fmt.Sprint(run["source_remote_id"])))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "source remote not found in repository")
-		return
-	}
-	target, err := remoteForRepository(r.Context(), tx, repoID, strings.TrimSpace(fmt.Sprint(run["target_remote_id"])))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "target remote not found in repository")
-		return
-	}
-	refs := refsFromRunRef(strings.TrimSpace(fmt.Sprint(run["ref"])), mapFromAny(lockedAsset["refs"]))
-	newRun, err := s.enqueueRepoSyncRun(r.Context(), tx, repo, source, target, refs, false, currentUser(r).ID, assetID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "could not enqueue repo sync rerun")
-		return
-	}
-	if _, err := tx.ExecContext(r.Context(), "UPDATE repo_sync_assets SET last_sync_status='queued', last_sync_run_id=$2, updated_at=now() WHERE id=$1", assetID, newRun["id"]); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update repo sync asset")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "repo_sync_asset.rerun") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit repo sync rerun")
+	var newRun map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var lockedAsset GormRepoSyncAsset
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lockedAsset, &GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		if !lockedAsset.Enabled {
+			return errRepoSyncAssetDisabled
+		}
+		if lockedAsset.ArchivedAt.Valid {
+			return errRepoSyncAssetArchived
+		}
+		repoID := cleanOptionalID(previousRun.ProjectGitRepositoryID.String)
+		var repoModel GormProjectGitRepository
+		if err := tx.First(&repoModel, &GormProjectGitRepository{GormBase: GormBase{ID: repoID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		repo := gitRepositoryMap(repoModel)
+		source, err := remoteForRepositoryGorm(r.Context(), tx, repoID, cleanOptionalID(previousRun.SourceRemoteID.String))
+		if err != nil {
+			return fmt.Errorf("source remote not found in repository")
+		}
+		target, err := remoteForRepositoryGorm(r.Context(), tx, repoID, cleanOptionalID(previousRun.TargetRemoteID.String))
+		if err != nil {
+			return fmt.Errorf("target remote not found in repository")
+		}
+		refs := refsFromRunRef(previousRun.Ref, mapFromAny(lockedAsset.Refs.Data))
+		newRun, err = s.enqueueRepoSyncRunGorm(r.Context(), tx, repo, source, target, refs, false, currentUser(r).ID, assetID)
+		if err != nil {
+			return fmt.Errorf("could not enqueue repo sync rerun")
+		}
+		if err := tx.Model(&GormRepoSyncAsset{}).
+			Where(&GormRepoSyncAsset{GormBase: GormBase{ID: assetID}}).
+			Updates(map[string]any{"last_sync_status": "queued", "last_sync_run_id": validNullString(cleanOptionalID(fmt.Sprint(newRun["id"])))}).Error; err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		if errors.Is(err, errRepoSyncAssetDisabled) {
+			writeError(w, http.StatusConflict, "repo sync asset is disabled")
+			return
+		}
+		if errors.Is(err, errRepoSyncAssetArchived) {
+			writeError(w, http.StatusConflict, "repo sync asset is archived")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"run": newRun})
 }
 
-func (s *Server) enqueueRepoSyncRun(ctx context.Context, tx *sqlx.Tx, repo, source, target map[string]any, refs map[string]any, allowForce bool, actorID, repoSyncAssetID string) (map[string]any, error) {
-	repoID := strings.TrimSpace(fmt.Sprint(repo["id"]))
-	sourceID := strings.TrimSpace(fmt.Sprint(source["id"]))
-	targetID := strings.TrimSpace(fmt.Sprint(target["id"]))
+func (s *Server) enqueueRepoSyncRunGorm(ctx context.Context, tx *gorm.DB, repo, source, target map[string]any, refs map[string]any, allowForce bool, actorID, repoSyncAssetID string) (map[string]any, error) {
+	repoID := cleanOptionalID(fmt.Sprint(repo["id"]))
+	sourceID := cleanOptionalID(fmt.Sprint(source["id"]))
+	targetID := cleanOptionalID(fmt.Sprint(target["id"]))
 	if repoID == "" || sourceID == "" || targetID == "" {
 		return nil, fmt.Errorf("repository, source, and target are required")
 	}
 	if sourceID == targetID {
 		return nil, fmt.Errorf("source and target remotes must differ")
 	}
-	if strings.TrimSpace(fmt.Sprint(source["project_git_repository_id"])) != repoID || strings.TrimSpace(fmt.Sprint(target["project_git_repository_id"])) != repoID {
+	if cleanOptionalID(fmt.Sprint(source["project_git_repository_id"])) != repoID || cleanOptionalID(fmt.Sprint(target["project_git_repository_id"])) != repoID {
 		return nil, fmt.Errorf("source and target remotes must belong to the repository")
 	}
 	input := map[string]any{
@@ -6214,45 +6519,50 @@ func (s *Server) enqueueRepoSyncRun(ctx context.Context, tx *sqlx.Tx, repo, sour
 	if repoSyncAssetID != "" {
 		input["repo_sync_asset_id"] = repoSyncAssetID
 	}
-	op, err := enqueueOperationTx(
-		ctx,
-		tx,
-		fmt.Sprint(repo["project_id"]),
-		targetID,
-		"repo.sync_remote",
-		"sync "+fmt.Sprint(source["name"])+" -> "+fmt.Sprint(target["name"]),
-		input,
-		[]string{"git"},
-		"",
-	)
+	op, err := enqueueOperationGorm(ctx, tx, cleanOptionalID(fmt.Sprint(repo["project_id"])), targetID, "repo.sync_remote", "sync "+fmt.Sprint(source["name"])+" -> "+fmt.Sprint(target["name"]), input, []string{"git"}, "")
 	if err != nil {
 		return nil, err
 	}
-	var assetID any
-	if repoSyncAssetID != "" {
-		assetID = repoSyncAssetID
+	run := GormRepoSyncRun{
+		OperationRunID:         cleanOptionalID(fmt.Sprint(op["id"])),
+		GitRemoteID:            targetID,
+		ProjectID:              validNullString(cleanOptionalID(fmt.Sprint(repo["project_id"]))),
+		ProjectGitRepositoryID: validNullString(repoID),
+		RepoSyncAssetID:        validNullString(repoSyncAssetID),
+		SourceRemoteID:         validNullString(sourceID),
+		TargetRemoteID:         validNullString(targetID),
+		Ref:                    refsSummary(refs),
+		ActorUserID:            validNullString(actorID),
+		Status:                 "queued",
 	}
-	var actor any
-	if strings.TrimSpace(actorID) != "" {
-		actor = actorID
+	if err := tx.WithContext(ctx).Create(&run).Error; err != nil {
+		return nil, err
 	}
-	return queryOne(ctx, tx, `
-		INSERT INTO repo_sync_runs(
-			operation_run_id, git_remote_id, project_id, project_git_repository_id,
-			repo_sync_asset_id, source_remote_id, target_remote_id, ref, actor_user_id, status
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued')
-		RETURNING *`,
-		op["id"],
-		targetID,
-		repo["project_id"],
-		repoID,
-		assetID,
-		sourceID,
-		targetID,
-		refsSummary(refs),
-		actor,
-	)
+	return repoSyncRunMap(run), nil
+}
+
+func repoSyncRunMap(run GormRepoSyncRun) map[string]any {
+	return map[string]any{
+		"id":                        run.ID,
+		"operation_run_id":          run.OperationRunID,
+		"git_remote_id":             run.GitRemoteID,
+		"project_id":                nullableStringValue(run.ProjectID),
+		"project_git_repository_id": nullableStringValue(run.ProjectGitRepositoryID),
+		"repo_sync_asset_id":        nullableStringValue(run.RepoSyncAssetID),
+		"source_remote_id":          nullableStringValue(run.SourceRemoteID),
+		"target_remote_id":          nullableStringValue(run.TargetRemoteID),
+		"ref":                       run.Ref,
+		"before_sha":                run.BeforeSHA,
+		"after_sha":                 run.AfterSHA,
+		"actor_user_id":             nullableStringValue(run.ActorUserID),
+		"status":                    run.Status,
+		"stdout":                    run.Stdout,
+		"stderr":                    run.Stderr,
+		"error_message":             run.ErrorMessage,
+		"started_at":                nullableTimeAny(run.StartedAt),
+		"finished_at":               nullableTimeAny(run.FinishedAt),
+		"created_at":                run.CreatedAt,
+	}
 }
 
 func (s *Server) listWebhookConnections(w http.ResponseWriter, r *http.Request) {
@@ -6261,88 +6571,7 @@ func (s *Server) listWebhookConnections(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	baseURL := s.publicBaseURL()
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT wc.id,
-			wc.project_id,
-			wc.provider,
-			wc.name,
-			wc.source_remote_id,
-			wc.enabled,
-			wc.event_types,
-			wc.last_delivery_status,
-			wc.metadata,
-			wc.created_at,
-			wc.updated_at,
-			gr.name AS source_remote_name,
-			COALESCE(stats.deliveries_7d, 0)::int AS deliveries_7d,
-			COALESCE(stats.failures_7d, 0)::int AS failures_7d,
-			COALESCE(stats.processed_7d, 0)::int AS processed_7d,
-			COALESCE(stats.ignored_7d, 0)::int AS ignored_7d,
-			COALESCE(stats.replayed_7d, 0)::int AS replayed_7d,
-			COALESCE(stats.signature_valid_7d, 0)::int AS signature_valid_7d,
-			COALESCE(stats.matched_repo_sync_asset_7d, 0)::int AS matched_repo_sync_asset_7d,
-			COALESCE(stats.operation_run_7d, 0)::int AS operation_run_7d,
-			stats.last_event_at,
-			stats.last_event_status,
-			stats.last_event_type,
-			stats.last_event_signature_valid,
-			COALESCE(audit_stats.threshold_decision_audit_count, 0)::int AS threshold_decision_audit_count,
-			audit_stats.last_threshold_decision_audit_at,
-			COALESCE(config_stats.threshold_configuration_count, 0)::int AS threshold_configuration_count,
-			config_stats.last_threshold_configuration_at,
-			('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_path,
-			$2 || ('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_url
-		FROM webhook_connections wc
-		LEFT JOIN git_remotes gr ON gr.id=wc.source_remote_id
-		LEFT JOIN LATERAL (
-			SELECT
-				count(*) FILTER (WHERE we.received_at >= now() - interval '7 days') AS deliveries_7d,
-				count(*) FILTER (WHERE we.status IN ('failed', 'rejected') AND we.received_at >= now() - interval '7 days') AS failures_7d,
-				count(*) FILTER (WHERE we.status='processed' AND we.received_at >= now() - interval '7 days') AS processed_7d,
-				count(*) FILTER (WHERE we.status='ignored' AND we.received_at >= now() - interval '7 days') AS ignored_7d,
-				count(*) FILTER (WHERE we.delivery_id ILIKE '%:replay:%' AND we.received_at >= now() - interval '7 days') AS replayed_7d,
-				count(*) FILTER (WHERE we.signature_valid AND we.received_at >= now() - interval '7 days') AS signature_valid_7d,
-				count(*) FILTER (WHERE we.matched_repo_sync_asset_id IS NOT NULL AND we.received_at >= now() - interval '7 days') AS matched_repo_sync_asset_7d,
-				count(*) FILTER (WHERE we.operation_run_id IS NOT NULL AND we.received_at >= now() - interval '7 days') AS operation_run_7d,
-				max(we.received_at) AS last_event_at,
-				(
-					SELECT recent.status
-					FROM webhook_events recent
-					WHERE recent.webhook_connection_id=wc.id
-					ORDER BY recent.received_at DESC
-					LIMIT 1
-				) AS last_event_status,
-				(
-					SELECT recent.event_type
-					FROM webhook_events recent
-					WHERE recent.webhook_connection_id=wc.id
-					ORDER BY recent.received_at DESC
-					LIMIT 1
-				) AS last_event_type,
-				(
-					SELECT recent.signature_valid
-					FROM webhook_events recent
-					WHERE recent.webhook_connection_id=wc.id
-					ORDER BY recent.received_at DESC
-					LIMIT 1
-				) AS last_event_signature_valid
-			FROM webhook_events we
-			WHERE we.webhook_connection_id=wc.id
-		) stats ON true
-		LEFT JOIN LATERAL (
-			SELECT count(*) AS threshold_decision_audit_count,
-				max(wtda.created_at) AS last_threshold_decision_audit_at
-			FROM webhook_threshold_decision_audits wtda
-			WHERE wtda.webhook_connection_id=wc.id
-		) audit_stats ON true
-		LEFT JOIN LATERAL (
-			SELECT count(*) AS threshold_configuration_count,
-				max(wtc.applied_at) AS last_threshold_configuration_at
-			FROM webhook_threshold_configurations wtc
-			WHERE wtc.webhook_connection_id=wc.id
-		) config_stats ON true
-		WHERE wc.project_id=$1
-		ORDER BY wc.created_at DESC`, projectID, baseURL)
+	items, err := s.webhookConnectionReadinessMapsGorm(r.Context(), projectID, "", baseURL)
 	annotateWebhookConnectionHealth(items)
 	annotateWebhookCallbackReadiness(items, baseURL)
 	annotateWebhookThresholdDecisionAuditEvidence(items)
@@ -6350,96 +6579,237 @@ func (s *Server) listWebhookConnections(w http.ResponseWriter, r *http.Request) 
 	writeQueryResult(w, items, err)
 }
 
-func webhookConnectionWithCallbackReadiness(ctx context.Context, db sqlx.ExtContext, connectionID, baseURL string) (map[string]any, error) {
-	item, err := queryOne(ctx, db, `
-		SELECT wc.id,
-			wc.project_id,
-			wc.provider,
-			wc.name,
-			wc.source_remote_id,
-			wc.enabled,
-			wc.event_types,
-			wc.last_delivery_status,
-			wc.metadata,
-			wc.created_at,
-			wc.updated_at,
-			gr.name AS source_remote_name,
-			COALESCE(stats.deliveries_7d, 0)::int AS deliveries_7d,
-			COALESCE(stats.failures_7d, 0)::int AS failures_7d,
-			COALESCE(stats.processed_7d, 0)::int AS processed_7d,
-			COALESCE(stats.ignored_7d, 0)::int AS ignored_7d,
-			COALESCE(stats.replayed_7d, 0)::int AS replayed_7d,
-			COALESCE(stats.signature_valid_7d, 0)::int AS signature_valid_7d,
-			COALESCE(stats.matched_repo_sync_asset_7d, 0)::int AS matched_repo_sync_asset_7d,
-			COALESCE(stats.operation_run_7d, 0)::int AS operation_run_7d,
-			stats.last_event_at,
-			stats.last_event_status,
-			stats.last_event_type,
-			stats.last_event_signature_valid,
-			COALESCE(audit_stats.threshold_decision_audit_count, 0)::int AS threshold_decision_audit_count,
-			audit_stats.last_threshold_decision_audit_at,
-			COALESCE(config_stats.threshold_configuration_count, 0)::int AS threshold_configuration_count,
-			config_stats.last_threshold_configuration_at,
-			('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_path,
-			$2 || ('/api/webhooks/' || wc.provider || '/' || wc.id::text) AS webhook_url
-		FROM webhook_connections wc
-		LEFT JOIN git_remotes gr ON gr.id=wc.source_remote_id
-		LEFT JOIN LATERAL (
-			SELECT
-				count(*) FILTER (WHERE we.received_at >= now() - interval '7 days') AS deliveries_7d,
-				count(*) FILTER (WHERE we.status IN ('failed', 'rejected') AND we.received_at >= now() - interval '7 days') AS failures_7d,
-				count(*) FILTER (WHERE we.status='processed' AND we.received_at >= now() - interval '7 days') AS processed_7d,
-				count(*) FILTER (WHERE we.status='ignored' AND we.received_at >= now() - interval '7 days') AS ignored_7d,
-				count(*) FILTER (WHERE we.delivery_id ILIKE '%:replay:%' AND we.received_at >= now() - interval '7 days') AS replayed_7d,
-				count(*) FILTER (WHERE we.signature_valid AND we.received_at >= now() - interval '7 days') AS signature_valid_7d,
-				count(*) FILTER (WHERE we.matched_repo_sync_asset_id IS NOT NULL AND we.received_at >= now() - interval '7 days') AS matched_repo_sync_asset_7d,
-				count(*) FILTER (WHERE we.operation_run_id IS NOT NULL AND we.received_at >= now() - interval '7 days') AS operation_run_7d,
-				max(we.received_at) AS last_event_at,
-				(
-					SELECT recent.status
-					FROM webhook_events recent
-					WHERE recent.webhook_connection_id=wc.id
-					ORDER BY recent.received_at DESC
-					LIMIT 1
-				) AS last_event_status,
-				(
-					SELECT recent.event_type
-					FROM webhook_events recent
-					WHERE recent.webhook_connection_id=wc.id
-					ORDER BY recent.received_at DESC
-					LIMIT 1
-				) AS last_event_type,
-				(
-					SELECT recent.signature_valid
-					FROM webhook_events recent
-					WHERE recent.webhook_connection_id=wc.id
-					ORDER BY recent.received_at DESC
-					LIMIT 1
-				) AS last_event_signature_valid
-			FROM webhook_events we
-			WHERE we.webhook_connection_id=wc.id
-		) stats ON true
-		LEFT JOIN LATERAL (
-			SELECT count(*) AS threshold_decision_audit_count,
-				max(wtda.created_at) AS last_threshold_decision_audit_at
-			FROM webhook_threshold_decision_audits wtda
-			WHERE wtda.webhook_connection_id=wc.id
-		) audit_stats ON true
-		LEFT JOIN LATERAL (
-			SELECT count(*) AS threshold_configuration_count,
-				max(wtc.applied_at) AS last_threshold_configuration_at
-			FROM webhook_threshold_configurations wtc
-			WHERE wtc.webhook_connection_id=wc.id
-		) config_stats ON true
-		WHERE wc.id=$1`, connectionID, baseURL)
+func (s *Server) webhookConnectionWithCallbackReadinessGorm(ctx context.Context, connectionID, baseURL string) (map[string]any, error) {
+	items, err := s.webhookConnectionReadinessMapsGorm(ctx, "", connectionID, baseURL)
 	if err != nil {
 		return nil, err
 	}
+	if len(items) == 0 {
+		return nil, ErrNotFound
+	}
+	item := items[0]
 	annotateWebhookConnectionHealth([]map[string]any{item})
 	annotateWebhookCallbackReadiness([]map[string]any{item}, baseURL)
 	annotateWebhookThresholdDecisionAuditEvidence([]map[string]any{item})
 	annotateWebhookThresholdConfigurationEvidence([]map[string]any{item})
 	return item, nil
+}
+
+func (s *Server) webhookConnectionReadinessMapsGorm(ctx context.Context, projectID, connectionID, baseURL string) ([]map[string]any, error) {
+	if s.store == nil || s.store.Gorm == nil {
+		return nil, errors.New("gorm store is not configured")
+	}
+	db := s.store.Gorm.WithContext(ctx).Model(&GormWebhookConnection{})
+	if projectID != "" {
+		db = db.Where(&GormWebhookConnection{ProjectID: projectID})
+	}
+	if connectionID != "" {
+		db = db.Where(&GormWebhookConnection{GormBase: GormBase{ID: connectionID}})
+	}
+	var connections []GormWebhookConnection
+	if err := db.Order(gormOrderDesc("created_at")).Find(&connections).Error; err != nil {
+		return nil, err
+	}
+	if connectionID != "" && len(connections) == 0 {
+		return nil, ErrNotFound
+	}
+	connectionIDs := make([]string, 0, len(connections))
+	sourceRemoteIDs := make([]string, 0, len(connections))
+	for _, connection := range connections {
+		connectionIDs = append(connectionIDs, connection.ID)
+		if id := cleanOptionalID(connection.SourceRemoteID.String); id != "" {
+			sourceRemoteIDs = append(sourceRemoteIDs, id)
+		}
+	}
+	sourceNames := map[string]string{}
+	if len(sourceRemoteIDs) > 0 {
+		var remotes []GormGitRemote
+		if err := s.store.Gorm.WithContext(ctx).Where(gormField("id", sourceRemoteIDs)).Find(&remotes).Error; err != nil {
+			return nil, err
+		}
+		for _, remote := range remotes {
+			sourceNames[remote.ID] = remote.Name
+		}
+	}
+	stats, err := s.webhookConnectionStatsGorm(ctx, connectionIDs)
+	if err != nil {
+		return nil, err
+	}
+	audits, err := s.webhookThresholdAuditStatsGorm(ctx, connectionIDs)
+	if err != nil {
+		return nil, err
+	}
+	configs, err := s.webhookThresholdConfigurationStatsGorm(ctx, connectionIDs)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(connections))
+	for _, connection := range connections {
+		stat := stats[connection.ID]
+		audit := audits[connection.ID]
+		config := configs[connection.ID]
+		path := "/api/webhooks/" + connection.Provider + "/" + connection.ID
+		items = append(items, map[string]any{
+			"id":                               connection.ID,
+			"project_id":                       connection.ProjectID,
+			"provider":                         connection.Provider,
+			"name":                             connection.Name,
+			"source_remote_id":                 nullableStringValue(connection.SourceRemoteID),
+			"enabled":                          connection.Enabled,
+			"event_types":                      mapFromAny(connection.EventTypes.Data),
+			"last_delivery_status":             connection.LastDeliveryStatus,
+			"metadata":                         mapFromAny(connection.Metadata.Data),
+			"created_at":                       connection.CreatedAt,
+			"updated_at":                       connection.UpdatedAt,
+			"source_remote_name":               sourceNames[cleanOptionalID(connection.SourceRemoteID.String)],
+			"deliveries_7d":                    stat.Deliveries7d,
+			"failures_7d":                      stat.Failures7d,
+			"processed_7d":                     stat.Processed7d,
+			"ignored_7d":                       stat.Ignored7d,
+			"replayed_7d":                      stat.Replayed7d,
+			"signature_valid_7d":               stat.SignatureValid7d,
+			"matched_repo_sync_asset_7d":       stat.MatchedRepoSyncAsset7d,
+			"operation_run_7d":                 stat.OperationRun7d,
+			"last_event_at":                    nullableTimeAny(sql.NullTime{Time: stat.LastEventAt, Valid: !stat.LastEventAt.IsZero()}),
+			"last_event_status":                stat.LastEventStatus,
+			"last_event_type":                  stat.LastEventType,
+			"last_event_signature_valid":       stat.LastEventSignatureValid,
+			"threshold_decision_audit_count":   audit.Count,
+			"last_threshold_decision_audit_at": nullableTimeAny(sql.NullTime{Time: audit.LastAt, Valid: !audit.LastAt.IsZero()}),
+			"threshold_configuration_count":    config.Count,
+			"last_threshold_configuration_at":  nullableTimeAny(sql.NullTime{Time: config.LastAt, Valid: !config.LastAt.IsZero()}),
+			"webhook_path":                     path,
+			"webhook_url":                      baseURL + path,
+		})
+	}
+	return items, nil
+}
+
+func webhookConnectionMap(connection GormWebhookConnection, webhookURL, webhookPath string) map[string]any {
+	return map[string]any{
+		"id":                   connection.ID,
+		"project_id":           connection.ProjectID,
+		"provider":             connection.Provider,
+		"name":                 connection.Name,
+		"source_remote_id":     nullableStringValue(connection.SourceRemoteID),
+		"enabled":              connection.Enabled,
+		"event_types":          stringSliceFromAny(connection.EventTypes.Data),
+		"last_delivery_status": connection.LastDeliveryStatus,
+		"last_delivery_error":  connection.LastDeliveryError,
+		"metadata":             mapFromAny(connection.Metadata.Data),
+		"created_at":           connection.CreatedAt,
+		"updated_at":           connection.UpdatedAt,
+		"webhook_path":         webhookPath,
+		"webhook_url":          webhookURL,
+	}
+}
+
+type webhookConnectionStats struct {
+	Deliveries7d            int
+	Failures7d              int
+	Processed7d             int
+	Ignored7d               int
+	Replayed7d              int
+	SignatureValid7d        int
+	MatchedRepoSyncAsset7d  int
+	OperationRun7d          int
+	LastEventAt             time.Time
+	LastEventStatus         string
+	LastEventType           string
+	LastEventSignatureValid bool
+}
+
+func (s *Server) webhookConnectionStatsGorm(ctx context.Context, connectionIDs []string) (map[string]webhookConnectionStats, error) {
+	stats := map[string]webhookConnectionStats{}
+	if len(connectionIDs) == 0 {
+		return stats, nil
+	}
+	var events []GormWebhookEvent
+	if err := s.store.Gorm.WithContext(ctx).Where(gormField("webhook_connection_id", connectionIDs)).Order(gormOrderDesc("received_at")).Find(&events).Error; err != nil {
+		return nil, err
+	}
+	since := time.Now().Add(-7 * 24 * time.Hour)
+	for _, event := range events {
+		connectionID := cleanOptionalID(event.WebhookConnectionID.String)
+		stat := stats[connectionID]
+		if stat.LastEventAt.IsZero() || event.ReceivedAt.After(stat.LastEventAt) {
+			stat.LastEventAt = event.ReceivedAt
+			stat.LastEventStatus = event.Status
+			stat.LastEventType = event.EventType
+			stat.LastEventSignatureValid = event.SignatureValid
+		}
+		if !event.ReceivedAt.Before(since) {
+			stat.Deliveries7d++
+			if isWebhookFailureStatus(event.Status) {
+				stat.Failures7d++
+			}
+			if event.Status == "processed" {
+				stat.Processed7d++
+			}
+			if event.Status == "ignored" {
+				stat.Ignored7d++
+			}
+			if strings.Contains(strings.ToLower(event.DeliveryID), ":replay:") {
+				stat.Replayed7d++
+			}
+			if event.SignatureValid {
+				stat.SignatureValid7d++
+			}
+			if cleanOptionalID(event.MatchedRepoSyncAssetID.String) != "" {
+				stat.MatchedRepoSyncAsset7d++
+			}
+			if cleanOptionalID(event.OperationRunID.String) != "" {
+				stat.OperationRun7d++
+			}
+		}
+		stats[connectionID] = stat
+	}
+	return stats, nil
+}
+
+type webhookThresholdStats struct {
+	Count  int
+	LastAt time.Time
+}
+
+func (s *Server) webhookThresholdAuditStatsGorm(ctx context.Context, connectionIDs []string) (map[string]webhookThresholdStats, error) {
+	stats := map[string]webhookThresholdStats{}
+	if len(connectionIDs) == 0 {
+		return stats, nil
+	}
+	var audits []GormWebhookThresholdDecisionAudit
+	if err := s.store.Gorm.WithContext(ctx).Where(gormField("webhook_connection_id", connectionIDs)).Find(&audits).Error; err != nil {
+		return nil, err
+	}
+	for _, audit := range audits {
+		stat := stats[audit.WebhookConnectionID]
+		stat.Count++
+		if audit.CreatedAt.After(stat.LastAt) {
+			stat.LastAt = audit.CreatedAt
+		}
+		stats[audit.WebhookConnectionID] = stat
+	}
+	return stats, nil
+}
+
+func (s *Server) webhookThresholdConfigurationStatsGorm(ctx context.Context, connectionIDs []string) (map[string]webhookThresholdStats, error) {
+	stats := map[string]webhookThresholdStats{}
+	if len(connectionIDs) == 0 {
+		return stats, nil
+	}
+	var configs []GormWebhookThresholdConfiguration
+	if err := s.store.Gorm.WithContext(ctx).Where(gormField("webhook_connection_id", connectionIDs)).Find(&configs).Error; err != nil {
+		return nil, err
+	}
+	for _, config := range configs {
+		stat := stats[config.WebhookConnectionID]
+		stat.Count++
+		if config.AppliedAt.After(stat.LastAt) {
+			stat.LastAt = config.AppliedAt
+		}
+		stats[config.WebhookConnectionID] = stat
+	}
+	return stats, nil
 }
 
 func annotateWebhookConnectionHealth(items []map[string]any) {
@@ -7376,21 +7746,17 @@ func (s *Server) createWebhookConnection(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "source_remote_id is required")
 		return
 	}
-	remote, err := queryOne(r.Context(), s.store.DB, `
-		SELECT gr.*, pgr.project_id
-		FROM git_remotes gr
-		JOIN project_git_repositories pgr ON pgr.id=gr.project_git_repository_id
-		WHERE gr.id=$1`, req.SourceRemoteID)
+	remoteModel, remoteProjectID, err := s.gitRemoteWithProjectGorm(r.Context(), req.SourceRemoteID)
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	if strings.TrimSpace(fmt.Sprint(remote["project_id"])) != projectID {
+	if remoteProjectID != projectID {
 		writeError(w, http.StatusBadRequest, "source remote must belong to the project")
 		return
 	}
 	if req.Name == "" {
-		req.Name = req.Provider + " webhook for " + fmt.Sprint(remote["name"])
+		req.Name = req.Provider + " webhook for " + remoteModel.Name
 	}
 	secret := strings.TrimSpace(req.SecretToken)
 	generated := false
@@ -7421,50 +7787,31 @@ func (s *Server) createWebhookConnection(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "could not encrypt webhook secret")
 		return
 	}
-	eventTypes, err := jsonParam(req.EventTypes)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid event_types")
+	connection := GormWebhookConnection{
+		ProjectID:        projectID,
+		Provider:         req.Provider,
+		Name:             req.Name,
+		SourceRemoteID:   validNullString(req.SourceRemoteID),
+		SecretCiphertext: secretCiphertext,
+		Enabled:          enabled,
+		EventTypes:       JSONValue{Data: req.EventTypes},
+		Metadata:         JSONValue{Data: nonNilMap(req.Metadata)},
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&connection).Error; err != nil {
+			return err
+		}
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		if err != nil {
+			return fmt.Errorf("syncing canonical assets for webhook_connection.create: %w", err)
+		}
+		return nil
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create webhook connection")
 		return
 	}
-	metadata, err := jsonParam(req.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid metadata")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start webhook connection transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO webhook_connections(project_id, provider, name, source_remote_id, secret_token, secret_ciphertext, enabled, event_types, metadata)
-		VALUES ($1, $2, $3, $4, '', $5, $6, $7::jsonb, $8::jsonb)
-		RETURNING id, project_id, provider, name, source_remote_id, enabled, event_types,
-			last_delivery_status, last_delivery_error, metadata, created_at, updated_at,
-			('/api/webhooks/' || provider || '/' || id::text) AS webhook_path,
-			$9 || ('/api/webhooks/' || provider || '/' || id::text) AS webhook_url`,
-		projectID,
-		req.Provider,
-		req.Name,
-		req.SourceRemoteID,
-		secretCiphertext,
-		enabled,
-		eventTypes,
-		metadata,
-		s.publicBaseURL(),
-	)
-	if err != nil {
-		writeQueryOne(w, item, err)
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "webhook_connection.create") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit webhook connection")
-		return
-	}
+	path := "/api/webhooks/" + connection.Provider + "/" + connection.ID
+	item := webhookConnectionMap(connection, s.publicBaseURL()+path, path)
 	if generated {
 		item["secret_token_once"] = secret
 	}
@@ -7473,15 +7820,12 @@ func (s *Server) createWebhookConnection(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) rotateWebhookConnectionSecret(w http.ResponseWriter, r *http.Request) {
 	connectionID := chi.URLParam(r, "id")
-	connection, err := queryOne(r.Context(), s.store.DB, `
-		SELECT id, project_id, provider
-		FROM webhook_connections
-		WHERE id=$1`, connectionID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var connection GormWebhookConnection
+	if err := s.store.Gorm.WithContext(r.Context()).First(&connection, &GormWebhookConnection{GormBase: GormBase{ID: connectionID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := strings.TrimSpace(fmt.Sprint(connection["project_id"]))
+	projectID := connection.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "webhook_connection", ID: connectionID, ProjectID: projectID}, "update") {
 		return
 	}
@@ -7494,6 +7838,7 @@ func (s *Server) rotateWebhookConnectionSecret(w http.ResponseWriter, r *http.Re
 	secret := strings.TrimSpace(req.SecretToken)
 	generated := false
 	if secret == "" {
+		var err error
 		secret, err = randomWebhookSecret()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not generate webhook secret")
@@ -7509,42 +7854,22 @@ func (s *Server) rotateWebhookConnectionSecret(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "could not encrypt webhook secret")
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start webhook secret rotation transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE webhook_connections
-		SET secret_token='',
-			secret_ciphertext=$2,
-			updated_at=now()
-		WHERE id=$1 AND project_id=$4
-		RETURNING id, project_id, provider, name, source_remote_id, enabled, event_types,
-			last_delivery_status, last_delivery_error, metadata, created_at, updated_at,
-			('/api/webhooks/' || provider || '/' || id::text) AS webhook_path,
-			$3 || ('/api/webhooks/' || provider || '/' || id::text) AS webhook_url`,
-		connectionID,
-		secretCiphertext,
-		s.publicBaseURL(),
-		projectID,
-	)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusConflict, "webhook connection changed during secret rotation; retry")
-			return
+	connection.SecretCiphertext = secretCiphertext
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&connection).Error; err != nil {
+			return err
 		}
-		writeQueryOne(w, item, err)
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		if err != nil {
+			return fmt.Errorf("syncing canonical assets for webhook_connection.rotate_secret: %w", err)
+		}
+		return nil
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not rotate webhook secret")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "webhook_connection.rotate_secret") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit webhook secret rotation")
-		return
-	}
+	path := "/api/webhooks/" + connection.Provider + "/" + connection.ID
+	item := webhookConnectionMap(connection, s.publicBaseURL()+path, path)
 	if generated {
 		item["secret_token_once"] = secret
 	}
@@ -7553,7 +7878,7 @@ func (s *Server) rotateWebhookConnectionSecret(w http.ResponseWriter, r *http.Re
 
 func (s *Server) recordWebhookThresholdDecisionAudit(w http.ResponseWriter, r *http.Request) {
 	connectionID := chi.URLParam(r, "id")
-	connection, err := webhookConnectionWithCallbackReadiness(r.Context(), s.store.DB, connectionID, s.publicBaseURL())
+	connection, err := s.webhookConnectionWithCallbackReadinessGorm(r.Context(), connectionID, s.publicBaseURL())
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -7627,56 +7952,44 @@ func (s *Server) recordWebhookThresholdDecisionAudit(w http.ResponseWriter, r *h
 		"raw_provider_response_recorded":           false,
 		"suppressed_fields":                        decisionAuditPlan["suppressed_fields"],
 	}
-	evidenceJSON, err := jsonParam(evidence)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not serialize threshold decision audit evidence")
-		return
-	}
 	actorID := ""
 	if user := currentUser(r); user != nil {
 		actorID = strings.TrimSpace(user.ID)
 	}
-	audit, err := queryOne(r.Context(), s.store.DB, `
-		INSERT INTO webhook_threshold_decision_audits(
-			project_id,
-			webhook_connection_id,
-			provider,
-			threshold_review_state,
-			decision_state,
-			operator_decision,
-			evidence_window,
-			evidence,
-			created_by
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NULLIF($9, '')::uuid)
-		ON CONFLICT (webhook_connection_id, decision_state, evidence_window)
-		DO UPDATE SET
-			provider=EXCLUDED.provider,
-			threshold_review_state=EXCLUDED.threshold_review_state,
-			operator_decision=EXCLUDED.operator_decision,
-			evidence=EXCLUDED.evidence,
-			created_by=COALESCE(EXCLUDED.created_by, webhook_threshold_decision_audits.created_by)
-		RETURNING id, project_id, webhook_connection_id, provider, threshold_review_state,
-			decision_state, operator_decision, evidence_window, evidence, created_by, created_at`,
-		projectID,
-		connectionID,
-		strings.TrimSpace(fmt.Sprint(connection["provider"])),
-		cleanPreviewString(decisionAuditPlan["threshold_review_state"]),
-		cleanPreviewString(decisionAuditPlan["decision_state"]),
-		operatorDecision,
-		evidenceWindow,
-		evidenceJSON,
-		actorID,
-	)
-	if err != nil {
+	provider := strings.TrimSpace(fmt.Sprint(connection["provider"]))
+	auditModel := GormWebhookThresholdDecisionAudit{
+		ProjectID:            projectID,
+		WebhookConnectionID:  connectionID,
+		Provider:             provider,
+		ThresholdReviewState: cleanPreviewString(decisionAuditPlan["threshold_review_state"]),
+		DecisionState:        cleanPreviewString(decisionAuditPlan["decision_state"]),
+		OperatorDecision:     operatorDecision,
+		EvidenceWindow:       evidenceWindow,
+		Evidence:             JSONValue{Data: evidence},
+		CreatedBy:            validNullString(actorID),
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "webhook_connection_id"}, {Name: "decision_state"}, {Name: "evidence_window"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"provider":               provider,
+			"threshold_review_state": auditModel.ThresholdReviewState,
+			"operator_decision":      operatorDecision,
+			"evidence":               JSONValue{Data: evidence},
+			"created_by":             validNullString(actorID),
+		}),
+	}).Create(&auditModel).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not record threshold decision audit")
+		return
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormWebhookThresholdDecisionAudit{WebhookConnectionID: connectionID, DecisionState: auditModel.DecisionState, EvidenceWindow: evidenceWindow}).First(&auditModel).Error; err != nil {
+		writeError(w, http.StatusInternalServerError, "could not reload threshold decision audit")
 		return
 	}
 	decisionAuditPlan["threshold_configuration_audit_inserted"] = true
 	decisionAuditPlan["audit_insert_enabled"] = true
 	decisionAuditPlan["operator_threshold_review_recorded"] = true
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"audit":                         audit,
+		"audit":                         webhookThresholdDecisionAuditMap(auditModel),
 		"readiness":                     readiness,
 		"threshold_decision_audit_plan": decisionAuditPlan,
 	})
@@ -7684,7 +7997,7 @@ func (s *Server) recordWebhookThresholdDecisionAudit(w http.ResponseWriter, r *h
 
 func (s *Server) applyWebhookThresholdConfiguration(w http.ResponseWriter, r *http.Request) {
 	connectionID := chi.URLParam(r, "id")
-	connection, err := webhookConnectionWithCallbackReadiness(r.Context(), s.store.DB, connectionID, s.publicBaseURL())
+	connection, err := s.webhookConnectionWithCallbackReadinessGorm(r.Context(), connectionID, s.publicBaseURL())
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -7728,11 +8041,6 @@ func (s *Server) applyWebhookThresholdConfiguration(w http.ResponseWriter, r *ht
 		return
 	}
 	thresholds := webhookProviderCallbackCurrentThresholds()
-	thresholdsJSON, err := jsonParam(thresholds)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not serialize threshold configuration")
-		return
-	}
 	evidence := map[string]any{
 		"mode":                                     "provider_callback_threshold_configuration_evidence",
 		"webhook_connection_id":                    connectionID,
@@ -7759,72 +8067,61 @@ func (s *Server) applyWebhookThresholdConfiguration(w http.ResponseWriter, r *ht
 		"provider_metrics_comparison_review_ready": boolOnlyFromAny(decisionAuditPlan["decision_ready_for_review"]),
 		"suppressed_fields":                        decisionAuditPlan["suppressed_fields"],
 	}
-	evidenceJSON, err := jsonParam(evidence)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not serialize threshold configuration evidence")
-		return
-	}
 	actorID := ""
 	if user := currentUser(r); user != nil {
 		actorID = strings.TrimSpace(user.ID)
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start threshold configuration transaction")
-		return
-	}
-	defer tx.Rollback()
-	configurations, err := queryMaps(r.Context(), tx, `
-		WITH latest_audit AS (
-			SELECT id
-			FROM webhook_threshold_decision_audits
-			WHERE webhook_connection_id=$2 AND evidence_window=$4
-			ORDER BY created_at DESC
-			LIMIT 1
-		),
-		thresholds AS (
-			SELECT *
-			FROM jsonb_to_recordset($5::jsonb) AS t(key text, warning_at integer, danger_at integer, unit text)
-		)
-		INSERT INTO webhook_threshold_configurations(
-			project_id,
-			webhook_connection_id,
-			provider,
-			threshold_key,
-			warning_at,
-			danger_at,
-			unit,
-			evidence_window,
-			source_audit_id,
-			evidence,
-			applied_by
-		)
-		SELECT $1, $2, $3, thresholds.key, thresholds.warning_at, thresholds.danger_at,
-			thresholds.unit, $4, latest_audit.id, $6::jsonb, NULLIF($7, '')::uuid
-		FROM thresholds
-		CROSS JOIN latest_audit
-		ON CONFLICT (webhook_connection_id, threshold_key, evidence_window)
-		DO UPDATE SET
-			provider=EXCLUDED.provider,
-			warning_at=EXCLUDED.warning_at,
-			danger_at=EXCLUDED.danger_at,
-			unit=EXCLUDED.unit,
-			source_audit_id=EXCLUDED.source_audit_id,
-			evidence=EXCLUDED.evidence,
-			applied_by=COALESCE(EXCLUDED.applied_by, webhook_threshold_configurations.applied_by),
-			applied_at=now()
-		RETURNING id, project_id, webhook_connection_id, provider, threshold_key,
-			warning_at, danger_at, unit, evidence_window, source_audit_id, evidence,
-			applied_by, applied_at`,
-		projectID,
-		connectionID,
-		strings.TrimSpace(fmt.Sprint(connection["provider"])),
-		evidenceWindow,
-		thresholdsJSON,
-		evidenceJSON,
-		actorID,
-	)
-	if err != nil {
+	provider := strings.TrimSpace(fmt.Sprint(connection["provider"]))
+	var configurations []GormWebhookThresholdConfiguration
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var latestAudit GormWebhookThresholdDecisionAudit
+		if err := tx.Where(&GormWebhookThresholdDecisionAudit{WebhookConnectionID: connectionID, EvidenceWindow: evidenceWindow}).Order(gormOrderDesc("created_at")).First(&latestAudit).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		for _, threshold := range thresholds {
+			key := cleanPreviewString(threshold["key"])
+			if key == "" {
+				continue
+			}
+			configuration := GormWebhookThresholdConfiguration{
+				ProjectID:           projectID,
+				WebhookConnectionID: connectionID,
+				Provider:            provider,
+				ThresholdKey:        key,
+				WarningAt:           intFromAny(threshold["warning_at"], 0),
+				DangerAt:            intFromAny(threshold["danger_at"], 0),
+				Unit:                cleanPreviewString(threshold["unit"]),
+				EvidenceWindow:      evidenceWindow,
+				SourceAuditID:       validNullString(latestAudit.ID),
+				Evidence:            JSONValue{Data: evidence},
+				AppliedBy:           validNullString(actorID),
+				AppliedAt:           time.Now().UTC(),
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "webhook_connection_id"}, {Name: "threshold_key"}, {Name: "evidence_window"}},
+				DoUpdates: clause.Assignments(map[string]any{
+					"provider":        configuration.Provider,
+					"warning_at":      configuration.WarningAt,
+					"danger_at":       configuration.DangerAt,
+					"unit":            configuration.Unit,
+					"source_audit_id": configuration.SourceAuditID,
+					"evidence":        configuration.Evidence,
+					"applied_by":      configuration.AppliedBy,
+					"applied_at":      configuration.AppliedAt,
+				}),
+			}).Create(&configuration).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Where(&GormWebhookThresholdConfiguration{WebhookConnectionID: connectionID, EvidenceWindow: evidenceWindow}).Order(gormOrderAsc("threshold_key")).Find(&configurations).Error
+	}); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":           "threshold configuration requires a matching threshold decision audit",
+				"evidence_window": evidenceWindow,
+			})
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not apply threshold configuration")
 		return
 	}
@@ -7835,15 +8132,12 @@ func (s *Server) applyWebhookThresholdConfiguration(w http.ResponseWriter, r *ht
 		})
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit threshold configuration")
-		return
-	}
+	configurationMaps := webhookThresholdConfigurationMaps(configurations)
 	configurationPlan["threshold_configuration_written"] = true
 	configurationPlan["configuration_state"] = "recorded"
-	configurationPlan["threshold_configuration_count"] = len(configurations)
+	configurationPlan["threshold_configuration_count"] = len(configurationMaps)
 	configurationPlan["provider_metrics_fetched"] = false
-	recomputeEvidence := webhookThresholdCapacityRecomputeEvidence(connection, len(configurations))
+	recomputeEvidence := webhookThresholdCapacityRecomputeEvidence(connection, len(configurationMaps))
 	configurationPlan["capacity_signals_recomputed"] = true
 	configurationPlan["capacity_signal_recompute_mode"] = recomputeEvidence["recompute_mode"]
 	configurationPlan["capacity_signal_recompute_evidence"] = recomputeEvidence
@@ -7854,11 +8148,11 @@ func (s *Server) applyWebhookThresholdConfiguration(w http.ResponseWriter, r *ht
 	decisionAuditPlan["capacity_signal_recompute_evidence"] = recomputeEvidence
 	configurationPlan["threshold_decision_audit_plan"] = decisionAuditPlan
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"configurations":                       configurations,
+		"configurations":                       configurationMaps,
 		"readiness":                            readiness,
 		"threshold_configuration_plan":         configurationPlan,
 		"threshold_configuration_written":      true,
-		"threshold_configuration_count":        len(configurations),
+		"threshold_configuration_count":        len(configurationMaps),
 		"provider_metrics_fetched":             false,
 		"provider_pair_limits_compared":        false,
 		"capacity_signals_recomputed":          true,
@@ -7878,7 +8172,7 @@ func (s *Server) recordWebhookProviderCallbackRehearsalSnapshot(w http.ResponseW
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	connection, err := webhookConnectionWithCallbackReadiness(r.Context(), s.store.DB, connectionID, s.publicBaseURL())
+	connection, err := s.webhookConnectionWithCallbackReadinessGorm(r.Context(), connectionID, s.publicBaseURL())
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -7914,44 +8208,90 @@ func validWebhookEvidenceWindow(value string) bool {
 	return err == nil && amount > 0
 }
 
+func webhookThresholdDecisionAuditMap(audit GormWebhookThresholdDecisionAudit) map[string]any {
+	return map[string]any{
+		"id":                     audit.ID,
+		"project_id":             audit.ProjectID,
+		"webhook_connection_id":  audit.WebhookConnectionID,
+		"provider":               audit.Provider,
+		"threshold_review_state": audit.ThresholdReviewState,
+		"decision_state":         audit.DecisionState,
+		"operator_decision":      audit.OperatorDecision,
+		"evidence_window":        audit.EvidenceWindow,
+		"evidence":               mapFromAny(audit.Evidence.Data),
+		"created_by":             nullableStringValue(audit.CreatedBy),
+		"created_at":             audit.CreatedAt,
+	}
+}
+
+func webhookThresholdConfigurationMaps(configurations []GormWebhookThresholdConfiguration) []map[string]any {
+	items := make([]map[string]any, 0, len(configurations))
+	for _, configuration := range configurations {
+		items = append(items, map[string]any{
+			"id":                    configuration.ID,
+			"project_id":            configuration.ProjectID,
+			"webhook_connection_id": configuration.WebhookConnectionID,
+			"provider":              configuration.Provider,
+			"threshold_key":         configuration.ThresholdKey,
+			"warning_at":            configuration.WarningAt,
+			"danger_at":             configuration.DangerAt,
+			"unit":                  configuration.Unit,
+			"evidence_window":       configuration.EvidenceWindow,
+			"source_audit_id":       nullableStringValue(configuration.SourceAuditID),
+			"evidence":              mapFromAny(configuration.Evidence.Data),
+			"applied_by":            nullableStringValue(configuration.AppliedBy),
+			"applied_at":            configuration.AppliedAt,
+		})
+	}
+	return items
+}
+
 func (s *Server) listWebhookEvents(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "webhook_event", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT we.id,
-			we.webhook_connection_id,
-			we.project_id,
-			we.provider,
-			we.event_type,
-			we.delivery_id,
-			we.signature_valid,
-			we.matched_repo_sync_asset_id,
-			we.operation_run_id,
-			we.status,
-			we.error_message,
-			we.received_at,
-			we.processed_at,
-			wc.name AS webhook_connection_name
-		FROM webhook_events we
-		LEFT JOIN webhook_connections wc ON wc.id=we.webhook_connection_id
-		WHERE we.project_id=$1
-		ORDER BY we.received_at DESC
-		LIMIT 100`, projectID)
-	writeQueryResult(w, items, err)
+	var events []GormWebhookEvent
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormWebhookEvent{ProjectID: validNullString(projectID)}).Order(gormOrderDesc("received_at")).Limit(100).Find(&events).Error; err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	connectionIDs := make([]string, 0, len(events))
+	for _, event := range events {
+		if id := cleanOptionalID(event.WebhookConnectionID.String); id != "" {
+			connectionIDs = append(connectionIDs, id)
+		}
+	}
+	connectionNames := map[string]string{}
+	if len(connectionIDs) > 0 {
+		var connections []GormWebhookConnection
+		if err := s.store.Gorm.WithContext(r.Context()).Find(&connections, connectionIDs).Error; err != nil {
+			writeQueryResult(w, nil, err)
+			return
+		}
+		for _, connection := range connections {
+			connectionNames[connection.ID] = connection.Name
+		}
+	}
+	items := make([]map[string]any, 0, len(events))
+	for _, event := range events {
+		item := webhookEventMap(event)
+		delete(item, "payload")
+		delete(item, "result")
+		item["webhook_connection_name"] = connectionNames[cleanOptionalID(event.WebhookConnectionID.String)]
+		items = append(items, item)
+	}
+	writeQueryResult(w, items, nil)
 }
 
 func (s *Server) replayWebhookEvent(w http.ResponseWriter, r *http.Request) {
 	eventID := chi.URLParam(r, "id")
-	event, err := queryOne(r.Context(), s.store.DB, `
-		SELECT *
-		FROM webhook_events
-		WHERE id=$1`, eventID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var eventModel GormWebhookEvent
+	if err := s.store.Gorm.WithContext(r.Context()).First(&eventModel, &GormWebhookEvent{ID: eventID}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
+	event := webhookEventMap(eventModel)
 	projectID := strings.TrimSpace(fmt.Sprint(event["project_id"]))
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "webhook_event", ID: eventID, ProjectID: projectID}, "repo.sync") {
 		return
@@ -7971,7 +8311,7 @@ func (s *Server) replayWebhookEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "only gitea push or github workflow_run webhook events can be replayed")
 		return
 	}
-	connection, err := webhookConnectionForDelivery(r.Context(), s.store.DB, connectionID, provider)
+	connection, err := s.webhookConnectionForDeliveryGorm(r.Context(), s.store.Gorm, connectionID, provider)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -7981,22 +8321,22 @@ func (s *Server) replayWebhookEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload := mapFromAny(event["payload"])
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
+	tx := s.store.Gorm.WithContext(r.Context()).Begin()
+	if tx.Error != nil {
 		writeError(w, http.StatusInternalServerError, "could not start webhook replay transaction")
 		return
 	}
 	defer tx.Rollback()
 	var result map[string]any
 	if provider == "github" {
-		result, err = s.upsertGitHubWorkflowRunFromWebhook(r.Context(), tx, connection, payload)
+		result, err = s.upsertGitHubWorkflowRunFromWebhookGorm(r.Context(), tx, connection, payload)
 	} else {
 		push := parseGiteaPushPayload(payload)
 		if push.Ref == "" {
 			writeError(w, http.StatusBadRequest, "webhook event payload has no push ref")
 			return
 		}
-		result, err = s.enqueueWebhookRepoSyncRuns(r.Context(), tx, connection, push)
+		result, err = s.enqueueWebhookRepoSyncRunsGorm(r.Context(), tx, connection, push)
 	}
 	status := stringFromMap(result, "status")
 	if status == "" {
@@ -8022,15 +8362,15 @@ func (s *Server) replayWebhookEvent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"event": replayEvent, "result": result, "error": errorMessage})
 		return
 	}
-	replayEvent, eventErr := s.recordWebhookEventTx(r.Context(), tx, connection, eventType, replayDeliveryID, false, status, errorMessage, payload, result)
+	replayEvent, eventErr := s.recordWebhookEventTxGorm(r.Context(), tx, connection, eventType, replayDeliveryID, false, status, errorMessage, payload, result)
 	if eventErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not record webhook replay")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "webhook_event.replay") {
+	if !s.syncCanonicalAssetsInGormTransaction(w, r, tx, "webhook_event.replay") {
 		return
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit webhook replay")
 		return
 	}
@@ -8043,7 +8383,7 @@ func (s *Server) receiveGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "webhook rate limit exceeded")
 		return
 	}
-	connection, err := webhookConnectionForDelivery(r.Context(), s.store.DB, connectionID, "github")
+	connection, err := s.webhookConnectionForDeliveryGorm(r.Context(), s.store.Gorm, connectionID, "github")
 	if err != nil {
 		writeError(w, http.StatusNotFound, "webhook connection not found")
 		return
@@ -8082,24 +8422,20 @@ func (s *Server) receiveGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, result)
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
+	tx := s.store.Gorm.WithContext(r.Context()).Begin()
+	if tx.Error != nil {
 		writeError(w, http.StatusInternalServerError, "could not start GitHub webhook transaction")
 		return
 	}
 	defer tx.Rollback()
 	if deliveryID != "" {
-		if _, err := tx.ExecContext(r.Context(), "SELECT pg_advisory_xact_lock(hashtext($1))", "webhook:"+connectionID+":"+deliveryID); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not lock webhook delivery")
-			return
-		}
-		existing, exists, err := findProcessedWebhookDelivery(r.Context(), tx, connectionID, deliveryID)
+		existing, exists, err := findProcessedWebhookDeliveryGorm(r.Context(), tx, connectionID, deliveryID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not check webhook delivery")
 			return
 		}
 		if exists {
-			if err := tx.Commit(); err != nil {
+			if err := tx.Commit().Error; err != nil {
 				writeError(w, http.StatusInternalServerError, "could not commit webhook delivery check")
 				return
 			}
@@ -8107,7 +8443,7 @@ func (s *Server) receiveGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	result, err := s.upsertGitHubWorkflowRunFromWebhook(r.Context(), tx, connection, payload)
+	result, err := s.upsertGitHubWorkflowRunFromWebhookGorm(r.Context(), tx, connection, payload)
 	status := "processed"
 	errorMessage := ""
 	if err != nil {
@@ -8127,15 +8463,15 @@ func (s *Server) receiveGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"event": event, "result": result, "error": errorMessage})
 		return
 	}
-	event, eventErr := s.recordWebhookEventTx(r.Context(), tx, connection, "workflow_run", deliveryID, true, status, errorMessage, payload, result)
+	event, eventErr := s.recordWebhookEventTxGorm(r.Context(), tx, connection, "workflow_run", deliveryID, true, status, errorMessage, payload, result)
 	if eventErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not record GitHub webhook event")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "webhook_event.github_workflow_run") {
+	if !s.syncCanonicalAssetsInGormTransaction(w, r, tx, "webhook_event.github_workflow_run") {
 		return
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit GitHub webhook event")
 		return
 	}
@@ -8148,7 +8484,7 @@ func (s *Server) receiveGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "webhook rate limit exceeded")
 		return
 	}
-	connection, err := webhookConnectionForDelivery(r.Context(), s.store.DB, connectionID, "gitea")
+	connection, err := s.webhookConnectionForDeliveryGorm(r.Context(), s.store.Gorm, connectionID, "gitea")
 	if err != nil {
 		writeError(w, http.StatusNotFound, "webhook connection not found")
 		return
@@ -8193,24 +8529,20 @@ func (s *Server) receiveGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "push ref is required")
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
+	tx := s.store.Gorm.WithContext(r.Context()).Begin()
+	if tx.Error != nil {
 		writeError(w, http.StatusInternalServerError, "could not start webhook transaction")
 		return
 	}
 	defer tx.Rollback()
 	if deliveryID != "" {
-		if _, err := tx.ExecContext(r.Context(), "SELECT pg_advisory_xact_lock(hashtext($1))", "webhook:"+connectionID+":"+deliveryID); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not lock webhook delivery")
-			return
-		}
-		existing, exists, err := findProcessedWebhookDelivery(r.Context(), tx, connectionID, deliveryID)
+		existing, exists, err := findProcessedWebhookDeliveryGorm(r.Context(), tx, connectionID, deliveryID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not check webhook delivery")
 			return
 		}
 		if exists {
-			if err := tx.Commit(); err != nil {
+			if err := tx.Commit().Error; err != nil {
 				writeError(w, http.StatusInternalServerError, "could not commit webhook delivery check")
 				return
 			}
@@ -8218,7 +8550,7 @@ func (s *Server) receiveGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	result, err := s.enqueueWebhookRepoSyncRuns(r.Context(), tx, connection, push)
+	result, err := s.enqueueWebhookRepoSyncRunsGorm(r.Context(), tx, connection, push)
 	status := stringFromMap(result, "status")
 	if status == "" {
 		status = "processed"
@@ -8238,46 +8570,38 @@ func (s *Server) receiveGiteaWebhook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"event": event, "result": result, "error": errorMessage})
 		return
 	}
-	event, eventErr := s.recordWebhookEventTx(r.Context(), tx, connection, "push", deliveryID, true, status, errorMessage, payload, result)
+	event, eventErr := s.recordWebhookEventTxGorm(r.Context(), tx, connection, "push", deliveryID, true, status, errorMessage, payload, result)
 	if eventErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not record webhook event")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "webhook_event.gitea_push") {
+	if !s.syncCanonicalAssetsInGormTransaction(w, r, tx, "webhook_event.gitea_push") {
 		return
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit webhook event")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"event": event, "result": result})
 }
 
-func webhookConnectionForDelivery(ctx context.Context, db sqlx.ExtContext, connectionID, provider string) (map[string]any, error) {
-	rows, err := db.QueryxContext(ctx, `
-		SELECT id, project_id, provider, source_remote_id, secret_token, secret_ciphertext, enabled
-		FROM webhook_connections
-		WHERE id=$1 AND provider=$2`, connectionID, provider)
-	if err != nil {
-		return nil, err
+func (s *Server) webhookConnectionForDeliveryGorm(ctx context.Context, db *gorm.DB, connectionID, provider string) (map[string]any, error) {
+	var connection GormWebhookConnection
+	if err := db.WithContext(ctx).Where(&GormWebhookConnection{GormBase: GormBase{ID: connectionID}, Provider: provider}).First(&connection).Error; err != nil {
+		return nil, gormNotFoundAsErrNotFound(err)
 	}
-	defer rows.Close()
-	if !rows.Next() {
-		return nil, ErrNotFound
+	return webhookConnectionDeliveryMap(connection), nil
+}
+
+func webhookConnectionDeliveryMap(connection GormWebhookConnection) map[string]any {
+	return map[string]any{
+		"id":                connection.ID,
+		"project_id":        connection.ProjectID,
+		"provider":          connection.Provider,
+		"source_remote_id":  nullableStringValue(connection.SourceRemoteID),
+		"secret_ciphertext": connection.SecretCiphertext,
+		"enabled":           connection.Enabled,
 	}
-	row := map[string]any{}
-	if err := rows.MapScan(row); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for key, value := range row {
-		if bytes, ok := value.([]byte); ok {
-			row[key] = string(bytes)
-		}
-	}
-	return row, nil
 }
 
 type giteaPushPayload struct {
@@ -8294,52 +8618,49 @@ func parseGiteaPushPayload(payload map[string]any) giteaPushPayload {
 	}
 }
 
-func (s *Server) enqueueWebhookRepoSyncRuns(ctx context.Context, tx *sqlx.Tx, connection map[string]any, push giteaPushPayload) (map[string]any, error) {
-	sourceRemoteID := strings.TrimSpace(fmt.Sprint(connection["source_remote_id"]))
-	if sourceRemoteID == "" || sourceRemoteID == "<nil>" {
+func (s *Server) enqueueWebhookRepoSyncRunsGorm(ctx context.Context, tx *gorm.DB, connection map[string]any, push giteaPushPayload) (map[string]any, error) {
+	sourceRemoteID := cleanOptionalID(fmt.Sprint(connection["source_remote_id"]))
+	if sourceRemoteID == "" {
 		return nil, fmt.Errorf("webhook connection has no source remote")
 	}
-	assets, err := queryMaps(ctx, tx, `
-		SELECT *
-		FROM repo_sync_assets
-		WHERE source_remote_id=$1
-			AND project_id=$2
-			AND enabled
-			AND archived_at IS NULL
-			AND trigger_mode IN ('webhook', 'push', 'manual_or_webhook')
-		ORDER BY created_at`, sourceRemoteID, connection["project_id"])
-	if err != nil {
+	projectID := cleanOptionalID(fmt.Sprint(connection["project_id"]))
+	var assets []GormRepoSyncAsset
+	if err := tx.WithContext(ctx).
+		Where(&GormRepoSyncAsset{SourceRemoteID: sourceRemoteID, ProjectID: projectID, Enabled: true}).
+		Where("archived_at IS NULL").
+		Where("trigger_mode IN ?", []string{"webhook", "push", "manual_or_webhook"}).
+		Order("created_at").
+		Find(&assets).Error; err != nil {
 		return nil, err
 	}
 	var runs []map[string]any
 	var matchedAssetID string
 	eventRefs := refsForWebhookRef(push.Ref)
 	for _, asset := range assets {
-		if !repoSyncAssetMatchesWebhookRef(mapFromAny(asset["refs"]), push.Ref) {
+		if !repoSyncAssetMatchesWebhookRef(mapFromAny(asset.Refs.Data), push.Ref) {
 			continue
 		}
-		repoID := strings.TrimSpace(fmt.Sprint(asset["project_git_repository_id"]))
-		repo, err := queryOne(ctx, tx, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+		var repo GormProjectGitRepository
+		if err := tx.WithContext(ctx).Where(&GormProjectGitRepository{GormBase: GormBase{ID: asset.ProjectGitRepositoryID}}).First(&repo).Error; err != nil {
+			return nil, gormNotFoundAsErrNotFound(err)
+		}
+		var source GormGitRemote
+		if err := tx.WithContext(ctx).Where(&GormGitRemote{GormBase: GormBase{ID: asset.SourceRemoteID}, ProjectGitRepositoryID: asset.ProjectGitRepositoryID}).First(&source).Error; err != nil {
+			return nil, gormNotFoundAsErrNotFound(err)
+		}
+		var target GormGitRemote
+		if err := tx.WithContext(ctx).Where(&GormGitRemote{GormBase: GormBase{ID: asset.TargetRemoteID}, ProjectGitRepositoryID: asset.ProjectGitRepositoryID}).First(&target).Error; err != nil {
+			return nil, gormNotFoundAsErrNotFound(err)
+		}
+		run, err := s.enqueueRepoSyncRunGorm(ctx, tx, gitRepositoryMap(repo), gitRemoteMap(source, nil, repo.ProjectID), gitRemoteMap(target, nil, repo.ProjectID), eventRefs, false, "", asset.ID)
 		if err != nil {
 			return nil, err
 		}
-		source, err := remoteForRepository(ctx, tx, repoID, strings.TrimSpace(fmt.Sprint(asset["source_remote_id"])))
-		if err != nil {
-			return nil, err
-		}
-		target, err := remoteForRepository(ctx, tx, repoID, strings.TrimSpace(fmt.Sprint(asset["target_remote_id"])))
-		if err != nil {
-			return nil, err
-		}
-		run, err := s.enqueueRepoSyncRun(ctx, tx, repo, source, target, eventRefs, false, "", strings.TrimSpace(fmt.Sprint(asset["id"])))
-		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, "UPDATE repo_sync_assets SET last_sync_status='queued', last_sync_run_id=$2, updated_at=now() WHERE id=$1", asset["id"], run["id"]); err != nil {
+		if err := tx.WithContext(ctx).Model(&GormRepoSyncAsset{}).Where(&GormRepoSyncAsset{GormBase: GormBase{ID: asset.ID}}).Updates(map[string]any{"last_sync_status": "queued", "last_sync_run_id": validNullString(cleanOptionalID(fmt.Sprint(run["id"])))}).Error; err != nil {
 			return nil, err
 		}
 		if matchedAssetID == "" {
-			matchedAssetID = strings.TrimSpace(fmt.Sprint(asset["id"]))
+			matchedAssetID = asset.ID
 		}
 		runs = append(runs, run)
 	}
@@ -8347,7 +8668,7 @@ func (s *Server) enqueueWebhookRepoSyncRuns(ctx context.Context, tx *sqlx.Tx, co
 	if len(runs) == 0 {
 		status = "ignored"
 	}
-	result := map[string]any{
+	return map[string]any{
 		"status":                  status,
 		"ref":                     push.Ref,
 		"before":                  push.BeforeSHA,
@@ -8355,8 +8676,7 @@ func (s *Server) enqueueWebhookRepoSyncRuns(ctx context.Context, tx *sqlx.Tx, co
 		"matched_repo_sync_asset": matchedAssetID,
 		"queued_runs":             runs,
 		"queued_count":            len(runs),
-	}
-	return result, nil
+	}, nil
 }
 
 type githubWorkflowRunPayload struct {
@@ -8380,20 +8700,16 @@ type githubWorkflowRunPayload struct {
 	} `json:"workflow_run"`
 }
 
-func (s *Server) upsertGitHubWorkflowRunFromWebhook(ctx context.Context, tx *sqlx.Tx, connection map[string]any, payload map[string]any) (map[string]any, error) {
-	remoteID := strings.TrimSpace(fmt.Sprint(connection["source_remote_id"]))
-	if remoteID == "" || remoteID == "<nil>" {
+func (s *Server) upsertGitHubWorkflowRunFromWebhookGorm(ctx context.Context, tx *gorm.DB, connection map[string]any, payload map[string]any) (map[string]any, error) {
+	remoteID := cleanOptionalID(fmt.Sprint(connection["source_remote_id"]))
+	if remoteID == "" {
 		return nil, fmt.Errorf("webhook connection has no GitHub remote")
 	}
-	remote, err := queryOne(ctx, tx, `
-		SELECT gr.*, pgr.project_id
-		FROM git_remotes gr
-		JOIN project_git_repositories pgr ON pgr.id=gr.project_git_repository_id
-		WHERE gr.id=$1`, remoteID)
+	remote, projectID, err := s.gitRemoteWithProjectGormTx(ctx, tx, remoteID)
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(fmt.Sprint(remote["project_id"])) != strings.TrimSpace(fmt.Sprint(connection["project_id"])) {
+	if projectID != cleanOptionalID(fmt.Sprint(connection["project_id"])) {
 		return nil, fmt.Errorf("GitHub remote does not belong to webhook project")
 	}
 	var event githubWorkflowRunPayload
@@ -8407,7 +8723,8 @@ func (s *Server) upsertGitHubWorkflowRunFromWebhook(ctx context.Context, tx *sql
 	if event.WorkflowRun.ID == 0 {
 		return nil, fmt.Errorf("GitHub workflow_run payload is missing workflow_run.id")
 	}
-	owner, repo, err := gitHubRepositoryFromRemote(remote)
+	remoteMap := gitRemoteMap(remote, nil, projectID)
+	owner, repo, err := gitHubRepositoryFromRemote(remoteMap)
 	if err != nil {
 		return nil, err
 	}
@@ -8419,63 +8736,58 @@ func (s *Server) upsertGitHubWorkflowRunFromWebhook(ctx context.Context, tx *sql
 		name = event.WorkflowRun.DisplayTitle
 	}
 	runID := fmt.Sprint(event.WorkflowRun.ID)
-	metadata, err := jsonParam(map[string]any{
-		"action":     event.Action,
-		"event":      event.WorkflowRun.Event,
-		"repository": event.Repository.FullName,
-		"run_number": event.WorkflowRun.RunNumber,
-	})
-	if err != nil {
-		return nil, err
+	run := GormGitHubActionRun{GitRemoteID: remoteID, ExternalRunID: runID}
+	updates := GormGitHubActionRun{
+		GitRemoteID:   remoteID,
+		ExternalRunID: runID,
+		WorkflowName:  name,
+		RunID:         runID,
+		Branch:        event.WorkflowRun.HeadBranch,
+		CommitSHA:     event.WorkflowRun.HeadSHA,
+		Status:        event.WorkflowRun.Status,
+		Conclusion:    event.WorkflowRun.Conclusion,
+		HTMLURL:       event.WorkflowRun.HTMLURL,
+		Metadata: JSONValue{Data: map[string]any{
+			"action":     event.Action,
+			"event":      event.WorkflowRun.Event,
+			"repository": event.Repository.FullName,
+			"run_number": event.WorkflowRun.RunNumber,
+		}},
+		StartedAt: nullableTimeFromPointer(event.WorkflowRun.RunStartedAt),
+		UpdatedAt: nullableTimeFromPointer(event.WorkflowRun.UpdatedAt),
+		SyncedAt:  sql.NullTime{Time: time.Now().UTC(), Valid: true},
 	}
-	run, err := queryOne(ctx, tx, `
-		INSERT INTO github_action_runs(
-			git_remote_id, external_run_id, workflow_name, run_id,
-			branch, commit_sha, status, conclusion, html_url, metadata, started_at, updated_at, synced_at
-		)
-		VALUES (
-			$1, $2, $3, $4,
-			$5, $6, $7, $8, $9, $10::jsonb, $11, $12, now()
-		)
-		ON CONFLICT (git_remote_id, external_run_id) WHERE external_run_id <> ''
-		DO UPDATE SET
-			workflow_name=EXCLUDED.workflow_name,
-			run_id=EXCLUDED.run_id,
-			branch=EXCLUDED.branch,
-			commit_sha=EXCLUDED.commit_sha,
-			status=EXCLUDED.status,
-			conclusion=EXCLUDED.conclusion,
-			html_url=EXCLUDED.html_url,
-			metadata=EXCLUDED.metadata,
-			started_at=EXCLUDED.started_at,
-			updated_at=EXCLUDED.updated_at,
-			synced_at=now()
-		RETURNING *`,
-		remoteID,
-		runID,
-		name,
-		runID,
-		event.WorkflowRun.HeadBranch,
-		event.WorkflowRun.HeadSHA,
-		event.WorkflowRun.Status,
-		event.WorkflowRun.Conclusion,
-		event.WorkflowRun.HTMLURL,
-		metadata,
-		event.WorkflowRun.RunStartedAt,
-		event.WorkflowRun.UpdatedAt,
-	)
-	if err != nil {
+	if err := tx.WithContext(ctx).Where(&run).Assign(updates).FirstOrCreate(&run).Error; err != nil {
 		return nil, err
 	}
 	return map[string]any{
 		"status":               "processed",
 		"git_remote_id":        remoteID,
-		"github_action_run_id": run["id"],
+		"github_action_run_id": run.ID,
 		"external_run_id":      runID,
 		"workflow_name":        name,
 		"branch":               event.WorkflowRun.HeadBranch,
 		"conclusion":           event.WorkflowRun.Conclusion,
 	}, nil
+}
+
+func nullableTimeFromPointer(value *time.Time) sql.NullTime {
+	if value == nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: *value, Valid: true}
+}
+
+func (s *Server) gitRemoteWithProjectGormTx(ctx context.Context, tx *gorm.DB, remoteID string) (GormGitRemote, string, error) {
+	var remote GormGitRemote
+	if err := tx.WithContext(ctx).Where(&GormGitRemote{GormBase: GormBase{ID: remoteID}}).First(&remote).Error; err != nil {
+		return remote, "", gormNotFoundAsErrNotFound(err)
+	}
+	var repo GormProjectGitRepository
+	if err := tx.WithContext(ctx).Where(&GormProjectGitRepository{GormBase: GormBase{ID: remote.ProjectGitRepositoryID}}).First(&repo).Error; err != nil {
+		return remote, "", gormNotFoundAsErrNotFound(err)
+	}
+	return remote, repo.ProjectID, nil
 }
 
 func repoSyncAssetMatchesWebhookRef(refs map[string]any, ref string) bool {
@@ -8531,22 +8843,19 @@ func refListMatches(values []string, name string) bool {
 }
 
 func (s *Server) recordWebhookEvent(ctx context.Context, connection map[string]any, eventType, deliveryID string, signatureValid bool, status, errorMessage string, payload, result map[string]any) (map[string]any, error) {
-	tx, err := s.store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	event, err := s.recordWebhookEventTx(ctx, tx, connection, eventType, deliveryID, signatureValid, status, errorMessage, payload, result)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
-		return nil, fmt.Errorf("syncing canonical assets for webhook event: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return event, nil
+	var event map[string]any
+	err := s.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		created, err := s.recordWebhookEventTxGorm(ctx, tx, connection, eventType, deliveryID, signatureValid, status, errorMessage, payload, result)
+		if err != nil {
+			return err
+		}
+		event = created
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for webhook event: %w", err)
+		}
+		return nil
+	})
+	return event, err
 }
 
 func (s *Server) recordWebhookDiagnosticEvent(ctx context.Context, connection map[string]any, eventType, deliveryID string, signatureValid bool, status, errorMessage string, payload, result map[string]any) {
@@ -8563,75 +8872,78 @@ func (s *Server) recordWebhookDiagnosticEvent(ctx context.Context, connection ma
 	}
 }
 
-func (s *Server) recordWebhookEventTx(ctx context.Context, db sqlx.ExtContext, connection map[string]any, eventType, deliveryID string, signatureValid bool, status, errorMessage string, payload, result map[string]any) (map[string]any, error) {
-	payloadJSON, err := jsonParam(payload)
-	if err != nil {
-		return nil, err
-	}
-	resultJSON, err := jsonParam(result)
-	if err != nil {
-		return nil, err
-	}
-	var matchedAssetID any
-	var operationRunID any
+func (s *Server) recordWebhookEventTxGorm(ctx context.Context, tx *gorm.DB, connection map[string]any, eventType, deliveryID string, signatureValid bool, status, errorMessage string, payload, result map[string]any) (map[string]any, error) {
+	var matchedAssetID sql.NullString
+	var operationRunID sql.NullString
 	if result != nil {
-		if value := strings.TrimSpace(fmt.Sprint(result["matched_repo_sync_asset"])); value != "" && value != "<nil>" {
-			matchedAssetID = value
+		if value := cleanOptionalID(fmt.Sprint(result["matched_repo_sync_asset"])); value != "" {
+			matchedAssetID = validNullString(value)
 		}
 		if runs, ok := result["queued_runs"].([]map[string]any); ok && len(runs) > 0 {
-			operationRunID = runs[0]["operation_run_id"]
+			operationRunID = validNullString(cleanOptionalID(fmt.Sprint(runs[0]["operation_run_id"])))
 		}
 	}
-	event, err := queryOne(ctx, db, `
-		INSERT INTO webhook_events(
-			webhook_connection_id, project_id, provider, event_type, delivery_id, signature_valid,
-			matched_repo_sync_asset_id, operation_run_id, status, error_message, payload, result, processed_at
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, now())
-		RETURNING *`,
-		connection["id"],
-		connection["project_id"],
-		connection["provider"],
-		eventType,
-		deliveryID,
-		signatureValid,
-		matchedAssetID,
-		operationRunID,
-		status,
-		errorMessage,
-		payloadJSON,
-		resultJSON,
-	)
-	if err != nil {
+	now := time.Now().UTC()
+	event := GormWebhookEvent{
+		WebhookConnectionID:    validNullString(cleanOptionalID(fmt.Sprint(connection["id"]))),
+		ProjectID:              validNullString(cleanOptionalID(fmt.Sprint(connection["project_id"]))),
+		Provider:               strings.TrimSpace(fmt.Sprint(connection["provider"])),
+		EventType:              eventType,
+		DeliveryID:             deliveryID,
+		SignatureValid:         signatureValid,
+		MatchedRepoSyncAssetID: matchedAssetID,
+		OperationRunID:         operationRunID,
+		Status:                 status,
+		ErrorMessage:           errorMessage,
+		Payload:                JSONValue{Data: payload},
+		Result:                 JSONValue{Data: result},
+		ReceivedAt:             now,
+		ProcessedAt:            sql.NullTime{Time: now, Valid: true},
+	}
+	if err := tx.WithContext(ctx).Create(&event).Error; err != nil {
 		return nil, err
 	}
-	if _, err := db.ExecContext(ctx, `
-		UPDATE webhook_connections
-		SET last_delivery_status=$2,
-			last_delivery_error=$3,
-			updated_at=now()
-		WHERE id=$1`, connection["id"], status, errorMessage); err != nil {
+	if err := tx.WithContext(ctx).Model(&GormWebhookConnection{}).
+		Where(&GormWebhookConnection{GormBase: GormBase{ID: cleanOptionalID(fmt.Sprint(connection["id"]))}}).
+		Updates(map[string]any{"last_delivery_status": status, "last_delivery_error": errorMessage}).Error; err != nil {
 		return nil, err
 	}
-	return event, nil
+	return webhookEventMap(event), nil
 }
 
-func findProcessedWebhookDelivery(ctx context.Context, db sqlx.ExtContext, connectionID, deliveryID string) (map[string]any, bool, error) {
-	event, err := queryOne(ctx, db, `
-		SELECT *
-		FROM webhook_events
-		WHERE webhook_connection_id=$1
-			AND delivery_id=$2
-			AND signature_valid
-		ORDER BY received_at DESC
-		LIMIT 1`, connectionID, deliveryID)
+func webhookEventMap(event GormWebhookEvent) map[string]any {
+	return map[string]any{
+		"id":                         event.ID,
+		"webhook_connection_id":      nullableStringValue(event.WebhookConnectionID),
+		"project_id":                 nullableStringValue(event.ProjectID),
+		"provider":                   event.Provider,
+		"event_type":                 event.EventType,
+		"delivery_id":                event.DeliveryID,
+		"signature_valid":            event.SignatureValid,
+		"matched_repo_sync_asset_id": nullableStringValue(event.MatchedRepoSyncAssetID),
+		"operation_run_id":           nullableStringValue(event.OperationRunID),
+		"status":                     event.Status,
+		"error_message":              event.ErrorMessage,
+		"payload":                    mapFromAny(event.Payload.Data),
+		"result":                     mapFromAny(event.Result.Data),
+		"received_at":                event.ReceivedAt,
+		"processed_at":               nullableTimeAny(event.ProcessedAt),
+	}
+}
+
+func findProcessedWebhookDeliveryGorm(ctx context.Context, tx *gorm.DB, connectionID, deliveryID string) (map[string]any, bool, error) {
+	var event GormWebhookEvent
+	err := tx.WithContext(ctx).
+		Where(&GormWebhookEvent{WebhookConnectionID: validNullString(connectionID), DeliveryID: deliveryID, SignatureValid: true}).
+		Order("received_at DESC").
+		First(&event).Error
+	if errorsIsRecordNotFound(err) {
+		return nil, false, nil
+	}
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, false, nil
-		}
 		return nil, false, err
 	}
-	return event, true, nil
+	return webhookEventMap(event), true, nil
 }
 
 func webhookEventType(r *http.Request) string {
@@ -8727,14 +9039,7 @@ func (s *Server) webhookSecretFromConnection(connection map[string]any) (string,
 	if ciphertext != "" && ciphertext != "<nil>" {
 		return s.decryptWebhookSecret(ciphertext)
 	}
-	secret := strings.TrimSpace(fmt.Sprint(connection["secret_token"]))
-	if secret == "<nil>" {
-		return "", fmt.Errorf("webhook connection has no secret configured")
-	}
-	if secret == "" {
-		return "", fmt.Errorf("webhook connection has no secret configured")
-	}
-	return secret, nil
+	return "", fmt.Errorf("webhook connection has no secret configured")
 }
 
 func (s *Server) webhookSecretKey() []byte {
@@ -8782,7 +9087,7 @@ func randomWebhookSecret() (string, error) {
 }
 
 func (s *Server) createGitRemote(w http.ResponseWriter, r *http.Request) {
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, chi.URLParam(r, "id"))
+	projectID, err := s.projectIDForRepositoryGorm(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -8836,71 +9141,65 @@ func (s *Server) createGitRemote(w http.ResponseWriter, r *http.Request) {
 	if req.RemoteURL == "" && len(req.URLs) > 0 {
 		req.RemoteURL = req.URLs[0]
 	}
-	urls, err := jsonParam(req.URLs)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid urls")
-		return
-	}
-	metadata, err := jsonParam(req.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid metadata")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start git remote transaction")
-		return
-	}
-	defer tx.Rollback()
 	credentialID := cleanOptionalID(req.CredentialID)
+	var credential *GormConnectionCredential
 	if credentialID != "" {
-		if _, err := requireConnectionCredential(r.Context(), tx, projectID, credentialID, "ssh_key"); err != nil {
+		credential, err = s.connectionCredentialForProjectOrGlobal(r.Context(), projectID, credentialID, "ssh_key")
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "credential_id must reference an SSH key credential in this project")
 			return
 		}
 	}
-	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO git_remotes(
-			project_git_repository_id, name, kind, remote_key, provider_type, remote_url, web_url,
-			remote_role, is_primary, sync_enabled, protected, latest_sha, last_sync_status,
-			urls, default_branch, credential_id, metadata
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16, $17::jsonb)
-		RETURNING *`,
-		chi.URLParam(r, "id"),
-		req.Name,
-		req.Kind,
-		req.RemoteKey,
-		req.ProviderType,
-		req.RemoteURL,
-		req.WebURL,
-		req.RemoteRole,
-		req.IsPrimary,
-		syncEnabled,
-		req.Protected,
-		req.LatestSHA,
-		req.LastSyncStatus,
-		urls,
-		req.DefaultBranch,
-		nullableIDArg(credentialID),
-		metadata,
-	)
-	if err != nil {
+	remote := GormGitRemote{
+		ProjectGitRepositoryID: chi.URLParam(r, "id"),
+		Name:                   req.Name,
+		Kind:                   req.Kind,
+		RemoteKey:              req.RemoteKey,
+		ProviderType:           req.ProviderType,
+		RemoteURL:              req.RemoteURL,
+		WebURL:                 req.WebURL,
+		RemoteRole:             req.RemoteRole,
+		IsPrimary:              req.IsPrimary,
+		SyncEnabled:            syncEnabled,
+		Protected:              req.Protected,
+		LatestSHA:              req.LatestSHA,
+		LastSyncStatus:         req.LastSyncStatus,
+		URLs:                   JSONValue{Data: req.URLs},
+		DefaultBranch:          req.DefaultBranch,
+		CredentialID:           validNullString(credentialID),
+		Metadata:               JSONValue{Data: req.Metadata},
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Create(&remote).Error; err != nil {
 		writeError(w, http.StatusBadRequest, "could not create resource")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "git_remote.create") {
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync git remote asset")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit git remote")
-		return
-	}
-	writeJSON(w, http.StatusCreated, item)
+	writeJSON(w, http.StatusCreated, gitRemoteMap(remote, credential, projectID))
+}
+
+type gitRemotePatchRequest struct {
+	Name           *string         `json:"name"`
+	Kind           *string         `json:"kind"`
+	RemoteKey      *string         `json:"remote_key"`
+	ProviderType   *string         `json:"provider_type"`
+	RemoteURL      *string         `json:"remote_url"`
+	WebURL         *string         `json:"web_url"`
+	RemoteRole     *string         `json:"remote_role"`
+	IsPrimary      *bool           `json:"is_primary"`
+	SyncEnabled    *bool           `json:"sync_enabled"`
+	Protected      *bool           `json:"protected"`
+	LatestSHA      *string         `json:"latest_sha"`
+	LastSyncStatus *string         `json:"last_sync_status"`
+	URLs           *[]string       `json:"urls"`
+	DefaultBranch  *string         `json:"default_branch"`
+	Metadata       *map[string]any `json:"metadata"`
 }
 
 func (s *Server) listGitRemotes(w http.ResponseWriter, r *http.Request) {
-	projectID, err := projectIDForRepository(r.Context(), s.store.DB, chi.URLParam(r, "id"))
+	projectID, err := s.projectIDForRepositoryGorm(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -8908,134 +9207,25 @@ func (s *Server) listGitRemotes(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_remote", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT gr.*, cc.name AS credential_name, cc.kind AS credential_kind,
-			(cc.secret_ciphertext <> '') AS credential_configured
-		FROM git_remotes gr
-		LEFT JOIN connection_credentials cc ON cc.id=gr.credential_id
-		WHERE gr.project_git_repository_id=$1
-		ORDER BY gr.created_at DESC`, chi.URLParam(r, "id"))
-	writeQueryResult(w, items, err)
+	var remotes []GormGitRemote
+	err = s.store.Gorm.WithContext(r.Context()).
+		Where(map[string]any{"project_git_repository_id": chi.URLParam(r, "id")}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true}).
+		Find(&remotes).Error
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	credentials, err := s.connectionCredentialsForGitRemotes(r.Context(), remotes)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": gitRemoteMaps(remotes, credentials, projectID)})
 }
 
 func (s *Server) getGitRemote(w http.ResponseWriter, r *http.Request) {
-	item, err := queryOne(r.Context(), s.store.DB, `
-		SELECT gr.*, pgr.project_id
-		FROM git_remotes gr
-		JOIN project_git_repositories pgr ON pgr.id=gr.project_git_repository_id
-		WHERE gr.id=$1`, chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_remote", ID: chi.URLParam(r, "id"), ProjectID: fmt.Sprint(item["project_id"])}, "read") {
-		return
-	}
-	writeQueryOne(w, item, err)
-}
-
-func (s *Server) updateGitRemote(w http.ResponseWriter, r *http.Request) {
-	projectID, err := projectIDForGitRemote(r.Context(), s.store.DB, chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_remote", ID: chi.URLParam(r, "id"), ProjectID: projectID}, "update") {
-		return
-	}
-	var req struct {
-		Name           *string         `json:"name"`
-		Kind           *string         `json:"kind"`
-		RemoteKey      *string         `json:"remote_key"`
-		ProviderType   *string         `json:"provider_type"`
-		RemoteURL      *string         `json:"remote_url"`
-		WebURL         *string         `json:"web_url"`
-		RemoteRole     *string         `json:"remote_role"`
-		IsPrimary      *bool           `json:"is_primary"`
-		SyncEnabled    *bool           `json:"sync_enabled"`
-		Protected      *bool           `json:"protected"`
-		LatestSHA      *string         `json:"latest_sha"`
-		LastSyncStatus *string         `json:"last_sync_status"`
-		URLs           *[]string       `json:"urls"`
-		DefaultBranch  *string         `json:"default_branch"`
-		Metadata       *map[string]any `json:"metadata"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	urls, err := jsonPatchParam(req.URLs)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid urls")
-		return
-	}
-	metadata, err := jsonPatchParam(req.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid metadata")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start git remote transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE git_remotes
-		SET name=COALESCE(NULLIF($2,''), name),
-			kind=COALESCE(NULLIF($3,''), kind),
-			remote_key=COALESCE(NULLIF($4,''), remote_key),
-			provider_type=COALESCE(NULLIF($5,''), provider_type),
-			remote_url=COALESCE($6, remote_url),
-			web_url=COALESCE($7, web_url),
-			remote_role=COALESCE(NULLIF($8,''), remote_role),
-			is_primary=COALESCE($9, is_primary),
-			sync_enabled=COALESCE($10, sync_enabled),
-			protected=COALESCE($11, protected),
-			latest_sha=COALESCE($12, latest_sha),
-			last_sync_status=COALESCE(NULLIF($13,''), last_sync_status),
-			urls=CASE WHEN $14='null' THEN urls ELSE $14::jsonb END,
-			default_branch=COALESCE(NULLIF($15,''), default_branch),
-			metadata=CASE WHEN $16='null' THEN metadata ELSE $16::jsonb END,
-			updated_at=now()
-		WHERE id=$1
-		RETURNING *`,
-		chi.URLParam(r, "id"),
-		nullableString(req.Name),
-		nullableString(req.Kind),
-		nullableString(req.RemoteKey),
-		nullableString(req.ProviderType),
-		nullableString(req.RemoteURL),
-		nullableString(req.WebURL),
-		nullableString(req.RemoteRole),
-		nullableBool(req.IsPrimary),
-		nullableBool(req.SyncEnabled),
-		nullableBool(req.Protected),
-		nullableString(req.LatestSHA),
-		nullableString(req.LastSyncStatus),
-		urls,
-		nullableString(req.DefaultBranch),
-		metadata,
-	)
-	if errors.Is(err, ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "git_remote.update") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit git remote")
-		return
-	}
-	writeJSON(w, http.StatusOK, item)
-}
-
-func (s *Server) listGitHubActions(w http.ResponseWriter, r *http.Request) {
-	projectID, err := projectIDForGitRemote(r.Context(), s.store.DB, chi.URLParam(r, "id"))
+	remote, projectID, err := s.gitRemoteWithProjectGorm(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -9043,63 +9233,47 @@ func (s *Server) listGitHubActions(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_remote", ID: chi.URLParam(r, "id"), ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT
-			gar.id,
-			gar.operation_run_id,
-			gar.git_remote_id,
-			gar.external_run_id,
-			gar.workflow_name,
-			gar.run_id,
-			gar.branch,
-			gar.commit_sha,
-			gar.status,
-			gar.conclusion,
-			gar.html_url,
-			gar.started_at,
-			gar.updated_at,
-			gar.synced_at,
-			gar.created_at,
-			COALESCE(artifact_summary.artifact_count, 0) AS artifact_count,
-			COALESCE(artifact_summary.active_artifact_count, 0) AS active_artifact_count,
-			COALESCE(artifact_summary.expired_artifact_count, 0) AS expired_artifact_count,
-			COALESCE(artifact_summary.total_artifact_size_in_bytes, 0) AS total_artifact_size_in_bytes,
-			artifact_summary.latest_artifact_synced_at AS latest_artifact_synced_at,
-			COALESCE(artifact_summary.artifacts, '[]'::jsonb) AS artifacts
-		FROM github_action_runs gar
-		LEFT JOIN LATERAL (
-			SELECT
-				COUNT(*)::int AS artifact_count,
-				COUNT(*) FILTER (WHERE NOT gaa.expired)::int AS active_artifact_count,
-				COUNT(*) FILTER (WHERE gaa.expired)::int AS expired_artifact_count,
-				COALESCE(SUM(gaa.size_in_bytes), 0)::bigint AS total_artifact_size_in_bytes,
-				MAX(gaa.synced_at) AS latest_artifact_synced_at,
-				jsonb_agg(
-					jsonb_build_object(
-						'id', gaa.id,
-						'external_artifact_id', gaa.external_artifact_id,
-						'name', gaa.name,
-						'size_in_bytes', gaa.size_in_bytes,
-						'expired', gaa.expired,
-						'created_at', gaa.created_at,
-						'updated_at', gaa.updated_at,
-						'expires_at', gaa.expires_at,
-						'synced_at', gaa.synced_at
-					)
-					ORDER BY gaa.created_at DESC NULLS LAST, gaa.name
-				) AS artifacts
-			FROM github_action_artifacts gaa
-			WHERE gaa.github_action_run_id=gar.id
-		) artifact_summary ON true
-		WHERE gar.git_remote_id=$1
-		ORDER BY gar.created_at DESC
-		LIMIT 50`, chi.URLParam(r, "id"))
-	writeQueryResult(w, items, err)
+	credential, err := s.connectionCredentialByID(r.Context(), remote.CredentialID.String)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, gitRemoteMap(remote, credential, projectID))
 }
 
-func (s *Server) listGitHubLabels(w http.ResponseWriter, r *http.Request) {
+func (s *Server) updateGitRemote(w http.ResponseWriter, r *http.Request) {
+	remote, projectID, err := s.gitRemoteWithProjectGorm(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_remote", ID: chi.URLParam(r, "id"), ProjectID: projectID}, "update") {
+		return
+	}
+	var req gitRemotePatchRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	applyGitRemotePatch(&remote, req)
+	if err := s.store.Gorm.WithContext(r.Context()).Save(&remote).Error; err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync git remote asset")
+		return
+	}
+	credential, err := s.connectionCredentialByID(r.Context(), remote.CredentialID.String)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, gitRemoteMap(remote, credential, projectID))
+}
+
+func (s *Server) listGitHubActions(w http.ResponseWriter, r *http.Request) {
 	remoteID := chi.URLParam(r, "id")
-	projectID, err := projectIDForGitRemote(r.Context(), s.store.DB, remoteID)
+	_, projectID, err := s.gitRemoteWithProjectGorm(r.Context(), remoteID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -9107,27 +9281,139 @@ func (s *Server) listGitHubLabels(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_remote", ID: remoteID, ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT
-			id,
-			operation_run_id,
-			git_remote_id,
-			external_label_id,
-			node_id,
-			name,
-			color,
-			description,
-			is_default,
-			synced_at,
-			created_at,
-			false AS provider_response_included,
-			false AS credential_included,
-			'github_repository_label_read_model' AS result_scope
-		FROM github_repository_labels
-		WHERE git_remote_id=$1
-		ORDER BY lower(name)
-		LIMIT 500`, remoteID)
+	items, err := s.gitHubActionRunMapsGorm(r.Context(), remoteID)
 	writeQueryResult(w, items, err)
+}
+
+func (s *Server) listGitHubLabels(w http.ResponseWriter, r *http.Request) {
+	remoteID := chi.URLParam(r, "id")
+	_, projectID, err := s.gitRemoteWithProjectGorm(r.Context(), remoteID)
+	if err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "git_remote", ID: remoteID, ProjectID: projectID}, "read") {
+		return
+	}
+	items, err := s.gitHubRepositoryLabelMapsGorm(r.Context(), remoteID)
+	writeQueryResult(w, items, err)
+}
+
+func (s *Server) gitHubActionRunMapsGorm(ctx context.Context, remoteID string) ([]map[string]any, error) {
+	var runs []GormGitHubActionRun
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormGitHubActionRun{GitRemoteID: remoteID}).Order(gormOrderDesc("created_at")).Limit(50).Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	runIDs := make([]string, 0, len(runs))
+	for _, run := range runs {
+		runIDs = append(runIDs, run.ID)
+	}
+	artifactsByRun := map[string][]GormGitHubActionArtifact{}
+	if len(runIDs) > 0 {
+		var artifacts []GormGitHubActionArtifact
+		if err := s.store.Gorm.WithContext(ctx).Where(gormField("github_action_run_id", runIDs)).Order(gormOrderDesc("created_at")).Order(gormOrderAsc("name")).Find(&artifacts).Error; err != nil {
+			return nil, err
+		}
+		for _, artifact := range artifacts {
+			artifactsByRun[artifact.GitHubActionRunID] = append(artifactsByRun[artifact.GitHubActionRunID], artifact)
+		}
+	}
+	items := make([]map[string]any, 0, len(runs))
+	for _, run := range runs {
+		artifacts := artifactsByRun[run.ID]
+		item := gitHubActionRunMap(run)
+		artifactItems := make([]map[string]any, 0, len(artifacts))
+		activeCount := 0
+		expiredCount := 0
+		var totalSize int64
+		latestSynced := time.Time{}
+		for _, artifact := range artifacts {
+			if artifact.Expired {
+				expiredCount++
+			} else {
+				activeCount++
+			}
+			totalSize += artifact.SizeInBytes
+			if artifact.SyncedAt.After(latestSynced) {
+				latestSynced = artifact.SyncedAt
+			}
+			artifactItems = append(artifactItems, gitHubActionArtifactMap(artifact))
+		}
+		item["artifact_count"] = len(artifacts)
+		item["active_artifact_count"] = activeCount
+		item["expired_artifact_count"] = expiredCount
+		item["total_artifact_size_in_bytes"] = totalSize
+		item["latest_artifact_synced_at"] = nullableTimeAny(sql.NullTime{Time: latestSynced, Valid: !latestSynced.IsZero()})
+		item["artifacts"] = artifactItems
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func gitHubActionRunMap(run GormGitHubActionRun) map[string]any {
+	return map[string]any{
+		"id":               run.ID,
+		"operation_run_id": nullableStringValue(run.OperationRunID),
+		"git_remote_id":    run.GitRemoteID,
+		"external_run_id":  run.ExternalRunID,
+		"workflow_name":    run.WorkflowName,
+		"run_id":           run.RunID,
+		"branch":           run.Branch,
+		"commit_sha":       run.CommitSHA,
+		"status":           run.Status,
+		"conclusion":       run.Conclusion,
+		"html_url":         run.HTMLURL,
+		"metadata":         mapFromAny(run.Metadata.Data),
+		"started_at":       nullableTimeAny(run.StartedAt),
+		"updated_at":       nullableTimeAny(run.UpdatedAt),
+		"synced_at":        nullableTimeAny(run.SyncedAt),
+		"created_at":       run.CreatedAt,
+	}
+}
+
+func gitHubActionArtifactMap(artifact GormGitHubActionArtifact) map[string]any {
+	return map[string]any{
+		"id":                   artifact.ID,
+		"external_artifact_id": artifact.ExternalArtifactID,
+		"name":                 artifact.Name,
+		"size_in_bytes":        artifact.SizeInBytes,
+		"expired":              artifact.Expired,
+		"created_at":           nullableTimeAny(artifact.CreatedAt),
+		"updated_at":           nullableTimeAny(artifact.UpdatedAt),
+		"expires_at":           nullableTimeAny(artifact.ExpiresAt),
+		"synced_at":            artifact.SyncedAt,
+	}
+}
+
+func (s *Server) gitHubRepositoryLabelMapsGorm(ctx context.Context, remoteID string) ([]map[string]any, error) {
+	var labels []GormGitHubRepositoryLabel
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormGitHubRepositoryLabel{GitRemoteID: remoteID}).Find(&labels).Error; err != nil {
+		return nil, err
+	}
+	sort.Slice(labels, func(i, j int) bool { return strings.ToLower(labels[i].Name) < strings.ToLower(labels[j].Name) })
+	if len(labels) > 500 {
+		labels = labels[:500]
+	}
+	items := make([]map[string]any, 0, len(labels))
+	for _, label := range labels {
+		items = append(items, map[string]any{
+			"id":                         label.ID,
+			"operation_run_id":           nullableStringValue(label.OperationRunID),
+			"git_remote_id":              label.GitRemoteID,
+			"external_label_id":          label.ExternalLabelID,
+			"node_id":                    label.NodeID,
+			"name":                       label.Name,
+			"color":                      label.Color,
+			"description":                label.Description,
+			"is_default":                 label.IsDefault,
+			"synced_at":                  label.SyncedAt,
+			"created_at":                 label.CreatedAt,
+			"provider_response_included": false,
+			"credential_included":        false,
+			"result_scope":               "github_repository_label_read_model",
+		})
+	}
+	return items, nil
 }
 
 func (s *Server) listRepoSyncRuns(w http.ResponseWriter, r *http.Request) {
@@ -9144,7 +9430,7 @@ func (s *Server) listRepoSyncRuns(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	switch {
 	case repoID != "":
-		projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+		projectID, err := s.projectIDForRepositoryGorm(r.Context(), repoID)
 		if err != nil {
 			writeQueryOne(w, nil, err)
 			return
@@ -9152,19 +9438,10 @@ func (s *Server) listRepoSyncRuns(w http.ResponseWriter, r *http.Request) {
 		if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_run", ProjectID: projectID}, "read") {
 			return
 		}
-		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT * FROM repo_sync_runs
-			WHERE project_git_repository_id=$1
-				AND ($2='' OR repo_sync_asset_id::text=$2)
-				AND ($3='' OR status=$3)
-				AND ($4='' OR ref=$4)
-				AND (NULLIF($5, '') IS NULL OR created_at >= NULLIF($5, '')::timestamptz)
-				AND (NULLIF($6, '') IS NULL OR created_at <= NULLIF($6, '')::timestamptz)
-			ORDER BY created_at DESC
-			LIMIT 100`, repoID, filters.AssetID, filters.Status, filters.Ref, filters.Since, filters.Until)
+		items, err := s.repoSyncRunListGorm(r.Context(), repoSyncRunListScope{RepoID: repoID}, filters, user)
 		writeQueryResult(w, items, err)
 	case remoteID != "":
-		projectID, err := projectIDForGitRemote(r.Context(), s.store.DB, remoteID)
+		_, projectID, err := s.gitRemoteWithProjectGorm(r.Context(), remoteID)
 		if err != nil {
 			writeQueryOne(w, nil, err)
 			return
@@ -9172,35 +9449,108 @@ func (s *Server) listRepoSyncRuns(w http.ResponseWriter, r *http.Request) {
 		if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_sync_run", ProjectID: projectID}, "read") {
 			return
 		}
-		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT * FROM repo_sync_runs
-			WHERE (source_remote_id=$1 OR target_remote_id=$1 OR git_remote_id=$1)
-				AND ($2='' OR repo_sync_asset_id::text=$2)
-				AND ($3='' OR status=$3)
-				AND ($4='' OR ref=$4)
-				AND (NULLIF($5, '') IS NULL OR created_at >= NULLIF($5, '')::timestamptz)
-				AND (NULLIF($6, '') IS NULL OR created_at <= NULLIF($6, '')::timestamptz)
-			ORDER BY created_at DESC
-			LIMIT 100`, remoteID, filters.AssetID, filters.Status, filters.Ref, filters.Since, filters.Until)
+		items, err := s.repoSyncRunListGorm(r.Context(), repoSyncRunListScope{RemoteID: remoteID}, filters, user)
 		writeQueryResult(w, items, err)
 	default:
-		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT rsr.*
-			FROM repo_sync_runs rsr
-			LEFT JOIN project_git_repositories pgr ON pgr.id=rsr.project_git_repository_id
-			WHERE $1 OR COALESCE(rsr.project_id::text, pgr.project_id::text, '')='' OR EXISTS (
-				SELECT 1 FROM project_members pm
-				WHERE pm.project_id::text=COALESCE(rsr.project_id::text, pgr.project_id::text, '') AND pm.user_id=$2
-			)
-			AND ($3='' OR rsr.repo_sync_asset_id::text=$3)
-			AND ($4='' OR rsr.status=$4)
-			AND ($5='' OR rsr.ref=$5)
-			AND (NULLIF($6, '') IS NULL OR rsr.created_at >= NULLIF($6, '')::timestamptz)
-			AND (NULLIF($7, '') IS NULL OR rsr.created_at <= NULLIF($7, '')::timestamptz)
-			ORDER BY rsr.created_at DESC
-			LIMIT 100`, userCanReadAllProjects(user), userIDOrNil(user), filters.AssetID, filters.Status, filters.Ref, filters.Since, filters.Until)
+		items, err := s.repoSyncRunListGorm(r.Context(), repoSyncRunListScope{}, filters, user)
 		writeQueryResult(w, items, err)
 	}
+}
+
+type repoSyncRunListScope struct {
+	RepoID   string
+	RemoteID string
+}
+
+func (s *Server) repoSyncRunListGorm(ctx context.Context, scope repoSyncRunListScope, filters repoSyncRunFilters, user *User) ([]map[string]any, error) {
+	db := s.store.Gorm.WithContext(ctx).Model(&GormRepoSyncRun{})
+	if scope.RepoID != "" {
+		db = db.Where(gormField("project_git_repository_id", scope.RepoID))
+	}
+	if scope.RemoteID != "" {
+		db = whereAnyFieldEquals(db, scope.RemoteID, "source_remote_id", "target_remote_id", "git_remote_id")
+	}
+	if filters.AssetID != "" {
+		db = db.Where(gormField("repo_sync_asset_id", filters.AssetID))
+	}
+	if filters.Status != "" {
+		db = db.Where(gormField("status", filters.Status))
+	}
+	if filters.Ref != "" {
+		db = db.Where(gormField("ref", filters.Ref))
+	}
+	if filters.Since != "" {
+		since, err := time.Parse(time.RFC3339, filters.Since)
+		if err != nil {
+			return nil, err
+		}
+		db = whereFieldGTE(db, "created_at", since)
+	}
+	if filters.Until != "" {
+		until, err := time.Parse(time.RFC3339, filters.Until)
+		if err != nil {
+			return nil, err
+		}
+		db = whereFieldLTE(db, "created_at", until)
+	}
+	var runs []GormRepoSyncRun
+	if err := db.Order(gormOrderDesc("created_at")).Limit(250).Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	if scope.RepoID == "" && scope.RemoteID == "" && !userCanReadAllProjects(user) {
+		allowed, err := s.projectMembershipSetGorm(ctx, user)
+		if err != nil {
+			return nil, err
+		}
+		reposByID, err := s.repoProjectIDMapForRunsGorm(ctx, runs)
+		if err != nil {
+			return nil, err
+		}
+		filtered := runs[:0]
+		for _, run := range runs {
+			projectID := cleanOptionalID(run.ProjectID.String)
+			if projectID == "" {
+				projectID = reposByID[cleanOptionalID(run.ProjectGitRepositoryID.String)]
+			}
+			if projectID == "" || allowed[projectID] {
+				filtered = append(filtered, run)
+			}
+		}
+		runs = filtered
+	}
+	if len(runs) > 100 {
+		runs = runs[:100]
+	}
+	items := make([]map[string]any, 0, len(runs))
+	for _, run := range runs {
+		items = append(items, repoSyncRunMap(run))
+	}
+	return items, nil
+}
+
+func (s *Server) repoProjectIDMapForRunsGorm(ctx context.Context, runs []GormRepoSyncRun) (map[string]string, error) {
+	repoIDs := make([]string, 0, len(runs))
+	seen := map[string]bool{}
+	for _, run := range runs {
+		repoID := cleanOptionalID(run.ProjectGitRepositoryID.String)
+		if repoID == "" || seen[repoID] {
+			continue
+		}
+		seen[repoID] = true
+		repoIDs = append(repoIDs, repoID)
+	}
+	if len(repoIDs) == 0 {
+		return map[string]string{}, nil
+	}
+	var repos []GormProjectGitRepository
+	if err := s.store.Gorm.WithContext(ctx).Where(gormField("id", repoIDs)).Find(&repos).Error; err != nil {
+		return nil, err
+	}
+	projectsByRepo := make(map[string]string, len(repos))
+	for _, repo := range repos {
+		projectsByRepo[repo.ID] = repo.ProjectID
+	}
+	return projectsByRepo, nil
 }
 
 type repoSyncRunFilters struct {
@@ -9257,7 +9607,7 @@ func (s *Server) listRepoTagRuns(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	switch {
 	case repoID != "":
-		projectID, err := projectIDForRepository(r.Context(), s.store.DB, repoID)
+		projectID, err := s.projectIDForRepositoryGorm(r.Context(), repoID)
 		if err != nil {
 			writeQueryOne(w, nil, err)
 			return
@@ -9265,58 +9615,10 @@ func (s *Server) listRepoTagRuns(w http.ResponseWriter, r *http.Request) {
 		if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_tag_run", ProjectID: projectID}, "read") {
 			return
 		}
-		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT rtr.*,
-				lookup_op.id AS lookup_operation_id,
-				lookup_op.status AS lookup_operation_status,
-				lookup_op.error AS lookup_operation_error,
-				lookup_op.git_remote_lookup_performed AS lookup_git_remote_lookup_performed,
-				lookup_op.remote_tag_found AS lookup_remote_tag_found,
-				lookup_op.matched_sha_present AS lookup_matched_sha_present,
-				lookup_op.matched_count AS lookup_matched_count,
-				lookup_op.credential_userinfo_stripped AS lookup_credential_userinfo_stripped,
-				lookup_op.started_at AS lookup_operation_started_at,
-				lookup_op.finished_at AS lookup_operation_finished_at,
-				lookup_op.created_at AS lookup_operation_created_at,
-				actions_op.id AS actions_refresh_operation_id,
-				actions_op.status AS actions_refresh_operation_status,
-				actions_op.synced_count AS actions_refresh_synced_count,
-				actions_op.started_at AS actions_refresh_operation_started_at,
-				actions_op.finished_at AS actions_refresh_operation_finished_at,
-				actions_op.created_at AS actions_refresh_operation_created_at
-			FROM repo_tag_runs rtr
-			LEFT JOIN LATERAL (
-				SELECT id, status, error,
-					(result->>'git_remote_lookup_performed')='true' AS git_remote_lookup_performed,
-					(result->>'remote_tag_found')='true' AS remote_tag_found,
-					(result->>'matched_sha_present')='true' AS matched_sha_present,
-					CASE WHEN jsonb_typeof(result->'matched_count')='number' THEN (result->>'matched_count')::numeric::int ELSE 0 END AS matched_count,
-					(result->>'credential_userinfo_stripped')='true' AS credential_userinfo_stripped,
-					started_at, finished_at, created_at
-				FROM operation_runs
-				WHERE operation_type='repo.tag.lookup'
-					AND input->>'repo_tag_run_id'=rtr.id::text
-				ORDER BY created_at DESC
-				LIMIT 1
-			) lookup_op ON true
-			LEFT JOIN LATERAL (
-				SELECT id, status,
-					CASE WHEN jsonb_typeof(result->'count')='number' THEN (result->>'count')::numeric::int ELSE 0 END AS synced_count,
-					started_at, finished_at, created_at
-				FROM operation_runs
-				WHERE operation_type='github.actions.sync'
-					AND input->>'repo_tag_run_id'=rtr.id::text
-					AND input->>'refresh_kind'='repo_tag_actions_refresh'
-				ORDER BY created_at DESC
-				LIMIT 1
-			) actions_op ON true
-			WHERE rtr.project_git_repository_id=$1
-			ORDER BY rtr.created_at DESC
-			LIMIT 100`, repoID)
-		items = repoTagRunsWithRemoteRehearsal(items)
+		items, err := s.repoTagRunListGorm(r.Context(), repoTagRunListScope{RepoID: repoID}, user)
 		writeQueryResult(w, items, err)
 	case remoteID != "":
-		projectID, err := projectIDForGitRemote(r.Context(), s.store.DB, remoteID)
+		_, projectID, err := s.gitRemoteWithProjectGorm(r.Context(), remoteID)
 		if err != nil {
 			writeQueryOne(w, nil, err)
 			return
@@ -9324,134 +9626,158 @@ func (s *Server) listRepoTagRuns(w http.ResponseWriter, r *http.Request) {
 		if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_tag_run", ProjectID: projectID}, "read") {
 			return
 		}
-		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT rtr.*,
-				lookup_op.id AS lookup_operation_id,
-				lookup_op.status AS lookup_operation_status,
-				lookup_op.error AS lookup_operation_error,
-				lookup_op.git_remote_lookup_performed AS lookup_git_remote_lookup_performed,
-				lookup_op.remote_tag_found AS lookup_remote_tag_found,
-				lookup_op.matched_sha_present AS lookup_matched_sha_present,
-				lookup_op.matched_count AS lookup_matched_count,
-				lookup_op.credential_userinfo_stripped AS lookup_credential_userinfo_stripped,
-				lookup_op.started_at AS lookup_operation_started_at,
-				lookup_op.finished_at AS lookup_operation_finished_at,
-				lookup_op.created_at AS lookup_operation_created_at,
-				actions_op.id AS actions_refresh_operation_id,
-				actions_op.status AS actions_refresh_operation_status,
-				actions_op.synced_count AS actions_refresh_synced_count,
-				actions_op.started_at AS actions_refresh_operation_started_at,
-				actions_op.finished_at AS actions_refresh_operation_finished_at,
-				actions_op.created_at AS actions_refresh_operation_created_at
-			FROM repo_tag_runs rtr
-			LEFT JOIN LATERAL (
-				SELECT id, status, error,
-					(result->>'git_remote_lookup_performed')='true' AS git_remote_lookup_performed,
-					(result->>'remote_tag_found')='true' AS remote_tag_found,
-					(result->>'matched_sha_present')='true' AS matched_sha_present,
-					CASE WHEN jsonb_typeof(result->'matched_count')='number' THEN (result->>'matched_count')::numeric::int ELSE 0 END AS matched_count,
-					(result->>'credential_userinfo_stripped')='true' AS credential_userinfo_stripped,
-					started_at, finished_at, created_at
-				FROM operation_runs
-				WHERE operation_type='repo.tag.lookup'
-					AND input->>'repo_tag_run_id'=rtr.id::text
-				ORDER BY created_at DESC
-				LIMIT 1
-			) lookup_op ON true
-			LEFT JOIN LATERAL (
-				SELECT id, status,
-					CASE WHEN jsonb_typeof(result->'count')='number' THEN (result->>'count')::numeric::int ELSE 0 END AS synced_count,
-					started_at, finished_at, created_at
-				FROM operation_runs
-				WHERE operation_type='github.actions.sync'
-					AND input->>'repo_tag_run_id'=rtr.id::text
-					AND input->>'refresh_kind'='repo_tag_actions_refresh'
-				ORDER BY created_at DESC
-				LIMIT 1
-			) actions_op ON true
-			WHERE rtr.target_remote_id=$1 OR rtr.git_remote_id=$1
-			ORDER BY rtr.created_at DESC
-			LIMIT 100`, remoteID)
-		items = repoTagRunsWithRemoteRehearsal(items)
+		items, err := s.repoTagRunListGorm(r.Context(), repoTagRunListScope{RemoteID: remoteID}, user)
 		writeQueryResult(w, items, err)
 	default:
-		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT rtr.*,
-				lookup_op.id AS lookup_operation_id,
-				lookup_op.status AS lookup_operation_status,
-				lookup_op.error AS lookup_operation_error,
-				lookup_op.git_remote_lookup_performed AS lookup_git_remote_lookup_performed,
-				lookup_op.remote_tag_found AS lookup_remote_tag_found,
-				lookup_op.matched_sha_present AS lookup_matched_sha_present,
-				lookup_op.matched_count AS lookup_matched_count,
-				lookup_op.credential_userinfo_stripped AS lookup_credential_userinfo_stripped,
-				lookup_op.started_at AS lookup_operation_started_at,
-				lookup_op.finished_at AS lookup_operation_finished_at,
-				lookup_op.created_at AS lookup_operation_created_at,
-				actions_op.id AS actions_refresh_operation_id,
-				actions_op.status AS actions_refresh_operation_status,
-				actions_op.synced_count AS actions_refresh_synced_count,
-				actions_op.started_at AS actions_refresh_operation_started_at,
-				actions_op.finished_at AS actions_refresh_operation_finished_at,
-				actions_op.created_at AS actions_refresh_operation_created_at
-			FROM repo_tag_runs rtr
-			LEFT JOIN LATERAL (
-				SELECT id, status, error,
-					(result->>'git_remote_lookup_performed')='true' AS git_remote_lookup_performed,
-					(result->>'remote_tag_found')='true' AS remote_tag_found,
-					(result->>'matched_sha_present')='true' AS matched_sha_present,
-					CASE WHEN jsonb_typeof(result->'matched_count')='number' THEN (result->>'matched_count')::numeric::int ELSE 0 END AS matched_count,
-					(result->>'credential_userinfo_stripped')='true' AS credential_userinfo_stripped,
-					started_at, finished_at, created_at
-				FROM operation_runs
-				WHERE operation_type='repo.tag.lookup'
-					AND input->>'repo_tag_run_id'=rtr.id::text
-				ORDER BY created_at DESC
-				LIMIT 1
-			) lookup_op ON true
-			LEFT JOIN LATERAL (
-				SELECT id, status,
-					CASE WHEN jsonb_typeof(result->'count')='number' THEN (result->>'count')::numeric::int ELSE 0 END AS synced_count,
-					started_at, finished_at, created_at
-				FROM operation_runs
-				WHERE operation_type='github.actions.sync'
-					AND input->>'repo_tag_run_id'=rtr.id::text
-					AND input->>'refresh_kind'='repo_tag_actions_refresh'
-				ORDER BY created_at DESC
-				LIMIT 1
-			) actions_op ON true
-			LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
-			WHERE $1 OR COALESCE(rtr.project_id::text, pgr.project_id::text, '')='' OR EXISTS (
-				SELECT 1 FROM project_members pm
-				WHERE pm.project_id::text=COALESCE(rtr.project_id::text, pgr.project_id::text, '') AND pm.user_id=$2
-			)
-			ORDER BY rtr.created_at DESC
-			LIMIT 100`, userCanReadAllProjects(user), userIDOrNil(user))
-		items = repoTagRunsWithRemoteRehearsal(items)
+		items, err := s.repoTagRunListGorm(r.Context(), repoTagRunListScope{}, user)
 		writeQueryResult(w, items, err)
 	}
 }
 
+type repoTagRunListScope struct {
+	RepoID   string
+	RemoteID string
+}
+
+func (s *Server) repoTagRunListGorm(ctx context.Context, scope repoTagRunListScope, user *User) ([]map[string]any, error) {
+	db := s.store.Gorm.WithContext(ctx).Model(&GormRepoTagRun{})
+	if scope.RepoID != "" {
+		db = db.Where(&GormRepoTagRun{ProjectGitRepositoryID: validNullString(scope.RepoID)})
+	}
+	if scope.RemoteID != "" {
+		db = whereAnyFieldEquals(db, scope.RemoteID, "target_remote_id", "git_remote_id")
+	}
+	var runs []GormRepoTagRun
+	if err := db.Order(gormOrderDesc("created_at")).Limit(250).Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	if scope.RepoID == "" && scope.RemoteID == "" && !userCanReadAllProjects(user) {
+		allowed, err := s.projectMembershipSetGorm(ctx, user)
+		if err != nil {
+			return nil, err
+		}
+		reposByID, err := s.repoProjectIDMapForTagRunsGorm(ctx, runs)
+		if err != nil {
+			return nil, err
+		}
+		filtered := runs[:0]
+		for _, run := range runs {
+			projectID := cleanOptionalID(run.ProjectID.String)
+			if projectID == "" {
+				projectID = reposByID[cleanOptionalID(run.ProjectGitRepositoryID.String)]
+			}
+			if projectID == "" || allowed[projectID] {
+				filtered = append(filtered, run)
+			}
+		}
+		runs = filtered
+	}
+	if len(runs) > 100 {
+		runs = runs[:100]
+	}
+	items := make([]map[string]any, 0, len(runs))
+	for _, run := range runs {
+		items = append(items, repoTagRunMap(run))
+	}
+	if err := s.annotateRepoTagRunOperationsGorm(ctx, items); err != nil {
+		return nil, err
+	}
+	return repoTagRunsWithRemoteRehearsal(items), nil
+}
+
+func (s *Server) repoProjectIDMapForTagRunsGorm(ctx context.Context, runs []GormRepoTagRun) (map[string]string, error) {
+	repoIDs := make([]string, 0, len(runs))
+	seen := map[string]bool{}
+	for _, run := range runs {
+		repoID := cleanOptionalID(run.ProjectGitRepositoryID.String)
+		if repoID == "" || seen[repoID] {
+			continue
+		}
+		seen[repoID] = true
+		repoIDs = append(repoIDs, repoID)
+	}
+	if len(repoIDs) == 0 {
+		return map[string]string{}, nil
+	}
+	var repos []GormProjectGitRepository
+	if err := s.store.Gorm.WithContext(ctx).Where(gormField("id", repoIDs)).Find(&repos).Error; err != nil {
+		return nil, err
+	}
+	projectsByRepo := make(map[string]string, len(repos))
+	for _, repo := range repos {
+		projectsByRepo[repo.ID] = repo.ProjectID
+	}
+	return projectsByRepo, nil
+}
+
+func (s *Server) annotateRepoTagRunOperationsGorm(ctx context.Context, items []map[string]any) error {
+	if len(items) == 0 {
+		return nil
+	}
+	var ops []GormOperationRun
+	if err := s.store.Gorm.WithContext(ctx).Where(gormField("operation_type", []string{"repo.tag.lookup", "github.actions.sync"})).Order(gormOrderDesc("created_at")).Find(&ops).Error; err != nil {
+		return err
+	}
+	itemByID := make(map[string]map[string]any, len(items))
+	for _, item := range items {
+		itemByID[cleanOptionalID(fmt.Sprint(item["id"]))] = item
+	}
+	seenLookup := map[string]bool{}
+	seenActions := map[string]bool{}
+	for _, op := range ops {
+		input := mapFromAny(op.Input.Data)
+		runID := cleanOptionalID(fmt.Sprint(input["repo_tag_run_id"]))
+		item := itemByID[runID]
+		if item == nil {
+			continue
+		}
+		switch op.OperationType {
+		case "repo.tag.lookup":
+			if seenLookup[runID] {
+				continue
+			}
+			seenLookup[runID] = true
+			result := mapFromAny(op.Result.Data)
+			item["lookup_operation_id"] = op.ID
+			item["lookup_operation_status"] = op.Status
+			item["lookup_operation_error"] = op.Error
+			item["lookup_git_remote_lookup_performed"] = boolOnlyFromAny(result["git_remote_lookup_performed"])
+			item["lookup_remote_tag_found"] = boolOnlyFromAny(result["remote_tag_found"])
+			item["lookup_matched_sha_present"] = boolOnlyFromAny(result["matched_sha_present"])
+			item["lookup_matched_count"] = intFromAny(result["matched_count"], 0)
+			item["lookup_credential_userinfo_stripped"] = boolOnlyFromAny(result["credential_userinfo_stripped"])
+			item["lookup_operation_started_at"] = nullableTimeAny(op.StartedAt)
+			item["lookup_operation_finished_at"] = nullableTimeAny(op.FinishedAt)
+			item["lookup_operation_created_at"] = op.CreatedAt
+		case "github.actions.sync":
+			if seenActions[runID] || strings.TrimSpace(fmt.Sprint(input["refresh_kind"])) != "repo_tag_actions_refresh" {
+				continue
+			}
+			seenActions[runID] = true
+			result := mapFromAny(op.Result.Data)
+			item["actions_refresh_operation_id"] = op.ID
+			item["actions_refresh_operation_status"] = op.Status
+			item["actions_refresh_synced_count"] = intFromAny(result["count"], 0)
+			item["actions_refresh_operation_started_at"] = nullableTimeAny(op.StartedAt)
+			item["actions_refresh_operation_finished_at"] = nullableTimeAny(op.FinishedAt)
+			item["actions_refresh_operation_created_at"] = op.CreatedAt
+		}
+	}
+	return nil
+}
+
 func (s *Server) createRepoTagRunLiveLookup(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "id")
-	run, err := queryOne(r.Context(), s.store.DB, `
-		SELECT rtr.*, COALESCE(rtr.project_id, pgr.project_id) AS effective_project_id
-		FROM repo_tag_runs rtr
-		LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
-		WHERE rtr.id=$1`, runID)
+	run, projectID, err := s.repoTagRunWithProjectGorm(r.Context(), s.store.Gorm, runID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	projectID := strings.TrimSpace(stringFromMap(run, "effective_project_id"))
-	if projectID == "" {
-		projectID = strings.TrimSpace(stringFromMap(run, "project_id"))
-	}
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_tag_run", ID: runID, ProjectID: projectID}, "update") {
 		return
 	}
-	targetRemoteID := strings.TrimSpace(firstNonEmptyString(stringFromMap(run, "target_remote_id"), stringFromMap(run, "git_remote_id")))
-	tagName := strings.TrimSpace(stringFromMap(run, "tag_name"))
+	targetRemoteID := cleanOptionalID(firstNonEmptyString(run.TargetRemoteID.String, run.GitRemoteID))
+	tagName := strings.TrimSpace(run.TagName)
 	if targetRemoteID == "" {
 		writeError(w, http.StatusBadRequest, "target_remote_id is required")
 		return
@@ -9464,29 +9790,24 @@ func (s *Server) createRepoTagRunLiveLookup(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "tag_name is invalid")
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
+	tx := s.store.Gorm.WithContext(r.Context()).Begin()
+	if tx.Error != nil {
 		writeError(w, http.StatusInternalServerError, "could not start lookup transaction")
 		return
 	}
 	defer tx.Rollback()
-	lockedRun, err := queryOne(r.Context(), tx, `
-		SELECT rtr.*, COALESCE(rtr.project_id, pgr.project_id) AS effective_project_id
-		FROM repo_tag_runs rtr
-		LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
-		WHERE rtr.id=$1
-		FOR UPDATE OF rtr`, runID)
+	lockedRun, projectID, err := s.repoTagRunWithProjectGorm(r.Context(), tx, runID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	targetRemoteID = strings.TrimSpace(firstNonEmptyString(stringFromMap(lockedRun, "target_remote_id"), stringFromMap(lockedRun, "git_remote_id")))
-	tagName = strings.TrimSpace(stringFromMap(lockedRun, "tag_name"))
+	targetRemoteID = cleanOptionalID(firstNonEmptyString(lockedRun.TargetRemoteID.String, lockedRun.GitRemoteID))
+	tagName = strings.TrimSpace(lockedRun.TagName)
 	if targetRemoteID == "" || tagName == "" {
 		writeError(w, http.StatusBadRequest, "repo tag run requires target remote and tag name")
 		return
 	}
-	inFlight, err := repoTagLookupInFlightOperation(r.Context(), tx, runID)
+	inFlight, err := s.repoTagInFlightOperationGorm(r.Context(), tx, runID, "repo.tag.lookup", "", "repo.tag.lookup")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not check lookup queue")
 		return
@@ -9510,20 +9831,20 @@ func (s *Server) createRepoTagRunLiveLookup(w http.ResponseWriter, r *http.Reque
 		"target_remote_id": targetRemoteID,
 		"tag_name":         tagName,
 	}
-	op, err := enqueueOperationTx(r.Context(), tx, projectID, targetRemoteID, "repo.tag.lookup", "lookup repository tag", input, []string{"git"}, "")
+	op, err := enqueueOperationGorm(r.Context(), tx, projectID, targetRemoteID, "repo.tag.lookup", "lookup repository tag", input, []string{"git"}, "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not enqueue live lookup")
 		return
 	}
-	if _, err := SyncCanonicalAssetsWith(r.Context(), tx); err != nil {
+	if _, err := syncCanonicalAssetsGorm(r.Context(), tx); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not sync canonical assets")
 		return
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit live lookup")
 		return
 	}
-	job, _ := repoTagLookupJobForOperation(r.Context(), s.store.DB, fmt.Sprint(op["id"]))
+	job, _ := s.workerJobForOperationGorm(r.Context(), s.store.Gorm, fmt.Sprint(op["id"]), "repo.tag.lookup")
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"mode":                    "repo_tag_live_lookup_enqueue",
 		"idempotent":              false,
@@ -9535,35 +9856,6 @@ func (s *Server) createRepoTagRunLiveLookup(w http.ResponseWriter, r *http.Reque
 		"remote_url_recorded":     false,
 		"raw_git_output_recorded": false,
 	})
-}
-
-func repoTagLookupInFlightOperation(ctx context.Context, db sqlx.ExtContext, runID string) (map[string]any, error) {
-	item, err := queryOne(ctx, db, `
-		SELECT op.id, op.operation_type, op.status, op.error, op.started_at, op.finished_at, op.created_at, op.updated_at,
-			wj.id AS worker_job_id, wj.status AS worker_job_status, wj.tool_name AS worker_job_tool_name
-		FROM operation_runs op
-		LEFT JOIN worker_jobs wj ON wj.operation_run_id=op.id AND wj.tool_name='repo.tag.lookup'
-		WHERE op.operation_type='repo.tag.lookup'
-			AND op.status IN ('queued', 'running')
-			AND op.input->>'repo_tag_run_id'=$1
-		ORDER BY op.created_at DESC
-		LIMIT 1`, runID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return item, nil
-}
-
-func repoTagLookupJobForOperation(ctx context.Context, db sqlx.ExtContext, opID string) (map[string]any, error) {
-	return queryOne(ctx, db, `
-		SELECT id AS worker_job_id, status AS worker_job_status, tool_name AS worker_job_tool_name
-		FROM worker_jobs
-		WHERE operation_run_id=$1 AND tool_name='repo.tag.lookup'
-		ORDER BY created_at DESC
-		LIMIT 1`, opID)
 }
 
 func repoTagLookupOperationSummary(operation map[string]any) map[string]any {
@@ -9593,60 +9885,112 @@ func repoTagLookupWorkerJobSummary(job map[string]any) map[string]any {
 	}
 }
 
+func (s *Server) repoTagRunWithProjectGorm(ctx context.Context, db *gorm.DB, runID string) (GormRepoTagRun, string, error) {
+	var run GormRepoTagRun
+	if err := db.WithContext(ctx).Where(&GormRepoTagRun{ID: cleanOptionalID(runID)}).First(&run).Error; err != nil {
+		return run, "", gormNotFoundAsErrNotFound(err)
+	}
+	projectID := cleanOptionalID(run.ProjectID.String)
+	if projectID == "" && cleanOptionalID(run.ProjectGitRepositoryID.String) != "" {
+		var repo GormProjectGitRepository
+		if err := db.WithContext(ctx).Where(&GormProjectGitRepository{GormBase: GormBase{ID: cleanOptionalID(run.ProjectGitRepositoryID.String)}}).First(&repo).Error; err != nil {
+			return run, "", gormNotFoundAsErrNotFound(err)
+		}
+		projectID = repo.ProjectID
+	}
+	return run, projectID, nil
+}
+
+func (s *Server) repoTagInFlightOperationGorm(ctx context.Context, db *gorm.DB, runID, operationType, refreshKind, toolName string) (map[string]any, error) {
+	var ops []GormOperationRun
+	if err := db.WithContext(ctx).
+		Where(&GormOperationRun{OperationType: operationType}).
+		Where("status IN ?", []string{"queued", "running"}).
+		Order("created_at DESC").
+		Find(&ops).Error; err != nil {
+		return nil, err
+	}
+	for _, op := range ops {
+		input := mapFromAny(op.Input.Data)
+		if cleanOptionalID(fmt.Sprint(input["repo_tag_run_id"])) != cleanOptionalID(runID) {
+			continue
+		}
+		if refreshKind != "" && strings.TrimSpace(fmt.Sprint(input["refresh_kind"])) != refreshKind {
+			continue
+		}
+		item := operationRunGormMap(op)
+		job, err := s.workerJobForOperationGorm(ctx, db, op.ID, toolName)
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range job {
+			item[key] = value
+		}
+		return item, nil
+	}
+	return nil, nil
+}
+
+func (s *Server) workerJobForOperationGorm(ctx context.Context, db *gorm.DB, opID, toolName string) (map[string]any, error) {
+	var job GormWorkerJob
+	err := db.WithContext(ctx).
+		Where(&GormWorkerJob{OperationRunID: validNullString(cleanOptionalID(opID)), ToolName: toolName}).
+		Order("created_at DESC").
+		First(&job).Error
+	if errorsIsRecordNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"worker_job_id": job.ID, "worker_job_status": job.Status, "worker_job_tool_name": job.ToolName}, nil
+}
+
 func (s *Server) createRepoTagRunActionsRefresh(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "id")
-	run, err := queryOne(r.Context(), s.store.DB, `
-		SELECT rtr.*, COALESCE(rtr.project_id, pgr.project_id) AS effective_project_id
-		FROM repo_tag_runs rtr
-		LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
-		WHERE rtr.id=$1`, runID)
+	_, projectID, err := s.repoTagRunWithProjectGorm(r.Context(), s.store.Gorm, runID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
-	}
-	projectID := strings.TrimSpace(stringFromMap(run, "effective_project_id"))
-	if projectID == "" {
-		projectID = strings.TrimSpace(stringFromMap(run, "project_id"))
 	}
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "repo_tag_run", ID: runID, ProjectID: projectID}, "update") {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
+	tx := s.store.Gorm.WithContext(r.Context()).Begin()
+	if tx.Error != nil {
 		writeError(w, http.StatusInternalServerError, "could not start Actions refresh transaction")
 		return
 	}
 	defer tx.Rollback()
-	lockedRun, err := queryOne(r.Context(), tx, `
-		SELECT rtr.*, COALESCE(rtr.project_id, pgr.project_id) AS effective_project_id
-		FROM repo_tag_runs rtr
-		LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
-		WHERE rtr.id=$1
-		FOR UPDATE OF rtr`, runID)
+	lockedRun, projectID, err := s.repoTagRunWithProjectGorm(r.Context(), tx, runID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	status := strings.ToLower(strings.TrimSpace(stringFromMap(lockedRun, "status")))
+	status := strings.ToLower(strings.TrimSpace(lockedRun.Status))
 	if status != "completed" && status != "succeeded" && status != "success" {
 		writeError(w, http.StatusBadRequest, "repo tag run must be completed before refreshing GitHub Actions")
 		return
 	}
-	targetRemoteID := strings.TrimSpace(firstNonEmptyString(stringFromMap(lockedRun, "target_remote_id"), stringFromMap(lockedRun, "git_remote_id")))
+	targetRemoteID := cleanOptionalID(firstNonEmptyString(lockedRun.TargetRemoteID.String, lockedRun.GitRemoteID))
 	if targetRemoteID == "" {
 		writeError(w, http.StatusBadRequest, "target_remote_id is required")
 		return
 	}
-	remote, err := queryOne(r.Context(), tx, "SELECT * FROM git_remotes WHERE id=$1", targetRemoteID)
+	remote, remoteProjectID, err := s.gitRemoteWithProjectGormTx(r.Context(), tx, targetRemoteID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	if _, _, err := gitHubRepositoryFromRemote(remote); err != nil {
+	if remoteProjectID != projectID {
+		writeError(w, http.StatusBadRequest, "target remote does not belong to repo tag project")
+		return
+	}
+	if _, _, err := gitHubRepositoryFromRemote(gitRemoteMap(remote, nil, remoteProjectID)); err != nil {
 		writeError(w, http.StatusBadRequest, "target remote must be a GitHub repository")
 		return
 	}
-	inFlight, err := repoTagActionsRefreshInFlightOperation(r.Context(), tx, runID)
+	inFlight, err := s.repoTagInFlightOperationGorm(r.Context(), tx, runID, "github.actions.sync", "repo_tag_actions_refresh", "github.actions.sync")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not check Actions refresh queue")
 		return
@@ -9670,24 +10014,24 @@ func (s *Server) createRepoTagRunActionsRefresh(w http.ResponseWriter, r *http.R
 		"repo_tag_run_id":  runID,
 		"target_remote_id": targetRemoteID,
 		"refresh_kind":     "repo_tag_actions_refresh",
-		"commit_sha":       strings.TrimSpace(stringFromMap(lockedRun, "target_sha")),
-		"tag_name":         strings.TrimSpace(stringFromMap(lockedRun, "tag_name")),
+		"commit_sha":       strings.TrimSpace(lockedRun.TargetSHA),
+		"tag_name":         strings.TrimSpace(lockedRun.TagName),
 		"limit":            50,
 	}
-	op, err := enqueueOperationTx(r.Context(), tx, projectID, targetRemoteID, "github.actions.sync", "refresh GitHub Actions after repository tag", input, []string{"github", "git"}, "")
+	op, err := enqueueOperationGorm(r.Context(), tx, projectID, targetRemoteID, "github.actions.sync", "refresh GitHub Actions after repository tag", input, []string{"github", "git"}, "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not enqueue Actions refresh")
 		return
 	}
-	if _, err := SyncCanonicalAssetsWith(r.Context(), tx); err != nil {
+	if _, err := syncCanonicalAssetsGorm(r.Context(), tx); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not sync canonical assets")
 		return
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit Actions refresh")
 		return
 	}
-	job, jobErr := repoTagActionsRefreshJobForOperation(r.Context(), s.store.DB, fmt.Sprint(op["id"]))
+	job, jobErr := s.workerJobForOperationGorm(r.Context(), s.store.Gorm, fmt.Sprint(op["id"]), "github.actions.sync")
 	if jobErr != nil && s.log != nil {
 		s.log.Warn("repo tag Actions refresh worker job lookup failed", "operation_id", op["id"], "repo_tag_run_id", runID, "error", jobErr)
 	}
@@ -9705,49 +10049,6 @@ func (s *Server) createRepoTagRunActionsRefresh(w http.ResponseWriter, r *http.R
 	})
 }
 
-func repoTagActionsRefreshInFlightOperation(ctx context.Context, db sqlx.ExtContext, runID string) (map[string]any, error) {
-	item, err := queryOne(ctx, db, `
-		SELECT op.id, op.operation_type, op.status, op.error, op.started_at, op.finished_at, op.created_at, op.updated_at,
-			wj.id AS worker_job_id, wj.status AS worker_job_status, wj.tool_name AS worker_job_tool_name
-		FROM operation_runs op
-		LEFT JOIN LATERAL (
-			SELECT id, status, tool_name
-			FROM worker_jobs
-			WHERE operation_run_id=op.id AND tool_name='github.actions.sync'
-			ORDER BY created_at DESC
-			LIMIT 1
-		) wj ON true
-		WHERE op.operation_type='github.actions.sync'
-			AND op.status IN ('queued', 'running')
-			AND op.input->>'repo_tag_run_id'=$1
-			AND op.input->>'refresh_kind'='repo_tag_actions_refresh'
-		ORDER BY op.created_at DESC
-		LIMIT 1`, runID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return item, nil
-}
-
-func repoTagActionsRefreshJobForOperation(ctx context.Context, db sqlx.ExtContext, opID string) (map[string]any, error) {
-	item, err := queryOne(ctx, db, `
-		SELECT id AS worker_job_id, status AS worker_job_status, tool_name AS worker_job_tool_name
-		FROM worker_jobs
-		WHERE operation_run_id=$1 AND tool_name='github.actions.sync'
-		ORDER BY created_at DESC
-		LIMIT 1`, opID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return item, nil
-}
-
 func repoTagRunsWithRemoteRehearsal(items []map[string]any) []map[string]any {
 	for _, item := range items {
 		item["remote_rehearsal_plan"] = repoTagRemoteRehearsalPlan(item)
@@ -9757,7 +10058,7 @@ func repoTagRunsWithRemoteRehearsal(items []map[string]any) []map[string]any {
 
 func (s *Server) recordRepoTagRunResultSnapshot(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "id")
-	projectID, err := repoTagRunProjectID(r.Context(), s.store.DB, runID)
+	projectID, err := repoTagRunProjectID(r.Context(), s.store.Gorm, runID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -9781,7 +10082,7 @@ func (s *Server) recordRepoTagRunResultSnapshot(w http.ResponseWriter, r *http.R
 
 func (s *Server) recordRepoTagRunActionsRefreshSnapshot(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "id")
-	projectID, err := repoTagRunProjectID(r.Context(), s.store.DB, runID)
+	projectID, err := repoTagRunProjectID(r.Context(), s.store.Gorm, runID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -10294,52 +10595,6 @@ func repoTagRemoteRehearsalResultRecordingPlan(evidence map[string]any, lookupPr
 		},
 		"message": "Remote tag rehearsal result recording reconciles sanitized repo_tag_run state only; no repo_tag_run update, GitHub Actions sync result, Git output, or provider response is persisted.",
 	}
-}
-
-func remoteForRepository(ctx context.Context, db sqlx.ExtContext, repoID, remoteID string) (map[string]any, error) {
-	return queryOne(ctx, db, `
-		SELECT * FROM git_remotes
-		WHERE id=$1 AND project_git_repository_id=$2`, remoteID, repoID)
-}
-
-func projectIDForRepository(ctx context.Context, db sqlx.ExtContext, repoID string) (string, error) {
-	repo, err := queryOne(ctx, db, "SELECT project_id FROM project_git_repositories WHERE id=$1", repoID)
-	if err != nil {
-		return "", err
-	}
-	projectID := strings.TrimSpace(fmt.Sprint(repo["project_id"]))
-	if projectID == "" || projectID == "<nil>" {
-		return "", ErrNotFound
-	}
-	return projectID, nil
-}
-
-func projectIDForGitRemote(ctx context.Context, db sqlx.ExtContext, remoteID string) (string, error) {
-	remote, err := queryOne(ctx, db, `
-		SELECT pgr.project_id
-		FROM git_remotes gr
-		JOIN project_git_repositories pgr ON pgr.id=gr.project_git_repository_id
-		WHERE gr.id=$1`, remoteID)
-	if err != nil {
-		return "", err
-	}
-	projectID := strings.TrimSpace(fmt.Sprint(remote["project_id"]))
-	if projectID == "" || projectID == "<nil>" {
-		return "", ErrNotFound
-	}
-	return projectID, nil
-}
-
-func projectIDForProjectVersion(ctx context.Context, db sqlx.ExtContext, versionID string) (string, error) {
-	version, err := queryOne(ctx, db, "SELECT project_id FROM project_versions WHERE id=$1", versionID)
-	if err != nil {
-		return "", err
-	}
-	projectID := strings.TrimSpace(fmt.Sprint(version["project_id"]))
-	if projectID == "" || projectID == "<nil>" {
-		return "", ErrNotFound
-	}
-	return projectID, nil
 }
 
 func projectVersionValidationPreview(version map[string]any, remotes, tagRuns, actionRuns, argoApps []map[string]any, argoConnections ...[]map[string]any) map[string]any {
@@ -11473,33 +11728,40 @@ func findProjectVersionArgoRevision(rows []map[string]any, argoRevision string) 
 	return nil
 }
 
-func defaultTargetRemoteIDs(ctx context.Context, db sqlx.ExtContext, repoID, sourceRemoteID string) ([]string, error) {
-	items, err := queryMaps(ctx, db, `
-		SELECT id FROM git_remotes
-		WHERE project_git_repository_id=$1 AND id<>$2 AND sync_enabled=true
-		ORDER BY is_primary DESC, name`, repoID, sourceRemoteID)
-	if err != nil {
+func defaultTargetRemoteIDsGorm(ctx context.Context, db *gorm.DB, repoID, sourceRemoteID string) ([]string, error) {
+	var remotes []GormGitRemote
+	if err := db.WithContext(ctx).
+		Where(&GormGitRemote{ProjectGitRepositoryID: repoID, SyncEnabled: true}).
+		Order("is_primary DESC").
+		Order("name ASC").
+		Find(&remotes).Error; err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(items))
-	for _, item := range items {
-		ids = append(ids, fmt.Sprint(item["id"]))
+	ids := make([]string, 0, len(remotes))
+	for _, remote := range remotes {
+		if remote.ID == sourceRemoteID {
+			continue
+		}
+		ids = append(ids, remote.ID)
 	}
 	return ids, nil
 }
 
-func defaultGitHubRemoteIDs(ctx context.Context, db sqlx.ExtContext, repoID string) ([]string, error) {
-	items, err := queryMaps(ctx, db, `
-		SELECT id FROM git_remotes
-		WHERE project_git_repository_id=$1
-		  AND (provider_type='github' OR kind='github')
-		ORDER BY is_primary DESC, name`, repoID)
-	if err != nil {
+func defaultGitHubRemoteIDsGorm(ctx context.Context, db *gorm.DB, repoID string) ([]string, error) {
+	var remotes []GormGitRemote
+	if err := db.WithContext(ctx).
+		Where(&GormGitRemote{ProjectGitRepositoryID: repoID}).
+		Order("is_primary DESC").
+		Order("name ASC").
+		Find(&remotes).Error; err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(items))
-	for _, item := range items {
-		ids = append(ids, fmt.Sprint(item["id"]))
+	ids := make([]string, 0, len(remotes))
+	for _, remote := range remotes {
+		if remote.ProviderType != "github" && remote.Kind != "github" {
+			continue
+		}
+		ids = append(ids, remote.ID)
 	}
 	return ids, nil
 }
@@ -11573,1613 +11835,40 @@ func userIDOrNil(user *User) any {
 	return user.ID
 }
 
-func assetInventorySQL() string {
-	return `
-	WITH asset_inventory AS (
-		SELECT
-			'project:' || p.id::text AS id,
-			p.id::text AS project_id,
-			'project' AS asset_type,
-			p.name AS name,
-			p.name AS display_name,
-			p.description AS description,
-			'local' AS source,
-			p.slug AS external_id,
-			'active' AS status,
-			'normal' AS risk_level,
-			'projects' AS source_table,
-			p.id::text AS source_id,
-			jsonb_build_object('slug', p.slug) AS metadata,
-			p.created_at AS created_at,
-			p.updated_at AS updated_at
-		FROM projects p
-		UNION ALL
-		SELECT
-			'project_template:' || pt.id::text,
-			'',
-			'project_template',
-			pt.name,
-			pt.name,
-			pt.description,
-			'assops_builtin',
-			pt.slug,
-			pt.status,
-			'normal',
-			'project_templates',
-			pt.id::text,
-			jsonb_build_object('slug', pt.slug, 'version', pt.version, 'defaults', pt.defaults, 'steps', pt.steps),
-			pt.created_at,
-			pt.updated_at
-		FROM project_templates pt
-		UNION ALL
-		SELECT
-			'project_template_run:' || ptr.id::text,
-			COALESCE(ptr.project_id::text, ''),
-			'project_template_run',
-			ptr.project_name,
-			ptr.project_name,
-			ptr.project_slug,
-			'project_template',
-			ptr.id::text,
-			ptr.status,
-			CASE
-				WHEN ptr.status='failed' THEN 'high'
-				WHEN ptr.status IN ('queued', 'running') THEN 'warning'
-				ELSE 'normal'
-			END,
-			'project_template_runs',
-			ptr.id::text,
-			jsonb_build_object(
-				'project_template_id', ptr.project_template_id,
-				'operation_run_id', ptr.operation_run_id,
-				'project_id', ptr.project_id,
-				'started_at', ptr.started_at,
-				'finished_at', ptr.finished_at,
-				'step_count', jsonb_array_length(ptr.steps),
-				'has_error', ptr.error_message <> ''
-			),
-			ptr.created_at,
-			ptr.updated_at
-		FROM project_template_runs ptr
-		UNION ALL
-		SELECT
-			'provider_account:' || pa.id::text,
-			'',
-			'provider_account',
-			pa.name,
-			pa.name,
-			pa.api_base_url,
-			pa.provider_type,
-			pa.default_owner,
-			CASE WHEN pa.enabled THEN 'active' ELSE 'disabled' END,
-			'normal',
-			'provider_accounts',
-			pa.id::text,
-			jsonb_build_object(
-				'provider_type', pa.provider_type,
-				'api_base_url', pa.api_base_url,
-				'web_base_url', pa.web_base_url,
-				'default_owner', pa.default_owner,
-				'visibility', pa.visibility,
-				'enabled', pa.enabled,
-				'token_configured', pa.token_env <> ''
-			),
-			pa.created_at,
-			pa.updated_at
-		FROM provider_accounts pa
-		UNION ALL
-		SELECT
-			'repository:' || r.id::text,
-			r.project_id::text,
-			'repository',
-			r.name,
-			COALESCE(NULLIF(r.display_name, ''), r.name),
-			r.description,
-			'local',
-			r.repo_key,
-			r.status,
-			'normal',
-			'project_git_repositories',
-			r.id::text,
-			jsonb_build_object('repo_key', r.repo_key, 'repo_role', r.repo_role, 'default_branch', r.default_branch),
-			r.created_at,
-			r.updated_at
-		FROM project_git_repositories r
-		UNION ALL
-		SELECT
-			'project_version:' || pv.id::text,
-			pv.project_id::text,
-			'project_version',
-			pv.version,
-			pv.version,
-			COALESCE(NULLIF(pv.source, ''), 'manual'),
-			'project_version',
-			pv.version,
-			'active',
-			'normal',
-			'project_versions',
-			pv.id::text,
-			jsonb_build_object(
-				'source', pv.source,
-				'repository_count', COALESCE(version_manifest.repository_count, 0),
-				'has_repository_manifest', jsonb_typeof(pv.metadata->'repositories')='array',
-				'has_config_commit', COALESCE(version_manifest.has_config_commit, false),
-				'has_action_link', COALESCE(version_manifest.has_action_link, false),
-				'has_argo_revision', COALESCE(version_manifest.has_argo_revision, false)
-			),
-			pv.created_at,
-			pv.created_at
-		FROM project_versions pv
-		LEFT JOIN LATERAL (
-			SELECT
-				count(*)::int AS repository_count,
-				bool_or(manifest_repo.item->>'repo_role'='config' OR COALESCE(NULLIF(manifest_repo.item->>'config_commit_sha', ''), '') <> '') AS has_config_commit,
-				bool_or(COALESCE(NULLIF(manifest_repo.item->>'github_action_run_id', ''), '') <> '') AS has_action_link,
-				bool_or(COALESCE(NULLIF(manifest_repo.item->>'argo_revision', ''), '') <> '') AS has_argo_revision
-			FROM jsonb_array_elements(
-				CASE
-					WHEN jsonb_typeof(pv.metadata->'repositories')='array'
-					THEN pv.metadata->'repositories'
-					ELSE '[]'::jsonb
-				END
-			) AS manifest_repo(item)
-		) version_manifest ON true
-		UNION ALL
-		SELECT
-			'template_file:' || ptf.id::text,
-			ptf.project_id::text,
-			'template_file',
-			ptf.path,
-			ptf.path,
-			'Planned starter file from project template',
-			'project_template',
-			ptf.path,
-			ptf.status,
-			'normal',
-			'project_template_files',
-			ptf.id::text,
-			jsonb_build_object('kind', ptf.kind, 'project_template_run_id', ptf.project_template_run_id, 'project_git_repository_id', ptf.project_git_repository_id),
-			ptf.created_at,
-			ptf.updated_at
-		FROM project_template_files ptf
-		UNION ALL
-		SELECT
-			'git_remote:' || gr.id::text,
-			r.project_id::text,
-			'git_remote',
-			gr.name,
-			COALESCE(NULLIF(gr.remote_key, ''), gr.name),
-			gr.web_url,
-			COALESCE(NULLIF(gr.provider_type, ''), gr.kind, 'git'),
-			COALESCE(NULLIF(gr.remote_url, ''), gr.urls->>0, ''),
-			gr.last_sync_status,
-			CASE WHEN gr.protected THEN 'high' ELSE 'normal' END,
-			'git_remotes',
-			gr.id::text,
-			jsonb_build_object('remote_role', gr.remote_role, 'default_branch', gr.default_branch, 'latest_sha', gr.latest_sha, 'sync_enabled', gr.sync_enabled),
-			gr.created_at,
-			gr.updated_at
-		FROM git_remotes gr
-		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text,
-			COALESCE(op.project_id::text, ''),
-			'operation_run',
-			op.title,
-			op.title,
-			op.operation_type,
-			'assops_operation',
-			op.id::text,
-			op.status,
-			CASE WHEN op.status='failed' THEN 'high' ELSE 'normal' END,
-			'operation_runs',
-			op.id::text,
-			jsonb_build_object(
-				'operation_type', op.operation_type,
-				'git_remote_id', op.git_remote_id,
-				'started_at', op.started_at,
-				'finished_at', op.finished_at,
-				'has_error', op.error <> ''
-			),
-			op.created_at,
-			op.updated_at
-		FROM operation_runs op
-		UNION ALL
-		SELECT
-			'operation_approval:' || oa.id::text,
-			COALESCE(oa.project_id::text, ''),
-			'operation_approval',
-			oa.title,
-			oa.title,
-			oa.action,
-			'assops_approval',
-			oa.id::text,
-			oa.status,
-			CASE
-				WHEN oa.status IN ('rejected', 'expired') THEN 'high'
-				WHEN oa.status='pending' THEN 'warning'
-				ELSE 'normal'
-			END,
-			'operation_approvals',
-			oa.id::text,
-			jsonb_build_object(
-				'action', oa.action,
-				'resource_type', oa.resource_type,
-				'resource_id', oa.resource_id,
-				'operation_run_id', oa.operation_run_id,
-				'required_approval_count', oa.required_approval_count,
-				'approved_count', COALESCE(decision_counts.approved_count, 0),
-				'rejected_count', COALESCE(decision_counts.rejected_count, 0),
-				'active_delegation_count', COALESCE(delegation_counts.active_delegation_count, 0),
-				'notification_status', oa.notification_status,
-				'escalation_count', oa.escalation_count
-			),
-			oa.created_at,
-			oa.updated_at
-		FROM operation_approvals oa
-		LEFT JOIN LATERAL (
-			SELECT
-				count(*) FILTER (WHERE decision='approved')::int AS approved_count,
-				count(*) FILTER (WHERE decision='rejected')::int AS rejected_count
-			FROM operation_approval_decisions oad
-			WHERE oad.operation_approval_id=oa.id
-		) decision_counts ON true
-		LEFT JOIN LATERAL (
-			SELECT count(*) FILTER (WHERE revoked_at IS NULL)::int AS active_delegation_count
-			FROM operation_approval_delegations oadel
-			WHERE oadel.operation_approval_id=oa.id
-		) delegation_counts ON true
-		UNION ALL
-		SELECT
-			'operation_approval_rule:' || oar.id::text,
-			'',
-			'operation_approval_rule',
-			COALESCE(NULLIF(oar.resource_type, ''), '*') || ':' || oar.action,
-			COALESCE(NULLIF(oar.resource_type, ''), '*') || ':' || oar.action,
-			'Approval policy rule',
-			'assops_policy',
-			oar.id::text,
-			CASE WHEN oar.enabled THEN 'active' ELSE 'disabled' END,
-			CASE WHEN oar.enabled THEN 'normal' ELSE 'warning' END,
-			'operation_approval_rules',
-			oar.id::text,
-			jsonb_build_object(
-				'resource_type', oar.resource_type,
-				'action', oar.action,
-				'required_approver_roles', oar.required_approver_roles,
-				'required_approval_count', oar.required_approval_count,
-				'expires_after_minutes', oar.expires_after_minutes,
-				'notification_channels', oar.notification_channels,
-				'escalation_after_minutes', oar.escalation_after_minutes,
-				'escalation_channels', oar.escalation_channels,
-				'priority', oar.priority,
-				'enabled', oar.enabled
-			),
-			oar.created_at,
-			oar.updated_at
-		FROM operation_approval_rules oar
-		UNION ALL
-		SELECT
-			'provider_review_attempt:' || pra.id::text,
-			COALESCE(oa.project_id::text, ptr.project_id::text, ''),
-			'provider_review_attempt',
-			pra.operation_name,
-			pra.operation_name,
-			pra.endpoint_key,
-			'provider_review',
-			pra.id::text,
-			pra.status,
-			CASE
-				WHEN pra.status IN ('failed', 'blocked') THEN 'high'
-				WHEN pra.status IN ('planned', 'running') THEN 'warning'
-				ELSE 'normal'
-			END,
-			'provider_review_attempts',
-			pra.id::text,
-			jsonb_build_object(
-				'operation_approval_id', pra.operation_approval_id,
-				'project_template_run_id', pra.project_template_run_id,
-				'provider_type', pra.provider_type,
-				'review_kind', pra.review_kind,
-				'operation_name', pra.operation_name,
-				'endpoint_key', pra.endpoint_key,
-				'operation_order', pra.operation_order,
-				'depends_on_operation', pra.depends_on_operation,
-				'dependency_status', pra.dependency_status,
-				'replay_check', pra.replay_check,
-				'conflict_policy', pra.conflict_policy,
-				'retry_policy', pra.retry_policy,
-				'provider_api_mutation', pra.provider_api_mutation,
-				'provider_api_call_made', pra.provider_api_call_made,
-				'external_call_made', pra.external_call_made,
-				'claim_recorded', pra.claimed_at IS NOT NULL
-			),
-			pra.created_at,
-			pra.updated_at
-		FROM provider_review_attempts pra
-		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
-		LEFT JOIN project_template_runs ptr ON ptr.id=pra.project_template_run_id
-		UNION ALL
-		SELECT
-			'repo_sync:' || rsa.id::text,
-			rsa.project_id::text,
-			'repo_sync',
-			rsa.name,
-			rsa.name,
-			rsa.driver,
-			'repo_sync',
-			rsa.id::text,
-			rsa.last_sync_status,
-			'normal',
-			'repo_sync_assets',
-			rsa.id::text,
-			jsonb_build_object(
-				'trigger_mode', rsa.trigger_mode,
-				'sync_mode', rsa.sync_mode,
-				'transport', rsa.transport,
-				'driver', rsa.driver,
-				'source_remote_id', rsa.source_remote_id,
-				'target_remote_id', rsa.target_remote_id,
-				'enabled', rsa.enabled
-			),
-			rsa.created_at,
-			rsa.updated_at
-		FROM repo_sync_assets rsa
-		UNION ALL
-		SELECT
-			'repo_tag_run:' || rtr.id::text,
-			COALESCE(rtr.project_id::text, pgr.project_id::text, ''),
-			'repo_tag_run',
-			COALESCE(NULLIF(gr.name, ''), 'target remote') || ' tag run',
-			COALESCE(NULLIF(gr.name, ''), 'target remote') || ' tag run',
-			COALESCE(gr.name, 'target remote'),
-			'repo_tag',
-			rtr.id::text,
-			rtr.status,
-			CASE
-				WHEN rtr.status IN ('failed', 'error', 'canceled', 'cancelled') THEN 'high'
-				WHEN rtr.status IN ('queued', 'running', 'pending') THEN 'warning'
-				ELSE 'normal'
-			END,
-			'repo_tag_runs',
-			rtr.id::text,
-			jsonb_build_object(
-				'operation_run_id', rtr.operation_run_id,
-				'project_git_repository_id', rtr.project_git_repository_id,
-				'target_remote_id', COALESCE(rtr.target_remote_id, rtr.git_remote_id),
-				'status', rtr.status,
-				'tag_name_configured', rtr.tag_name <> '',
-				'target_sha_configured', rtr.target_sha <> '',
-				'started_at', rtr.started_at,
-				'finished_at', rtr.finished_at,
-				'has_error', rtr.error_message <> ''
-			),
-			rtr.created_at,
-			COALESCE(rtr.finished_at, rtr.started_at, rtr.created_at)
-		FROM repo_tag_runs rtr
-		LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
-		LEFT JOIN git_remotes gr ON gr.id=COALESCE(rtr.target_remote_id, rtr.git_remote_id)
-		UNION ALL
-		SELECT
-			'webhook_connection:' || wc.id::text,
-			wc.project_id::text,
-			'webhook_connection',
-			wc.name,
-			wc.name,
-			wc.provider,
-			'webhook',
-			wc.id::text,
-			wc.last_delivery_status,
-			CASE
-				WHEN wc.last_delivery_status IN ('failed', 'rejected') THEN 'high'
-				WHEN NOT wc.enabled THEN 'warning'
-				ELSE 'normal'
-			END,
-			'webhook_connections',
-			wc.id::text,
-			jsonb_build_object(
-				'provider', wc.provider,
-				'source_remote_id', wc.source_remote_id,
-				'enabled', wc.enabled,
-				'has_last_delivery_error', wc.last_delivery_error <> ''
-			),
-			wc.created_at,
-			wc.updated_at
-		FROM webhook_connections wc
-		UNION ALL
-		SELECT
-			'webhook_event:' || we.id::text,
-			COALESCE(we.project_id::text, wc.project_id::text, ''),
-			'webhook_event',
-			COALESCE(NULLIF(we.event_type, ''), we.provider || ' webhook'),
-			we.id::text,
-			we.provider,
-			'webhook',
-			we.id::text,
-			we.status,
-			CASE
-				WHEN NOT we.signature_valid THEN 'high'
-				WHEN we.status IN ('failed', 'rejected') THEN 'high'
-				WHEN we.status IN ('received', 'processing') THEN 'warning'
-				ELSE 'normal'
-			END,
-			'webhook_events',
-			we.id::text,
-			jsonb_build_object(
-				'webhook_connection_id', we.webhook_connection_id,
-				'provider', we.provider,
-				'event_type', we.event_type,
-				'delivery_id', we.delivery_id,
-				'signature_valid', we.signature_valid,
-				'matched_repo_sync_asset_id', we.matched_repo_sync_asset_id,
-				'operation_run_id', we.operation_run_id,
-				'processed_at', we.processed_at,
-				'has_payload', we.payload <> '{}'::jsonb,
-				'has_result', we.result <> '{}'::jsonb,
-				'has_error', we.error_message <> ''
-			),
-			we.received_at,
-			COALESCE(we.processed_at, we.received_at)
-		FROM webhook_events we
-		LEFT JOIN webhook_connections wc ON wc.id=we.webhook_connection_id
-		UNION ALL
-		SELECT
-			'github_action_run:' || gh.id::text,
-			r.project_id::text,
-			'pipeline_run',
-			COALESCE(NULLIF(gh.workflow_name, ''), 'GitHub Actions'),
-			COALESCE(NULLIF(gh.workflow_name, ''), 'GitHub Actions'),
-			gh.html_url,
-			'github_actions',
-			gh.run_id,
-			COALESCE(NULLIF(gh.conclusion, ''), gh.status),
-			'normal',
-			'github_action_runs',
-			gh.id::text,
-			jsonb_build_object('branch', gh.branch, 'commit_sha', gh.commit_sha, 'html_url', gh.html_url),
-			gh.created_at,
-			COALESCE(gh.updated_at, gh.created_at)
-		FROM github_action_runs gh
-		JOIN git_remotes gr ON gr.id=gh.git_remote_id
-		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-		UNION ALL
-		SELECT
-			'ssh_machine:' || sm.id::text,
-			sm.project_id::text,
-			'host',
-			sm.name,
-			sm.name,
-			sm.host,
-			'ssh',
-			sm.host,
-			'active',
-			'normal',
-			'ssh_machines',
-			sm.id::text,
-			jsonb_build_object('host', sm.host, 'port', sm.port, 'username', sm.username, 'auth_type', sm.auth_type),
-			sm.created_at,
-			sm.updated_at
-		FROM ssh_machines sm
-		UNION ALL
-		SELECT
-			'ssh_command_run:' || scr.id::text,
-			COALESCE(scr.project_id::text, sm.project_id::text, op.project_id::text, ''),
-			'ssh_command_run',
-			'SSH command run',
-			'SSH command run',
-			COALESCE(sm.name, 'SSH command run'),
-			'ssh',
-			scr.id::text,
-			scr.status,
-			CASE
-				WHEN scr.status='failed' THEN 'high'
-				WHEN scr.status IN ('queued', 'running') THEN 'warning'
-				ELSE 'normal'
-			END,
-			'ssh_command_runs',
-			scr.id::text,
-			jsonb_build_object(
-				'operation_run_id', scr.operation_run_id,
-				'ssh_machine_id', scr.ssh_machine_id,
-				'actor_user_id', scr.actor_user_id,
-				'exit_code', scr.exit_code,
-				'started_at', scr.started_at,
-				'finished_at', scr.finished_at,
-				'has_command', scr.command <> '',
-				'has_stdout', scr.stdout <> '',
-				'has_stderr', scr.stderr <> '',
-				'has_error', scr.error_message <> ''
-			),
-			scr.created_at,
-			COALESCE(scr.finished_at, scr.started_at, scr.created_at)
-		FROM ssh_command_runs scr
-		LEFT JOIN ssh_machines sm ON sm.id=scr.ssh_machine_id
-		LEFT JOIN operation_runs op ON op.id=scr.operation_run_id
-		UNION ALL
-		SELECT
-			'argo_connection:' || ac.id::text,
-			ac.project_id::text,
-			'argo_connection',
-			ac.name,
-			ac.name,
-			ac.server_url,
-			'argocd',
-			ac.server_url,
-			ac.last_sync_status,
-			'normal',
-			'argo_connections',
-			ac.id::text,
-			jsonb_build_object('auth_type', ac.auth_type, 'last_sync_error', ac.last_sync_error),
-			ac.created_at,
-			ac.updated_at
-		FROM argo_connections ac
-		UNION ALL
-		SELECT
-			'deployment_target:' || dt.id::text,
-			dt.project_id::text,
-			'deployment_target',
-			dt.name,
-			dt.name,
-			dt.namespace,
-			dt.source,
-			dt.environment,
-			dt.status,
-			'normal',
-			'deployment_targets',
-			dt.id::text,
-			jsonb_build_object(
-				'environment', dt.environment,
-				'cluster_name', dt.cluster_name,
-				'namespace', dt.namespace,
-				'argo_connection_id', dt.argo_connection_id
-			),
-			dt.created_at,
-			dt.updated_at
-		FROM deployment_targets dt
-		UNION ALL
-		SELECT
-			'deployment_record:' || dr.id::text,
-			dr.project_id::text,
-			'deployment_record',
-			dr.name,
-			dr.name,
-			dr.environment || '/' || dr.namespace,
-			dr.source,
-			dr.revision,
-			dr.status,
-			'normal',
-			'deployment_records',
-			dr.id::text,
-			jsonb_build_object('environment', dr.environment, 'namespace', dr.namespace, 'cluster_name', dr.cluster_name, 'deployment_target_id', dr.deployment_target_id, 'image_refs', dr.image_refs),
-			dr.created_at,
-			dr.updated_at
-		FROM deployment_records dr
-		UNION ALL
-		SELECT
-			'rollback_point:' || rp.id::text,
-			rp.project_id::text,
-			'rollback_point',
-			rp.name,
-			rp.name,
-			rp.environment,
-			rp.source,
-			rp.revision,
-			rp.status,
-			'normal',
-			'rollback_points',
-			rp.id::text,
-			jsonb_build_object('environment', rp.environment, 'deployment_record_id', rp.deployment_record_id, 'deployment_target_id', rp.deployment_target_id, 'image_refs', rp.image_refs),
-			rp.created_at,
-			rp.captured_at
-		FROM rollback_points rp
-		UNION ALL
-		SELECT
-			'argo_app:' || aa.id::text,
-			aa.project_id::text,
-			'argo_app',
-			aa.name,
-			aa.name,
-			aa.namespace,
-			'argocd',
-			aa.name,
-			aa.status,
-			'normal',
-			'argo_apps',
-			aa.id::text,
-			jsonb_build_object('namespace', aa.namespace, 'argo_connection_id', aa.argo_connection_id, 'deployment_target_id', aa.deployment_target_id),
-			aa.created_at,
-			aa.updated_at
-		FROM argo_apps aa
-		UNION ALL
-		SELECT
-			'ai_runtime:' || ar.id::text,
-			COALESCE(ar.project_id::text, ''),
-			'ai_runtime',
-			ar.name,
-			ar.name,
-			ar.runtime_type,
-			'local',
-			ar.runtime_type,
-			ar.status,
-			'normal',
-			'ai_runtimes',
-			ar.id::text,
-			jsonb_build_object('runtime_type', ar.runtime_type, 'codex_binary', ar.codex_binary, 'model', ar.model),
-			ar.created_at,
-			ar.updated_at
-		FROM ai_runtimes ar
-		UNION ALL
-		SELECT
-			'agent_task:' || at.id::text,
-			at.project_id::text,
-			'agent_task',
-			at.title,
-			at.title,
-			'AI agent task',
-			'assops_agent',
-			at.id::text,
-			at.status,
-			'normal',
-			'agent_tasks',
-			at.id::text,
-			jsonb_build_object(
-				'created_by', at.created_by,
-				'latest_plan_id', latest_plan.id,
-				'latest_plan_status', latest_plan.status,
-				'latest_plan_approved_at', latest_plan.approved_at
-			),
-			at.created_at,
-			at.updated_at
-		FROM agent_tasks at
-		LEFT JOIN LATERAL (
-			SELECT id, status, approved_at
-			FROM agent_plans ap
-			WHERE ap.agent_task_id=at.id
-			ORDER BY created_at DESC
-			LIMIT 1
-		) latest_plan ON true
-		UNION ALL
-		SELECT
-			'agent_tool_call:' || atc.id::text,
-			COALESCE(atc.project_id::text, at.project_id::text, ''),
-			'agent_tool_call',
-			atc.tool_name,
-			atc.tool_name,
-			'AI tool call audit',
-			'assops_agent',
-			atc.id::text,
-			atc.status,
-			CASE WHEN atc.status='failed' THEN 'high' ELSE 'normal' END,
-			'agent_tool_calls',
-			atc.id::text,
-			jsonb_build_object(
-				'agent_task_id', atc.agent_task_id,
-				'operation_run_id', atc.operation_run_id,
-				'project_id', COALESCE(atc.project_id, at.project_id),
-				'tool_name', atc.tool_name,
-				'started_at', atc.started_at,
-				'finished_at', atc.finished_at,
-				'has_input', atc.input <> '{}'::jsonb,
-				'has_output', atc.output <> '{}'::jsonb,
-				'has_error', atc.error_message <> ''
-			),
-			atc.created_at,
-			atc.updated_at
-		FROM agent_tool_calls atc
-		JOIN agent_tasks at ON at.id=atc.agent_task_id
-		UNION ALL
-		SELECT
-			'worker_job:' || wj.id::text,
-			COALESCE(op.project_id::text, ''),
-			'worker_job',
-			wj.tool_name,
-			wj.tool_name,
-			'Worker job',
-			'assops_worker',
-			wj.id::text,
-			wj.status,
-			CASE
-				WHEN wj.status='failed' THEN 'high'
-				WHEN wj.status IN ('queued', 'running') THEN 'warning'
-				ELSE 'normal'
-			END,
-			'worker_jobs',
-			wj.id::text,
-			jsonb_build_object(
-				'operation_run_id', wj.operation_run_id,
-				'tool_name', wj.tool_name,
-				'required_capabilities', wj.required_capabilities,
-				'preferred_node_kind', wj.preferred_node_kind,
-				'assigned_worker_node_id', wj.assigned_worker_node_id,
-				'claimed_at', wj.claimed_at,
-				'started_at', wj.started_at,
-				'finished_at', wj.finished_at,
-				'has_payload', wj.payload <> '{}'::jsonb,
-				'has_result', wj.result <> '{}'::jsonb,
-				'has_error', wj.error <> ''
-			),
-			wj.created_at,
-			wj.updated_at
-		FROM worker_jobs wj
-		LEFT JOIN operation_runs op ON op.id=wj.operation_run_id
-		UNION ALL
-		SELECT
-			'worker_node:' || wn.id::text,
-			'',
-			'node_agent',
-			wn.name,
-			wn.name,
-			wn.kind,
-			'local',
-			wn.name,
-			wn.status,
-			'normal',
-			'worker_nodes',
-			wn.id::text,
-			jsonb_build_object('kind', wn.kind, 'capabilities', wn.capabilities, 'last_heartbeat_at', wn.last_heartbeat_at),
-			wn.created_at,
-			wn.updated_at
-		FROM worker_nodes wn
-	)
-`
-}
-
-func assetRelationInventorySQL() string {
-	return `
-	WITH asset_relation_inventory AS (
-		SELECT
-			'project:' || p.id::text || ':owns:repository:' || r.id::text AS id,
-			p.id::text AS project_id,
-			'project:' || p.id::text AS from_asset_id,
-			'repository:' || r.id::text AS to_asset_id,
-			'owns' AS relation_type,
-			'{}'::jsonb AS metadata,
-			r.created_at AS created_at
-		FROM projects p
-		JOIN project_git_repositories r ON r.project_id=p.id
-		UNION ALL
-		SELECT
-			'repository:' || r.id::text || ':has_remote:git_remote:' || gr.id::text,
-			r.project_id::text,
-			'repository:' || r.id::text,
-			'git_remote:' || gr.id::text,
-			'has_remote',
-			jsonb_build_object('remote_role', gr.remote_role),
-			gr.created_at
-		FROM project_git_repositories r
-		JOIN git_remotes gr ON gr.project_git_repository_id=r.id
-		UNION ALL
-		SELECT
-			'provider_account:' || pa.id::text || ':manages:git_remote:' || gr.id::text,
-			r.project_id::text,
-			'provider_account:' || pa.id::text,
-			'git_remote:' || gr.id::text,
-			'manages',
-			jsonb_build_object('provider_type', pa.provider_type),
-			gr.created_at
-		FROM provider_accounts pa
-		JOIN git_remotes gr ON gr.source_account_id=pa.id
-		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-		UNION ALL
-		SELECT
-			'project:' || p.id::text || ':owns:operation_run:' || op.id::text,
-			p.id::text,
-			'project:' || p.id::text,
-			'operation_run:' || op.id::text,
-			'owns_operation',
-			jsonb_build_object('operation_type', op.operation_type, 'status', op.status),
-			op.created_at
-		FROM projects p
-		JOIN operation_runs op ON op.project_id=p.id
-		UNION ALL
-		SELECT
-			'project:' || p.id::text || ':owns:project_version:' || pv.id::text,
-			p.id::text,
-			'project:' || p.id::text,
-			'project_version:' || pv.id::text,
-			'owns_version',
-			jsonb_build_object('version', pv.version, 'source', pv.source),
-			pv.created_at
-		FROM projects p
-		JOIN project_versions pv ON pv.project_id=p.id
-		UNION ALL
-		SELECT
-			'project_version:' || pv.id::text || ':includes_repository:repository:' || r.id::text,
-			pv.project_id::text,
-			'project_version:' || pv.id::text,
-			'repository:' || r.id::text,
-			'includes_repository',
-			jsonb_build_object(
-				'version', pv.version,
-				'repository_id', r.id,
-				'has_tag', COALESCE(NULLIF(manifest_repo.item->>'tag', ''), '') <> '',
-				'has_commit_sha', COALESCE(NULLIF(manifest_repo.item->>'commit_sha', ''), '') <> ''
-			),
-			pv.created_at
-		FROM project_versions pv
-		JOIN LATERAL jsonb_array_elements(
-			CASE
-				WHEN jsonb_typeof(pv.metadata->'repositories')='array'
-				THEN pv.metadata->'repositories'
-				ELSE '[]'::jsonb
-			END
-		) AS manifest_repo(item) ON true
-		JOIN project_git_repositories r ON r.id=CASE
-			WHEN (manifest_repo.item->>'repository_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-			THEN (manifest_repo.item->>'repository_id')::uuid
-			ELSE NULL
-		END
-			AND r.project_id=pv.project_id
-		UNION ALL
-		SELECT
-			'project_version:' || pv.id::text || ':pins_remote:git_remote:' || gr.id::text,
-			pv.project_id::text,
-			'project_version:' || pv.id::text,
-			'git_remote:' || gr.id::text,
-			'pins_remote',
-			jsonb_build_object(
-				'version', pv.version,
-				'remote_id', gr.id,
-				'has_tag', COALESCE(NULLIF(manifest_repo.item->>'tag', ''), '') <> '',
-				'has_commit_sha', COALESCE(NULLIF(manifest_repo.item->>'commit_sha', ''), '') <> '',
-				'has_github_action_run', COALESCE(NULLIF(manifest_repo.item->>'github_action_run_id', ''), '') <> '',
-				'has_argo_revision', COALESCE(NULLIF(manifest_repo.item->>'argo_revision', ''), '') <> ''
-			),
-			pv.created_at
-		FROM project_versions pv
-		JOIN LATERAL jsonb_array_elements(
-			CASE
-				WHEN jsonb_typeof(pv.metadata->'repositories')='array'
-				THEN pv.metadata->'repositories'
-				ELSE '[]'::jsonb
-			END
-		) AS manifest_repo(item) ON true
-		JOIN git_remotes gr ON gr.id=CASE
-			WHEN (manifest_repo.item->>'remote_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-			THEN (manifest_repo.item->>'remote_id')::uuid
-			ELSE NULL
-		END
-		-- Git remotes inherit project ownership through their logical repository.
-		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-			AND r.project_id=pv.project_id
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text || ':dispatched_worker_job:worker_job:' || wj.id::text,
-			COALESCE(op.project_id::text, ''),
-			'operation_run:' || op.id::text,
-			'worker_job:' || wj.id::text,
-			'dispatched_worker_job',
-			jsonb_build_object('tool_name', wj.tool_name, 'status', wj.status),
-			wj.created_at
-		FROM worker_jobs wj
-		JOIN operation_runs op ON op.id=wj.operation_run_id
-		UNION ALL
-		-- Queued jobs have not been claimed yet, so they intentionally do not have an
-		-- assigned node edge until assigned_worker_node_id is set by claim.
-		SELECT
-			'worker_job:' || wj.id::text || ':assigned_to:worker_node:' || wn.id::text,
-			COALESCE(op.project_id::text, ''),
-			'worker_job:' || wj.id::text,
-			'worker_node:' || wn.id::text,
-			'assigned_to_worker_node',
-			jsonb_build_object('tool_name', wj.tool_name, 'status', wj.status, 'node_kind', wn.kind),
-			wj.created_at
-		FROM worker_jobs wj
-		JOIN worker_nodes wn ON wn.id=wj.assigned_worker_node_id
-		LEFT JOIN operation_runs op ON op.id=wj.operation_run_id
-		UNION ALL
-		SELECT
-			'project:' || p.id::text || ':owns:operation_approval:' || oa.id::text,
-			p.id::text,
-			'project:' || p.id::text,
-			'operation_approval:' || oa.id::text,
-			'owns_approval',
-			jsonb_build_object('action', oa.action, 'status', oa.status),
-			oa.created_at
-		FROM projects p
-		JOIN operation_approvals oa ON oa.project_id=p.id
-		UNION ALL
-		SELECT
-			'operation_approval:' || oa.id::text || ':gates_operation:operation_run:' || op.id::text,
-			COALESCE(oa.project_id::text, op.project_id::text, ''),
-			'operation_approval:' || oa.id::text,
-			'operation_run:' || op.id::text,
-			'gates_operation',
-			jsonb_build_object('action', oa.action, 'status', oa.status),
-			oa.created_at
-		FROM operation_approvals oa
-		JOIN operation_runs op ON op.id=oa.operation_run_id
-		UNION ALL
-		SELECT
-			'operation_approval_rule:' || oar.id::text || ':governs:operation_approval:' || oa.id::text,
-			COALESCE(oa.project_id::text, ''),
-			'operation_approval_rule:' || oar.id::text,
-			'operation_approval:' || oa.id::text,
-			'governs',
-			jsonb_build_object('action', oa.action, 'status', oa.status),
-			oa.created_at
-		FROM operation_approval_rules oar
-		JOIN operation_approvals oa ON oa.approval_rule_id=oar.id
-		UNION ALL
-		SELECT
-			'operation_approval:' || oa.id::text || ':gates_provider_review_attempt:provider_review_attempt:' || pra.id::text,
-			COALESCE(oa.project_id::text, ptr.project_id::text, ''),
-			'operation_approval:' || oa.id::text,
-			'provider_review_attempt:' || pra.id::text,
-			'gates_provider_review_attempt',
-			jsonb_build_object('operation_name', pra.operation_name, 'status', pra.status, 'dependency_status', pra.dependency_status),
-			pra.created_at
-		FROM provider_review_attempts pra
-		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
-		LEFT JOIN project_template_runs ptr ON ptr.id=pra.project_template_run_id
-		UNION ALL
-		SELECT
-			'project_template_run:' || ptr.id::text || ':records_provider_review_attempt:provider_review_attempt:' || pra.id::text,
-			COALESCE(ptr.project_id::text, oa.project_id::text, ''),
-			'project_template_run:' || ptr.id::text,
-			'provider_review_attempt:' || pra.id::text,
-			'records_provider_review_attempt',
-			jsonb_build_object('operation_name', pra.operation_name, 'status', pra.status, 'operation_order', pra.operation_order),
-			pra.created_at
-		FROM provider_review_attempts pra
-		JOIN project_template_runs ptr ON ptr.id=pra.project_template_run_id
-		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
-		UNION ALL
-		SELECT
-			'provider_review_attempt:' || dependency.id::text || ':unlocks_provider_review_attempt:provider_review_attempt:' || dependent.id::text,
-			COALESCE(oa.project_id::text, ptr.project_id::text, ''),
-			'provider_review_attempt:' || dependency.id::text,
-			'provider_review_attempt:' || dependent.id::text,
-			'unlocks_provider_review_attempt',
-			jsonb_build_object('dependency_status', dependent.dependency_status),
-			dependent.created_at
-		FROM provider_review_attempts dependent
-		JOIN provider_review_attempts dependency ON dependency.operation_approval_id=dependent.operation_approval_id
-			AND dependency.operation_name=dependent.depends_on_operation
-		JOIN operation_approvals oa ON oa.id=dependent.operation_approval_id
-		LEFT JOIN project_template_runs ptr ON ptr.id=dependent.project_template_run_id
-		WHERE dependent.depends_on_operation <> ''
-		UNION ALL
-		SELECT
-			'operation_approval:' || oa.id::text || ':targets:' || approval_resource.asset_id,
-			COALESCE(oa.project_id::text, ''),
-			'operation_approval:' || oa.id::text,
-			approval_resource.asset_id,
-			'targets',
-			jsonb_build_object('action', oa.action, 'status', oa.status),
-			oa.created_at
-		FROM operation_approvals oa
-		JOIN LATERAL (
-			-- Current approval policy resources use UUID primary keys. If a future resource
-			-- type uses slugs or external IDs, add an explicit mapping here instead of
-			-- letting the UUID filter below silently drop the target relation.
-			SELECT CASE oa.resource_type
-				WHEN 'project' THEN 'project:' || oa.resource_id
-				WHEN 'repository' THEN 'repository:' || oa.resource_id
-				WHEN 'git_remote' THEN 'git_remote:' || oa.resource_id
-				WHEN 'repo_sync' THEN 'repo_sync:' || oa.resource_id
-				WHEN 'webhook_connection' THEN 'webhook_connection:' || oa.resource_id
-				WHEN 'ssh_machine' THEN 'ssh_machine:' || oa.resource_id
-				-- Compatibility alias for older callers that described SSH machines as hosts.
-				WHEN 'host' THEN 'ssh_machine:' || oa.resource_id
-				WHEN 'agent_task' THEN 'agent_task:' || oa.resource_id
-				WHEN 'argo_connection' THEN 'argo_connection:' || oa.resource_id
-				ELSE ''
-			END AS asset_id
-		) approval_resource ON approval_resource.asset_id <> ''
-		WHERE oa.resource_type IN ('project', 'repository', 'git_remote', 'repo_sync', 'webhook_connection', 'host', 'ssh_machine', 'agent_task', 'argo_connection')
-			AND oa.resource_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-		UNION ALL
-		SELECT
-			'git_remote:' || gr.id::text || ':triggered:operation_run:' || op.id::text,
-			r.project_id::text,
-			'git_remote:' || gr.id::text,
-			'operation_run:' || op.id::text,
-			'triggered',
-			jsonb_build_object('operation_type', op.operation_type, 'status', op.status),
-			op.created_at
-		FROM operation_runs op
-		JOIN git_remotes gr ON gr.id=op.git_remote_id
-		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text || ':ran_repo_sync:repo_sync:' || rsa.id::text,
-			rsa.project_id::text,
-			'operation_run:' || op.id::text,
-			'repo_sync:' || rsa.id::text,
-			'ran_repo_sync',
-			jsonb_build_object('status', rsr.status),
-			rsr.created_at
-		FROM repo_sync_runs rsr
-		JOIN operation_runs op ON op.id=rsr.operation_run_id
-		JOIN repo_sync_assets rsa ON rsa.id=rsr.repo_sync_asset_id
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text || ':used_source_remote:git_remote:' || source.id::text,
-			r.project_id::text,
-			'operation_run:' || op.id::text,
-			'git_remote:' || source.id::text,
-			'used_source_remote',
-			jsonb_build_object('status', rsr.status),
-			rsr.created_at
-		FROM repo_sync_runs rsr
-		JOIN operation_runs op ON op.id=rsr.operation_run_id
-		JOIN git_remotes source ON source.id=rsr.source_remote_id
-		JOIN project_git_repositories r ON r.id=source.project_git_repository_id
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text || ':used_target_remote:git_remote:' || target.id::text,
-			r.project_id::text,
-			'operation_run:' || op.id::text,
-			'git_remote:' || target.id::text,
-			'used_target_remote',
-			jsonb_build_object('status', rsr.status),
-			rsr.created_at
-		FROM repo_sync_runs rsr
-		JOIN operation_runs op ON op.id=rsr.operation_run_id
-		JOIN git_remotes target ON target.id=rsr.target_remote_id
-		JOIN project_git_repositories r ON r.id=target.project_git_repository_id
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text || ':tagged_remote:git_remote:' || target.id::text,
-			r.project_id::text,
-			'operation_run:' || op.id::text,
-			'git_remote:' || target.id::text,
-			'tagged_remote',
-			jsonb_build_object('status', rtr.status, 'tag_name', rtr.tag_name),
-			rtr.created_at
-		FROM repo_tag_runs rtr
-		JOIN operation_runs op ON op.id=rtr.operation_run_id
-		JOIN git_remotes target ON target.id=rtr.target_remote_id
-		JOIN project_git_repositories r ON r.id=target.project_git_repository_id
-		UNION ALL
-		SELECT
-			'repo_tag_run:' || rtr.id::text || ':matched_action_run:github_action_run:' || gh.id::text,
-			COALESCE(rtr.project_id::text, r.project_id::text, ''),
-			'repo_tag_run:' || rtr.id::text,
-			'github_action_run:' || gh.id::text,
-			'matched_action_run',
-			jsonb_build_object(
-				'tag_run_status', rtr.status,
-				'action_run_status', gh.status,
-				'action_run_conclusion', gh.conclusion,
-				'target_remote_matched', true,
-				'commit_sha_matched', true,
-				'sanitized_metadata_only', true
-			),
-			GREATEST(rtr.created_at, gh.created_at)
-		FROM repo_tag_runs rtr
-		JOIN git_remotes gr ON gr.id=COALESCE(rtr.target_remote_id, rtr.git_remote_id)
-		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-		JOIN github_action_runs gh ON gh.git_remote_id=gr.id
-			AND rtr.target_sha <> ''
-			AND gh.commit_sha <> ''
-			AND gh.commit_sha=rtr.target_sha
-		WHERE rtr.status IN ('completed', 'succeeded', 'success')
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text || ':executed_on:ssh_machine:' || sm.id::text,
-			sm.project_id::text,
-			'operation_run:' || op.id::text,
-			'ssh_machine:' || sm.id::text,
-			'executed_on',
-			jsonb_build_object('status', scr.status, 'exit_code', scr.exit_code),
-			scr.created_at
-		FROM ssh_command_runs scr
-		JOIN operation_runs op ON op.id=scr.operation_run_id
-		JOIN ssh_machines sm ON sm.id=scr.ssh_machine_id
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text || ':ran_ssh_command:ssh_command_run:' || scr.id::text,
-			COALESCE(scr.project_id::text, op.project_id::text, sm.project_id::text, ''),
-			'operation_run:' || op.id::text,
-			'ssh_command_run:' || scr.id::text,
-			'ran_ssh_command',
-			jsonb_build_object('status', scr.status, 'exit_code', scr.exit_code),
-			scr.created_at
-		FROM ssh_command_runs scr
-		JOIN operation_runs op ON op.id=scr.operation_run_id
-		LEFT JOIN ssh_machines sm ON sm.id=scr.ssh_machine_id
-		UNION ALL
-		SELECT
-			'ssh_command_run:' || scr.id::text || ':executed_on:ssh_machine:' || sm.id::text,
-			COALESCE(scr.project_id::text, sm.project_id::text, ''),
-			'ssh_command_run:' || scr.id::text,
-			'ssh_machine:' || sm.id::text,
-			'executed_on',
-			jsonb_build_object('status', scr.status, 'exit_code', scr.exit_code),
-			scr.created_at
-		FROM ssh_command_runs scr
-		JOIN ssh_machines sm ON sm.id=scr.ssh_machine_id
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text || ':executed_agent_task:agent_task:' || at.id::text,
-			at.project_id::text,
-			'operation_run:' || op.id::text,
-			'agent_task:' || at.id::text,
-			'executed_agent_task',
-			jsonb_build_object('status', at.status),
-			op.created_at
-		FROM operation_runs op
-		JOIN agent_tasks at ON at.id=CASE
-			WHEN (op.input->>'agent_task_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-			THEN (op.input->>'agent_task_id')::uuid
-			ELSE NULL
-		END
-		WHERE op.operation_type='agent.execute'
-		UNION ALL
-		-- Keep this relation scoped to real Argo app sync operations; if new Argo
-		-- sync operation types are introduced, update readiness consumers together.
-		SELECT
-			'operation_run:' || op.id::text || ':synced_argo_connection:argo_connection:' || ac.id::text,
-			ac.project_id::text,
-			'operation_run:' || op.id::text,
-			'argo_connection:' || ac.id::text,
-			'synced_argo_connection',
-			jsonb_build_object('status', op.status),
-			op.created_at
-		FROM operation_runs op
-		JOIN argo_connections ac ON ac.id=CASE
-			WHEN (op.input->>'argo_connection_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-			THEN (op.input->>'argo_connection_id')::uuid
-			ELSE NULL
-		END
-		WHERE op.operation_type='argo.apps.sync'
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text || ':created_template_run:project_template_run:' || ptr.id::text,
-			COALESCE(ptr.project_id::text, op.project_id::text, ''),
-			'operation_run:' || op.id::text,
-			'project_template_run:' || ptr.id::text,
-			'created_template_run',
-			jsonb_build_object('status', ptr.status),
-			ptr.created_at
-		FROM project_template_runs ptr
-		JOIN operation_runs op ON op.id=ptr.operation_run_id
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text || ':created_from_template:project_template:' || pt.id::text,
-			COALESCE(ptr.project_id::text, ''),
-			'operation_run:' || op.id::text,
-			'project_template:' || pt.id::text,
-			'created_from_template',
-			jsonb_build_object('status', ptr.status),
-			ptr.created_at
-		FROM project_template_runs ptr
-		JOIN operation_runs op ON op.id=ptr.operation_run_id
-		JOIN project_templates pt ON pt.id=ptr.project_template_id
-		UNION ALL
-		SELECT
-			'project:' || p.id::text || ':owns:project_template_run:' || ptr.id::text,
-			p.id::text,
-			'project:' || p.id::text,
-			'project_template_run:' || ptr.id::text,
-			'owns_template_run',
-			jsonb_build_object('status', ptr.status),
-			ptr.created_at
-		FROM project_template_runs ptr
-		JOIN projects p ON p.id=ptr.project_id
-		UNION ALL
-		SELECT
-			'project_template_run:' || ptr.id::text || ':instantiates:project_template:' || pt.id::text,
-			COALESCE(ptr.project_id::text, ''),
-			'project_template_run:' || ptr.id::text,
-			'project_template:' || pt.id::text,
-			'instantiates_template',
-			jsonb_build_object('status', ptr.status),
-			ptr.created_at
-		FROM project_template_runs ptr
-		JOIN project_templates pt ON pt.id=ptr.project_template_id
-		UNION ALL
-		SELECT
-			'project_template_run:' || ptr.id::text || ':produced_file:template_file:' || ptf.id::text,
-			COALESCE(ptr.project_id::text, ptf.project_id::text, ''),
-			'project_template_run:' || ptr.id::text,
-			'template_file:' || ptf.id::text,
-			'produced_template_file',
-			jsonb_build_object('path', ptf.path, 'status', ptf.status),
-			ptf.created_at
-		FROM project_template_files ptf
-		JOIN project_template_runs ptr ON ptr.id=ptf.project_template_run_id
-		UNION ALL
-		-- Connection deletion nulls webhook_events.webhook_connection_id, so historical
-		-- webhook events remain as assets while this connection edge naturally disappears.
-		SELECT
-			'webhook_connection:' || wc.id::text || ':received:webhook_event:' || we.id::text,
-			COALESCE(we.project_id::text, wc.project_id::text, ''),
-			'webhook_connection:' || wc.id::text,
-			'webhook_event:' || we.id::text,
-			'received_webhook_event',
-			jsonb_build_object('provider', we.provider, 'event_type', we.event_type, 'status', we.status),
-			we.received_at
-		FROM webhook_events we
-		JOIN webhook_connections wc ON wc.id=we.webhook_connection_id
-		UNION ALL
-		SELECT
-			'webhook_event:' || we.id::text || ':matched_repo_sync:repo_sync:' || rsa.id::text,
-			COALESCE(we.project_id::text, rsa.project_id::text, ''),
-			'webhook_event:' || we.id::text,
-			'repo_sync:' || rsa.id::text,
-			'matched_repo_sync',
-			jsonb_build_object('provider', we.provider, 'event_type', we.event_type, 'status', we.status),
-			we.received_at
-		FROM webhook_events we
-		JOIN repo_sync_assets rsa ON rsa.id=we.matched_repo_sync_asset_id
-		UNION ALL
-		SELECT
-			'webhook_event:' || we.id::text || ':triggered_operation:operation_run:' || op.id::text,
-			COALESCE(we.project_id::text, op.project_id::text, ''),
-			'webhook_event:' || we.id::text,
-			'operation_run:' || op.id::text,
-			'triggered_operation',
-			jsonb_build_object('provider', we.provider, 'event_type', we.event_type, 'status', we.status),
-			we.received_at
-		FROM webhook_events we
-		JOIN operation_runs op ON op.id=we.operation_run_id
-		UNION ALL
-		-- Compatibility edge for older graph consumers that linked connections straight
-		-- to operations before webhook_event became a first-class asset node.
-		SELECT
-			'webhook_connection:' || wc.id::text || ':triggered_operation:operation_run:' || op.id::text,
-			wc.project_id::text,
-			'webhook_connection:' || wc.id::text,
-			'operation_run:' || op.id::text,
-			'triggered_operation',
-			jsonb_build_object('provider', we.provider, 'event_type', we.event_type),
-			we.received_at
-		FROM webhook_events we
-		JOIN operation_runs op ON op.id=we.operation_run_id
-		JOIN webhook_connections wc ON wc.id=we.webhook_connection_id
-		UNION ALL
-		SELECT
-			'repository:' || r.id::text || ':has_sync:repo_sync:' || rsa.id::text,
-			r.project_id::text,
-			'repository:' || r.id::text,
-			'repo_sync:' || rsa.id::text,
-			'has_sync',
-			jsonb_build_object('trigger_mode', rsa.trigger_mode, 'sync_mode', rsa.sync_mode),
-			rsa.created_at
-		FROM project_git_repositories r
-		JOIN repo_sync_assets rsa ON rsa.project_git_repository_id=r.id
-		UNION ALL
-		SELECT
-			'repo_sync:' || rsa.id::text || ':synced_from:git_remote:' || source.id::text,
-			rsa.project_id::text,
-			'repo_sync:' || rsa.id::text,
-			'git_remote:' || source.id::text,
-			'synced_from',
-			jsonb_build_object('remote_role', source.remote_role),
-			rsa.created_at
-		FROM repo_sync_assets rsa
-		JOIN git_remotes source ON source.id=rsa.source_remote_id
-		UNION ALL
-		SELECT
-			'repo_sync:' || rsa.id::text || ':mirrors_to:git_remote:' || target.id::text,
-			rsa.project_id::text,
-			'repo_sync:' || rsa.id::text,
-			'git_remote:' || target.id::text,
-			'mirrors_to',
-			jsonb_build_object('remote_role', target.remote_role),
-			rsa.created_at
-		FROM repo_sync_assets rsa
-		JOIN git_remotes target ON target.id=rsa.target_remote_id
-		UNION ALL
-		SELECT
-			'git_remote:' || gr.id::text || ':receives:webhook_connection:' || wc.id::text,
-			wc.project_id::text,
-			'git_remote:' || gr.id::text,
-			'webhook_connection:' || wc.id::text,
-			'receives',
-			jsonb_build_object('provider', wc.provider),
-			wc.created_at
-		FROM webhook_connections wc
-		JOIN git_remotes gr ON gr.id=wc.source_remote_id
-		UNION ALL
-		SELECT
-			'git_remote:' || gr.id::text || ':triggered_by:github_action_run:' || gh.id::text,
-			r.project_id::text,
-			'git_remote:' || gr.id::text,
-			'github_action_run:' || gh.id::text,
-			'triggered_by',
-			jsonb_build_object('workflow_name', gh.workflow_name, 'run_id', gh.run_id),
-			gh.created_at
-		FROM github_action_runs gh
-		JOIN git_remotes gr ON gr.id=gh.git_remote_id
-		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-		UNION ALL
-		SELECT
-			'project:' || p.id::text || ':owns:ssh_machine:' || sm.id::text,
-			p.id::text,
-			'project:' || p.id::text,
-			'ssh_machine:' || sm.id::text,
-			'owns',
-			'{}'::jsonb,
-			sm.created_at
-		FROM projects p
-		JOIN ssh_machines sm ON sm.project_id=p.id
-		UNION ALL
-		SELECT
-			'project:' || p.id::text || ':owns:argo_connection:' || ac.id::text,
-			p.id::text,
-			'project:' || p.id::text,
-			'argo_connection:' || ac.id::text,
-			'owns',
-			'{}'::jsonb,
-			ac.created_at
-		FROM projects p
-		JOIN argo_connections ac ON ac.project_id=p.id
-		UNION ALL
-		SELECT
-			'project:' || p.id::text || ':owns:deployment_target:' || dt.id::text,
-			p.id::text,
-			'project:' || p.id::text,
-			'deployment_target:' || dt.id::text,
-			'owns',
-			jsonb_build_object('environment', dt.environment, 'namespace', dt.namespace),
-			dt.created_at
-		FROM projects p
-		JOIN deployment_targets dt ON dt.project_id=p.id
-		UNION ALL
-		SELECT
-			'project:' || p.id::text || ':owns:deployment_record:' || dr.id::text,
-			p.id::text,
-			'project:' || p.id::text,
-			'deployment_record:' || dr.id::text,
-			'owns',
-			jsonb_build_object('environment', dr.environment, 'namespace', dr.namespace),
-			dr.created_at
-		FROM projects p
-		JOIN deployment_records dr ON dr.project_id=p.id
-		UNION ALL
-		SELECT
-			'project:' || p.id::text || ':owns:rollback_point:' || rp.id::text,
-			p.id::text,
-			'project:' || p.id::text,
-			'rollback_point:' || rp.id::text,
-			'owns',
-			jsonb_build_object('environment', rp.environment, 'revision', rp.revision),
-			rp.created_at
-		FROM projects p
-		JOIN rollback_points rp ON rp.project_id=p.id
-		UNION ALL
-		SELECT
-			'argo_connection:' || ac.id::text || ':manages:argo_app:' || aa.id::text,
-			aa.project_id::text,
-			'argo_connection:' || ac.id::text,
-			'argo_app:' || aa.id::text,
-			'manages',
-			jsonb_build_object('namespace', aa.namespace),
-			aa.created_at
-		FROM argo_apps aa
-		JOIN argo_connections ac ON ac.id=aa.argo_connection_id
-		UNION ALL
-		SELECT
-			'argo_app:' || aa.id::text || ':deployed_to:deployment_target:' || dt.id::text,
-			aa.project_id::text,
-			'argo_app:' || aa.id::text,
-			'deployment_target:' || dt.id::text,
-			'deployed_to',
-			jsonb_build_object('environment', dt.environment, 'namespace', dt.namespace, 'cluster_name', dt.cluster_name),
-			aa.created_at
-		FROM argo_apps aa
-		JOIN deployment_targets dt ON dt.id=aa.deployment_target_id
-		UNION ALL
-		SELECT
-			'deployment_target:' || dt.id::text || ':hosts:argo_app:' || aa.id::text,
-			aa.project_id::text,
-			'deployment_target:' || dt.id::text,
-			'argo_app:' || aa.id::text,
-			'hosts',
-			jsonb_build_object('environment', dt.environment, 'namespace', dt.namespace, 'cluster_name', dt.cluster_name),
-			aa.created_at
-		FROM argo_apps aa
-		JOIN deployment_targets dt ON dt.id=aa.deployment_target_id
-		UNION ALL
-		SELECT
-			'deployment_record:' || dr.id::text || ':deployed_to:deployment_target:' || dt.id::text,
-			dr.project_id::text,
-			'deployment_record:' || dr.id::text,
-			'deployment_target:' || dt.id::text,
-			'deployed_to',
-			jsonb_build_object('environment', dr.environment, 'namespace', dr.namespace, 'revision', dr.revision),
-			dr.created_at
-		FROM deployment_records dr
-		JOIN deployment_targets dt ON dt.id=dr.deployment_target_id
-		UNION ALL
-		SELECT
-			'deployment_record:' || dr.id::text || ':has_rollback:rollback_point:' || rp.id::text,
-			dr.project_id::text,
-			'deployment_record:' || dr.id::text,
-			'rollback_point:' || rp.id::text,
-			'has_rollback',
-			jsonb_build_object('revision', rp.revision, 'captured_at', rp.captured_at),
-			rp.created_at
-		FROM rollback_points rp
-		JOIN deployment_records dr ON dr.id=rp.deployment_record_id
-		UNION ALL
-		SELECT
-			'project:' || p.id::text || ':owns:ai_runtime:' || ar.id::text,
-			p.id::text,
-			'project:' || p.id::text,
-			'ai_runtime:' || ar.id::text,
-			'owns',
-			jsonb_build_object('runtime_type', ar.runtime_type),
-			ar.created_at
-		FROM projects p
-		JOIN ai_runtimes ar ON ar.project_id=p.id
-		UNION ALL
-		SELECT
-			'project:' || p.id::text || ':owns:agent_task:' || at.id::text,
-			p.id::text,
-			'project:' || p.id::text,
-			'agent_task:' || at.id::text,
-			'owns',
-			jsonb_build_object('status', at.status),
-			at.created_at
-		FROM projects p
-		JOIN agent_tasks at ON at.project_id=p.id
-		UNION ALL
-		SELECT
-			'agent_task:' || at.id::text || ':uses_runtime:ai_runtime:' || runtime.id::text,
-			at.project_id::text,
-			'agent_task:' || at.id::text,
-			'ai_runtime:' || runtime.id::text,
-			'uses_runtime',
-			jsonb_build_object('runtime_type', runtime.runtime_type),
-			at.updated_at
-		FROM agent_tasks at
-		JOIN LATERAL (
-			SELECT ar.id, ar.runtime_type
-			FROM ai_runtimes ar
-			WHERE ar.project_id=at.project_id OR ar.project_id IS NULL
-			ORDER BY
-				CASE WHEN ar.project_id=at.project_id THEN 0 ELSE 1 END,
-				CASE WHEN ar.status='verified' THEN 0 ELSE 1 END,
-				ar.updated_at DESC
-			LIMIT 1
-		) runtime ON true
-		UNION ALL
-		SELECT
-			'agent_task:' || at.id::text || ':records_tool_call:agent_tool_call:' || atc.id::text,
-			COALESCE(atc.project_id::text, at.project_id::text, ''),
-			'agent_task:' || at.id::text,
-			'agent_tool_call:' || atc.id::text,
-			'records_tool_call',
-			jsonb_build_object('tool_name', atc.tool_name, 'status', atc.status),
-			atc.created_at
-		FROM agent_tool_calls atc
-		JOIN agent_tasks at ON at.id=atc.agent_task_id
-		UNION ALL
-		SELECT
-			'operation_run:' || op.id::text || ':ran_tool_call:agent_tool_call:' || atc.id::text,
-			COALESCE(atc.project_id::text, at.project_id::text, ''),
-			'operation_run:' || op.id::text,
-			'agent_tool_call:' || atc.id::text,
-			'ran_tool_call',
-			jsonb_build_object('tool_name', atc.tool_name, 'status', atc.status),
-			atc.created_at
-		FROM agent_tool_calls atc
-		JOIN agent_tasks at ON at.id=atc.agent_task_id
-		JOIN operation_runs op ON op.id=atc.operation_run_id
-		UNION ALL
-		SELECT
-			ar.id::text,
-			ar.project_id::text,
-			from_asset.asset_type || ':' || from_asset.source_id::text,
-			to_asset.asset_type || ':' || to_asset.source_id::text,
-			ar.relation_type,
-			ar.metadata,
-			ar.created_at
-		FROM asset_relations ar
-		JOIN assets from_asset ON from_asset.id=ar.from_asset_id
-		JOIN assets to_asset ON to_asset.id=ar.to_asset_id
-		WHERE from_asset.source_id IS NOT NULL
-			AND to_asset.source_id IS NOT NULL
-			AND ar.metadata->>'source'='manual'
-	)
-`
-}
-
-func assetDependencySQL(direction string) string {
-	startColumn := "from_asset_id"
-	nextColumn := "to_asset_id"
-	if direction == "upstream" {
-		startColumn = "to_asset_id"
-		nextColumn = "from_asset_id"
-	}
-	return fmt.Sprintf(`
-	%s,
-	asset_dependency_walk AS (
-		SELECT
-			ari.id,
-			ari.project_id,
-			ari.from_asset_id,
-			ari.to_asset_id,
-			ari.relation_type,
-			1 AS depth,
-			ARRAY[ari.from_asset_id, ari.to_asset_id]::text[] AS path_assets,
-			ari.%[3]s AS current_asset_id,
-			(ari.from_asset_id || ' --' || ari.relation_type || '--> ' || ari.to_asset_id) AS path_text,
-			ari.created_at
-		FROM asset_relation_inventory ari
-		WHERE ari.%[2]s=$1
-			AND ($2='' OR ari.project_id=$2)
-		UNION ALL
-		SELECT
-			next.id,
-			next.project_id,
-			next.from_asset_id,
-			next.to_asset_id,
-			next.relation_type,
-			walk.depth + 1,
-			walk.path_assets || next.%[3]s,
-			next.%[3]s,
-			walk.path_text || ' | ' || next.from_asset_id || ' --' || next.relation_type || '--> ' || next.to_asset_id,
-			next.created_at
-		FROM asset_dependency_walk walk
-		JOIN asset_relation_inventory next ON next.%[2]s=walk.current_asset_id
-		WHERE walk.depth < $3
-			AND ($2='' OR next.project_id=$2)
-			AND NOT next.%[3]s = ANY(walk.path_assets)
-	),
-	asset_dependency_paths AS (
-		SELECT
-			id,
-			project_id,
-			from_asset_id,
-			to_asset_id,
-			relation_type,
-			depth,
-			path_assets,
-			current_asset_id,
-			path_text,
-			created_at
-		FROM asset_dependency_walk
-		LIMIT 501
-	)
-`, assetRelationInventorySQL(), startColumn, nextColumn)
-}
-
 func (s *Server) createRemoteOperation(tool string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input map[string]any
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&input)
 		}
-		remote, err := queryOne(r.Context(), s.store.DB, "SELECT gr.*, pgr.project_id FROM git_remotes gr JOIN project_git_repositories pgr ON pgr.id=gr.project_git_repository_id WHERE gr.id=$1", chi.URLParam(r, "id"))
-		if err != nil {
-			writeQueryOne(w, nil, err)
-			return
-		}
 		remoteID := chi.URLParam(r, "id")
+		remoteModel, projectID, err := s.gitRemoteWithProjectGorm(r.Context(), remoteID)
+		if err != nil {
+			writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
+			return
+		}
 		payload := map[string]any{"kind": "remote_operation", "tool": tool, "remote_id": remoteID, "input": input}
-		if !s.requireProjectPolicyOrApproval(w, r, PolicyResource{Type: "git_remote", ID: remoteID, ProjectID: fmt.Sprint(remote["project_id"])}, tool, tool+" "+fmt.Sprint(remote["name"]), payload) {
+		if !s.requireProjectPolicyOrApproval(w, r, PolicyResource{Type: "git_remote", ID: remoteID, ProjectID: projectID}, tool, tool+" "+remoteModel.Name, payload) {
 			return
 		}
-		tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not start operation transaction")
-			return
-		}
-		defer tx.Rollback()
-		op, err := s.enqueueRemoteOperationRun(r.Context(), tx, remoteID, tool, input, currentUser(r).ID)
-		if err != nil {
+		var op map[string]any
+		if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+			var err error
+			op, err = s.enqueueRemoteOperationRunGorm(r.Context(), tx, remoteID, tool, input, currentUser(r).ID)
+			if err != nil {
+				return err
+			}
+			_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+			return err
+		}); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if !s.syncCanonicalAssetsInTransaction(w, r, tx, "remote_operation.enqueue") {
-			return
-		}
-		if err := tx.Commit(); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not commit operation")
-			return
-		}
-		writeCreatedOne(w, op, err)
+		writeCreatedOne(w, op, nil)
 	}
 }
 
-func createRemoteOperationRun(ctx context.Context, tx *sqlx.Tx, op, remote, input map[string]any, actorID, tool string) error {
+func createRemoteOperationRunGorm(ctx context.Context, tx *gorm.DB, op, remote, input map[string]any, actorID, tool string) error {
 	switch tool {
 	case "repo.sync":
 		sourceID := stringFromMap(input, "source_remote_id")
@@ -13192,7 +11881,7 @@ func createRemoteOperationRun(ctx context.Context, tx *sqlx.Tx, op, remote, inpu
 			targetID = stringFromMap(input, "target_id")
 		}
 		if targetID == "" {
-			targetIDs, err := defaultTargetRemoteIDs(ctx, tx, repoID, sourceID)
+			targetIDs, err := defaultTargetRemoteIDsGorm(ctx, tx, repoID, sourceID)
 			if err != nil {
 				return err
 			}
@@ -13206,46 +11895,38 @@ func createRemoteOperationRun(ctx context.Context, tx *sqlx.Tx, op, remote, inpu
 		if targetID == sourceID {
 			return fmt.Errorf("target_remote_id must be different from source_remote_id")
 		}
-		if _, err := remoteForRepository(ctx, tx, repoID, sourceID); err != nil {
+		if _, err := remoteForRepositoryGorm(ctx, tx, repoID, sourceID); err != nil {
 			return fmt.Errorf("source remote not found in repository")
 		}
-		if _, err := remoteForRepository(ctx, tx, repoID, targetID); err != nil {
+		if _, err := remoteForRepositoryGorm(ctx, tx, repoID, targetID); err != nil {
 			return fmt.Errorf("target remote not found in repository")
 		}
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO repo_sync_runs(
-				operation_run_id, git_remote_id, project_id, project_git_repository_id,
-				source_remote_id, target_remote_id, ref, actor_user_id, status
-			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued')`,
-			op["id"],
-			targetID,
-			remote["project_id"],
-			remote["project_git_repository_id"],
-			sourceID,
-			targetID,
-			refsSummaryFromInput(input),
-			actorID,
-		)
-		return err
+		run := GormRepoSyncRun{
+			OperationRunID:         cleanOptionalID(fmt.Sprint(op["id"])),
+			GitRemoteID:            targetID,
+			ProjectID:              validNullString(cleanOptionalID(fmt.Sprint(remote["project_id"]))),
+			ProjectGitRepositoryID: validNullString(cleanOptionalID(fmt.Sprint(remote["project_git_repository_id"]))),
+			SourceRemoteID:         validNullString(sourceID),
+			TargetRemoteID:         validNullString(targetID),
+			Ref:                    refsSummaryFromInput(input),
+			ActorUserID:            validNullString(actorID),
+			Status:                 "queued",
+		}
+		return tx.WithContext(ctx).Create(&run).Error
 	case "repo.tag":
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO repo_tag_runs(
-				operation_run_id, git_remote_id, project_id, project_git_repository_id,
-				target_remote_id, tag_name, target_sha, tag_message, actor_user_id, status
-			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued')`,
-			op["id"],
-			remote["id"],
-			remote["project_id"],
-			remote["project_git_repository_id"],
-			remote["id"],
-			stringFromMap(input, "tag_name", "tag"),
-			stringFromMap(input, "target_sha", "sha"),
-			stringFromMap(input, "tag_message", "message"),
-			actorID,
-		)
-		return err
+		run := GormRepoTagRun{
+			OperationRunID:         cleanOptionalID(fmt.Sprint(op["id"])),
+			GitRemoteID:            cleanOptionalID(fmt.Sprint(remote["id"])),
+			ProjectID:              validNullString(cleanOptionalID(fmt.Sprint(remote["project_id"]))),
+			ProjectGitRepositoryID: validNullString(cleanOptionalID(fmt.Sprint(remote["project_git_repository_id"]))),
+			TargetRemoteID:         validNullString(cleanOptionalID(fmt.Sprint(remote["id"]))),
+			TagName:                stringFromMap(input, "tag_name", "tag"),
+			TargetSHA:              stringFromMap(input, "target_sha", "sha"),
+			TagMessage:             stringFromMap(input, "tag_message", "message"),
+			ActorUserID:            validNullString(actorID),
+			Status:                 "queued",
+		}
+		return tx.WithContext(ctx).Create(&run).Error
 	default:
 		return nil
 	}
@@ -13259,17 +11940,18 @@ type repositoryTagRequest struct {
 	TagMessage      string   `json:"tag_message"`
 }
 
-func (s *Server) enqueueRepositoryTagRuns(ctx context.Context, tx *sqlx.Tx, repoID string, req repositoryTagRequest, actorID string) ([]map[string]any, error) {
+func (s *Server) enqueueRepositoryTagRunsGorm(ctx context.Context, tx *gorm.DB, repoID string, req repositoryTagRequest, actorID string) ([]map[string]any, error) {
 	if strings.TrimSpace(req.TagName) == "" {
 		return nil, fmt.Errorf("tag_name is required")
 	}
-	repo, err := queryOne(ctx, tx, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
-	if err != nil {
-		return nil, err
+	var repo GormProjectGitRepository
+	if err := tx.WithContext(ctx).First(&repo, &GormProjectGitRepository{GormBase: GormBase{ID: repoID}}).Error; err != nil {
+		return nil, gormNotFoundAsErrNotFound(err)
 	}
 	targetIDs := req.TargetRemoteIDs
 	if len(targetIDs) == 0 {
-		targetIDs, err = defaultGitHubRemoteIDs(ctx, tx, repoID)
+		var err error
+		targetIDs, err = defaultGitHubRemoteIDsGorm(ctx, tx, repoID)
 		if err != nil {
 			return nil, fmt.Errorf("could not select GitHub remotes")
 		}
@@ -13279,7 +11961,7 @@ func (s *Server) enqueueRepositoryTagRuns(ctx context.Context, tx *sqlx.Tx, repo
 	}
 	var runs []map[string]any
 	for _, targetID := range targetIDs {
-		target, err := remoteForRepository(ctx, tx, repoID, targetID)
+		target, err := remoteForRepositoryGorm(ctx, tx, repoID, targetID)
 		if err != nil {
 			return nil, fmt.Errorf("target remote not found in repository")
 		}
@@ -13291,85 +11973,64 @@ func (s *Server) enqueueRepositoryTagRuns(ctx context.Context, tx *sqlx.Tx, repo
 			"branch":                    req.Branch,
 			"tag_message":               req.TagMessage,
 		}
-		op, err := enqueueOperationTx(ctx, tx, fmt.Sprint(repo["project_id"]), targetID, "repo.create_tag", "tag "+req.TagName+" on "+fmt.Sprint(target["name"]), input, []string{"git"}, "")
+		op, err := enqueueOperationGorm(ctx, tx, repo.ProjectID, targetID, "repo.create_tag", "tag "+req.TagName+" on "+fmt.Sprint(target["name"]), input, []string{"git"}, "")
 		if err != nil {
 			return nil, fmt.Errorf("could not enqueue tag")
 		}
-		run, err := queryOne(ctx, tx, `
-			INSERT INTO repo_tag_runs(
-				operation_run_id, git_remote_id, project_id, project_git_repository_id,
-				target_remote_id, tag_name, target_sha, tag_message, actor_user_id, status
-			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued')
-			RETURNING *`,
-			op["id"],
-			targetID,
-			repo["project_id"],
-			repoID,
-			targetID,
-			req.TagName,
-			req.TargetSHA,
-			req.TagMessage,
-			actorID,
-		)
-		if err != nil {
+		run := GormRepoTagRun{
+			OperationRunID:         cleanOptionalID(fmt.Sprint(op["id"])),
+			GitRemoteID:            targetID,
+			ProjectID:              validNullString(repo.ProjectID),
+			ProjectGitRepositoryID: validNullString(repoID),
+			TargetRemoteID:         validNullString(targetID),
+			TagName:                req.TagName,
+			TargetSHA:              req.TargetSHA,
+			TagMessage:             req.TagMessage,
+			ActorUserID:            validNullString(actorID),
+			Status:                 "queued",
+		}
+		if err := tx.WithContext(ctx).Create(&run).Error; err != nil {
 			return nil, fmt.Errorf("could not create tag run")
 		}
-		runs = append(runs, run)
+		runs = append(runs, repoTagRunMap(run))
 	}
 	return runs, nil
 }
 
-func (s *Server) enqueueRemoteOperationRun(ctx context.Context, tx *sqlx.Tx, remoteID, tool string, input map[string]any, actorID string) (map[string]any, error) {
-	remote, err := queryOne(ctx, tx, "SELECT gr.*, pgr.project_id FROM git_remotes gr JOIN project_git_repositories pgr ON pgr.id=gr.project_git_repository_id WHERE gr.id=$1 FOR SHARE", remoteID)
-	if err != nil {
-		return nil, err
+func (s *Server) enqueueRemoteOperationRunGorm(ctx context.Context, tx *gorm.DB, remoteID, tool string, input map[string]any, actorID string) (map[string]any, error) {
+	var remoteModel GormGitRemote
+	if err := tx.WithContext(ctx).First(&remoteModel, &GormGitRemote{GormBase: GormBase{ID: remoteID}}).Error; err != nil {
+		return nil, gormNotFoundAsErrNotFound(err)
 	}
-	op, err := enqueueOperationTx(ctx, tx, fmt.Sprint(remote["project_id"]), remoteID, tool, tool+" "+fmt.Sprint(remote["name"]), input, []string{"git"}, "")
+	var repo GormProjectGitRepository
+	if err := tx.WithContext(ctx).First(&repo, &GormProjectGitRepository{GormBase: GormBase{ID: remoteModel.ProjectGitRepositoryID}}).Error; err != nil {
+		return nil, gormNotFoundAsErrNotFound(err)
+	}
+	remote := gitRemoteMap(remoteModel, nil, repo.ProjectID)
+	op, err := enqueueOperationGorm(ctx, tx, repo.ProjectID, remoteID, tool, tool+" "+remoteModel.Name, input, []string{"git"}, "")
 	if err != nil {
 		return nil, fmt.Errorf("could not enqueue operation")
 	}
-	if err := createRemoteOperationRun(ctx, tx, op, remote, input, actorID, tool); err != nil {
+	if err := createRemoteOperationRunGorm(ctx, tx, op, remote, input, actorID, tool); err != nil {
 		return nil, fmt.Errorf("could not create operation run")
 	}
 	return op, nil
 }
 
 func (s *Server) enqueueOperation(ctx context.Context, projectID, remoteID, tool, title string, input map[string]any, capabilities []string, preferredKind string) (map[string]any, error) {
-	tx, err := s.store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	op, err := enqueueOperationTx(ctx, tx, projectID, remoteID, tool, title, input, capabilities, preferredKind)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
-		return nil, fmt.Errorf("syncing canonical assets for operation enqueue: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return op, nil
-}
-
-func enqueueOperationTx(ctx context.Context, tx *sqlx.Tx, projectID, remoteID, tool, title string, input map[string]any, capabilities []string, preferredKind string) (map[string]any, error) {
-	payload, err := jsonParam(input)
-	if err != nil {
-		return nil, err
-	}
-	op, err := queryOne(ctx, tx, `
-		INSERT INTO operation_runs(project_id, git_remote_id, operation_type, title, input)
-		VALUES (NULLIF($1,'')::uuid, NULLIF($2,'')::uuid, $3, $4, $5::jsonb)
-		RETURNING *`, projectID, remoteID, tool, title, payload)
-	if err != nil {
-		return nil, err
-	}
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO worker_jobs(operation_run_id, tool_name, payload, required_capabilities, preferred_node_kind)
-		VALUES ($1, $2, $3::jsonb, $4, $5)`, op["id"], tool, payload, pq.Array(capabilities), preferredKind)
-	if err != nil {
+	var op map[string]any
+	if err := s.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		op, err = enqueueOperationGorm(ctx, tx, projectID, remoteID, tool, title, input, capabilities, preferredKind)
+		if err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("syncing canonical assets for operation enqueue: %w", err)
+		}
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	return op, nil
@@ -13380,33 +12041,53 @@ func (s *Server) listOperations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := currentUser(r)
-	items, err := queryMaps(r.Context(), s.store.DB, operationListSQL(), userCanReadAllProjects(user), userIDOrNil(user))
+	items, err := s.operationListGorm(r.Context(), user)
 	writeQueryResult(w, items, err)
 }
 
-func operationListSQL() string {
-	return `
-		SELECT op.*,
-			COALESCE(log_counts.log_count, 0) AS log_count
-		FROM (
-			-- Keep visibility filtering and LIMIT inside this subquery so the
-			-- lateral log count only touches the currently visible page.
-			SELECT *
-			FROM operation_runs op
-			WHERE $1 OR op.project_id IS NULL OR EXISTS (
-				SELECT 1 FROM project_members pm
-				WHERE pm.project_id=op.project_id AND pm.user_id=$2
-			)
-			ORDER BY op.created_at DESC
-			LIMIT 100
-		) op
-		LEFT JOIN LATERAL (
-			SELECT count(*)::int AS log_count
-			FROM operation_logs
-			WHERE operation_run_id=op.id
-		) log_counts ON true
-		ORDER BY op.created_at DESC
-		LIMIT 100`
+func (s *Server) operationListGorm(ctx context.Context, user *User) ([]map[string]any, error) {
+	var ops []GormOperationRun
+	if err := s.store.Gorm.WithContext(ctx).Order(gormOrderDesc("created_at")).Limit(250).Find(&ops).Error; err != nil {
+		return nil, err
+	}
+	if !userCanReadAllProjects(user) {
+		allowed, err := s.projectMembershipSetGorm(ctx, user)
+		if err != nil {
+			return nil, err
+		}
+		filtered := ops[:0]
+		for _, op := range ops {
+			projectID := cleanOptionalID(op.ProjectID.String)
+			if projectID == "" || allowed[projectID] {
+				filtered = append(filtered, op)
+			}
+		}
+		ops = filtered
+	}
+	if len(ops) > 100 {
+		ops = ops[:100]
+	}
+	opIDs := make([]string, 0, len(ops))
+	for _, op := range ops {
+		opIDs = append(opIDs, op.ID)
+	}
+	logCounts := map[string]int{}
+	if len(opIDs) > 0 {
+		var logs []GormOperationLog
+		if err := s.store.Gorm.WithContext(ctx).Where(gormField("operation_run_id", opIDs)).Find(&logs).Error; err != nil {
+			return nil, err
+		}
+		for _, log := range logs {
+			logCounts[cleanOptionalID(log.OperationRunID.String)]++
+		}
+	}
+	items := make([]map[string]any, 0, len(ops))
+	for _, op := range ops {
+		item := operationRunGormMap(op)
+		item["log_count"] = logCounts[op.ID]
+		items = append(items, item)
+	}
+	return items, nil
 }
 
 func (s *Server) getWorkerQueueSummary(w http.ResponseWriter, r *http.Request) {
@@ -13417,10 +12098,7 @@ func (s *Server) getWorkerQueueSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := currentUser(r)
-	summary, err := queryOne(r.Context(), s.store.DB, workerQueueSummarySQL(), userCanReadAllProjects(user), userIDOrNil(user))
-	if err == nil {
-		summary["backend_summary"] = workerQueueBackendSummary()
-	}
+	summary, err := s.workerQueueSummaryGorm(r.Context(), user)
 	writeQueryOne(w, summary, err)
 }
 
@@ -13440,66 +12118,168 @@ func workerQueueBackendSummary() map[string]any {
 	}
 }
 
-func workerQueueSummarySQL() string {
-	return `
-		WITH visible_jobs AS (
-			SELECT wj.*
-			FROM worker_jobs wj
-			LEFT JOIN operation_runs op ON op.id=wj.operation_run_id
-			WHERE $1 OR op.project_id IS NULL OR EXISTS (
-				SELECT 1 FROM project_members pm
-				WHERE pm.project_id=op.project_id AND pm.user_id=$2
-			)
-		),
-		job_status_counts AS (
-			SELECT status, count(*)::int AS count
-			FROM visible_jobs
-			GROUP BY status
-		),
-		node_kind_counts AS (
-			SELECT kind, count(*)::int AS count
-			FROM worker_nodes
-			GROUP BY kind
-			ORDER BY count DESC, kind
-		),
-		queue_by_tool AS (
-			SELECT tool_name, count(*)::int AS queued
-			FROM visible_jobs
-			WHERE status='queued'
-			GROUP BY tool_name
-			ORDER BY queued DESC, tool_name
-			LIMIT 8
-		),
-		recent_failures AS (
-			SELECT id, tool_name, error, updated_at
-			FROM visible_jobs
-			WHERE status='failed'
-			ORDER BY updated_at DESC
-			LIMIT 5
-		)
-		SELECT
-			(SELECT count(*)::int FROM worker_nodes) AS total_nodes,
-			(SELECT count(*)::int FROM worker_nodes WHERE status='online' AND last_heartbeat_at >= now() - interval '2 minutes') AS online_nodes,
-			(SELECT count(*)::int FROM worker_nodes WHERE last_heartbeat_at < now() - interval '2 minutes') AS stale_nodes,
-			(SELECT count(*)::int FROM visible_jobs) AS total_jobs,
-			(SELECT count(*)::int FROM visible_jobs WHERE status='queued') AS queued_jobs,
-			(SELECT count(*)::int FROM visible_jobs WHERE status='running') AS running_jobs,
-			(SELECT count(*)::int FROM visible_jobs WHERE status='failed') AS failed_jobs,
-			(SELECT count(*)::int FROM visible_jobs WHERE status='completed' AND updated_at >= now() - interval '24 hours') AS completed_24h,
-			(SELECT count(*)::int FROM visible_jobs WHERE status='failed' AND updated_at >= now() - interval '24 hours') AS failed_24h,
-			(SELECT count(*)::int FROM visible_jobs WHERE status='queued' AND created_at < now() - interval '15 minutes') AS aged_queued_jobs,
-			(SELECT count(*)::int FROM visible_jobs WHERE status='running' AND started_at < now() - interval '15 minutes') AS stale_running_jobs,
-			COALESCE((SELECT jsonb_object_agg(status, count) FROM job_status_counts), '{}'::jsonb) AS jobs_by_status,
-			COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', kind, 'count', count)) FROM node_kind_counts), '[]'::jsonb) AS nodes_by_kind,
-			COALESCE((SELECT jsonb_agg(jsonb_build_object('tool_name', tool_name, 'queued', queued)) FROM queue_by_tool), '[]'::jsonb) AS queue_by_tool,
-			COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'tool_name', tool_name, 'error', error, 'updated_at', updated_at)) FROM recent_failures), '[]'::jsonb) AS recent_failures`
+func (s *Server) workerQueueSummaryGorm(ctx context.Context, user *User) (map[string]any, error) {
+	var jobs []GormWorkerJob
+	if err := s.store.Gorm.WithContext(ctx).Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	if !userCanReadAllProjects(user) {
+		allowed, err := s.projectMembershipSetGorm(ctx, user)
+		if err != nil {
+			return nil, err
+		}
+		opProjects, err := s.operationProjectMapForJobsGorm(ctx, jobs)
+		if err != nil {
+			return nil, err
+		}
+		filtered := jobs[:0]
+		for _, job := range jobs {
+			projectID := opProjects[cleanOptionalID(job.OperationRunID.String)]
+			if projectID == "" || allowed[projectID] {
+				filtered = append(filtered, job)
+			}
+		}
+		jobs = filtered
+	}
+	var nodes []GormWorkerNode
+	if err := s.store.Gorm.WithContext(ctx).Find(&nodes).Error; err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	jobsByStatus := map[string]int{}
+	queueByToolCount := map[string]int{}
+	recentFailures := []map[string]any{}
+	summary := map[string]any{
+		"total_nodes":        len(nodes),
+		"online_nodes":       0,
+		"stale_nodes":        0,
+		"total_jobs":         len(jobs),
+		"queued_jobs":        0,
+		"running_jobs":       0,
+		"failed_jobs":        0,
+		"completed_24h":      0,
+		"failed_24h":         0,
+		"aged_queued_jobs":   0,
+		"stale_running_jobs": 0,
+	}
+	for _, node := range nodes {
+		if node.Status == "online" && !node.LastHeartbeatAt.Before(now.Add(-2*time.Minute)) {
+			summary["online_nodes"] = intFromAny(summary["online_nodes"], 0) + 1
+		}
+		if node.LastHeartbeatAt.Before(now.Add(-2 * time.Minute)) {
+			summary["stale_nodes"] = intFromAny(summary["stale_nodes"], 0) + 1
+		}
+	}
+	nodesByKind := workerNodeKindCounts(nodes)
+	for _, job := range jobs {
+		jobsByStatus[job.Status]++
+		switch job.Status {
+		case "queued":
+			summary["queued_jobs"] = intFromAny(summary["queued_jobs"], 0) + 1
+			queueByToolCount[job.ToolName]++
+			if job.CreatedAt.Before(now.Add(-15 * time.Minute)) {
+				summary["aged_queued_jobs"] = intFromAny(summary["aged_queued_jobs"], 0) + 1
+			}
+		case "running":
+			summary["running_jobs"] = intFromAny(summary["running_jobs"], 0) + 1
+			if job.StartedAt.Valid && job.StartedAt.Time.Before(now.Add(-15*time.Minute)) {
+				summary["stale_running_jobs"] = intFromAny(summary["stale_running_jobs"], 0) + 1
+			}
+		case "failed":
+			summary["failed_jobs"] = intFromAny(summary["failed_jobs"], 0) + 1
+			if !job.UpdatedAt.Before(now.Add(-24 * time.Hour)) {
+				summary["failed_24h"] = intFromAny(summary["failed_24h"], 0) + 1
+			}
+			recentFailures = append(recentFailures, map[string]any{"id": job.ID, "tool_name": job.ToolName, "error": job.Error, "updated_at": job.UpdatedAt})
+		case "completed":
+			if !job.UpdatedAt.Before(now.Add(-24 * time.Hour)) {
+				summary["completed_24h"] = intFromAny(summary["completed_24h"], 0) + 1
+			}
+		}
+	}
+	sort.Slice(recentFailures, func(i, j int) bool {
+		return fmt.Sprint(recentFailures[i]["updated_at"]) > fmt.Sprint(recentFailures[j]["updated_at"])
+	})
+	if len(recentFailures) > 5 {
+		recentFailures = recentFailures[:5]
+	}
+	summary["jobs_by_status"] = jobsByStatus
+	summary["nodes_by_kind"] = nodesByKind
+	summary["queue_by_tool"] = queueByTool(queueByToolCount)
+	summary["recent_failures"] = recentFailures
+	summary["backend_summary"] = workerQueueBackendSummary()
+	return summary, nil
+}
+
+func (s *Server) operationProjectMapForJobsGorm(ctx context.Context, jobs []GormWorkerJob) (map[string]string, error) {
+	opIDs := make([]string, 0, len(jobs))
+	seen := map[string]bool{}
+	for _, job := range jobs {
+		opID := cleanOptionalID(job.OperationRunID.String)
+		if opID == "" || seen[opID] {
+			continue
+		}
+		seen[opID] = true
+		opIDs = append(opIDs, opID)
+	}
+	projects := map[string]string{}
+	if len(opIDs) == 0 {
+		return projects, nil
+	}
+	var ops []GormOperationRun
+	if err := s.store.Gorm.WithContext(ctx).Where(gormField("id", opIDs)).Find(&ops).Error; err != nil {
+		return nil, err
+	}
+	for _, op := range ops {
+		projects[op.ID] = cleanOptionalID(op.ProjectID.String)
+	}
+	return projects, nil
+}
+
+func workerNodeKindCounts(nodes []GormWorkerNode) []map[string]any {
+	counts := map[string]int{}
+	for _, node := range nodes {
+		counts[node.Kind]++
+	}
+	items := make([]map[string]any, 0, len(counts))
+	for kind, count := range counts {
+		items = append(items, map[string]any{"kind": kind, "count": count})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		left := intFromAny(items[i]["count"], 0)
+		right := intFromAny(items[j]["count"], 0)
+		if left != right {
+			return left > right
+		}
+		return fmt.Sprint(items[i]["kind"]) < fmt.Sprint(items[j]["kind"])
+	})
+	return items
+}
+
+func queueByTool(counts map[string]int) []map[string]any {
+	items := make([]map[string]any, 0, len(counts))
+	for tool, count := range counts {
+		items = append(items, map[string]any{"tool_name": tool, "queued": count})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		left := intFromAny(items[i]["queued"], 0)
+		right := intFromAny(items[j]["queued"], 0)
+		if left != right {
+			return left > right
+		}
+		return fmt.Sprint(items[i]["tool_name"]) < fmt.Sprint(items[j]["tool_name"])
+	})
+	if len(items) > 8 {
+		items = items[:8]
+	}
+	return items
 }
 
 func (s *Server) listOperationApprovals(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval"}, "read") {
 		return
 	}
-	if err := s.expirePendingOperationApprovals(r.Context(), s.store.DB); err != nil {
+	if err := s.expirePendingOperationApprovalsGorm(r.Context(), s.store.Gorm); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not expire approvals")
 		return
 	}
@@ -13509,79 +12289,7 @@ func (s *Server) listOperationApprovals(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT
-			oa.id,
-			oa.project_id,
-			oa.operation_run_id,
-			oa.approval_rule_id,
-			oa.resource_type,
-			oa.resource_id,
-			oa.action,
-			oa.title,
-			oa.status,
-			oa.required_approver_roles,
-			oa.required_approval_count,
-			oa.notification_channels,
-			oa.escalation_after_minutes,
-			oa.escalation_channels,
-			oa.last_escalated_at,
-			oa.escalation_count,
-			oa.notification_status,
-			oa.requested_by,
-			oa.decided_by,
-			oa.decision_reason,
-			oa.decided_at,
-			oa.expires_at,
-			oa.expired_at,
-			oa.created_at,
-			oa.updated_at,
-			requester.email AS requested_by_email,
-			decider.email AS decided_by_email,
-			p.name AS project_name,
-			COALESCE(decision_counts.approved_count, 0) AS approved_count,
-			COALESCE(decision_counts.rejected_count, 0) AS rejected_count,
-			EXISTS (
-				SELECT 1 FROM operation_approval_delegations oadel
-				WHERE oadel.operation_approval_id=oa.id
-					AND oadel.to_user_id=$10
-					AND oadel.revoked_at IS NULL
-			) AS can_current_user_decide
-		FROM operation_approvals oa
-		LEFT JOIN users requester ON requester.id=oa.requested_by
-		LEFT JOIN users decider ON decider.id=oa.decided_by
-		LEFT JOIN projects p ON p.id=oa.project_id
-		LEFT JOIN LATERAL (
-			SELECT
-				count(*) FILTER (WHERE decision='approved')::int AS approved_count,
-				count(*) FILTER (WHERE decision='rejected')::int AS rejected_count
-			FROM operation_approval_decisions oad
-			WHERE oad.operation_approval_id=oa.id
-		) decision_counts ON true
-		WHERE ($3='' OR oa.status=$3)
-			AND ($4='' OR oa.action=$4)
-			AND ($5='' OR oa.resource_type=$5)
-			AND ($6='' OR requester.email ILIKE $6 ESCAPE '\' OR oa.title ILIKE $6 ESCAPE '\' OR oa.resource_id ILIKE $6 ESCAPE '\')
-			AND ($7='' OR requester.email ILIKE $7 ESCAPE '\')
-			AND (NULLIF($8, '') IS NULL OR oa.created_at >= NULLIF($8, '')::timestamptz)
-			AND (NULLIF($9, '') IS NULL OR oa.created_at <= NULLIF($9, '')::timestamptz)
-			AND ($1 OR oa.project_id IS NULL OR EXISTS (
-				SELECT 1 FROM project_members pm
-				WHERE pm.project_id=oa.project_id AND pm.user_id=$2
-			))
-		ORDER BY oa.created_at DESC
-		LIMIT 100`,
-		userCanReadAllProjects(user),
-		userIDOrNil(user),
-		filters.Status,
-		filters.Action,
-		filters.ResourceType,
-		likeContains(filters.Query),
-		likeContains(filters.RequestedBy),
-		filters.Since,
-		filters.Until,
-		userIDOrNil(user),
-	)
+	items, err := s.operationApprovalListGorm(r.Context(), user, filters)
 	writeQueryResult(w, items, err)
 }
 
@@ -13589,14 +12297,12 @@ func (s *Server) getOperationApprovalSummary(w http.ResponseWriter, r *http.Requ
 	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval"}, "read") {
 		return
 	}
-	if err := s.expirePendingOperationApprovals(r.Context(), s.store.DB); err != nil {
+	if err := s.expirePendingOperationApprovalsGorm(r.Context(), s.store.Gorm); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not expire approvals")
 		return
 	}
 	user := currentUser(r)
-	canReadAll := userCanReadAllProjects(user)
-	userID := userIDOrNil(user)
-	summary, err := queryOne(r.Context(), s.store.DB, operationApprovalSummarySQL(), canReadAll, userID)
+	summary, err := s.operationApprovalSummaryGorm(r.Context(), user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load approval summary")
 		return
@@ -13608,171 +12314,324 @@ func (s *Server) listOperationApprovalReminderCandidates(w http.ResponseWriter, 
 	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval"}, "read") {
 		return
 	}
-	if err := s.expirePendingOperationApprovals(r.Context(), s.store.DB); err != nil {
+	if err := s.expirePendingOperationApprovalsGorm(r.Context(), s.store.Gorm); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not expire approvals")
 		return
 	}
 	user := currentUser(r)
-	items, err := queryMaps(r.Context(), s.store.DB, operationApprovalReminderCandidatesSQL(), userCanReadAllProjects(user), userIDOrNil(user))
+	items, err := s.operationApprovalReminderCandidatesGorm(r.Context(), user)
 	writeQueryResult(w, items, err)
 }
 
-func operationApprovalReminderCandidatesSQL() string {
-	return `
-		WITH visible AS (
-			SELECT
-				oa.id,
-				oa.project_id,
-				oa.action,
-				oa.resource_type,
-				oa.title,
-				oa.status,
-				oa.required_approval_count,
-				oa.notification_status,
-				oa.required_approver_roles,
-				oa.expires_at,
-				oa.last_reminded_at,
-				oa.reminder_count,
-				oa.escalation_after_minutes,
-				oa.escalation_channels,
-				oa.last_escalated_at,
-				oa.escalation_count,
-				oa.created_at,
-				p.name AS project_name,
-				requester.email AS requested_by_email,
-				COALESCE(decision_counts.approved_count, 0)::int AS approved_count,
-				EXISTS (
-					SELECT 1 FROM operation_approval_delegations oadel
-					WHERE oadel.operation_approval_id=oa.id
-						AND oadel.to_user_id=$2
-						AND oadel.revoked_at IS NULL
-				) AS can_current_user_decide
-			FROM operation_approvals oa
-			LEFT JOIN projects p ON p.id=oa.project_id
-			LEFT JOIN users requester ON requester.id=oa.requested_by
-			LEFT JOIN LATERAL (
-				SELECT count(*) FILTER (WHERE decision='approved')::int AS approved_count
-				FROM operation_approval_decisions oad
-				WHERE oad.operation_approval_id=oa.id
-			) decision_counts ON true
-			WHERE oa.status='pending'
-				AND ($1 OR oa.project_id IS NULL OR EXISTS (
-					SELECT 1 FROM project_members pm
-					WHERE pm.project_id=oa.project_id AND pm.user_id=$2
-				))
-		)
-		SELECT
-			id,
-			project_id,
-			project_name,
-			action,
-			resource_type,
-			title,
-			status,
-			required_approval_count,
-			approved_count,
-			notification_status,
-			required_approver_roles,
-			can_current_user_decide,
-			requested_by_email,
-			expires_at,
-			last_reminded_at,
-			reminder_count,
-			escalation_after_minutes,
-			escalation_channels,
-			last_escalated_at,
-			escalation_count,
-			created_at,
-			GREATEST(0, floor(EXTRACT(EPOCH FROM (now() - created_at)) / 60))::int AS age_minutes,
-			CASE
-				WHEN expires_at IS NULL THEN NULL
-				ELSE floor(EXTRACT(EPOCH FROM (expires_at - now())) / 60)::int
-			END AS minutes_until_expiry,
-			CASE
-				WHEN notification_status='failed' THEN 'notification_failed'
-				WHEN escalation_after_minutes > 0 AND created_at <= now() - (escalation_after_minutes * interval '1 minute') AND approved_count < required_approval_count THEN 'escalation_due'
-				WHEN expires_at IS NOT NULL AND expires_at <= now() + interval '15 minutes' THEN 'expires_soon'
-				WHEN created_at <= now() - interval '30 minutes' AND approved_count < required_approval_count THEN 'waiting_for_approvers'
-				WHEN expires_at IS NOT NULL AND expires_at <= now() + interval '1 hour' THEN 'approaching_expiry'
-				ELSE 'watch'
-			END AS reminder_reason,
-			CASE
-				WHEN notification_status='failed'
-					OR (escalation_after_minutes > 0 AND created_at <= now() - (escalation_after_minutes * interval '1 minute') AND approved_count < required_approval_count)
-					OR (expires_at IS NOT NULL AND expires_at <= now() + interval '15 minutes') THEN 'danger'
-				WHEN created_at <= now() - interval '30 minutes' AND approved_count < required_approval_count THEN 'warning'
-				WHEN expires_at IS NOT NULL AND expires_at <= now() + interval '1 hour' THEN 'warning'
-				ELSE 'info'
-			END AS escalation_level
-		FROM visible
-		WHERE notification_status='failed'
-			OR (escalation_after_minutes > 0 AND created_at <= now() - (escalation_after_minutes * interval '1 minute') AND approved_count < required_approval_count)
-			OR (expires_at IS NOT NULL AND expires_at <= now() + interval '1 hour')
-			OR (created_at <= now() - interval '30 minutes' AND approved_count < required_approval_count)
-		ORDER BY
-			CASE
-				WHEN notification_status='failed' THEN 0
-				WHEN escalation_after_minutes > 0 AND created_at <= now() - (escalation_after_minutes * interval '1 minute') AND approved_count < required_approval_count THEN 1
-				WHEN expires_at IS NOT NULL AND expires_at <= now() + interval '15 minutes' THEN 2
-				WHEN created_at <= now() - interval '30 minutes' AND approved_count < required_approval_count THEN 3
-				ELSE 4
-			END,
-			expires_at NULLS LAST,
-			created_at ASC
-		LIMIT 50`
+func (s *Server) operationApprovalListGorm(ctx context.Context, user *User, filters operationApprovalFilters) ([]map[string]any, error) {
+	approvals, err := s.visibleOperationApprovalsGorm(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	usersByID, projectsByID, decisions, delegated, err := s.operationApprovalAnnotationDataGorm(ctx, approvals, user)
+	if err != nil {
+		return nil, err
+	}
+	since, _ := time.Parse(time.RFC3339, filters.Since)
+	until, _ := time.Parse(time.RFC3339, filters.Until)
+	query := strings.ToLower(strings.TrimSpace(filters.Query))
+	requestedBy := strings.ToLower(strings.TrimSpace(filters.RequestedBy))
+	items := make([]map[string]any, 0, len(approvals))
+	for _, approval := range approvals {
+		requesterEmail := strings.ToLower(usersByID[cleanOptionalID(approval.RequestedBy.String)].Email)
+		if filters.Status != "" && approval.Status != filters.Status {
+			continue
+		}
+		if filters.Action != "" && approval.Action != filters.Action {
+			continue
+		}
+		if filters.ResourceType != "" && approval.ResourceType != filters.ResourceType {
+			continue
+		}
+		if query != "" && !strings.Contains(requesterEmail, query) && !strings.Contains(strings.ToLower(approval.Title), query) && !strings.Contains(strings.ToLower(approval.ResourceID), query) {
+			continue
+		}
+		if requestedBy != "" && !strings.Contains(requesterEmail, requestedBy) {
+			continue
+		}
+		if !since.IsZero() && approval.CreatedAt.Before(since) {
+			continue
+		}
+		if !until.IsZero() && approval.CreatedAt.After(until) {
+			continue
+		}
+		item := operationApprovalMap(approval, usersByID, projectsByID, decisions, delegated)
+		items = append(items, item)
+		if len(items) >= 100 {
+			break
+		}
+	}
+	return items, nil
 }
 
-func dueOperationApprovalRemindersSQL() string {
-	return `
-		WITH due AS (
-			SELECT
-				oa.id,
-				COALESCE(decision_counts.approved_count, 0)::int AS approved_count
-			FROM operation_approvals oa
-			LEFT JOIN LATERAL (
-				SELECT count(*) FILTER (WHERE decision='approved')::int AS approved_count
-				FROM operation_approval_decisions oad
-				WHERE oad.operation_approval_id=oa.id
-			) decision_counts ON true
-			WHERE oa.status='pending'
-				AND (oa.last_reminded_at IS NULL OR oa.last_reminded_at <= now() - interval '60 minutes')
-				AND (
-					oa.notification_status='failed'
-					OR (oa.expires_at IS NOT NULL AND oa.expires_at <= now() + interval '1 hour')
-					OR (oa.created_at <= now() - interval '30 minutes' AND COALESCE(decision_counts.approved_count, 0) < oa.required_approval_count)
-				)
-			ORDER BY
-				CASE
-					WHEN oa.notification_status='failed' THEN 0
-					WHEN oa.expires_at IS NOT NULL AND oa.expires_at <= now() + interval '15 minutes' THEN 1
-					WHEN oa.created_at <= now() - interval '30 minutes' AND COALESCE(decision_counts.approved_count, 0) < oa.required_approval_count THEN 2
-					ELSE 3
-				END,
-				oa.expires_at NULLS LAST,
-				oa.created_at ASC
-			FOR UPDATE OF oa SKIP LOCKED
-			LIMIT 20
-		)
-		UPDATE operation_approvals oa
-		SET last_reminded_at=now(),
-			reminder_count=reminder_count + 1,
-			updated_at=now()
-		FROM due
-		WHERE oa.id=due.id
-		RETURNING oa.*, due.approved_count`
+func (s *Server) operationApprovalSummaryGorm(ctx context.Context, user *User) (map[string]any, error) {
+	approvals, err := s.visibleOperationApprovalsGorm(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	byStatus := map[string]int{}
+	byAction := map[string]int{}
+	summary := map[string]any{"total": len(approvals), "pending": 0, "approved": 0, "rejected": 0, "expired": 0, "expiring_soon": 0, "notification_failed": 0}
+	for _, approval := range approvals {
+		byStatus[approval.Status]++
+		byAction[approval.Action]++
+		switch approval.Status {
+		case "pending":
+			summary["pending"] = intFromAny(summary["pending"], 0) + 1
+			if approval.ExpiresAt.Valid && !approval.ExpiresAt.Time.After(now.Add(time.Hour)) {
+				summary["expiring_soon"] = intFromAny(summary["expiring_soon"], 0) + 1
+			}
+		case "approved":
+			summary["approved"] = intFromAny(summary["approved"], 0) + 1
+		case "rejected":
+			summary["rejected"] = intFromAny(summary["rejected"], 0) + 1
+		case "expired":
+			summary["expired"] = intFromAny(summary["expired"], 0) + 1
+		}
+		if approval.NotificationStatus == "failed" {
+			summary["notification_failed"] = intFromAny(summary["notification_failed"], 0) + 1
+		}
+	}
+	summary["by_status"] = byStatus
+	summary["by_action"] = approvalActionCounts(byAction)
+	return summary, nil
+}
+
+func (s *Server) operationApprovalReminderCandidatesGorm(ctx context.Context, user *User) ([]map[string]any, error) {
+	approvals, err := s.visibleOperationApprovalsGorm(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	usersByID, projectsByID, decisions, delegated, err := s.operationApprovalAnnotationDataGorm(ctx, approvals, user)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	items := []map[string]any{}
+	for _, approval := range approvals {
+		if approval.Status != "pending" {
+			continue
+		}
+		approvedCount := decisions[approval.ID]["approved"]
+		ageMinutes := int(now.Sub(approval.CreatedAt).Minutes())
+		minutesUntilExpiry := any(nil)
+		if approval.ExpiresAt.Valid {
+			minutesUntilExpiry = int(approval.ExpiresAt.Time.Sub(now).Minutes())
+		}
+		escalationMinutes := intFromAny(mapFromAny(approval.EscalationPolicy.Data)["after_minutes"], 0)
+		reminderReason, level := operationApprovalReminderReason(approval, approvedCount, ageMinutes, minutesUntilExpiry, escalationMinutes)
+		if reminderReason == "watch" {
+			continue
+		}
+		item := operationApprovalMap(approval, usersByID, projectsByID, decisions, delegated)
+		item["approved_count"] = approvedCount
+		item["last_reminded_at"] = nullableTimeAny(approval.LastReminderAt)
+		item["reminder_count"] = approval.ReminderCount
+		item["escalation_after_minutes"] = escalationMinutes
+		item["escalation_channels"] = stringSliceFromAny(mapFromAny(approval.EscalationPolicy.Data)["channels"])
+		item["last_escalated_at"] = nullableTimeAny(approval.EscalatedAt)
+		item["escalation_count"] = intFromAny(mapFromAny(approval.EscalationPolicy.Data)["count"], 0)
+		item["age_minutes"] = ageMinutes
+		item["minutes_until_expiry"] = minutesUntilExpiry
+		item["reminder_reason"] = reminderReason
+		item["escalation_level"] = level
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return operationApprovalReminderRank(items[i]) < operationApprovalReminderRank(items[j])
+	})
+	if len(items) > 50 {
+		items = items[:50]
+	}
+	return items, nil
+}
+
+func (s *Server) visibleOperationApprovalsGorm(ctx context.Context, user *User) ([]GormOperationApproval, error) {
+	var approvals []GormOperationApproval
+	if err := s.store.Gorm.WithContext(ctx).Order(gormOrderDesc("created_at")).Find(&approvals).Error; err != nil {
+		return nil, err
+	}
+	if userCanReadAllProjects(user) {
+		return approvals, nil
+	}
+	allowed, err := s.projectMembershipSetGorm(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	filtered := approvals[:0]
+	for _, approval := range approvals {
+		projectID := cleanOptionalID(approval.ProjectID.String)
+		if projectID == "" || allowed[projectID] {
+			filtered = append(filtered, approval)
+		}
+	}
+	return filtered, nil
+}
+
+func (s *Server) operationApprovalAnnotationDataGorm(ctx context.Context, approvals []GormOperationApproval, user *User) (map[string]GormUser, map[string]GormProject, map[string]map[string]int, map[string]bool, error) {
+	userIDs := []string{}
+	projectIDs := []string{}
+	approvalIDs := []string{}
+	seenUsers := map[string]bool{}
+	seenProjects := map[string]bool{}
+	for _, approval := range approvals {
+		approvalIDs = append(approvalIDs, approval.ID)
+		for _, id := range []string{cleanOptionalID(approval.RequestedBy.String), cleanOptionalID(approval.DecidedBy.String)} {
+			if id != "" && !seenUsers[id] {
+				seenUsers[id] = true
+				userIDs = append(userIDs, id)
+			}
+		}
+		if id := cleanOptionalID(approval.ProjectID.String); id != "" && !seenProjects[id] {
+			seenProjects[id] = true
+			projectIDs = append(projectIDs, id)
+		}
+	}
+	usersByID := map[string]GormUser{}
+	if len(userIDs) > 0 {
+		var users []GormUser
+		if err := s.store.Gorm.WithContext(ctx).Where(gormField("id", userIDs)).Find(&users).Error; err != nil {
+			return nil, nil, nil, nil, err
+		}
+		for _, item := range users {
+			usersByID[item.ID] = item
+		}
+	}
+	projectsByID := map[string]GormProject{}
+	if len(projectIDs) > 0 {
+		var projects []GormProject
+		if err := s.store.Gorm.WithContext(ctx).Where(gormField("id", projectIDs)).Find(&projects).Error; err != nil {
+			return nil, nil, nil, nil, err
+		}
+		for _, item := range projects {
+			projectsByID[item.ID] = item
+		}
+	}
+	decisions := map[string]map[string]int{}
+	if len(approvalIDs) > 0 {
+		var rows []GormOperationApprovalDecision
+		if err := s.store.Gorm.WithContext(ctx).Where(gormField("operation_approval_id", approvalIDs)).Find(&rows).Error; err != nil {
+			return nil, nil, nil, nil, err
+		}
+		for _, row := range rows {
+			if decisions[row.OperationApprovalID] == nil {
+				decisions[row.OperationApprovalID] = map[string]int{}
+			}
+			decisions[row.OperationApprovalID][row.Decision]++
+		}
+	}
+	delegated := map[string]bool{}
+	if user != nil && cleanOptionalID(user.ID) != "" && len(approvalIDs) > 0 {
+		var delegations []GormOperationApprovalDelegation
+		if err := s.store.Gorm.WithContext(ctx).Where(gormField("operation_approval_id", approvalIDs)).Where(&GormOperationApprovalDelegation{ToUserID: user.ID}).Find(&delegations).Error; err != nil {
+			return nil, nil, nil, nil, err
+		}
+		for _, delegation := range delegations {
+			delegated[delegation.OperationApprovalID] = true
+		}
+	}
+	return usersByID, projectsByID, decisions, delegated, nil
+}
+
+func operationApprovalMap(approval GormOperationApproval, users map[string]GormUser, projects map[string]GormProject, decisions map[string]map[string]int, delegated map[string]bool) map[string]any {
+	escalation := mapFromAny(approval.EscalationPolicy.Data)
+	return map[string]any{
+		"id":                       approval.ID,
+		"project_id":               nullableStringValue(approval.ProjectID),
+		"operation_run_id":         nullableStringValue(approval.OperationRunID),
+		"approval_rule_id":         nullableStringValue(approval.ApprovalRuleID),
+		"resource_type":            approval.ResourceType,
+		"resource_id":              approval.ResourceID,
+		"action":                   approval.Action,
+		"title":                    approval.Title,
+		"status":                   approval.Status,
+		"required_approver_roles":  []string(approval.RequiredApproverRoles),
+		"required_approval_count":  approval.RequiredApprovalCount,
+		"notification_channels":    []string(approval.NotificationChannels),
+		"escalation_after_minutes": intFromAny(escalation["after_minutes"], 0),
+		"escalation_channels":      stringSliceFromAny(escalation["channels"]),
+		"last_escalated_at":        nullableTimeAny(approval.EscalatedAt),
+		"escalation_count":         intFromAny(escalation["count"], 0),
+		"notification_status":      approval.NotificationStatus,
+		"notification_last_error":  approval.NotificationLastError,
+		"requested_by":             nullableStringValue(approval.RequestedBy),
+		"decided_by":               nullableStringValue(approval.DecidedBy),
+		"decision_reason":          approval.DecisionReason,
+		"decided_at":               nullableTimeAny(approval.DecidedAt),
+		"expires_at":               nullableTimeAny(approval.ExpiresAt),
+		"expired_at":               nullableTimeAny(approval.ExpiredAt),
+		"created_at":               approval.CreatedAt,
+		"updated_at":               approval.UpdatedAt,
+		"requested_by_email":       users[cleanOptionalID(approval.RequestedBy.String)].Email,
+		"decided_by_email":         users[cleanOptionalID(approval.DecidedBy.String)].Email,
+		"project_name":             projects[cleanOptionalID(approval.ProjectID.String)].Name,
+		"approved_count":           decisions[approval.ID]["approved"],
+		"rejected_count":           decisions[approval.ID]["rejected"],
+		"can_current_user_decide":  delegated[approval.ID],
+	}
+}
+
+func approvalActionCounts(counts map[string]int) []map[string]any {
+	items := make([]map[string]any, 0, len(counts))
+	for action, count := range counts {
+		items = append(items, map[string]any{"action": action, "count": count})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		left := intFromAny(items[i]["count"], 0)
+		right := intFromAny(items[j]["count"], 0)
+		if left != right {
+			return left > right
+		}
+		return fmt.Sprint(items[i]["action"]) < fmt.Sprint(items[j]["action"])
+	})
+	if len(items) > 8 {
+		items = items[:8]
+	}
+	return items
+}
+
+func operationApprovalReminderReason(approval GormOperationApproval, approvedCount, ageMinutes int, minutesUntilExpiry any, escalationMinutes int) (string, string) {
+	expiryMinutes, hasExpiry := minutesUntilExpiry.(int)
+	switch {
+	case approval.NotificationStatus == "failed":
+		return "notification_failed", "danger"
+	case escalationMinutes > 0 && ageMinutes >= escalationMinutes && approvedCount < approval.RequiredApprovalCount:
+		return "escalation_due", "danger"
+	case hasExpiry && expiryMinutes <= 15:
+		return "expires_soon", "danger"
+	case ageMinutes >= 30 && approvedCount < approval.RequiredApprovalCount:
+		return "waiting_for_approvers", "warning"
+	case hasExpiry && expiryMinutes <= 60:
+		return "approaching_expiry", "warning"
+	default:
+		return "watch", "info"
+	}
+}
+
+func operationApprovalReminderRank(item map[string]any) int {
+	switch fmt.Sprint(item["reminder_reason"]) {
+	case "notification_failed":
+		return 0
+	case "escalation_due":
+		return 1
+	case "expires_soon":
+		return 2
+	case "waiting_for_approvers":
+		return 3
+	default:
+		return 4
+	}
 }
 
 func (s *Server) dispatchDueOperationApprovalReminders(ctx context.Context) error {
-	tx, err := s.store.DB.BeginTxx(ctx, nil)
+	items, err := s.dueOperationApprovalRemindersGorm(ctx)
 	if err != nil {
-		return err
-	}
-	items, err := queryMaps(ctx, tx, dueOperationApprovalRemindersSQL())
-	if err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
 		return err
 	}
 	for _, item := range items {
@@ -13783,47 +12642,9 @@ func (s *Server) dispatchDueOperationApprovalReminders(ctx context.Context) erro
 	return nil
 }
 
-func dueOperationApprovalEscalationsSQL() string {
-	return `
-		WITH due AS (
-			SELECT
-				oa.id,
-				COALESCE(decision_counts.approved_count, 0)::int AS approved_count
-			FROM operation_approvals oa
-			LEFT JOIN LATERAL (
-				SELECT count(*) FILTER (WHERE decision='approved')::int AS approved_count
-				FROM operation_approval_decisions oad
-				WHERE oad.operation_approval_id=oa.id
-			) decision_counts ON true
-			WHERE oa.status='pending'
-				AND oa.escalation_after_minutes > 0
-				AND oa.created_at <= now() - (oa.escalation_after_minutes * interval '1 minute')
-				AND COALESCE(decision_counts.approved_count, 0) < oa.required_approval_count
-				AND (oa.last_escalated_at IS NULL OR oa.last_escalated_at <= now() - interval '120 minutes')
-			ORDER BY oa.created_at ASC
-			FOR UPDATE OF oa SKIP LOCKED
-			LIMIT 20
-		)
-		UPDATE operation_approvals oa
-		SET last_escalated_at=now(),
-			escalation_count=escalation_count + 1,
-			updated_at=now()
-		FROM due
-		WHERE oa.id=due.id
-		RETURNING oa.*, due.approved_count`
-}
-
 func (s *Server) dispatchDueOperationApprovalEscalations(ctx context.Context) error {
-	tx, err := s.store.DB.BeginTxx(ctx, nil)
+	items, err := s.dueOperationApprovalEscalationsGorm(ctx)
 	if err != nil {
-		return err
-	}
-	items, err := queryMaps(ctx, tx, dueOperationApprovalEscalationsSQL())
-	if err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
 		return err
 	}
 	for _, item := range items {
@@ -13834,36 +12655,161 @@ func (s *Server) dispatchDueOperationApprovalEscalations(ctx context.Context) er
 	return nil
 }
 
+func (s *Server) dueOperationApprovalRemindersGorm(ctx context.Context) ([]map[string]any, error) {
+	var items []map[string]any
+	now := time.Now().UTC()
+	err := s.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		approvals, counts, err := pendingOperationApprovalsWithDecisionCounts(ctx, tx)
+		if err != nil {
+			return err
+		}
+		due := make([]GormOperationApproval, 0, len(approvals))
+		for _, approval := range approvals {
+			approved := counts[approval.ID]
+			if !approval.LastReminderAt.Valid || approval.LastReminderAt.Time.Before(now.Add(-60*time.Minute)) || approval.LastReminderAt.Time.Equal(now.Add(-60*time.Minute)) {
+				createdOld := approval.CreatedAt.Before(now.Add(-30*time.Minute)) || approval.CreatedAt.Equal(now.Add(-30*time.Minute))
+				expiresSoon := approval.ExpiresAt.Valid && (approval.ExpiresAt.Time.Before(now.Add(time.Hour)) || approval.ExpiresAt.Time.Equal(now.Add(time.Hour)))
+				needsApprover := createdOld && approved < requiredApprovalCount(approval.RequiredApprovalCount)
+				if approval.NotificationStatus == "failed" || expiresSoon || needsApprover {
+					due = append(due, approval)
+				}
+			}
+		}
+		sort.Slice(due, func(i, j int) bool {
+			leftRank := operationApprovalDueReminderRank(due[i], counts[due[i].ID], now)
+			rightRank := operationApprovalDueReminderRank(due[j], counts[due[j].ID], now)
+			if leftRank != rightRank {
+				return leftRank < rightRank
+			}
+			if due[i].ExpiresAt.Valid != due[j].ExpiresAt.Valid {
+				return due[i].ExpiresAt.Valid
+			}
+			if due[i].ExpiresAt.Valid && !due[i].ExpiresAt.Time.Equal(due[j].ExpiresAt.Time) {
+				return due[i].ExpiresAt.Time.Before(due[j].ExpiresAt.Time)
+			}
+			return due[i].CreatedAt.Before(due[j].CreatedAt)
+		})
+		if len(due) > 20 {
+			due = due[:20]
+		}
+		items = make([]map[string]any, 0, len(due))
+		for _, approval := range due {
+			approval.LastReminderAt = validNullTime(now)
+			approval.ReminderCount++
+			if err := tx.WithContext(ctx).Save(&approval).Error; err != nil {
+				return err
+			}
+			item := operationApprovalMap(approval, nil, nil, map[string]map[string]int{approval.ID: {"approved": counts[approval.ID]}}, nil)
+			item["approved_count"] = counts[approval.ID]
+			items = append(items, item)
+		}
+		return nil
+	})
+	return items, err
+}
+
+func (s *Server) dueOperationApprovalEscalationsGorm(ctx context.Context) ([]map[string]any, error) {
+	var items []map[string]any
+	now := time.Now().UTC()
+	err := s.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		approvals, counts, err := pendingOperationApprovalsWithDecisionCounts(ctx, tx)
+		if err != nil {
+			return err
+		}
+		due := make([]GormOperationApproval, 0, len(approvals))
+		for _, approval := range approvals {
+			escalation := mapFromAny(approval.EscalationPolicy.Data)
+			afterMinutes := intFromAny(escalation["after_minutes"], 0)
+			if afterMinutes <= 0 || counts[approval.ID] >= requiredApprovalCount(approval.RequiredApprovalCount) {
+				continue
+			}
+			if approval.CreatedAt.After(now.Add(-time.Duration(afterMinutes) * time.Minute)) {
+				continue
+			}
+			if approval.EscalatedAt.Valid && approval.EscalatedAt.Time.After(now.Add(-120*time.Minute)) {
+				continue
+			}
+			due = append(due, approval)
+		}
+		sort.Slice(due, func(i, j int) bool { return due[i].CreatedAt.Before(due[j].CreatedAt) })
+		if len(due) > 20 {
+			due = due[:20]
+		}
+		items = make([]map[string]any, 0, len(due))
+		for _, approval := range due {
+			escalation := mapFromAny(approval.EscalationPolicy.Data)
+			escalation["count"] = intFromAny(escalation["count"], 0) + 1
+			approval.EscalationPolicy = JSONValue{Data: escalation}
+			approval.EscalatedAt = validNullTime(now)
+			if err := tx.WithContext(ctx).Save(&approval).Error; err != nil {
+				return err
+			}
+			item := operationApprovalMap(approval, nil, nil, map[string]map[string]int{approval.ID: {"approved": counts[approval.ID]}}, nil)
+			item["approved_count"] = counts[approval.ID]
+			items = append(items, item)
+		}
+		return nil
+	})
+	return items, err
+}
+
+func pendingOperationApprovalsWithDecisionCounts(ctx context.Context, db *gorm.DB) ([]GormOperationApproval, map[string]int, error) {
+	var approvals []GormOperationApproval
+	if err := db.WithContext(ctx).Where(&GormOperationApproval{Status: "pending"}).Find(&approvals).Error; err != nil {
+		return nil, nil, err
+	}
+	var decisions []GormOperationApprovalDecision
+	if err := db.WithContext(ctx).Where(&GormOperationApprovalDecision{Decision: "approved"}).Find(&decisions).Error; err != nil {
+		return nil, nil, err
+	}
+	approvalIDs := map[string]bool{}
+	for _, approval := range approvals {
+		approvalIDs[approval.ID] = true
+	}
+	counts := map[string]int{}
+	for _, decision := range decisions {
+		if approvalIDs[decision.OperationApprovalID] {
+			counts[decision.OperationApprovalID]++
+		}
+	}
+	return approvals, counts, nil
+}
+
+func operationApprovalDueReminderRank(approval GormOperationApproval, approved int, now time.Time) int {
+	switch {
+	case approval.NotificationStatus == "failed":
+		return 0
+	case approval.ExpiresAt.Valid && (approval.ExpiresAt.Time.Before(now.Add(15*time.Minute)) || approval.ExpiresAt.Time.Equal(now.Add(15*time.Minute))):
+		return 1
+	case approval.CreatedAt.Before(now.Add(-30*time.Minute)) && approved < requiredApprovalCount(approval.RequiredApprovalCount):
+		return 2
+	default:
+		return 3
+	}
+}
+
 func (s *Server) listOperationApprovalRules(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval_rule"}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, operationApprovalRulesSQL())
+	var rules []GormOperationApprovalRule
+	err := s.store.Gorm.WithContext(r.Context()).
+		Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{
+			{Column: clause.Column{Name: "enabled"}, Desc: true},
+			{Column: clause.Column{Name: "priority"}},
+			{Column: clause.Column{Name: "resource_type"}},
+			{Column: clause.Column{Name: "action"}},
+		}}).
+		Find(&rules).Error
 	if err != nil {
-		writeQueryResult(w, items, err)
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
+	items := make([]map[string]any, 0, len(rules))
+	for _, rule := range rules {
+		items = append(items, operationApprovalRuleMap(rule))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": enrichOperationApprovalRules(items)})
-}
-
-func operationApprovalRulesSQL() string {
-	return `
-		SELECT id,
-			resource_type,
-			action,
-			required_approver_roles,
-			required_approval_count,
-			expires_after_minutes,
-			notification_channels,
-			escalation_after_minutes,
-			escalation_channels,
-			priority,
-			enabled,
-			metadata,
-			created_at,
-			updated_at
-		FROM operation_approval_rules
-		ORDER BY enabled DESC, priority ASC, resource_type, action`
 }
 
 type operationApprovalRuleRequest struct {
@@ -13888,54 +12834,23 @@ func (s *Server) createOperationApprovalRule(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	metadata, _ := jsonParam(req.Metadata)
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	var item map[string]any
+	err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		rule := operationApprovalRuleModelFromRequest(req)
+		if err := tx.Create(&rule).Error; err != nil {
+			return err
+		}
+		item = operationApprovalRuleMap(rule)
+		if err := s.recordOperationApprovalRuleAuditGorm(r.Context(), tx, rule.ID, currentUser(r), "create", nil, item); err != nil {
+			return fmt.Errorf("recording approval rule audit: %w", err)
+		}
+		if _, err := syncCanonicalAssetsGorm(r.Context(), tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for approval rule create: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start approval rule transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO operation_approval_rules(
-			resource_type,
-			action,
-			required_approver_roles,
-			required_approval_count,
-			expires_after_minutes,
-			notification_channels,
-			escalation_after_minutes,
-			escalation_channels,
-			priority,
-			enabled,
-			metadata
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
-		RETURNING id, resource_type, action, required_approver_roles, required_approval_count, expires_after_minutes, notification_channels, escalation_after_minutes, escalation_channels, priority, enabled, metadata, created_at, updated_at`,
-		req.ResourceType,
-		req.Action,
-		pq.Array(req.RequiredApproverRoles),
-		req.RequiredApprovalCount,
-		req.ExpiresAfterMinutes,
-		pq.Array(req.NotificationChannels),
-		req.EscalationAfterMinutes,
-		pq.Array(req.EscalationChannels),
-		req.Priority,
-		*req.Enabled,
-		metadata,
-	)
-	if err != nil {
-		writeCreatedOne(w, item, err)
-		return
-	}
-	if err := s.recordOperationApprovalRuleAudit(r.Context(), tx, item["id"], currentUser(r), "create", nil, item); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not record approval rule audit")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval_rule.create") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit approval rule")
+		writeError(w, http.StatusBadRequest, "could not create approval rule")
 		return
 	}
 	writeJSON(w, http.StatusCreated, enrichOperationApprovalRule(item))
@@ -13949,67 +12864,77 @@ func (s *Server) updateOperationApprovalRule(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	metadata, _ := jsonParam(req.Metadata)
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	var item map[string]any
+	err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var rule GormOperationApprovalRule
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where(&GormOperationApprovalRule{GormBase: GormBase{ID: chi.URLParam(r, "id")}}).First(&rule).Error; err != nil {
+			return err
+		}
+		before := operationApprovalRuleMap(rule)
+		applyOperationApprovalRuleRequest(&rule, req)
+		if err := tx.Save(&rule).Error; err != nil {
+			return err
+		}
+		item = operationApprovalRuleMap(rule)
+		if err := s.recordOperationApprovalRuleAuditGorm(r.Context(), tx, rule.ID, currentUser(r), "update", before, item); err != nil {
+			return fmt.Errorf("recording approval rule audit: %w", err)
+		}
+		if _, err := syncCanonicalAssetsGorm(r.Context(), tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for approval rule update: %w", err)
+		}
+		return nil
+	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start approval rule transaction")
-		return
-	}
-	defer tx.Rollback()
-	before, err := queryOne(r.Context(), tx, `
-		SELECT id, resource_type, action, required_approver_roles, required_approval_count, expires_after_minutes, notification_channels, escalation_after_minutes, escalation_channels, priority, enabled, metadata, created_at, updated_at
-		FROM operation_approval_rules
-		WHERE id=$1
-		FOR UPDATE`, chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE operation_approval_rules
-		SET resource_type=$2,
-			action=$3,
-			required_approver_roles=$4,
-			required_approval_count=$5,
-			expires_after_minutes=$6,
-			notification_channels=$7,
-			escalation_after_minutes=$8,
-			escalation_channels=$9,
-			priority=$10,
-			enabled=$11,
-			metadata=$12::jsonb,
-			updated_at=now()
-		WHERE id=$1
-		RETURNING id, resource_type, action, required_approver_roles, required_approval_count, expires_after_minutes, notification_channels, escalation_after_minutes, escalation_channels, priority, enabled, metadata, created_at, updated_at`,
-		chi.URLParam(r, "id"),
-		req.ResourceType,
-		req.Action,
-		pq.Array(req.RequiredApproverRoles),
-		req.RequiredApprovalCount,
-		req.ExpiresAfterMinutes,
-		pq.Array(req.NotificationChannels),
-		req.EscalationAfterMinutes,
-		pq.Array(req.EscalationChannels),
-		req.Priority,
-		*req.Enabled,
-		metadata,
-	)
-	if err != nil {
-		writeQueryOne(w, item, err)
-		return
-	}
-	if err := s.recordOperationApprovalRuleAudit(r.Context(), tx, item["id"], currentUser(r), "update", before, item); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not record approval rule audit")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval_rule.update") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit approval rule")
+		writeError(w, http.StatusInternalServerError, "could not update approval rule")
 		return
 	}
 	writeJSON(w, http.StatusOK, enrichOperationApprovalRule(item))
+}
+
+func operationApprovalRuleModelFromRequest(req operationApprovalRuleRequest) GormOperationApprovalRule {
+	rule := GormOperationApprovalRule{}
+	applyOperationApprovalRuleRequest(&rule, req)
+	return rule
+}
+
+func applyOperationApprovalRuleRequest(rule *GormOperationApprovalRule, req operationApprovalRuleRequest) {
+	rule.ResourceType = req.ResourceType
+	rule.Action = req.Action
+	rule.RequiredApproverRoles = pq.StringArray(req.RequiredApproverRoles)
+	rule.RequiredApprovalCount = req.RequiredApprovalCount
+	rule.ExpiresAfterMinutes = req.ExpiresAfterMinutes
+	rule.NotificationChannels = pq.StringArray(req.NotificationChannels)
+	rule.EscalationPolicy = JSONValue{Data: map[string]any{
+		"after_minutes": req.EscalationAfterMinutes,
+		"channels":      req.EscalationChannels,
+	}}
+	rule.Priority = req.Priority
+	rule.Enabled = *req.Enabled
+	rule.Metadata = JSONValue{Data: nonNilMap(req.Metadata)}
+}
+
+func operationApprovalRuleMap(rule GormOperationApprovalRule) map[string]any {
+	escalation := mapFromAny(rule.EscalationPolicy.Data)
+	return map[string]any{
+		"id":                       rule.ID,
+		"resource_type":            rule.ResourceType,
+		"action":                   rule.Action,
+		"required_approver_roles":  []string(rule.RequiredApproverRoles),
+		"required_approval_count":  rule.RequiredApprovalCount,
+		"expires_after_minutes":    rule.ExpiresAfterMinutes,
+		"notification_channels":    []string(rule.NotificationChannels),
+		"escalation_after_minutes": intFromAny(escalation["after_minutes"], 0),
+		"escalation_channels":      stringSliceFromAny(escalation["channels"]),
+		"priority":                 rule.Priority,
+		"enabled":                  rule.Enabled,
+		"metadata":                 mapFromAny(rule.Metadata.Data),
+		"created_at":               rule.CreatedAt,
+		"updated_at":               rule.UpdatedAt,
+	}
 }
 
 func enrichOperationApprovalRules(items []map[string]any) []map[string]any {
@@ -14162,47 +13087,79 @@ func (s *Server) listOperationApprovalRuleAudits(w http.ResponseWriter, r *http.
 	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval_rule", ID: chi.URLParam(r, "id")}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT
-			a.id,
-			a.operation_approval_rule_id,
-			a.actor_user_id,
-			u.email AS actor_email,
-			a.action,
-			a.before_state,
-			a.after_state,
-			a.created_at
-		FROM operation_approval_rule_audits a
-		LEFT JOIN users u ON u.id=a.actor_user_id
-		WHERE a.operation_approval_rule_id=$1
-		ORDER BY a.created_at DESC
-		LIMIT 100`, chi.URLParam(r, "id"))
-	writeQueryResult(w, items, err)
+	var audits []GormOperationApprovalRuleAudit
+	if err := s.store.Gorm.WithContext(r.Context()).
+		Where(&GormOperationApprovalRuleAudit{OperationApprovalRuleID: validNullString(chi.URLParam(r, "id"))}).
+		Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}, Desc: true}}}).
+		Limit(100).
+		Find(&audits).Error; err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	usersByID, err := operationApprovalRuleAuditUsers(r.Context(), s.store.Gorm, audits)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	items := make([]map[string]any, 0, len(audits))
+	for _, audit := range audits {
+		items = append(items, operationApprovalRuleAuditMap(audit, usersByID))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-func (s *Server) recordOperationApprovalRuleAudit(ctx context.Context, db sqlx.ExtContext, ruleID any, actor *User, action string, before, after map[string]any) error {
-	beforeJSON, err := jsonParam(nonNilMap(before))
-	if err != nil {
-		return err
+func operationApprovalRuleAuditUsers(ctx context.Context, db *gorm.DB, audits []GormOperationApprovalRuleAudit) (map[string]GormUser, error) {
+	ids := make([]string, 0, len(audits))
+	seen := map[string]bool{}
+	for _, audit := range audits {
+		id := cleanOptionalID(audit.ActorUserID.String)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
 	}
-	afterJSON, err := jsonParam(nonNilMap(after))
-	if err != nil {
-		return err
+	if len(ids) == 0 {
+		return map[string]GormUser{}, nil
 	}
-	actorID := ""
+	var users []GormUser
+	if err := db.WithContext(ctx).Find(&users, ids).Error; err != nil {
+		return nil, err
+	}
+	usersByID := make(map[string]GormUser, len(users))
+	for _, user := range users {
+		usersByID[user.ID] = user
+	}
+	return usersByID, nil
+}
+
+func operationApprovalRuleAuditMap(audit GormOperationApprovalRuleAudit, users map[string]GormUser) map[string]any {
+	actorID := cleanOptionalID(audit.ActorUserID.String)
+	return map[string]any{
+		"id":                         audit.ID,
+		"operation_approval_rule_id": nullableStringValue(audit.OperationApprovalRuleID),
+		"actor_user_id":              nullableStringValue(audit.ActorUserID),
+		"actor_email":                users[actorID].Email,
+		"action":                     audit.Action,
+		"before_state":               mapFromAny(audit.Before.Data),
+		"after_state":                mapFromAny(audit.After.Data),
+		"created_at":                 audit.CreatedAt,
+	}
+}
+
+func (s *Server) recordOperationApprovalRuleAuditGorm(ctx context.Context, db *gorm.DB, ruleID string, actor *User, action string, before, after map[string]any) error {
+	actorID := sql.NullString{}
 	if actor != nil {
-		actorID = actor.ID
+		actorID = validNullString(actor.ID)
 	}
-	_, err = db.ExecContext(ctx, `
-		INSERT INTO operation_approval_rule_audits(operation_approval_rule_id, actor_user_id, action, before_state, after_state)
-		VALUES ($1, NULLIF($2, '')::uuid, $3, $4::jsonb, $5::jsonb)`,
-		ruleID,
-		actorID,
-		action,
-		beforeJSON,
-		afterJSON,
-	)
-	return err
+	audit := GormOperationApprovalRuleAudit{
+		OperationApprovalRuleID: validNullString(ruleID),
+		ActorUserID:             actorID,
+		Action:                  action,
+		Before:                  JSONValue{Data: nonNilMap(before)},
+		After:                   JSONValue{Data: nonNilMap(after)},
+	}
+	return db.WithContext(ctx).Create(&audit).Error
 }
 
 func nonNilMap(value map[string]any) map[string]any {
@@ -14287,13 +13244,16 @@ func (s *Server) listOperationApprovalViews(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	user := currentUser(r)
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, user_id, name, filters, created_at, updated_at
-		FROM operation_approval_views
-		WHERE user_id=$1
-		ORDER BY updated_at DESC, name
-		LIMIT 200`, userIDOrNil(user))
-	writeQueryResult(w, items, err)
+	var views []GormOperationApprovalView
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormOperationApprovalView{UserID: user.ID}).Order(gormOrderDesc("updated_at")).Order(gormOrderAsc("name")).Limit(200).Find(&views).Error; err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(views))
+	for _, view := range views {
+		items = append(items, operationApprovalViewMap(view))
+	}
+	writeQueryResult(w, items, nil)
 }
 
 func (s *Server) createOperationApprovalView(w http.ResponseWriter, r *http.Request) {
@@ -14321,20 +13281,8 @@ func (s *Server) createOperationApprovalView(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	payload, err := jsonParam(filters)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid filters")
-		return
-	}
-	item, err := queryOne(r.Context(), s.store.DB, `
-		INSERT INTO operation_approval_views(user_id, name, filters)
-		VALUES ($1, $2, $3::jsonb)
-		RETURNING id, user_id, name, filters, created_at, updated_at`,
-		userIDOrNil(currentUser(r)),
-		name,
-		payload,
-	)
-	if err != nil {
+	view := GormOperationApprovalView{UserID: currentUser(r).ID, Name: name, Filters: JSONValue{Data: filters}}
+	if err := s.store.Gorm.WithContext(r.Context()).Create(&view).Error; err != nil {
 		if isUniqueViolation(err, "operation_approval_views_user_id_name_key") {
 			writeError(w, http.StatusBadRequest, "an approval view with this name already exists")
 			return
@@ -14342,7 +13290,7 @@ func (s *Server) createOperationApprovalView(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "could not create approval view")
 		return
 	}
-	writeJSON(w, http.StatusCreated, item)
+	writeJSON(w, http.StatusCreated, operationApprovalViewMap(view))
 }
 
 func (s *Server) updateOperationApprovalView(w http.ResponseWriter, r *http.Request) {
@@ -14365,7 +13313,7 @@ func (s *Server) updateOperationApprovalView(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "name is too long")
 		return
 	}
-	var payload any
+	var filtersPatch map[string]any
 	if len(req.Filters) > 0 && string(req.Filters) != "null" {
 		var raw map[string]any
 		if err := json.Unmarshal(req.Filters, &raw); err != nil {
@@ -14377,30 +13325,23 @@ func (s *Server) updateOperationApprovalView(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		encoded, err := jsonParam(filters)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid filters")
-			return
-		}
-		payload = encoded
+		filtersPatch = filters
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
-		UPDATE operation_approval_views
-		SET name=COALESCE(NULLIF($3, ''), name),
-			filters=COALESCE($4::jsonb, filters),
-			updated_at=now()
-		WHERE id=$1 AND user_id=$2
-		RETURNING id, user_id, name, filters, created_at, updated_at`,
-		chi.URLParam(r, "id"),
-		userIDOrNil(currentUser(r)),
-		name,
-		payload,
-	)
-	if errors.Is(err, ErrNotFound) {
+	var view GormOperationApprovalView
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormOperationApprovalView{GormBase: GormBase{ID: chi.URLParam(r, "id")}, UserID: currentUser(r).ID}).First(&view).Error; errorsIsRecordNotFound(err) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
+	} else if err != nil {
+		writeError(w, http.StatusBadRequest, "could not update approval view")
+		return
 	}
-	if err != nil {
+	if name != "" {
+		view.Name = name
+	}
+	if filtersPatch != nil {
+		view.Filters = JSONValue{Data: filtersPatch}
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Save(&view).Error; err != nil {
 		if isUniqueViolation(err, "operation_approval_views_user_id_name_key") {
 			writeError(w, http.StatusBadRequest, "an approval view with this name already exists")
 			return
@@ -14408,67 +13349,27 @@ func (s *Server) updateOperationApprovalView(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "could not update approval view")
 		return
 	}
-	writeJSON(w, http.StatusOK, item)
+	writeJSON(w, http.StatusOK, operationApprovalViewMap(view))
 }
 
 func (s *Server) deleteOperationApprovalView(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval"}, "read") {
 		return
 	}
-	result, err := s.store.DB.ExecContext(r.Context(), `
-		DELETE FROM operation_approval_views
-		WHERE id=$1 AND user_id=$2`,
-		chi.URLParam(r, "id"),
-		userIDOrNil(currentUser(r)),
-	)
-	if err != nil {
+	result := s.store.Gorm.WithContext(r.Context()).Where(&GormOperationApprovalView{GormBase: GormBase{ID: chi.URLParam(r, "id")}, UserID: currentUser(r).ID}).Delete(&GormOperationApprovalView{})
+	if result.Error != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete approval view")
 		return
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not delete approval view")
-		return
-	}
-	if count == 0 {
+	if result.RowsAffected == 0 {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func operationApprovalSummarySQL() string {
-	return `
-		WITH visible AS (
-			SELECT oa.*
-			FROM operation_approvals oa
-			WHERE ($1 OR oa.project_id IS NULL OR EXISTS (
-				SELECT 1 FROM project_members pm
-				WHERE pm.project_id=oa.project_id AND pm.user_id=$2
-			))
-		),
-		status_counts AS (
-			SELECT status, count(*)::int AS count
-			FROM visible
-			GROUP BY status
-		),
-		action_counts AS (
-			SELECT action, count(*)::int AS count
-			FROM visible
-			GROUP BY action
-			ORDER BY count DESC, action
-			LIMIT 8
-		)
-		SELECT
-			(SELECT count(*)::int FROM visible) AS total,
-			(SELECT count(*)::int FROM visible WHERE status='pending') AS pending,
-			(SELECT count(*)::int FROM visible WHERE status='approved') AS approved,
-			(SELECT count(*)::int FROM visible WHERE status='rejected') AS rejected,
-			(SELECT count(*)::int FROM visible WHERE status='expired') AS expired,
-			(SELECT count(*)::int FROM visible WHERE status='pending' AND expires_at IS NOT NULL AND expires_at <= now() + interval '1 hour') AS expiring_soon,
-			(SELECT count(*)::int FROM visible WHERE notification_status='failed') AS notification_failed,
-			COALESCE((SELECT jsonb_object_agg(status, count) FROM status_counts), '{}'::jsonb) AS by_status,
-			COALESCE((SELECT jsonb_agg(jsonb_build_object('action', action, 'count', count)) FROM action_counts), '[]'::jsonb) AS by_action`
+func operationApprovalViewMap(view GormOperationApprovalView) map[string]any {
+	return map[string]any{"id": view.ID, "user_id": view.UserID, "name": view.Name, "filters": mapFromAny(view.Filters.Data), "created_at": view.CreatedAt, "updated_at": view.UpdatedAt}
 }
 
 type operationApprovalFilters struct {
@@ -14597,67 +13498,23 @@ func (s *Server) getOperationApproval(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "operation_approval"}, "read") {
 		return
 	}
-	if expired, err := s.expireOperationApprovalByID(r.Context(), s.store.DB, chi.URLParam(r, "id")); err != nil {
+	if expired, err := s.expireOperationApprovalByIDGorm(r.Context(), s.store.Gorm, chi.URLParam(r, "id")); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not expire approval")
 		return
 	} else if expired != nil {
 		s.dispatchApprovalNotification(r.Context(), expired, "expired")
 	}
-	approval, err := queryOne(r.Context(), s.store.DB, `
-		SELECT
-			oa.id,
-			oa.project_id,
-			oa.operation_run_id,
-			oa.approval_rule_id,
-			oa.resource_type,
-			oa.resource_id,
-			oa.action,
-			oa.title,
-			oa.status,
-			oa.required_approver_roles,
-			oa.required_approval_count,
-			oa.notification_channels,
-			oa.escalation_after_minutes,
-			oa.escalation_channels,
-			oa.last_escalated_at,
-			oa.escalation_count,
-			oa.notification_status,
-			oa.notification_last_error,
-			oa.requested_by,
-			oa.decided_by,
-			oa.decision_reason,
-			oa.decided_at,
-			oa.expires_at,
-			oa.expired_at,
-			oa.created_at,
-			oa.updated_at,
-			requester.email AS requested_by_email,
-			decider.email AS decided_by_email,
-			p.name AS project_name,
-			COALESCE(decision_counts.approved_count, 0) AS approved_count,
-			COALESCE(decision_counts.rejected_count, 0) AS rejected_count,
-			EXISTS (
-				SELECT 1 FROM operation_approval_delegations oadel
-				WHERE oadel.operation_approval_id=oa.id
-					AND oadel.to_user_id=$2
-					AND oadel.revoked_at IS NULL
-			) AS can_current_user_decide
-		FROM operation_approvals oa
-		LEFT JOIN users requester ON requester.id=oa.requested_by
-		LEFT JOIN users decider ON decider.id=oa.decided_by
-		LEFT JOIN projects p ON p.id=oa.project_id
-		LEFT JOIN LATERAL (
-			SELECT
-				count(*) FILTER (WHERE decision='approved')::int AS approved_count,
-				count(*) FILTER (WHERE decision='rejected')::int AS rejected_count
-			FROM operation_approval_decisions oad
-			WHERE oad.operation_approval_id=oa.id
-		) decision_counts ON true
-		WHERE oa.id=$1`, chi.URLParam(r, "id"), userIDOrNil(currentUser(r)))
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var approvalModel GormOperationApproval
+	if err := s.store.Gorm.WithContext(r.Context()).First(&approvalModel, &GormOperationApproval{GormBase: GormBase{ID: chi.URLParam(r, "id")}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
+	users, projects, decisionCounts, delegated, err := s.operationApprovalAnnotationDataGorm(r.Context(), []GormOperationApproval{approvalModel}, currentUser(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load approval annotations")
+		return
+	}
+	approval := operationApprovalMap(approvalModel, users, projects, decisionCounts, delegated)
 	if !s.requireApprovalRead(w, r, approval) {
 		return
 	}
@@ -14693,28 +13550,40 @@ func (s *Server) getOperationApproval(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
-	operation, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
-	if err != nil && !errors.Is(err, ErrNotFound) {
+	var operationModel GormOperationRun
+	err = s.store.Gorm.WithContext(r.Context()).First(&operationModel, &GormOperationRun{GormBase: GormBase{ID: opID}}).Error
+	if err != nil && !errorsIsRecordNotFound(err) {
 		writeError(w, http.StatusInternalServerError, "could not load approval operation")
 		return
+	}
+	var operation map[string]any
+	if err == nil {
+		operation = operationRunMap(operationModel)
 	}
 	if operation != nil && !s.requireOperationRead(w, r, operation) {
 		return
 	}
 	operation = safeOperationForAudit(operation)
-	logs, err := queryMaps(r.Context(), s.store.DB, "SELECT id, operation_run_id, worker_job_id, level, message, fields, created_at FROM operation_logs WHERE operation_run_id=$1 ORDER BY created_at", opID)
-	if err != nil {
+	var logModels []GormOperationLog
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormOperationLog{OperationRunID: validNullString(opID)}).Order(gormOrderAsc("created_at")).Find(&logModels).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load approval operation logs")
 		return
 	}
-	jobs, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, operation_run_id, tool_name, status, error, required_capabilities, preferred_node_kind, assigned_worker_node_id, claimed_at, started_at, finished_at, created_at, updated_at
-		FROM worker_jobs
-		WHERE operation_run_id=$1
-		ORDER BY created_at`, opID)
-	if err != nil {
+	logs := make([]map[string]any, 0, len(logModels))
+	for _, log := range logModels {
+		logs = append(logs, operationLogMap(log))
+	}
+	var jobModels []GormWorkerJob
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormWorkerJob{OperationRunID: validNullString(opID)}).Order(gormOrderAsc("created_at")).Find(&jobModels).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load approval worker jobs")
 		return
+	}
+	jobs := make([]map[string]any, 0, len(jobModels))
+	for _, job := range jobModels {
+		item := workerJobMap(job)
+		delete(item, "payload")
+		delete(item, "result")
+		jobs = append(jobs, item)
 	}
 	canReadSSHOutput := NewPolicyChecker().Check(currentUser(r), PolicyResource{Type: "ssh_command_run"}, "read").Effect == PolicyAllow
 	runRecords, err := s.operationRunRecords(r.Context(), opID, canReadSSHOutput)
@@ -15007,49 +13876,89 @@ func (s *Server) providerReviewAttemptLedgerForApproval(ctx context.Context, app
 	if approvalID == "" {
 		return providerReviewAttemptLedgerSummary(nil), nil
 	}
-	return s.providerReviewAttemptLedgerForApprovalDB(ctx, s.store.DB, approvalID)
+	return providerReviewAttemptLedgerForApprovalGorm(ctx, s.store.Gorm, approvalID)
 }
 
-func (s *Server) providerReviewAttemptLedgerForApprovalDB(ctx context.Context, db sqlx.ExtContext, approvalID string) (map[string]any, error) {
+func providerReviewAttemptLedgerForApprovalGorm(ctx context.Context, db *gorm.DB, approvalID string) (map[string]any, error) {
 	approvalID = cleanOptionalID(approvalID)
 	if approvalID == "" {
 		return providerReviewAttemptLedgerSummary(nil), nil
 	}
-	attempts, err := queryMaps(ctx, db, `
-		SELECT
-			id,
-			operation_name,
-			endpoint_key,
-			status,
-			replay_check,
-			conflict_policy,
-			retry_policy,
-			operation_order,
-			depends_on_operation,
-			dependency_status,
-			request_summary,
-			response_diagnostics,
-			provider_api_call_made,
-			provider_api_mutation,
-			external_call_made,
-			provider_status_class,
-			provider_review_url,
-			executed_at,
-			live_execution_phase,
-			live_execution_retryable,
-			live_execution_manual_cleanup_hint,
-			cleanup_attempted,
-			cleanup_succeeded,
-			cleanup_required,
-			claimed_at,
-			claimed_by_user_id
-		FROM provider_review_attempts
-		WHERE operation_approval_id=$1
-		ORDER BY operation_order ASC, created_at ASC, operation_name ASC`, approvalID)
-	if err != nil {
+	var models []GormProviderReviewAttempt
+	if err := db.WithContext(ctx).
+		Where(&GormProviderReviewAttempt{OperationApprovalID: approvalID}).
+		Order("operation_order ASC").
+		Order("created_at ASC").
+		Order("operation_name ASC").
+		Find(&models).Error; err != nil {
 		return nil, err
 	}
+	attempts := make([]map[string]any, 0, len(models))
+	for _, model := range models {
+		attempts = append(attempts, providerReviewAttemptMap(model, nil))
+	}
 	return providerReviewAttemptLedgerSummary(attempts), nil
+}
+
+func providerReviewAttemptMap(attempt GormProviderReviewAttempt, approval *GormOperationApproval) map[string]any {
+	item := map[string]any{
+		"id":                                 attempt.ID,
+		"operation_approval_id":              attempt.OperationApprovalID,
+		"project_template_run_id":            nullableStringValue(attempt.ProjectTemplateRunID),
+		"provider_type":                      attempt.ProviderType,
+		"review_kind":                        attempt.ReviewKind,
+		"operation_name":                     attempt.OperationName,
+		"endpoint_key":                       attempt.EndpointKey,
+		"status":                             attempt.Status,
+		"replay_check":                       attempt.ReplayCheck,
+		"conflict_policy":                    attempt.ConflictPolicy,
+		"retry_policy":                       attempt.RetryPolicy,
+		"operation_order":                    attempt.OperationOrder,
+		"depends_on_operation":               attempt.DependsOnOperation,
+		"dependency_status":                  attempt.DependencyStatus,
+		"request_summary":                    mapFromAny(attempt.RequestSummary.Data),
+		"response_diagnostics":               mapFromAny(attempt.ResponseDiagnostics.Data),
+		"provider_api_call_made":             attempt.ProviderAPICallMade,
+		"provider_api_mutation":              attempt.ProviderAPIMutation,
+		"external_call_made":                 attempt.ExternalCallMade,
+		"provider_status_class":              attempt.ProviderStatusClass,
+		"provider_review_url":                attempt.ProviderReviewURL,
+		"executed_at":                        nullableTimeAny(attempt.ExecutedAt),
+		"live_execution_phase":               attempt.LiveExecutionPhase,
+		"live_execution_retryable":           attempt.LiveExecutionRetryable,
+		"live_execution_manual_cleanup_hint": attempt.LiveExecutionManualCleanupHint,
+		"cleanup_attempted":                  attempt.CleanupAttempted,
+		"cleanup_succeeded":                  attempt.CleanupSucceeded,
+		"cleanup_required":                   attempt.CleanupRequired,
+		"claimed_at":                         nullableTimeAny(attempt.ClaimedAt),
+		"claimed_by_user_id":                 nullableStringValue(attempt.ClaimedByUserID),
+		"created_at":                         attempt.CreatedAt,
+		"updated_at":                         attempt.UpdatedAt,
+	}
+	if approval != nil {
+		item["approval_id"] = approval.ID
+		item["approval_project_id"] = nullableStringValue(approval.ProjectID)
+		item["approval_action"] = approval.Action
+		item["approval_status"] = approval.Status
+		item["approval_request_payload"] = mapFromAny(approval.RequestPayload.Data)
+	}
+	return item
+}
+
+func providerReviewAttemptWithApprovalGorm(ctx context.Context, tx *gorm.DB, attemptID string, lock bool) (GormProviderReviewAttempt, GormOperationApproval, map[string]any, error) {
+	db := tx.WithContext(ctx)
+	if lock {
+		db = db.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	var attempt GormProviderReviewAttempt
+	if err := db.First(&attempt, &GormProviderReviewAttempt{GormBase: GormBase{ID: attemptID}}).Error; err != nil {
+		return GormProviderReviewAttempt{}, GormOperationApproval{}, nil, gormNotFoundAsErrNotFound(err)
+	}
+	var approval GormOperationApproval
+	if err := tx.WithContext(ctx).First(&approval, &GormOperationApproval{GormBase: GormBase{ID: attempt.OperationApprovalID}}).Error; err != nil {
+		return GormProviderReviewAttempt{}, GormOperationApproval{}, nil, gormNotFoundAsErrNotFound(err)
+	}
+	return attempt, approval, providerReviewAttemptMap(attempt, &approval), nil
 }
 
 func (s *Server) claimProviderReviewAttempt(w http.ResponseWriter, r *http.Request) {
@@ -15064,112 +13973,71 @@ func (s *Server) claimProviderReviewAttempt(w http.ResponseWriter, r *http.Reque
 	if !s.requireProviderReviewAttemptUpdatePolicy(w, r, attemptID) {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start provider review attempt claim")
-		return
-	}
-	defer tx.Rollback()
-	attempt, err := queryOne(r.Context(), tx, `
-		SELECT
-			pra.id,
-			pra.operation_approval_id,
-			pra.project_template_run_id,
-			pra.provider_type,
-			pra.review_kind,
-			pra.operation_name,
-			pra.endpoint_key,
-			pra.status,
-			pra.replay_check,
-			pra.conflict_policy,
-			pra.retry_policy,
-			pra.operation_order,
-			pra.depends_on_operation,
-			pra.dependency_status,
-			pra.request_summary,
-			pra.response_diagnostics,
-			pra.provider_api_call_made,
-			pra.provider_api_mutation,
-			pra.external_call_made,
-			pra.claimed_at,
-			pra.claimed_by_user_id,
-			oa.id AS approval_id,
-			oa.project_id AS approval_project_id,
-			oa.action AS approval_action,
-			oa.status AS approval_status
-		FROM provider_review_attempts pra
-		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
-		WHERE pra.id=$1
-		FOR UPDATE OF pra`, attemptID)
-	if err != nil {
+	var claimed map[string]any
+	var ledger map[string]any
+	var claimPlan map[string]any
+	var blocked map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		attemptModel, _, attempt, err := providerReviewAttemptWithApprovalGorm(r.Context(), tx, attemptID, true)
+		if err != nil {
+			return err
+		}
+		if stringFromMap(attempt, "approval_action") != templateProviderReviewExecuteApprovalAction {
+			blocked = map[string]any{"http_status": http.StatusConflict, "error": "provider review attempt is not tied to provider review execution approval"}
+			return nil
+		}
+		if stringFromMap(attempt, "approval_status") != "approved" {
+			blocked = providerReviewAttemptClaimBlockedResponse(attempt, "operation_approval_not_approved", nil)
+			return nil
+		}
+		claimPlan = providerReviewAttemptClaimPlanFromAttempt(attempt)
+		if claimPlan["claim_metadata_ready"] != true {
+			blocked = providerReviewAttemptClaimBlockedResponse(attempt, "provider_review_attempt_claim_metadata_not_ready", claimPlan)
+			return nil
+		}
+		updates := map[string]any{
+			"status":     "running",
+			"claimed_at": sql.NullTime{Time: time.Now().UTC(), Valid: true},
+			"updated_at": time.Now().UTC(),
+		}
+		if user := currentUser(r); user != nil && cleanOptionalID(user.ID) != "" {
+			updates["claimed_by_user_id"] = validNullString(user.ID)
+		}
+		result := tx.Model(&GormProviderReviewAttempt{}).
+			Where(&GormProviderReviewAttempt{GormBase: GormBase{ID: attemptModel.ID}, Status: "planned", DependencyStatus: attemptModel.DependencyStatus, ProviderAPICallMade: false, ExternalCallMade: false, ProviderAPIMutation: "disabled"}).
+			Where("dependency_status IN ?", []string{"independent", "dependency_satisfied"}).
+			Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			blocked = providerReviewAttemptClaimBlockedResponse(attempt, "provider_review_attempt_claim_conflict", claimPlan)
+			return nil
+		}
+		var reloaded GormProviderReviewAttempt
+		if err := tx.First(&reloaded, &GormProviderReviewAttempt{GormBase: GormBase{ID: attemptModel.ID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		claimed = providerReviewAttemptMap(reloaded, nil)
+		ledger, err = providerReviewAttemptLedgerForApprovalGorm(r.Context(), tx, attemptModel.OperationApprovalID)
+		if err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		if err != nil {
+			return fmt.Errorf("syncing canonical assets for provider_review_attempt.claim: %w", err)
+		}
+		return nil
+	}); err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	if stringFromMap(attempt, "approval_action") != templateProviderReviewExecuteApprovalAction {
-		writeError(w, http.StatusConflict, "provider review attempt is not tied to provider review execution approval")
-		return
-	}
-	if stringFromMap(attempt, "approval_status") != "approved" {
-		writeJSON(w, http.StatusOK, providerReviewAttemptClaimBlockedResponse(attempt, "operation_approval_not_approved", nil))
-		return
-	}
-	claimPlan := providerReviewAttemptClaimPlanFromAttempt(attempt)
-	if claimPlan["claim_metadata_ready"] != true {
-		writeJSON(w, http.StatusOK, providerReviewAttemptClaimBlockedResponse(attempt, "provider_review_attempt_claim_metadata_not_ready", claimPlan))
-		return
-	}
-	claimed, err := queryOne(r.Context(), tx, `
-		UPDATE provider_review_attempts
-		SET status='running',
-			claimed_at=COALESCE(claimed_at, now()),
-			claimed_by_user_id=COALESCE(claimed_by_user_id, NULLIF($2,'')::uuid),
-			updated_at=now()
-		WHERE id=$1
-			AND status='planned'
-			AND dependency_status IN ('independent', 'dependency_satisfied')
-			AND provider_api_call_made=false
-			AND external_call_made=false
-			AND provider_api_mutation='disabled'
-		RETURNING
-			id,
-			operation_approval_id,
-			project_template_run_id,
-			provider_type,
-			review_kind,
-			operation_name,
-			endpoint_key,
-			status,
-			replay_check,
-			conflict_policy,
-			retry_policy,
-			operation_order,
-			depends_on_operation,
-			dependency_status,
-			request_summary,
-			response_diagnostics,
-			provider_api_call_made,
-			provider_api_mutation,
-			external_call_made,
-			claimed_at,
-			claimed_by_user_id`, attemptID, userIDOrNil(currentUser(r)))
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			writeJSON(w, http.StatusOK, providerReviewAttemptClaimBlockedResponse(attempt, "provider_review_attempt_claim_conflict", claimPlan))
+	if blocked != nil {
+		if status := intFromAny(blocked["http_status"], 0); status >= 400 {
+			writeError(w, status, cleanOptionalText(stringFromMap(blocked, "error")))
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "could not claim provider review attempt")
-		return
-	}
-	ledger, err := s.providerReviewAttemptLedgerForApprovalDB(r.Context(), tx, cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not reload provider review attempt ledger")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_review_attempt.claim") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit provider review attempt claim")
+		writeJSON(w, http.StatusOK, blocked)
 		return
 	}
 	writeJSON(w, http.StatusOK, providerReviewAttemptClaimResponse(claimed, ledger, true, "claimed"))
@@ -15204,149 +14072,80 @@ func (s *Server) recordProviderReviewAttemptLocalResult(w http.ResponseWriter, r
 	if !s.requireProviderReviewAttemptUpdatePolicy(w, r, attemptID) {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start provider review attempt result recording")
-		return
-	}
-	defer tx.Rollback()
-	attempt, err := queryOne(r.Context(), tx, `
-		SELECT
-			pra.id,
-			pra.operation_approval_id,
-			pra.project_template_run_id,
-			pra.provider_type,
-			pra.review_kind,
-			pra.operation_name,
-			pra.endpoint_key,
-			pra.status,
-			pra.replay_check,
-			pra.conflict_policy,
-			pra.retry_policy,
-			pra.operation_order,
-			pra.depends_on_operation,
-			pra.dependency_status,
-			pra.request_summary,
-			pra.response_diagnostics,
-			pra.provider_api_call_made,
-			pra.provider_api_mutation,
-			pra.external_call_made,
-			pra.claimed_at,
-			pra.claimed_by_user_id,
-			oa.id AS approval_id,
-			oa.project_id AS approval_project_id,
-			oa.action AS approval_action,
-			oa.status AS approval_status
-		FROM provider_review_attempts pra
-		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
-		WHERE pra.id=$1
-		FOR UPDATE OF pra`, attemptID)
-	if err != nil {
+	var recorded map[string]any
+	var ledger map[string]any
+	var resultPlan map[string]any
+	var blocked map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		attemptModel, _, attempt, err := providerReviewAttemptWithApprovalGorm(r.Context(), tx, attemptID, true)
+		if err != nil {
+			return err
+		}
+		if stringFromMap(attempt, "approval_action") != templateProviderReviewExecuteApprovalAction {
+			blocked = map[string]any{"http_status": http.StatusConflict, "error": "provider review attempt is not tied to provider review execution approval"}
+			return nil
+		}
+		if stringFromMap(attempt, "approval_status") != "approved" {
+			blocked = providerReviewAttemptLocalResultBlockedResponse(attempt, "operation_approval_not_approved", resultStatus, nil)
+			return nil
+		}
+		resultPlan = providerReviewAttemptLocalResultPlanFromAttempt(attempt, resultStatus)
+		if resultPlan["result_recording_metadata_ready"] != true {
+			blocked = providerReviewAttemptLocalResultBlockedResponse(attempt, "provider_review_attempt_result_metadata_not_ready", resultStatus, resultPlan)
+			return nil
+		}
+		attemptStatus := providerReviewAttemptStatusForLocalResult(resultStatus)
+		updates := map[string]any{
+			"status":               attemptStatus,
+			"response_diagnostics": JSONValue{Data: providerReviewAttemptLocalResultDiagnostics(attempt, resultStatus)},
+			"updated_at":           time.Now().UTC(),
+		}
+		if attemptStatus == "planned" {
+			updates["claimed_at"] = sql.NullTime{}
+			updates["claimed_by_user_id"] = sql.NullString{}
+		}
+		result := tx.Model(&GormProviderReviewAttempt{}).
+			Where(&GormProviderReviewAttempt{GormBase: GormBase{ID: attemptModel.ID}, Status: "running", ProviderAPICallMade: false, ExternalCallMade: false, ProviderAPIMutation: "disabled"}).
+			Where("claimed_at IS NOT NULL").
+			Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			blocked = providerReviewAttemptLocalResultBlockedResponse(attempt, "provider_review_attempt_result_conflict", resultStatus, resultPlan)
+			return nil
+		}
+		if dependencyStatus := providerReviewAttemptDependencyStatusForLocalResult(resultStatus); dependencyStatus != "" {
+			if err := tx.Model(&GormProviderReviewAttempt{}).
+				Where(&GormProviderReviewAttempt{OperationApprovalID: attemptModel.OperationApprovalID, DependsOnOperation: safeProviderReviewAttemptOperationName(attemptModel.OperationName), DependencyStatus: "waiting_for_dependency", ProviderAPICallMade: false, ExternalCallMade: false, ProviderAPIMutation: "disabled"}).
+				Updates(map[string]any{"dependency_status": dependencyStatus, "updated_at": time.Now().UTC()}).Error; err != nil {
+				return err
+			}
+		}
+		var reloaded GormProviderReviewAttempt
+		if err := tx.First(&reloaded, &GormProviderReviewAttempt{GormBase: GormBase{ID: attemptModel.ID}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		recorded = providerReviewAttemptMap(reloaded, nil)
+		ledger, err = providerReviewAttemptLedgerForApprovalGorm(r.Context(), tx, attemptModel.OperationApprovalID)
+		if err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		if err != nil {
+			return fmt.Errorf("syncing canonical assets for provider_review_attempt.local_result: %w", err)
+		}
+		return nil
+	}); err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	if stringFromMap(attempt, "approval_action") != templateProviderReviewExecuteApprovalAction {
-		writeError(w, http.StatusConflict, "provider review attempt is not tied to provider review execution approval")
-		return
-	}
-	if stringFromMap(attempt, "approval_status") != "approved" {
-		writeJSON(w, http.StatusOK, providerReviewAttemptLocalResultBlockedResponse(attempt, "operation_approval_not_approved", resultStatus, nil))
-		return
-	}
-	resultPlan := providerReviewAttemptLocalResultPlanFromAttempt(attempt, resultStatus)
-	if resultPlan["result_recording_metadata_ready"] != true {
-		writeJSON(w, http.StatusOK, providerReviewAttemptLocalResultBlockedResponse(attempt, "provider_review_attempt_result_metadata_not_ready", resultStatus, resultPlan))
-		return
-	}
-	attemptStatus := providerReviewAttemptStatusForLocalResult(resultStatus)
-	responseJSON, err := jsonParam(providerReviewAttemptLocalResultDiagnostics(attempt, resultStatus))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not encode provider review attempt diagnostics")
-		return
-	}
-	recorded, err := queryOne(r.Context(), tx, `
-		UPDATE provider_review_attempts
-		SET status=$2,
-			response_diagnostics=$3::jsonb,
-			claimed_at=CASE WHEN $2='planned' THEN NULL ELSE claimed_at END,
-			claimed_by_user_id=CASE WHEN $2='planned' THEN NULL ELSE claimed_by_user_id END,
-			updated_at=now()
-		WHERE id=$1
-			AND status='running'
-			AND claimed_at IS NOT NULL
-			AND provider_api_call_made=false
-			AND external_call_made=false
-			AND provider_api_mutation='disabled'
-		RETURNING
-			id,
-			operation_approval_id,
-			project_template_run_id,
-			provider_type,
-			review_kind,
-			operation_name,
-			endpoint_key,
-			status,
-			replay_check,
-			conflict_policy,
-			retry_policy,
-			operation_order,
-			depends_on_operation,
-			dependency_status,
-			request_summary,
-			response_diagnostics,
-			provider_api_call_made,
-			provider_api_mutation,
-			external_call_made,
-			claimed_at,
-			claimed_by_user_id`, attemptID, attemptStatus, responseJSON)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			writeJSON(w, http.StatusOK, providerReviewAttemptLocalResultBlockedResponse(attempt, "provider_review_attempt_result_conflict", resultStatus, resultPlan))
+	if blocked != nil {
+		if status := intFromAny(blocked["http_status"], 0); status >= 400 {
+			writeError(w, status, cleanOptionalText(stringFromMap(blocked, "error")))
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "could not record provider review attempt result")
-		return
-	}
-	if dependencyStatus := providerReviewAttemptDependencyStatusForLocalResult(resultStatus); dependencyStatus != "" {
-		if _, err := queryMaps(r.Context(), tx, `
-			SELECT id
-			FROM provider_review_attempts
-			WHERE operation_approval_id=$1
-				AND depends_on_operation=$2
-				AND dependency_status='waiting_for_dependency'
-			FOR UPDATE`,
-			cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])),
-			safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name"))); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not lock provider review attempt dependency")
-			return
-		}
-		if _, err := tx.ExecContext(r.Context(), `
-			UPDATE provider_review_attempts
-			SET dependency_status=$3,
-				updated_at=now()
-			WHERE operation_approval_id=$1
-				AND depends_on_operation=$2
-				AND dependency_status='waiting_for_dependency'
-				AND provider_api_call_made=false
-				AND external_call_made=false
-				AND provider_api_mutation='disabled'`,
-			cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])),
-			safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name")),
-			dependencyStatus); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not update provider review attempt dependency")
-			return
-		}
-	}
-	ledger, err := s.providerReviewAttemptLedgerForApprovalDB(r.Context(), tx, cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"])))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not reload provider review attempt ledger")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "provider_review_attempt.local_result") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit provider review attempt result")
+		writeJSON(w, http.StatusOK, blocked)
 		return
 	}
 	writeJSON(w, http.StatusOK, providerReviewAttemptLocalResultResponse(recorded, ledger, true, "recorded", resultStatus, resultPlan))
@@ -15466,54 +14265,21 @@ func (s *Server) cleanupProviderReviewAttemptLive(w http.ResponseWriter, r *http
 }
 
 func (s *Server) providerReviewLiveExecutionInput(ctx context.Context, attemptID string) (reviewBranchExecutionInput, map[string]any, map[string]any, error) {
-	attempt, err := queryOne(ctx, s.store.DB, `
-		SELECT
-			pra.id,
-			pra.operation_approval_id,
-			pra.project_template_run_id,
-			pra.provider_type,
-			pra.review_kind,
-			pra.operation_name,
-			pra.endpoint_key,
-			pra.status,
-			pra.replay_check,
-			pra.conflict_policy,
-			pra.retry_policy,
-			pra.operation_order,
-			pra.depends_on_operation,
-			pra.dependency_status,
-			pra.request_summary,
-			pra.response_diagnostics,
-			pra.provider_api_call_made,
-			pra.provider_api_mutation,
-			pra.external_call_made,
-			pra.provider_status_class,
-			pra.provider_review_url,
-			pra.executed_at,
-			pra.live_execution_phase,
-			pra.live_execution_retryable,
-			pra.live_execution_manual_cleanup_hint,
-			pra.cleanup_attempted,
-			pra.cleanup_succeeded,
-			pra.cleanup_required,
-			pra.claimed_at,
-			pra.claimed_by_user_id,
-			oa.id AS approval_id,
-			oa.project_id AS approval_project_id,
-			oa.action AS approval_action,
-			oa.status AS approval_status,
-			oa.request_payload AS approval_request_payload,
-			ptr.result AS template_run_result
-		FROM provider_review_attempts pra
-		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
-		LEFT JOIN project_template_runs ptr ON ptr.id=pra.project_template_run_id
-		WHERE pra.id=$1`, attemptID)
+	_, _, attempt, err := providerReviewAttemptWithApprovalGorm(ctx, s.store.Gorm, attemptID, false)
 	if err != nil {
 		return reviewBranchExecutionInput{}, nil, nil, err
 	}
+	if runID := cleanOptionalID(fmt.Sprint(attempt["project_template_run_id"])); runID != "" {
+		var run GormProjectTemplateRun
+		if err := s.store.Gorm.WithContext(ctx).First(&run, &GormProjectTemplateRun{GormBase: GormBase{ID: runID}}).Error; err != nil && !errorsIsRecordNotFound(err) {
+			return reviewBranchExecutionInput{}, nil, nil, err
+		} else if err == nil {
+			attempt["template_run_result"] = mapFromAny(run.Result.Data)
+		}
+	}
 	missing := providerReviewLiveExecutionMissingEvidence(s.cfg, attempt)
 	if len(missing) == 0 {
-		assetID, assetErr := providerReviewAttemptAssetID(ctx, s.store.DB, attemptID)
+		assetID, assetErr := providerReviewAttemptAssetID(ctx, s.store.Gorm, attemptID)
 		if assetErr != nil {
 			missing = append(missing, "provider_review_attempt_asset_missing")
 		} else {
@@ -15542,15 +14308,17 @@ func (s *Server) providerReviewLiveExecutionInput(ctx context.Context, attemptID
 	if remoteID == "" {
 		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveExecutionBlockedResponse(attempt, "blocked", []string{"provider_review_target_remote_missing"}), nil
 	}
-	remote, err := queryOne(ctx, s.store.DB, "SELECT * FROM git_remotes WHERE id=$1", remoteID)
+	remoteModel, repoProjectID, err := s.gitRemoteWithProjectGorm(ctx, remoteID)
 	if err != nil {
 		return reviewBranchExecutionInput{}, attempt, nil, err
 	}
-	repoID := cleanOptionalID(fmt.Sprint(remote["project_git_repository_id"]))
-	repo, err := queryOne(ctx, s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+	repoID := cleanOptionalID(remoteModel.ProjectGitRepositoryID)
+	repoModel, err := s.gitRepositoryByIDGorm(ctx, repoID)
 	if err != nil {
 		return reviewBranchExecutionInput{}, attempt, nil, err
 	}
+	remote := gitRemoteMap(remoteModel, nil, repoProjectID)
+	repo := gitRepositoryMap(repoModel)
 	spec, ok := buildExternalTemplateProviderSpec(repo, remote)
 	if !ok || spec.Provider != "github" {
 		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveExecutionBlockedResponse(attempt, "blocked", []string{"provider_review_github_target_missing"}), nil
@@ -15558,7 +14326,7 @@ func (s *Server) providerReviewLiveExecutionInput(ctx context.Context, attemptID
 	if spec.Token == "" {
 		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveExecutionBlockedResponse(attempt, "blocked", []string{"provider_token_env_present"}), nil
 	}
-	files, err := providerReviewStarterFilesForLiveExecution(ctx, s.store.DB, runID, repoID)
+	files, err := providerReviewStarterFilesForLiveExecutionGorm(ctx, s.store.Gorm, runID, repoID)
 	if err != nil {
 		return reviewBranchExecutionInput{}, attempt, nil, err
 	}
@@ -15622,50 +14390,17 @@ func providerReviewLiveExecutionMissingEvidence(cfg Config, attempt map[string]a
 }
 
 func (s *Server) providerReviewLiveCleanupInput(ctx context.Context, attemptID string) (reviewBranchExecutionInput, map[string]any, map[string]any, error) {
-	attempt, err := queryOne(ctx, s.store.DB, `
-		SELECT
-			pra.id,
-			pra.operation_approval_id,
-			pra.project_template_run_id,
-			pra.provider_type,
-			pra.review_kind,
-			pra.operation_name,
-			pra.endpoint_key,
-			pra.status,
-			pra.replay_check,
-			pra.conflict_policy,
-			pra.retry_policy,
-			pra.operation_order,
-			pra.depends_on_operation,
-			pra.dependency_status,
-			pra.request_summary,
-			pra.response_diagnostics,
-			pra.provider_api_call_made,
-			pra.provider_api_mutation,
-			pra.external_call_made,
-			pra.provider_status_class,
-			pra.provider_review_url,
-			pra.executed_at,
-			pra.live_execution_phase,
-			pra.live_execution_retryable,
-			pra.live_execution_manual_cleanup_hint,
-			pra.cleanup_attempted,
-			pra.cleanup_succeeded,
-			pra.cleanup_required,
-			pra.claimed_at,
-			pra.claimed_by_user_id,
-			oa.id AS approval_id,
-			oa.project_id AS approval_project_id,
-			oa.action AS approval_action,
-			oa.status AS approval_status,
-			oa.request_payload AS approval_request_payload,
-			ptr.result AS template_run_result
-		FROM provider_review_attempts pra
-		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
-		LEFT JOIN project_template_runs ptr ON ptr.id=pra.project_template_run_id
-		WHERE pra.id=$1`, attemptID)
+	_, _, attempt, err := providerReviewAttemptWithApprovalGorm(ctx, s.store.Gorm, attemptID, false)
 	if err != nil {
 		return reviewBranchExecutionInput{}, nil, nil, err
+	}
+	if runID := cleanOptionalID(fmt.Sprint(attempt["project_template_run_id"])); runID != "" {
+		var run GormProjectTemplateRun
+		if err := s.store.Gorm.WithContext(ctx).First(&run, &GormProjectTemplateRun{GormBase: GormBase{ID: runID}}).Error; err != nil && !errorsIsRecordNotFound(err) {
+			return reviewBranchExecutionInput{}, nil, nil, err
+		} else if err == nil {
+			attempt["template_run_result"] = mapFromAny(run.Result.Data)
+		}
 	}
 	missing := providerReviewLiveCleanupMissingEvidence(s.cfg, attempt)
 	if len(missing) > 0 {
@@ -15676,15 +14411,16 @@ func (s *Server) providerReviewLiveCleanupInput(ctx context.Context, attemptID s
 	if remoteID == "" {
 		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveCleanupBlockedResponse(attempt, "blocked", []string{"provider_review_target_remote_missing"}), nil
 	}
-	remote, err := queryOne(ctx, s.store.DB, "SELECT * FROM git_remotes WHERE id=$1", remoteID)
+	remoteModel, repoProjectID, err := s.gitRemoteWithProjectGorm(ctx, remoteID)
 	if err != nil {
 		return reviewBranchExecutionInput{}, attempt, nil, err
 	}
-	repoID := cleanOptionalID(fmt.Sprint(remote["project_git_repository_id"]))
-	repo, err := queryOne(ctx, s.store.DB, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+	repoModel, err := s.gitRepositoryByIDGorm(ctx, cleanOptionalID(remoteModel.ProjectGitRepositoryID))
 	if err != nil {
 		return reviewBranchExecutionInput{}, attempt, nil, err
 	}
+	remote := gitRemoteMap(remoteModel, nil, repoProjectID)
+	repo := gitRepositoryMap(repoModel)
 	spec, ok := buildExternalTemplateProviderSpec(repo, remote)
 	if !ok || spec.Provider != "github" {
 		return reviewBranchExecutionInput{}, attempt, providerReviewAttemptLiveCleanupBlockedResponse(attempt, "blocked", []string{"provider_review_github_target_missing"}), nil
@@ -15746,83 +14482,70 @@ func providerReviewLiveCleanupMissingEvidence(cfg Config, attempt map[string]any
 }
 
 func (s *Server) acquireProviderReviewLiveExecutionLock(ctx context.Context, attemptID string) (bool, func(), error) {
-	conn, err := s.store.DB.Connx(ctx)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
-	var locked bool
-	if err := conn.QueryRowxContext(ctx, `SELECT pg_try_advisory_lock(hashtext($1::text), hashtext($2::text))`, "provider_review_live_execution", attemptID).Scan(&locked); err != nil {
-		conn.Close()
-		return false, nil, err
+	key := "provider_review_live_execution:" + cleanOptionalID(attemptID)
+	if key == "provider_review_live_execution:" {
+		return false, nil, fmt.Errorf("provider review live execution lock requires an attempt id")
 	}
-	if !locked {
-		conn.Close()
+	if _, loaded := providerReviewLiveExecutionLocks.LoadOrStore(key, struct{}{}); loaded {
 		return false, nil, nil
 	}
 	unlock := func() {
-		var released bool
-		_ = conn.QueryRowxContext(context.Background(), `SELECT pg_advisory_unlock(hashtext($1::text), hashtext($2::text))`, "provider_review_live_execution", attemptID).Scan(&released)
-		conn.Close()
+		providerReviewLiveExecutionLocks.Delete(key)
 	}
 	return true, unlock, nil
 }
 
-func providerReviewStarterFilesForLiveExecution(ctx context.Context, db sqlx.ExtContext, runID, repoID string) (map[string]string, error) {
-	rows, err := queryMaps(ctx, db, `
-		SELECT path, content
-		FROM project_template_files
-		WHERE project_template_run_id=$1
-			AND project_git_repository_id=$2
-		ORDER BY created_at, path`, runID, repoID)
-	if err != nil {
+func providerReviewStarterFilesForLiveExecutionGorm(ctx context.Context, db *gorm.DB, runID, repoID string) (map[string]string, error) {
+	var models []GormProjectTemplateFile
+	if err := db.WithContext(ctx).
+		Where(&GormProjectTemplateFile{ProjectTemplateRunID: validNullString(runID), ProjectGitRepositoryID: validNullString(repoID)}).
+		Order("created_at").
+		Order("path").
+		Find(&models).Error; err != nil {
 		return nil, err
 	}
-	files := make(map[string]string, len(rows))
-	for _, row := range rows {
-		path := safeTemplateFilePath(stringFromMap(row, "path"))
+	files := make(map[string]string, len(models))
+	for _, model := range models {
+		path := safeTemplateFilePath(model.Path)
 		if path == "" {
 			continue
 		}
-		content := stringFromMap(row, "content")
-		if len([]byte(content)) > reviewBranchExecutorMaxFileBytes {
+		if len([]byte(model.Content)) > reviewBranchExecutorMaxFileBytes {
 			return nil, fmt.Errorf("provider review starter file is too large")
 		}
-		files[path] = content
+		files[path] = model.Content
 	}
 	return files, nil
 }
 
 func (s *Server) markProviderReviewAttemptLiveExecutionArmed(ctx context.Context, attemptID, idempotencyHash, idempotencyMaterial string) (map[string]any, error) {
-	_, err := queryOne(ctx, s.store.DB, `
-		UPDATE provider_review_attempts
-		SET provider_api_mutation='enabled',
-			idempotency_key_hash=$2,
-			idempotency_key_material=$3::jsonb,
-			updated_at=now()
-		WHERE id=$1
-			AND status='running'
-			AND claimed_at IS NOT NULL
-			AND operation_name='create_branch_ref'
-			AND endpoint_key='github.create_branch_ref'
-			AND provider_api_call_made=false
-			AND external_call_made=false
-		RETURNING id`, attemptID, idempotencyHash, idempotencyMaterial)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return map[string]any{
-				"live_execution_state":       "provider_review_attempt_execution_conflict",
-				"live_execution_ready":       false,
-				"executed":                   false,
-				"provider_review_attempt_id": attemptID,
-				"missing_evidence":           []string{"provider_review_attempt_execution_conflict"},
-				"external_call_made":         false,
-				"provider_api_call_made":     false,
-				"provider_api_mutation":      "disabled",
-				"contains_token":             false,
-				"contains_file_content":      false,
-			}, nil
-		}
-		return nil, err
+	material := map[string]any{}
+	if strings.TrimSpace(idempotencyMaterial) != "" {
+		_ = json.Unmarshal([]byte(idempotencyMaterial), &material)
+	}
+	result := s.store.Gorm.WithContext(ctx).Model(&GormProviderReviewAttempt{}).
+		Where(&GormProviderReviewAttempt{GormBase: GormBase{ID: attemptID}, Status: "running", OperationName: "create_branch_ref", EndpointKey: "github.create_branch_ref", ProviderAPICallMade: false, ExternalCallMade: false}).
+		Where("claimed_at IS NOT NULL").
+		Updates(map[string]any{"provider_api_mutation": "enabled", "idempotency_key_hash": idempotencyHash, "idempotency_key_material": JSONValue{Data: material}, "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return map[string]any{
+			"live_execution_state":       "provider_review_attempt_execution_conflict",
+			"live_execution_ready":       false,
+			"executed":                   false,
+			"provider_review_attempt_id": attemptID,
+			"missing_evidence":           []string{"provider_review_attempt_execution_conflict"},
+			"external_call_made":         false,
+			"provider_api_call_made":     false,
+			"provider_api_mutation":      "disabled",
+			"contains_token":             false,
+			"contains_file_content":      false,
+		}, nil
 	}
 	return nil, nil
 }
@@ -15842,175 +14565,108 @@ func (s *Server) recordProviderReviewAttemptLiveExecutionResult(ctx context.Cont
 		statusClass = "unknown"
 	}
 	reviewURL := sanitizeProviderReviewURLForResponse(result.ReviewURL)
-	diagnostics, err := jsonParam(providerReviewAttemptLiveExecutionDiagnostics(attempt, responseStatus, statusClass, result))
-	if err != nil {
-		return nil, err
-	}
-	tx, err := s.store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	recorded, err := queryOne(ctx, tx, `
-		UPDATE provider_review_attempts
-		SET status=$2,
-			response_diagnostics=$3::jsonb,
-			provider_api_call_made=$4,
-			provider_api_mutation='enabled',
-			external_call_made=$5,
-			provider_status_class=$6,
-			provider_review_url=$7,
-			executed_at=COALESCE(executed_at, now()),
-			live_execution_phase=$8,
-			live_execution_retryable=$9,
-			live_execution_manual_cleanup_hint=$10,
-			cleanup_attempted=$11,
-			cleanup_succeeded=$12,
-			cleanup_required=$13,
-			updated_at=now()
-		WHERE id=$1
-			AND status='running'
-		RETURNING
-			id,
-			operation_approval_id,
-			project_template_run_id,
-			provider_type,
-			review_kind,
-			operation_name,
-			endpoint_key,
-			status,
-			replay_check,
-			conflict_policy,
-			retry_policy,
-			operation_order,
-			depends_on_operation,
-			dependency_status,
-			request_summary,
-			response_diagnostics,
-			provider_api_call_made,
-			provider_api_mutation,
-			external_call_made,
-			provider_status_class,
-			provider_review_url,
-			executed_at,
-			live_execution_phase,
-			live_execution_retryable,
-			live_execution_manual_cleanup_hint,
-			cleanup_attempted,
-			cleanup_succeeded,
-			cleanup_required,
-			claimed_at,
-			claimed_by_user_id`,
-		attemptID,
-		status,
-		diagnostics,
-		result.ExternalCallMade,
-		result.ExternalCallMade,
-		statusClass,
-		reviewURL,
-		safeProviderReviewLiveExecutionPhase(result.ExecutionPhase),
-		result.Retryable,
-		safeProviderReviewManualCleanupHint(result.ManualCleanupHint),
-		result.CleanupAttempted,
-		result.CleanupSucceeded,
-		result.CleanupRequired,
-	)
-	if err != nil {
-		return nil, err
-	}
 	approvalID := cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"]))
-	if status == "completed" {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE provider_review_attempts
-			SET status='completed',
-				dependency_status='dependency_satisfied',
-				response_diagnostics=COALESCE(response_diagnostics, '{}'::jsonb) || jsonb_build_object(
-					'status', $12,
-					'live_result_recorded', true,
-					'live_result_source', 'atomic_github_review_branch_executor',
-					'provider_status_class', $4,
-					'provider_api_call_made', $3,
-					'provider_api_mutation', 'enabled',
-					'external_call_made', $3,
-					'live_execution_phase', $6,
-					'live_execution_retryable', $7,
-					'manual_cleanup_hint', $8,
-					'cleanup_attempted', $9,
-					'cleanup_succeeded', $10,
-					'cleanup_required', $11,
-					'provider_response_status_included', false,
-					'provider_request_id_included', false,
-					'response_body_included', false,
-					'headers_included', false,
-					'provider_url_included', false,
-					'idempotency_key_included', false,
-					'contains_token', false,
-					'contains_provider_url', false,
-					'contains_repository_ref', false,
-					'contains_branch_name', false,
-					'contains_file_content', false
-				),
-				provider_api_call_made=$3,
-				provider_api_mutation='enabled',
-				external_call_made=$3,
-				provider_status_class=$4,
-				provider_review_url=$5,
-				live_execution_phase=$6,
-				live_execution_retryable=$7,
-				live_execution_manual_cleanup_hint=$8,
-				executed_at=COALESCE(executed_at, now()),
-				cleanup_attempted=$9,
-				cleanup_succeeded=$10,
-				cleanup_required=$11,
-				updated_at=now()
-			WHERE operation_approval_id=$1
-				AND id<>$2
-				AND operation_name IN ('commit_starter_files', 'open_review_request')
-				AND status IN ('planned', 'running')`,
-			approvalID,
-			attemptID,
-			result.ExternalCallMade,
-			statusClass,
-			reviewURL,
-			safeProviderReviewLiveExecutionPhase(result.ExecutionPhase),
-			result.Retryable,
-			safeProviderReviewManualCleanupHint(result.ManualCleanupHint),
-			result.CleanupAttempted,
-			result.CleanupSucceeded,
-			result.CleanupRequired,
-			responseStatus,
-		); err != nil {
-			return nil, err
+	var recorded map[string]any
+	var ledger map[string]any
+	err := s.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model GormProviderReviewAttempt
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&model, &GormProviderReviewAttempt{GormBase: GormBase{ID: attemptID}, Status: "running"}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
 		}
-	} else {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE provider_review_attempts
-			SET dependency_status='dependency_failed',
-				updated_at=now()
-			WHERE operation_approval_id=$1
-				AND depends_on_operation=$2
-				AND dependency_status='waiting_for_dependency'`,
-			approvalID,
-			safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name")),
-		); err != nil {
-			return nil, err
+		now := time.Now().UTC()
+		model.Status = status
+		model.ResponseDiagnostics = JSONValue{Data: providerReviewAttemptLiveExecutionDiagnostics(attempt, responseStatus, statusClass, result)}
+		model.ProviderAPICallMade = result.ExternalCallMade
+		model.ProviderAPIMutation = "enabled"
+		model.ExternalCallMade = result.ExternalCallMade
+		model.ProviderStatusClass = statusClass
+		model.ProviderReviewURL = reviewURL
+		if !model.ExecutedAt.Valid {
+			model.ExecutedAt = validNullTime(now)
 		}
-	}
-	ledger, err := s.providerReviewAttemptLedgerForApprovalDB(ctx, tx, approvalID)
+		model.LiveExecutionPhase = safeProviderReviewLiveExecutionPhase(result.ExecutionPhase)
+		model.LiveExecutionRetryable = result.Retryable
+		model.LiveExecutionManualCleanupHint = safeProviderReviewManualCleanupHint(result.ManualCleanupHint)
+		model.CleanupAttempted = result.CleanupAttempted
+		model.CleanupSucceeded = result.CleanupSucceeded
+		model.CleanupRequired = result.CleanupRequired
+		if err := tx.Save(&model).Error; err != nil {
+			return err
+		}
+		recorded = providerReviewAttemptMap(model, nil)
+		if status == "completed" {
+			if err := completeProviderReviewDependentAttemptsGorm(ctx, tx, approvalID, attemptID, responseStatus, statusClass, reviewURL, result); err != nil {
+				return err
+			}
+		} else {
+			if err := failProviderReviewDependentAttemptsGorm(ctx, tx, approvalID, safeProviderReviewAttemptOperationName(stringFromMap(attempt, "operation_name"))); err != nil {
+				return err
+			}
+		}
+		var err error
+		ledger, err = providerReviewAttemptLedgerForApprovalGorm(ctx, tx, approvalID)
+		if err != nil {
+			return err
+		}
+		syncResult, err := syncCanonicalAssetsGorm(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("syncing canonical assets for provider review live execution: %w", err)
+		}
+		if s.log != nil {
+			s.log.Debug("canonical assets synced in transaction", "reason", "provider_review_attempt.live_execute", "synced_assets", syncResult.SyncedAssets, "inserted_relations", syncResult.InsertedRelations, "pruned_relations", syncResult.PrunedRelations, "inserted_status_snapshots", syncResult.InsertedStatusSnapshots)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	syncResult, err := SyncCanonicalAssetsWith(ctx, tx)
-	if err != nil {
-		return nil, fmt.Errorf("syncing canonical assets for provider review live execution: %w", err)
-	}
-	if s.log != nil {
-		s.log.Debug("canonical assets synced in transaction", "reason", "provider_review_attempt.live_execute", "synced_assets", syncResult.SyncedAssets, "inserted_relations", syncResult.InsertedRelations, "pruned_relations", syncResult.PrunedRelations, "inserted_status_snapshots", syncResult.InsertedStatusSnapshots)
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return providerReviewAttemptLiveExecutionResponse(recorded, ledger, execErr == nil, responseStatus, statusClass, reviewURL, result), nil
+}
+
+func completeProviderReviewDependentAttemptsGorm(ctx context.Context, tx *gorm.DB, approvalID, attemptID, responseStatus, statusClass, reviewURL string, result reviewBranchExecutionResult) error {
+	var attempts []GormProviderReviewAttempt
+	if err := tx.WithContext(ctx).
+		Where(&GormProviderReviewAttempt{OperationApprovalID: approvalID}).
+		Where("id <> ?", attemptID).
+		Where("operation_name IN ?", []string{"commit_starter_files", "open_review_request"}).
+		Where("status IN ?", []string{"planned", "running"}).
+		Find(&attempts).Error; err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, attempt := range attempts {
+		diagnostics := mapFromAny(attempt.ResponseDiagnostics.Data)
+		for key, value := range providerReviewAttemptLiveExecutionDiagnostics(providerReviewAttemptMap(attempt, nil), responseStatus, statusClass, result) {
+			diagnostics[key] = value
+		}
+		attempt.Status = "completed"
+		attempt.DependencyStatus = "dependency_satisfied"
+		attempt.ResponseDiagnostics = JSONValue{Data: diagnostics}
+		attempt.ProviderAPICallMade = result.ExternalCallMade
+		attempt.ProviderAPIMutation = "enabled"
+		attempt.ExternalCallMade = result.ExternalCallMade
+		attempt.ProviderStatusClass = statusClass
+		attempt.ProviderReviewURL = reviewURL
+		attempt.LiveExecutionPhase = safeProviderReviewLiveExecutionPhase(result.ExecutionPhase)
+		attempt.LiveExecutionRetryable = result.Retryable
+		attempt.LiveExecutionManualCleanupHint = safeProviderReviewManualCleanupHint(result.ManualCleanupHint)
+		if !attempt.ExecutedAt.Valid {
+			attempt.ExecutedAt = validNullTime(now)
+		}
+		attempt.CleanupAttempted = result.CleanupAttempted
+		attempt.CleanupSucceeded = result.CleanupSucceeded
+		attempt.CleanupRequired = result.CleanupRequired
+		if err := tx.Save(&attempt).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func failProviderReviewDependentAttemptsGorm(ctx context.Context, tx *gorm.DB, approvalID, operationName string) error {
+	return tx.WithContext(ctx).Model(&GormProviderReviewAttempt{}).
+		Where(&GormProviderReviewAttempt{OperationApprovalID: approvalID, DependsOnOperation: operationName, DependencyStatus: "waiting_for_dependency"}).
+		Updates(map[string]any{"dependency_status": "dependency_failed", "updated_at": time.Now().UTC()}).Error
 }
 
 func (s *Server) recordProviderReviewAttemptLiveCleanupResult(ctx context.Context, attemptID string, attempt map[string]any, result reviewBranchExecutionResult, cleanupErr error) (map[string]any, error) {
@@ -16050,86 +14706,44 @@ func (s *Server) recordProviderReviewAttemptLiveCleanupResult(ctx context.Contex
 	diagnostics["contains_repository_ref"] = false
 	diagnostics["contains_branch_name"] = false
 	diagnostics["contains_file_content"] = false
-	diagnosticsJSON, err := jsonParam(diagnostics)
-	if err != nil {
-		return nil, err
-	}
-	tx, err := s.store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	recorded, err := queryOne(ctx, tx, `
-		UPDATE provider_review_attempts
-		SET response_diagnostics=$2::jsonb,
-			provider_api_mutation='enabled',
-			provider_status_class=$3,
-			live_execution_phase=$4,
-			live_execution_retryable=$5,
-			live_execution_manual_cleanup_hint=$6,
-			cleanup_attempted=true,
-			cleanup_succeeded=$7,
-			cleanup_required=$8,
-			updated_at=now()
-		WHERE id=$1
-			AND status='failed'
-			AND cleanup_required=true
-		RETURNING
-			id,
-			operation_approval_id,
-			project_template_run_id,
-			provider_type,
-			review_kind,
-			operation_name,
-			endpoint_key,
-			status,
-			replay_check,
-			conflict_policy,
-			retry_policy,
-			operation_order,
-			depends_on_operation,
-			dependency_status,
-			request_summary,
-			response_diagnostics,
-			provider_api_call_made,
-			provider_api_mutation,
-			external_call_made,
-			provider_status_class,
-			provider_review_url,
-			executed_at,
-			live_execution_phase,
-			live_execution_retryable,
-			live_execution_manual_cleanup_hint,
-			cleanup_attempted,
-			cleanup_succeeded,
-			cleanup_required,
-			claimed_at,
-			claimed_by_user_id`,
-		attemptID,
-		diagnosticsJSON,
-		statusClass,
-		safeProviderReviewLiveExecutionPhase(result.ExecutionPhase),
-		result.Retryable,
-		safeProviderReviewManualCleanupHint(result.ManualCleanupHint),
-		result.CleanupSucceeded,
-		result.CleanupRequired,
-	)
-	if err != nil {
-		return nil, err
-	}
 	approvalID := cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"]))
-	ledger, err := s.providerReviewAttemptLedgerForApprovalDB(ctx, tx, approvalID)
+	var recorded map[string]any
+	var ledger map[string]any
+	err := s.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model GormProviderReviewAttempt
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where(&GormProviderReviewAttempt{GormBase: GormBase{ID: attemptID}, Status: "failed", CleanupRequired: true}).
+			First(&model).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		model.ResponseDiagnostics = JSONValue{Data: diagnostics}
+		model.ProviderAPIMutation = "enabled"
+		model.ProviderStatusClass = statusClass
+		model.LiveExecutionPhase = safeProviderReviewLiveExecutionPhase(result.ExecutionPhase)
+		model.LiveExecutionRetryable = result.Retryable
+		model.LiveExecutionManualCleanupHint = safeProviderReviewManualCleanupHint(result.ManualCleanupHint)
+		model.CleanupAttempted = true
+		model.CleanupSucceeded = result.CleanupSucceeded
+		model.CleanupRequired = result.CleanupRequired
+		if err := tx.Save(&model).Error; err != nil {
+			return err
+		}
+		recorded = providerReviewAttemptMap(model, nil)
+		var err error
+		ledger, err = providerReviewAttemptLedgerForApprovalGorm(ctx, tx, approvalID)
+		if err != nil {
+			return err
+		}
+		syncResult, err := syncCanonicalAssetsGorm(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("syncing canonical assets for provider review live cleanup: %w", err)
+		}
+		if s.log != nil {
+			s.log.Debug("canonical assets synced in transaction", "reason", "provider_review_attempt.live_cleanup", "synced_assets", syncResult.SyncedAssets, "inserted_relations", syncResult.InsertedRelations, "pruned_relations", syncResult.PrunedRelations, "inserted_status_snapshots", syncResult.InsertedStatusSnapshots)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	syncResult, err := SyncCanonicalAssetsWith(ctx, tx)
-	if err != nil {
-		return nil, fmt.Errorf("syncing canonical assets for provider review live cleanup: %w", err)
-	}
-	if s.log != nil {
-		s.log.Debug("canonical assets synced in transaction", "reason", "provider_review_attempt.live_cleanup", "synced_assets", syncResult.SyncedAssets, "inserted_relations", syncResult.InsertedRelations, "pruned_relations", syncResult.PrunedRelations, "inserted_status_snapshots", syncResult.InsertedStatusSnapshots)
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return providerReviewAttemptLiveCleanupResponse(recorded, ledger, cleanupErr == nil, responseStatus, statusClass, result), nil
@@ -16388,7 +15002,7 @@ func (s *Server) recordProviderReviewAttemptSnapshot(w http.ResponseWriter, r *h
 	if !s.requireProviderReviewAttemptUpdatePolicy(w, r, attemptID) {
 		return
 	}
-	attempt, err := providerReviewAttemptForSnapshot(r.Context(), s.store.DB, attemptID)
+	attempt, err := providerReviewAttemptForSnapshot(r.Context(), s.store.Gorm, attemptID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -18264,19 +16878,13 @@ func providerReviewAttemptLocalResultBlockedResponse(attempt map[string]any, rea
 }
 
 func (s *Server) requireProviderReviewAttemptUpdatePolicy(w http.ResponseWriter, r *http.Request, attemptID string) bool {
-	approval, err := queryOne(r.Context(), s.store.DB, `
-		SELECT
-			oa.id AS approval_id,
-			oa.project_id AS approval_project_id
-		FROM provider_review_attempts pra
-		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
-		WHERE pra.id=$1`, attemptID)
+	_, approval, _, err := providerReviewAttemptWithApprovalGorm(r.Context(), s.store.Gorm, attemptID, false)
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return false
 	}
-	approvalID := cleanOptionalID(fmt.Sprint(approval["approval_id"]))
-	projectID := cleanOptionalID(fmt.Sprint(approval["approval_project_id"]))
+	approvalID := approval.ID
+	projectID := cleanOptionalID(approval.ProjectID.String)
 	if projectID == "" {
 		return s.requirePolicy(w, r, PolicyResource{Type: "operation_approval", ID: approvalID}, "update")
 	}
@@ -19225,41 +17833,80 @@ func sanitizedProviderReviewReconciliationOperations(items []map[string]any) []m
 }
 
 func (s *Server) operationApprovalDecisions(ctx context.Context, approvalID string) ([]map[string]any, error) {
-	return queryMaps(ctx, s.store.DB, `
-		SELECT
-			oad.id,
-			oad.operation_approval_id,
-			oad.user_id,
-			u.email AS user_email,
-			oad.decision,
-			oad.reason,
-			oad.decided_at,
-			oad.created_at,
-			oad.updated_at
-		FROM operation_approval_decisions oad
-		LEFT JOIN users u ON u.id=oad.user_id
-		WHERE oad.operation_approval_id=$1
-		ORDER BY oad.decided_at DESC`, approvalID)
+	var decisions []GormOperationApprovalDecision
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormOperationApprovalDecision{OperationApprovalID: approvalID}).Order(gormOrderDesc("decided_at")).Find(&decisions).Error; err != nil {
+		return nil, err
+	}
+	userIDs := make([]string, 0, len(decisions))
+	for _, decision := range decisions {
+		if id := cleanOptionalID(decision.UserID.String); id != "" {
+			userIDs = append(userIDs, id)
+		}
+	}
+	users, err := usersByIDGorm(ctx, s.store.Gorm, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(decisions))
+	for _, decision := range decisions {
+		userID := cleanOptionalID(decision.UserID.String)
+		items = append(items, map[string]any{"id": decision.ID, "operation_approval_id": decision.OperationApprovalID, "user_id": nullableStringValue(decision.UserID), "user_email": users[userID].Email, "decision": decision.Decision, "reason": decision.Reason, "decided_at": decision.DecidedAt})
+	}
+	return items, nil
 }
 
 func (s *Server) operationApprovalDelegations(ctx context.Context, approvalID string) ([]map[string]any, error) {
-	return queryMaps(ctx, s.store.DB, `
-		SELECT
-			oadel.id,
-			oadel.operation_approval_id,
-			oadel.from_user_id,
-			from_user.email AS from_user_email,
-			oadel.to_user_id,
-			to_user.email AS to_user_email,
-			oadel.reason,
-			oadel.revoked_at,
-			oadel.created_at,
-			oadel.updated_at
-		FROM operation_approval_delegations oadel
-		LEFT JOIN users from_user ON from_user.id=oadel.from_user_id
-		LEFT JOIN users to_user ON to_user.id=oadel.to_user_id
-		WHERE oadel.operation_approval_id=$1
-		ORDER BY oadel.created_at DESC`, approvalID)
+	var delegations []GormOperationApprovalDelegation
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormOperationApprovalDelegation{OperationApprovalID: approvalID}).Order(gormOrderDesc("created_at")).Find(&delegations).Error; err != nil {
+		return nil, err
+	}
+	userIDs := make([]string, 0, len(delegations)*2)
+	for _, delegation := range delegations {
+		if id := cleanOptionalID(delegation.FromUserID.String); id != "" {
+			userIDs = append(userIDs, id)
+		}
+		userIDs = append(userIDs, delegation.ToUserID)
+	}
+	users, err := usersByIDGorm(ctx, s.store.Gorm, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(delegations))
+	for _, delegation := range delegations {
+		fromID := cleanOptionalID(delegation.FromUserID.String)
+		items = append(items, map[string]any{"id": delegation.ID, "operation_approval_id": delegation.OperationApprovalID, "from_user_id": nullableStringValue(delegation.FromUserID), "from_user_email": users[fromID].Email, "to_user_id": delegation.ToUserID, "to_user_email": users[delegation.ToUserID].Email, "reason": delegation.Reason, "revoked_at": nullableTimeAny(delegation.RevokedAt), "created_at": delegation.CreatedAt})
+	}
+	return items, nil
+}
+
+func usersByIDGorm(ctx context.Context, db *gorm.DB, ids []string) (map[string]GormUser, error) {
+	out := map[string]GormUser{}
+	ids = uniqueCleanIDs(ids)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var users []GormUser
+	if err := db.WithContext(ctx).Find(&users, ids).Error; err != nil {
+		return nil, err
+	}
+	for _, user := range users {
+		out[user.ID] = user
+	}
+	return out, nil
+}
+
+func uniqueCleanIDs(ids []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = cleanOptionalID(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func (s *Server) requireApprovalRead(w http.ResponseWriter, r *http.Request, approval map[string]any) bool {
@@ -19291,58 +17938,91 @@ func safeOperationForAudit(operation map[string]any) map[string]any {
 
 func (s *Server) operationRunRecords(ctx context.Context, opID string, canReadSSHOutput bool) (map[string]any, error) {
 	records := map[string]any{}
-	queries := map[string]string{
-		"repo_sync_runs": `
-			SELECT id, operation_run_id, project_id, project_git_repository_id, repo_sync_asset_id, source_remote_id, target_remote_id, ref, before_sha, after_sha, status, error_message, started_at, finished_at, created_at
-			FROM repo_sync_runs
-			WHERE operation_run_id=$1
-			ORDER BY created_at`,
-		"repo_tag_runs": `
-			SELECT id, operation_run_id, project_id, project_git_repository_id, target_remote_id, tag_name, target_sha, status, error_message, started_at, finished_at, created_at
-			FROM repo_tag_runs
-			WHERE operation_run_id=$1
-			ORDER BY created_at`,
-		"project_template_runs": `
-			SELECT id, operation_run_id, project_template_id, requested_by, project_id, project_name, project_slug, status, steps, error_message, started_at, finished_at, created_at, updated_at
-			FROM project_template_runs
-			WHERE operation_run_id=$1
-			ORDER BY created_at`,
-		"webhook_events": `
-			SELECT id, webhook_connection_id, project_id, provider, event_type, delivery_id, signature_valid, matched_repo_sync_asset_id, operation_run_id, status, error_message, processed_at, received_at
-			FROM webhook_events
-			WHERE operation_run_id=$1
-			ORDER BY received_at`,
-		"agent_tool_calls": `
-			SELECT id, agent_task_id, operation_run_id, project_id, tool_name, input, output, status, error_message, started_at, finished_at, created_at, updated_at
-			FROM agent_tool_calls
-			WHERE operation_run_id=$1
-			ORDER BY created_at`,
-	}
-	for key, query := range queries {
-		items, err := queryMaps(ctx, s.store.DB, query, opID)
-		if err != nil {
-			return nil, err
-		}
-		records[key] = items
-	}
-	sshQuery := `
-		SELECT id, operation_run_id, ssh_machine_id, project_id, actor_user_id, status, exit_code, error_message, started_at, finished_at, created_at
-		FROM ssh_command_runs
-		WHERE operation_run_id=$1
-		ORDER BY created_at`
-	if canReadSSHOutput {
-		sshQuery = `
-			SELECT id, operation_run_id, ssh_machine_id, project_id, command, actor_user_id, status, exit_code, stdout, stderr, error_message, started_at, finished_at, created_at
-			FROM ssh_command_runs
-			WHERE operation_run_id=$1
-			ORDER BY created_at`
-	}
-	sshItems, err := queryMaps(ctx, s.store.DB, sshQuery, opID)
-	if err != nil {
+	var syncRuns []GormRepoSyncRun
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormRepoSyncRun{OperationRunID: opID}).Order(gormOrderAsc("created_at")).Find(&syncRuns).Error; err != nil {
 		return nil, err
+	}
+	syncItems := make([]map[string]any, 0, len(syncRuns))
+	for _, run := range syncRuns {
+		item := repoSyncRunMap(run)
+		delete(item, "git_remote_id")
+		delete(item, "actor_user_id")
+		delete(item, "stdout")
+		delete(item, "stderr")
+		syncItems = append(syncItems, item)
+	}
+	records["repo_sync_runs"] = syncItems
+
+	var tagRuns []GormRepoTagRun
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormRepoTagRun{OperationRunID: opID}).Order(gormOrderAsc("created_at")).Find(&tagRuns).Error; err != nil {
+		return nil, err
+	}
+	tagItems := make([]map[string]any, 0, len(tagRuns))
+	for _, run := range tagRuns {
+		tagItems = append(tagItems, repoTagRunRecordMap(run))
+	}
+	records["repo_tag_runs"] = tagItems
+
+	var templateRuns []GormProjectTemplateRun
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormProjectTemplateRun{OperationRunID: validNullString(opID)}).Order(gormOrderAsc("created_at")).Find(&templateRuns).Error; err != nil {
+		return nil, err
+	}
+	templateItems := make([]map[string]any, 0, len(templateRuns))
+	for _, run := range templateRuns {
+		templateItems = append(templateItems, projectTemplateRunRecordMap(run))
+	}
+	records["project_template_runs"] = templateItems
+
+	var events []GormWebhookEvent
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormWebhookEvent{OperationRunID: validNullString(opID)}).Order(gormOrderAsc("received_at")).Find(&events).Error; err != nil {
+		return nil, err
+	}
+	eventItems := make([]map[string]any, 0, len(events))
+	for _, event := range events {
+		item := webhookEventMap(event)
+		delete(item, "payload")
+		delete(item, "result")
+		eventItems = append(eventItems, item)
+	}
+	records["webhook_events"] = eventItems
+
+	var toolCalls []GormAgentToolCall
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormAgentToolCall{OperationRunID: validNullString(opID)}).Order(gormOrderAsc("created_at")).Find(&toolCalls).Error; err != nil {
+		return nil, err
+	}
+	toolItems := make([]map[string]any, 0, len(toolCalls))
+	for _, call := range toolCalls {
+		item := agentToolCallMap(call)
+		delete(item, "metadata")
+		toolItems = append(toolItems, item)
+	}
+	records["agent_tool_calls"] = toolItems
+
+	var sshRuns []GormSSHCommandRun
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormSSHCommandRun{OperationRunID: validNullString(opID)}).Order(gormOrderAsc("created_at")).Find(&sshRuns).Error; err != nil {
+		return nil, err
+	}
+	sshItems := make([]map[string]any, 0, len(sshRuns))
+	for _, run := range sshRuns {
+		item := sshCommandRunMap(run, "")
+		delete(item, "operation_type")
+		if !canReadSSHOutput {
+			delete(item, "command")
+			delete(item, "stdout")
+			delete(item, "stderr")
+		}
+		sshItems = append(sshItems, item)
 	}
 	records["ssh_command_runs"] = sshItems
 	return records, nil
+}
+
+func repoTagRunRecordMap(run GormRepoTagRun) map[string]any {
+	return map[string]any{"id": run.ID, "operation_run_id": run.OperationRunID, "project_id": nullableStringValue(run.ProjectID), "project_git_repository_id": nullableStringValue(run.ProjectGitRepositoryID), "target_remote_id": nullableStringValue(run.TargetRemoteID), "tag_name": run.TagName, "target_sha": run.TargetSHA, "status": run.Status, "error_message": run.ErrorMessage, "started_at": nullableTimeAny(run.StartedAt), "finished_at": nullableTimeAny(run.FinishedAt), "created_at": run.CreatedAt}
+}
+
+func projectTemplateRunRecordMap(run GormProjectTemplateRun) map[string]any {
+	return map[string]any{"id": run.ID, "operation_run_id": nullableStringValue(run.OperationRunID), "project_template_id": nullableStringValue(run.ProjectTemplateID), "requested_by": nullableStringValue(run.RequestedBy), "project_id": nullableStringValue(run.ProjectID), "project_name": run.ProjectName, "project_slug": run.ProjectSlug, "status": run.Status, "steps": mapSliceFromAny(run.Steps.Data), "error_message": run.ErrorMessage, "started_at": nullableTimeAny(run.StartedAt), "finished_at": nullableTimeAny(run.FinishedAt), "created_at": run.CreatedAt, "updated_at": run.UpdatedAt}
 }
 
 func (s *Server) approveOperationApproval(w http.ResponseWriter, r *http.Request) {
@@ -19350,174 +18030,7 @@ func (s *Server) approveOperationApproval(w http.ResponseWriter, r *http.Request
 		Reason string `json:"reason"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start approval transaction")
-		return
-	}
-	defer tx.Rollback()
-	expired, err := s.expireOperationApprovalByID(r.Context(), tx, chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not expire approval")
-		return
-	}
-	approval, err := queryOne(r.Context(), tx, "SELECT * FROM operation_approvals WHERE id=$1 FOR UPDATE", chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	if fmt.Sprint(approval["status"]) != "pending" {
-		if expired != nil {
-			if err := tx.Commit(); err != nil {
-				writeError(w, http.StatusInternalServerError, "could not commit expired approval")
-				return
-			}
-			s.dispatchApprovalNotification(r.Context(), expired, "expired")
-		}
-		writeError(w, http.StatusConflict, "approval is not pending")
-		return
-	}
-	if !s.canDecideOperationApproval(r.Context(), currentUser(r), approval) {
-		writeError(w, http.StatusForbidden, "approval decision requires one of the configured approver roles")
-		return
-	}
-	if err := upsertOperationApprovalDecision(r.Context(), tx, chi.URLParam(r, "id"), currentUser(r).ID, "approved", strings.TrimSpace(req.Reason)); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not record approval decision")
-		return
-	}
-	approvedCount, err := operationApprovalApprovedCount(r.Context(), tx, chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not count approval decisions")
-		return
-	}
-	requiredCount := requiredApprovalCount(approval["required_approval_count"])
-	if approvedCount < requiredCount {
-		item, err := queryOne(r.Context(), tx, `
-			UPDATE operation_approvals
-			SET decided_by=$2,
-				decision_reason=$3,
-				updated_at=now()
-			WHERE id=$1 AND status='pending'
-			RETURNING *`, chi.URLParam(r, "id"), currentUser(r).ID, strings.TrimSpace(req.Reason))
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not update approval progress")
-			return
-		}
-		if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.progress") {
-			return
-		}
-		if err := tx.Commit(); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not commit approval progress")
-			return
-		}
-		delete(item, "request_payload")
-		item["approved_count"] = approvedCount
-		item["required_approval_count"] = requiredCount
-		writeJSON(w, http.StatusOK, item)
-		return
-	}
-	result, operationRunID, err := s.executeApprovedOperation(r.Context(), tx, approval)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	resultJSON, err := jsonParam(result)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid approval result")
-		return
-	}
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE operation_approvals
-		SET status='approved',
-			operation_run_id=NULLIF($2,'')::uuid,
-			decided_by=$3,
-			decision_reason=$4,
-			decided_at=now(),
-			updated_at=now(),
-			request_payload=request_payload || jsonb_build_object('approval_result', $5::jsonb)
-		WHERE id=$1 AND status='pending'
-		RETURNING *`, chi.URLParam(r, "id"), operationRunID, currentUser(r).ID, strings.TrimSpace(req.Reason), resultJSON)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update approval")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.execute") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit approval")
-		return
-	}
-	delete(item, "request_payload")
-	item["approved_count"] = approvedCount
-	item["required_approval_count"] = requiredCount
-	item = s.dispatchApprovalNotification(r.Context(), item, "approved")
-	writeJSON(w, http.StatusOK, item)
-}
-
-func (s *Server) rejectOperationApproval(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Reason string `json:"reason"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start approval transaction")
-		return
-	}
-	defer tx.Rollback()
-	expired, err := s.expireOperationApprovalByID(r.Context(), tx, chi.URLParam(r, "id"))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not expire approval")
-		return
-	}
-	approval, err := queryOne(r.Context(), tx, "SELECT * FROM operation_approvals WHERE id=$1 FOR UPDATE", chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	if fmt.Sprint(approval["status"]) != "pending" {
-		if expired != nil {
-			if err := tx.Commit(); err != nil {
-				writeError(w, http.StatusInternalServerError, "could not commit expired approval")
-				return
-			}
-			s.dispatchApprovalNotification(r.Context(), expired, "expired")
-		}
-		writeError(w, http.StatusConflict, "approval is not pending")
-		return
-	}
-	if !s.canDecideOperationApproval(r.Context(), currentUser(r), approval) {
-		writeError(w, http.StatusForbidden, "approval decision requires one of the configured approver roles")
-		return
-	}
-	if err := upsertOperationApprovalDecision(r.Context(), tx, chi.URLParam(r, "id"), currentUser(r).ID, "rejected", strings.TrimSpace(req.Reason)); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not record approval decision")
-		return
-	}
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE operation_approvals
-		SET status='rejected', decided_by=$2, decision_reason=$3, decided_at=now(), updated_at=now()
-		WHERE id=$1 AND status='pending'
-		RETURNING *`, chi.URLParam(r, "id"), currentUser(r).ID, strings.TrimSpace(req.Reason))
-	if err != nil {
-		writeQueryOne(w, item, err)
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.reject") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit approval")
-		return
-	}
-	delete(item, "request_payload")
-	item = s.dispatchApprovalNotification(r.Context(), item, "rejected")
-	writeQueryOne(w, item, err)
-}
-
-func (s *Server) remindOperationApproval(w http.ResponseWriter, r *http.Request) {
-	expired, err := s.expireOperationApprovalByID(r.Context(), s.store.DB, chi.URLParam(r, "id"))
+	expired, err := s.expireOperationApprovalByIDGorm(r.Context(), s.store.Gorm, chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not expire approval")
 		return
@@ -19527,15 +18040,165 @@ func (s *Server) remindOperationApproval(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusConflict, "approval is not pending")
 		return
 	}
-	approval, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM operation_approvals WHERE id=$1", chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var approvalModel GormOperationApproval
+	if err := s.store.Gorm.WithContext(r.Context()).First(&approvalModel, &GormOperationApproval{GormBase: GormBase{ID: chi.URLParam(r, "id")}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
+	approval := operationApprovalMap(approvalModel, nil, nil, nil, nil)
+	if approvalModel.Status != "pending" {
+		writeError(w, http.StatusConflict, "approval is not pending")
+		return
+	}
+	if !s.canDecideOperationApproval(r.Context(), currentUser(r), approval) {
+		writeError(w, http.StatusForbidden, "approval decision requires one of the configured approver roles")
+		return
+	}
+	approvedCount := 0
+	requiredCount := requiredApprovalCount(approval["required_approval_count"])
+	var item map[string]any
+	var shouldNotify bool
+	err = s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&approvalModel, &GormOperationApproval{GormBase: GormBase{ID: chi.URLParam(r, "id")}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		if approvalModel.Status != "pending" {
+			return errApprovalNotPending
+		}
+		if err := upsertOperationApprovalDecisionGorm(r.Context(), tx, chi.URLParam(r, "id"), currentUser(r).ID, "approved", strings.TrimSpace(req.Reason)); err != nil {
+			return fmt.Errorf("recording approval decision: %w", err)
+		}
+		var err error
+		approvedCount, err = operationApprovalApprovedCountGorm(r.Context(), tx, chi.URLParam(r, "id"))
+		if err != nil {
+			return fmt.Errorf("counting approval decisions: %w", err)
+		}
+		approval = operationApprovalMap(approvalModel, nil, nil, nil, nil)
+		if approvedCount < requiredCount {
+			approvalModel.DecidedBy = validNullString(currentUser(r).ID)
+			approvalModel.DecisionReason = strings.TrimSpace(req.Reason)
+			if err := tx.Save(&approvalModel).Error; err != nil {
+				return err
+			}
+			item = operationApprovalMap(approvalModel, nil, nil, nil, nil)
+			_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+			return err
+		}
+		result, operationRunID, err := s.executeApprovedOperation(r.Context(), tx, approval)
+		if err != nil {
+			return err
+		}
+		payload := mapFromAny(approvalModel.RequestPayload.Data)
+		payload["approval_result"] = result
+		approvalModel.Status = "approved"
+		approvalModel.OperationRunID = validNullString(operationRunID)
+		approvalModel.DecidedBy = validNullString(currentUser(r).ID)
+		approvalModel.DecisionReason = strings.TrimSpace(req.Reason)
+		approvalModel.DecidedAt = validNullTime(time.Now().UTC())
+		approvalModel.RequestPayload = JSONValue{Data: payload}
+		if err := tx.Save(&approvalModel).Error; err != nil {
+			return err
+		}
+		item = operationApprovalMap(approvalModel, nil, nil, nil, nil)
+		shouldNotify = true
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, errApprovalNotPending) {
+			writeError(w, http.StatusConflict, "approval is not pending")
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	delete(item, "request_payload")
+	item["approved_count"] = approvedCount
+	item["required_approval_count"] = requiredCount
+	if shouldNotify {
+		item = s.dispatchApprovalNotification(r.Context(), item, "approved")
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) rejectOperationApproval(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	expired, err := s.expireOperationApprovalByIDGorm(r.Context(), s.store.Gorm, chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not expire approval")
+		return
+	}
+	if expired != nil {
+		s.dispatchApprovalNotification(r.Context(), expired, "expired")
+		writeError(w, http.StatusConflict, "approval is not pending")
+		return
+	}
+	var approvalModel GormOperationApproval
+	if err := s.store.Gorm.WithContext(r.Context()).First(&approvalModel, &GormOperationApproval{GormBase: GormBase{ID: chi.URLParam(r, "id")}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
+		return
+	}
+	approval := operationApprovalMap(approvalModel, nil, nil, nil, nil)
+	if approvalModel.Status != "pending" {
+		writeError(w, http.StatusConflict, "approval is not pending")
+		return
+	}
+	if !s.canDecideOperationApproval(r.Context(), currentUser(r), approval) {
+		writeError(w, http.StatusForbidden, "approval decision requires one of the configured approver roles")
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := upsertOperationApprovalDecisionGorm(r.Context(), tx, chi.URLParam(r, "id"), currentUser(r).ID, "rejected", reason); err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		approvalModel.Status = "rejected"
+		approvalModel.DecidedBy = validNullString(currentUser(r).ID)
+		approvalModel.DecisionReason = reason
+		approvalModel.DecidedAt = validNullTime(now)
+		if err := tx.Save(&approvalModel).Error; err != nil {
+			return err
+		}
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		if err != nil {
+			return fmt.Errorf("syncing canonical assets for operation_approval.reject: %w", err)
+		}
+		return nil
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not commit approval")
+		return
+	}
+	item := operationApprovalMap(approvalModel, nil, nil, nil, nil)
+	delete(item, "request_payload")
+	item = s.dispatchApprovalNotification(r.Context(), item, "rejected")
+	writeQueryOne(w, item, nil)
+}
+
+func (s *Server) remindOperationApproval(w http.ResponseWriter, r *http.Request) {
+	expired, err := s.expireOperationApprovalByIDGorm(r.Context(), s.store.Gorm, chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not expire approval")
+		return
+	}
+	if expired != nil {
+		s.dispatchApprovalNotification(r.Context(), expired, "expired")
+		writeError(w, http.StatusConflict, "approval is not pending")
+		return
+	}
+	var approvalModel GormOperationApproval
+	if err := s.store.Gorm.WithContext(r.Context()).First(&approvalModel, &GormOperationApproval{GormBase: GormBase{ID: chi.URLParam(r, "id")}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
+		return
+	}
+	approval := operationApprovalMap(approvalModel, nil, nil, nil, nil)
 	if !s.requireApprovalRead(w, r, approval) {
 		return
 	}
-	if fmt.Sprint(approval["status"]) != "pending" {
+	if approvalModel.Status != "pending" {
 		writeError(w, http.StatusConflict, "approval is not pending")
 		return
 	}
@@ -19543,7 +18206,7 @@ func (s *Server) remindOperationApproval(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusForbidden, "approval reminder requires one of the configured approver roles")
 		return
 	}
-	approvedCount, err := operationApprovalApprovedCount(r.Context(), s.store.DB, chi.URLParam(r, "id"))
+	approvedCount, err := operationApprovalApprovedCountGorm(r.Context(), s.store.Gorm, chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not count approval decisions")
 		return
@@ -19551,17 +18214,13 @@ func (s *Server) remindOperationApproval(w http.ResponseWriter, r *http.Request)
 	approval["approved_count"] = approvedCount
 	approval["required_approval_count"] = requiredApprovalCount(approval["required_approval_count"])
 	delete(approval, "request_payload")
-	approval, err = queryOne(r.Context(), s.store.DB, `
-		UPDATE operation_approvals
-		SET last_reminded_at=now(),
-			reminder_count=reminder_count + 1,
-			updated_at=now()
-		WHERE id=$1 AND status='pending'
-		RETURNING *`, chi.URLParam(r, "id"))
-	if err != nil {
+	approvalModel.LastReminderAt = validNullTime(time.Now().UTC())
+	approvalModel.ReminderCount++
+	if err := s.store.Gorm.WithContext(r.Context()).Save(&approvalModel).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not record approval reminder")
 		return
 	}
+	approval = operationApprovalMap(approvalModel, nil, nil, nil, nil)
 	approval["approved_count"] = approvedCount
 	approval["required_approval_count"] = requiredApprovalCount(approval["required_approval_count"])
 	delete(approval, "request_payload")
@@ -19585,39 +18244,30 @@ func (s *Server) createOperationApprovalDelegation(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, "to_email is required")
 		return
 	}
-	if s == nil || s.store == nil || s.store.DB == nil {
+	if s == nil || s.store == nil || s.store.Gorm == nil {
 		writeError(w, http.StatusInternalServerError, "approval store is not configured")
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start delegation transaction")
-		return
-	}
-	defer tx.Rollback()
-	expired, err := s.expireOperationApprovalByID(r.Context(), tx, chi.URLParam(r, "id"))
+	expired, err := s.expireOperationApprovalByIDGorm(r.Context(), s.store.Gorm, chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not expire approval")
 		return
 	}
 	if expired != nil {
-		if err := tx.Commit(); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not commit expired approval")
-			return
-		}
 		s.dispatchApprovalNotification(r.Context(), expired, "expired")
 		writeError(w, http.StatusConflict, "approval is not pending")
 		return
 	}
-	approval, err := queryOne(r.Context(), tx, "SELECT * FROM operation_approvals WHERE id=$1 FOR UPDATE", chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var approvalModel GormOperationApproval
+	if err := s.store.Gorm.WithContext(r.Context()).First(&approvalModel, &GormOperationApproval{GormBase: GormBase{ID: chi.URLParam(r, "id")}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
+	approval := operationApprovalMap(approvalModel, nil, nil, nil, nil)
 	if !s.requireApprovalRead(w, r, approval) {
 		return
 	}
-	if fmt.Sprint(approval["status"]) != "pending" {
+	if approvalModel.Status != "pending" {
 		writeError(w, http.StatusConflict, "approval is not pending")
 		return
 	}
@@ -19625,94 +18275,87 @@ func (s *Server) createOperationApprovalDelegation(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusForbidden, "approval delegation requires one of the configured approver roles")
 		return
 	}
-	target, err := queryOne(r.Context(), tx, "SELECT id, email, role FROM users WHERE lower(email)=lower($1)", req.ToEmail)
-	if err != nil {
+	var target GormUser
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormUser{Email: req.ToEmail}).First(&target).Error; err != nil {
 		writeError(w, http.StatusNotFound, "delegate user not found")
 		return
 	}
-	if fmt.Sprint(target["id"]) == currentUser(r).ID {
+	if target.ID == currentUser(r).ID {
 		writeError(w, http.StatusBadRequest, "cannot delegate approval to yourself")
 		return
 	}
-	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO operation_approval_delegations(operation_approval_id, from_user_id, to_user_id, reason)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (operation_approval_id, to_user_id) DO UPDATE
-		SET from_user_id=EXCLUDED.from_user_id,
-			reason=EXCLUDED.reason,
-			revoked_at=NULL,
-			updated_at=now()
-		RETURNING *`, chi.URLParam(r, "id"), currentUser(r).ID, target["id"], strings.TrimSpace(req.Reason))
-	if err != nil {
+	delegation := GormOperationApprovalDelegation{OperationApprovalID: chi.URLParam(r, "id"), FromUserID: validNullString(currentUser(r).ID), ToUserID: target.ID, Reason: strings.TrimSpace(req.Reason), RevokedAt: sql.NullTime{}}
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "operation_approval_id"}, {Name: "to_user_id"}},
+			DoUpdates: clause.Assignments(map[string]any{"from_user_id": delegation.FromUserID, "reason": delegation.Reason, "revoked_at": sql.NullTime{}}),
+		}).Create(&delegation).Error; err != nil {
+			return err
+		}
+		if err := tx.Where(&GormOperationApprovalDelegation{OperationApprovalID: chi.URLParam(r, "id"), ToUserID: target.ID}).First(&delegation).Error; err != nil {
+			return err
+		}
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		if err != nil {
+			return fmt.Errorf("syncing canonical assets for operation_approval.delegation.create: %w", err)
+		}
+		return nil
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create approval delegation")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.delegation.create") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit approval delegation")
-		return
-	}
-	item["to_user_email"] = target["email"]
-	item["from_user_email"] = currentUser(r).Email
+	item := operationApprovalDelegationMap(delegation, map[string]GormUser{target.ID: target, currentUser(r).ID: {GormBase: GormBase{ID: currentUser(r).ID}, Email: currentUser(r).Email}})
 	writeJSON(w, http.StatusCreated, item)
 }
 
 func (s *Server) revokeOperationApprovalDelegation(w http.ResponseWriter, r *http.Request) {
-	if s == nil || s.store == nil || s.store.DB == nil {
+	if s == nil || s.store == nil || s.store.Gorm == nil {
 		writeError(w, http.StatusInternalServerError, "approval store is not configured")
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start delegation transaction")
+	var approvalModel GormOperationApproval
+	if err := s.store.Gorm.WithContext(r.Context()).First(&approvalModel, &GormOperationApproval{GormBase: GormBase{ID: chi.URLParam(r, "id")}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	defer tx.Rollback()
-	approval, err := queryOne(r.Context(), tx, "SELECT * FROM operation_approvals WHERE id=$1 FOR UPDATE", chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
+	approval := operationApprovalMap(approvalModel, nil, nil, nil, nil)
 	if !s.requireApprovalRead(w, r, approval) {
 		return
 	}
-	delegation, err := queryOne(r.Context(), tx, `
-		SELECT *
-		FROM operation_approval_delegations
-		WHERE id=$1 AND operation_approval_id=$2
-		FOR UPDATE`, chi.URLParam(r, "delegationID"), chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var delegation GormOperationApprovalDelegation
+	if err := s.store.Gorm.WithContext(r.Context()).First(&delegation, &GormOperationApprovalDelegation{ID: chi.URLParam(r, "delegationID"), OperationApprovalID: chi.URLParam(r, "id")}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	if cleanOptionalText(fmt.Sprint(delegation["revoked_at"])) != "" {
+	if delegation.RevokedAt.Valid {
 		writeError(w, http.StatusConflict, "approval delegation is already revoked")
 		return
 	}
-	if !s.canRevokeOperationApprovalDelegation(r.Context(), currentUser(r), approval, delegation) {
+	delegationMap := operationApprovalDelegationMap(delegation, nil)
+	if !s.canRevokeOperationApprovalDelegation(r.Context(), currentUser(r), approval, delegationMap) {
 		writeError(w, http.StatusForbidden, "approval delegation revoke requires the delegator, an active approver, or an operator role")
 		return
 	}
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE operation_approval_delegations
-		SET revoked_at=COALESCE(revoked_at, now()),
-			updated_at=now()
-		WHERE id=$1 AND operation_approval_id=$2
-		RETURNING *`, chi.URLParam(r, "delegationID"), chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, item, err)
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation_approval.delegation.revoke") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
+	delegation.RevokedAt = validNullTime(time.Now().UTC())
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&delegation).Error; err != nil {
+			return err
+		}
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		if err != nil {
+			return fmt.Errorf("syncing canonical assets for operation_approval.delegation.revoke: %w", err)
+		}
+		return nil
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not commit approval delegation revoke")
 		return
 	}
-	writeJSON(w, http.StatusOK, item)
+	writeJSON(w, http.StatusOK, operationApprovalDelegationMap(delegation, nil))
+}
+
+func operationApprovalDelegationMap(delegation GormOperationApprovalDelegation, users map[string]GormUser) map[string]any {
+	fromID := cleanOptionalID(delegation.FromUserID.String)
+	return map[string]any{"id": delegation.ID, "operation_approval_id": delegation.OperationApprovalID, "from_user_id": nullableStringValue(delegation.FromUserID), "from_user_email": users[fromID].Email, "to_user_id": delegation.ToUserID, "to_user_email": users[delegation.ToUserID].Email, "reason": delegation.Reason, "revoked_at": nullableTimeAny(delegation.RevokedAt), "created_at": delegation.CreatedAt}
 }
 
 func (s *Server) canRevokeOperationApprovalDelegation(ctx context.Context, user *User, approval, delegation map[string]any) bool {
@@ -19733,18 +18376,16 @@ func (s *Server) canDecideOperationApproval(ctx context.Context, user *User, app
 	if canDecideOperationApproval(user, approval) {
 		return true
 	}
-	if user == nil || s == nil || s.store == nil || s.store.DB == nil {
+	if user == nil || s == nil || s.store == nil || s.store.Gorm == nil {
 		return false
 	}
-	var exists bool
-	err := s.store.DB.GetContext(ctx, &exists, `
-		SELECT EXISTS(
-			SELECT 1 FROM operation_approval_delegations
-			WHERE operation_approval_id=$1
-				AND to_user_id=$2
-				AND revoked_at IS NULL
-		)`, approval["id"], user.ID)
-	return err == nil && exists
+	var count int64
+	err := s.store.Gorm.WithContext(ctx).Model(&GormOperationApprovalDelegation{}).Where(map[string]any{
+		"operation_approval_id": cleanOptionalID(fmt.Sprint(approval["id"])),
+		"to_user_id":            user.ID,
+		"revoked_at":            nil,
+	}).Count(&count).Error
+	return err == nil && count > 0
 }
 
 func canDecideOperationApproval(user *User, approval map[string]any) bool {
@@ -19764,38 +18405,26 @@ func canDecideOperationApproval(user *User, approval map[string]any) bool {
 	return false
 }
 
-func upsertOperationApprovalDecision(ctx context.Context, tx *sqlx.Tx, approvalID, userID, decision, reason string) error {
+func upsertOperationApprovalDecisionGorm(ctx context.Context, tx *gorm.DB, approvalID, userID, decision, reason string) error {
 	if strings.TrimSpace(userID) == "" {
 		return fmt.Errorf("approval decision requires a user")
 	}
 	if decision != "approved" && decision != "rejected" {
 		return fmt.Errorf("approval decision is invalid")
 	}
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO operation_approval_decisions(operation_approval_id, user_id, decision, reason)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (operation_approval_id, user_id) DO UPDATE
-		SET decision=EXCLUDED.decision,
-			reason=EXCLUDED.reason,
-			decided_at=now(),
-			updated_at=now()`,
-		approvalID,
-		userID,
-		decision,
-		reason,
-	)
-	return err
+	row := GormOperationApprovalDecision{OperationApprovalID: approvalID, UserID: validNullString(userID), Decision: decision, Reason: reason, DecidedAt: time.Now().UTC()}
+	return tx.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "operation_approval_id"}, {Name: "user_id"}},
+		DoUpdates: clause.Assignments(map[string]any{"decision": decision, "reason": reason, "decided_at": row.DecidedAt}),
+	}).Create(&row).Error
 }
 
-func operationApprovalApprovedCount(ctx context.Context, db sqlx.ExtContext, approvalID string) (int, error) {
-	item, err := queryOne(ctx, db, `
-		SELECT count(*)::int AS approved_count
-		FROM operation_approval_decisions
-		WHERE operation_approval_id=$1 AND decision='approved'`, approvalID)
-	if err != nil {
+func operationApprovalApprovedCountGorm(ctx context.Context, db *gorm.DB, approvalID string) (int, error) {
+	var count int64
+	if err := db.WithContext(ctx).Model(&GormOperationApprovalDecision{}).Where(&GormOperationApprovalDecision{OperationApprovalID: approvalID, Decision: "approved"}).Count(&count).Error; err != nil {
 		return 0, err
 	}
-	return intFromAny(item["approved_count"], 0), nil
+	return int(count), nil
 }
 
 func requiredApprovalCount(value any) int {
@@ -19839,17 +18468,12 @@ func (s *Server) requirePolicyOrApproval(w http.ResponseWriter, r *http.Request,
 func (s *Server) requireProjectMembershipForPolicy(w http.ResponseWriter, r *http.Request, resource PolicyResource) bool {
 	user := currentUser(r)
 	if user != nil && resource.ProjectID != "" && resource.ProjectID != "<nil>" && user.Role != "admin" && user.Role != "owner" {
-		var exists bool
-		err := s.store.DB.GetContext(r.Context(), &exists, `
-			SELECT EXISTS(
-				SELECT 1 FROM project_members
-				WHERE project_id=$1 AND user_id=$2
-			)`, resource.ProjectID, user.ID)
-		if err != nil {
+		var count int64
+		if err := s.store.Gorm.WithContext(r.Context()).Model(&GormProjectMember{}).Where(&GormProjectMember{ProjectID: resource.ProjectID, UserID: user.ID}).Count(&count).Error; err != nil {
 			writeError(w, http.StatusInternalServerError, "could not check project membership")
 			return false
 		}
-		if !exists {
+		if count == 0 {
 			writeJSON(w, http.StatusForbidden, PolicyDecision{Effect: PolicyDeny, Reason: "user is not a member of this project"})
 			return false
 		}
@@ -19858,11 +18482,7 @@ func (s *Server) requireProjectMembershipForPolicy(w http.ResponseWriter, r *htt
 }
 
 func (s *Server) createOperationApproval(ctx context.Context, resource PolicyResource, action, title string, payload map[string]any, requestedBy string) (map[string]any, error) {
-	rule, err := s.operationApprovalRule(ctx, s.store.DB, resource, action)
-	if err != nil {
-		return nil, err
-	}
-	payloadJSON, err := jsonParam(payload)
+	rule, err := s.operationApprovalRule(ctx, s.store.Gorm, resource, action)
 	if err != nil {
 		return nil, err
 	}
@@ -19870,55 +18490,38 @@ func (s *Server) createOperationApproval(ctx context.Context, resource PolicyRes
 	if expiresAfter <= 0 {
 		expiresAfter = 1440
 	}
-	tx, err := s.store.DB.BeginTxx(ctx, nil)
+	approval := GormOperationApproval{
+		ProjectID:             validNullString(cleanOptionalID(resource.ProjectID)),
+		ApprovalRuleID:        validNullString(rule.ID),
+		ResourceType:          resource.Type,
+		ResourceID:            resource.ID,
+		Action:                action,
+		Title:                 title,
+		RequestPayload:        JSONValue{Data: nonNilMap(payload)},
+		RequiredApproverRoles: pq.StringArray(rule.RequiredApproverRoles),
+		RequiredApprovalCount: rule.RequiredApprovalCount,
+		NotificationChannels:  pq.StringArray(rule.NotificationChannels),
+		EscalationPolicy: JSONValue{Data: map[string]any{
+			"after_minutes": rule.EscalationAfterMinutes,
+			"channels":      rule.EscalationChannels,
+			"count":         0,
+		}},
+		ExpiresAt:   validNullTime(time.Now().Add(time.Duration(expiresAfter) * time.Minute)),
+		RequestedBy: validNullString(requestedBy),
+	}
+	err = s.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&approval).Error; err != nil {
+			return err
+		}
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for operation approval create: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
-	approval, err := queryOne(ctx, tx, `
-		INSERT INTO operation_approvals(
-			project_id,
-			approval_rule_id,
-			resource_type,
-			resource_id,
-			action,
-			title,
-			request_payload,
-			required_approver_roles,
-			required_approval_count,
-			notification_channels,
-			escalation_after_minutes,
-			escalation_channels,
-			expires_at,
-			requested_by
-		)
-		VALUES (
-			NULLIF($1,'')::uuid,
-			NULLIF($2,'')::uuid,
-			$3,
-			$4,
-			$5,
-			$6,
-			$7::jsonb,
-			$8,
-			$9,
-			$10,
-			$11,
-			$12,
-			now() + ($13::int * interval '1 minute'),
-			$14
-		)
-		RETURNING *`, cleanOptionalID(resource.ProjectID), rule.ID, resource.Type, resource.ID, action, title, payloadJSON, pq.Array(rule.RequiredApproverRoles), rule.RequiredApprovalCount, pq.Array(rule.NotificationChannels), rule.EscalationAfterMinutes, pq.Array(rule.EscalationChannels), expiresAfter, requestedBy)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
-		return nil, fmt.Errorf("syncing canonical assets for operation approval create: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return s.dispatchApprovalNotification(ctx, approval, "pending"), nil
+	return s.dispatchApprovalNotification(ctx, operationApprovalMap(approval, nil, nil, nil, nil), "pending"), nil
 }
 
 type operationApprovalRule struct {
@@ -19942,89 +18545,124 @@ func defaultOperationApprovalRule() operationApprovalRule {
 	}
 }
 
-func (s *Server) operationApprovalRule(ctx context.Context, db sqlx.ExtContext, resource PolicyResource, action string) (operationApprovalRule, error) {
+func (s *Server) operationApprovalRule(ctx context.Context, db *gorm.DB, resource PolicyResource, action string) (operationApprovalRule, error) {
 	rule := defaultOperationApprovalRule()
-	row, err := queryOne(ctx, db, `
-		SELECT id, required_approver_roles, required_approval_count, expires_after_minutes, notification_channels, escalation_after_minutes, escalation_channels
-		FROM operation_approval_rules
-		WHERE enabled
-			AND action IN ($2, '*')
-			AND resource_type IN ($1, '')
-		ORDER BY
-			priority ASC,
-			(CASE WHEN resource_type=$1 THEN 1 ELSE 0 END + CASE WHEN action=$2 THEN 1 ELSE 0 END) DESC,
-			CASE WHEN resource_type=$1 THEN 0 ELSE 1 END,
-			CASE WHEN action=$2 THEN 0 ELSE 1 END,
-			updated_at DESC
-		LIMIT 1`, resource.Type, action)
-	if errors.Is(err, ErrNotFound) {
-		return rule, nil
-	}
-	if err != nil {
+	var candidates []GormOperationApprovalRule
+	if err := db.WithContext(ctx).Where(&GormOperationApprovalRule{Enabled: true}).Find(&candidates).Error; err != nil {
 		return rule, err
 	}
-	rule.ID = cleanOptionalID(fmt.Sprint(row["id"]))
-	if roles := approvalRolesFromAny(row["required_approver_roles"]); len(roles) > 0 {
+	matched := make([]GormOperationApprovalRule, 0, len(candidates))
+	for _, candidate := range candidates {
+		if (candidate.Action == action || candidate.Action == "*") && (candidate.ResourceType == resource.Type || candidate.ResourceType == "") {
+			matched = append(matched, candidate)
+		}
+	}
+	if len(matched) == 0 {
+		return rule, nil
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		left := matched[i]
+		right := matched[j]
+		if left.Priority != right.Priority {
+			return left.Priority < right.Priority
+		}
+		leftScore := approvalRuleSpecificity(left, resource.Type, action)
+		rightScore := approvalRuleSpecificity(right, resource.Type, action)
+		if leftScore != rightScore {
+			return leftScore > rightScore
+		}
+		if left.ResourceType != right.ResourceType {
+			return left.ResourceType == resource.Type
+		}
+		if left.Action != right.Action {
+			return left.Action == action
+		}
+		return left.UpdatedAt.After(right.UpdatedAt)
+	})
+	selected := matched[0]
+	rule.ID = selected.ID
+	if roles := approvalRolesFromAny([]string(selected.RequiredApproverRoles)); len(roles) > 0 {
 		rule.RequiredApproverRoles = roles
 	}
-	rule.RequiredApprovalCount = requiredApprovalCount(row["required_approval_count"])
-	rule.ExpiresAfterMinutes = intFromAny(row["expires_after_minutes"], rule.ExpiresAfterMinutes)
-	if channels := approvalRolesFromAny(row["notification_channels"]); len(channels) > 0 {
+	rule.RequiredApprovalCount = requiredApprovalCount(selected.RequiredApprovalCount)
+	rule.ExpiresAfterMinutes = selected.ExpiresAfterMinutes
+	if channels := approvalRolesFromAny([]string(selected.NotificationChannels)); len(channels) > 0 {
 		rule.NotificationChannels = channels
 	}
-	rule.EscalationAfterMinutes = intFromAny(row["escalation_after_minutes"], 0)
+	escalation := mapFromAny(selected.EscalationPolicy.Data)
+	rule.EscalationAfterMinutes = intFromAny(escalation["after_minutes"], 0)
 	if rule.EscalationAfterMinutes < 0 {
 		rule.EscalationAfterMinutes = 0
 	}
-	rule.EscalationChannels = approvalRolesFromAny(row["escalation_channels"])
+	rule.EscalationChannels = approvalRolesFromAny(stringSliceFromAny(escalation["channels"]))
 	return rule, nil
 }
 
-func (s *Server) expirePendingOperationApprovals(ctx context.Context, db sqlx.ExtContext) error {
-	items, err := queryMaps(ctx, db, approvalExpirySQL())
-	if err != nil {
+func approvalRuleSpecificity(rule GormOperationApprovalRule, resourceType, action string) int {
+	score := 0
+	if rule.ResourceType == resourceType {
+		score++
+	}
+	if rule.Action == action {
+		score++
+	}
+	return score
+}
+
+func (s *Server) expirePendingOperationApprovalsGorm(ctx context.Context, db *gorm.DB) error {
+	var approvals []GormOperationApproval
+	if err := db.WithContext(ctx).Where(&GormOperationApproval{Status: "pending"}).Find(&approvals).Error; err != nil {
 		return err
 	}
-	if len(items) > 0 {
-		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+	now := time.Now().UTC()
+	expired := make([]map[string]any, 0)
+	for _, approval := range approvals {
+		if !approval.ExpiresAt.Valid || approval.ExpiresAt.Time.After(now) {
+			continue
+		}
+		approval.Status = "expired"
+		approval.ExpiredAt = validNullTime(now)
+		if strings.TrimSpace(approval.DecisionReason) == "" {
+			approval.DecisionReason = "approval expired"
+		}
+		if err := db.WithContext(ctx).Save(&approval).Error; err != nil {
+			return err
+		}
+		expired = append(expired, operationApprovalMap(approval, nil, nil, nil, nil))
+	}
+	if len(expired) > 0 {
+		if _, err := syncCanonicalAssetsGorm(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for expired operation approvals: %w", err)
 		}
 	}
-	for _, item := range items {
+	for _, item := range expired {
 		s.dispatchApprovalNotification(ctx, item, "expired")
 	}
 	return nil
 }
 
-func approvalExpirySQL() string {
-	return `
-		UPDATE operation_approvals
-		SET status='expired',
-			expired_at=now(),
-			decision_reason=COALESCE(NULLIF(decision_reason, ''), 'approval expired'),
-			updated_at=now()
-		WHERE status='pending'
-			AND expires_at IS NOT NULL
-			AND expires_at <= now()
-		RETURNING *`
-}
-
-func (s *Server) expireOperationApprovalByID(ctx context.Context, db sqlx.ExtContext, approvalID string) (map[string]any, error) {
-	item, err := queryOne(ctx, db, `
-		UPDATE operation_approvals
-		SET status='expired',
-			expired_at=now(),
-			decision_reason=COALESCE(NULLIF(decision_reason, ''), 'approval expired'),
-			updated_at=now()
-		WHERE id=$1
-			AND status='pending'
-			AND expires_at IS NOT NULL
-			AND expires_at <= now()
-		RETURNING *`, approvalID)
-	if errors.Is(err, ErrNotFound) {
+func (s *Server) expireOperationApprovalByIDGorm(ctx context.Context, db *gorm.DB, approvalID string) (map[string]any, error) {
+	var approval GormOperationApproval
+	err := db.WithContext(ctx).First(&approval, &GormOperationApproval{GormBase: GormBase{ID: approvalID}}).Error
+	if errorsIsRecordNotFound(err) {
 		return nil, nil
 	}
-	return item, err
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if approval.Status != "pending" || !approval.ExpiresAt.Valid || approval.ExpiresAt.Time.After(now) {
+		return nil, nil
+	}
+	approval.Status = "expired"
+	approval.ExpiredAt = validNullTime(now)
+	if strings.TrimSpace(approval.DecisionReason) == "" {
+		approval.DecisionReason = "approval expired"
+	}
+	if err := db.WithContext(ctx).Save(&approval).Error; err != nil {
+		return nil, err
+	}
+	return operationApprovalMap(approval, nil, nil, nil, nil), nil
 }
 
 func (s *Server) dispatchApprovalNotification(ctx context.Context, approval map[string]any, event string) map[string]any {
@@ -20032,24 +18670,27 @@ func (s *Server) dispatchApprovalNotification(ctx context.Context, approval map[
 		return nil
 	}
 	status, lastError := s.approvalNotificationStatus(ctx, approval, event)
-	updated, err := queryOne(ctx, s.store.DB, `
-		UPDATE operation_approvals
-		SET notification_status=$2,
-			notification_last_error=$3,
-			updated_at=now()
-		WHERE id=$1
-		RETURNING *`, approval["id"], status, lastError)
+	approvalID := cleanOptionalID(fmt.Sprint(approval["id"]))
+	var updatedApproval GormOperationApproval
+	err := s.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where(&GormOperationApproval{GormBase: GormBase{ID: approvalID}}).First(&updatedApproval).Error; err != nil {
+			return err
+		}
+		updatedApproval.NotificationStatus = status
+		updatedApproval.NotificationLastError = lastError
+		return tx.Save(&updatedApproval).Error
+	})
 	if err != nil {
 		return approval
 	}
-	if s.store != nil && s.store.DB != nil {
+	if s.store != nil && s.store.Gorm != nil {
 		// Notification dispatch happens after the approval transaction commits, so this
 		// refresh is intentionally best-effort; the next canonical sync will repair it.
-		if _, syncErr := SyncCanonicalAssetsWith(ctx, s.store.DB); syncErr != nil {
+		if _, syncErr := syncCanonicalAssetsGorm(ctx, s.store.Gorm); syncErr != nil {
 			s.log.Debug("could not sync canonical assets after approval notification", "error", syncErr)
 		}
 	}
-	return updated
+	return operationApprovalMap(updatedApproval, nil, nil, nil, nil)
 }
 
 func (s *Server) approvalNotificationStatus(ctx context.Context, approval map[string]any, event string) (string, string) {
@@ -20234,7 +18875,7 @@ func cleanOptionalText(value string) string {
 	return value
 }
 
-func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, approval map[string]any) (map[string]any, string, error) {
+func (s *Server) executeApprovedOperation(ctx context.Context, tx *gorm.DB, approval map[string]any) (map[string]any, string, error) {
 	payload := mapFromAny(approval["request_payload"])
 	actorID := cleanOptionalID(fmt.Sprint(approval["requested_by"]))
 	if actorID == "" {
@@ -20246,7 +18887,7 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 		if err := decodePayloadField(payload, "request", &req); err != nil {
 			return nil, "", fmt.Errorf("invalid repository tag approval payload")
 		}
-		runs, err := s.enqueueRepositoryTagRuns(ctx, tx, stringFromMap(payload, "repo_id"), req, actorID)
+		runs, err := s.enqueueRepositoryTagRunsGorm(ctx, tx, stringFromMap(payload, "repo_id"), req, actorID)
 		if err != nil {
 			return nil, "", err
 		}
@@ -20256,31 +18897,31 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 		}
 		return map[string]any{"items": runs}, operationRunID, nil
 	case "remote_operation":
-		op, err := s.enqueueRemoteOperationRun(ctx, tx, stringFromMap(payload, "remote_id"), stringFromMap(payload, "tool"), mapFromAny(payload["input"]), actorID)
+		op, err := s.enqueueRemoteOperationRunGorm(ctx, tx, stringFromMap(payload, "remote_id"), stringFromMap(payload, "tool"), mapFromAny(payload["input"]), actorID)
 		if err != nil {
 			return nil, "", err
 		}
 		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "ssh_command":
-		op, run, err := s.enqueueSSHCommandRun(ctx, tx, stringFromMap(payload, "machine_id"), mapFromAny(payload["input"]), actorID, "ssh.exec", "")
+		op, run, err := s.enqueueSSHCommandRunGorm(ctx, tx, stringFromMap(payload, "machine_id"), mapFromAny(payload["input"]), actorID, "ssh.exec", "")
 		if err != nil {
 			return nil, "", err
 		}
 		return map[string]any{"operation": op, "run": run}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "agent_execute":
-		op, err := s.enqueueAgentTaskExecutionTx(ctx, tx, stringFromMap(payload, "agent_task_id"))
+		op, err := s.enqueueAgentTaskExecutionGorm(ctx, tx, stringFromMap(payload, "agent_task_id"))
 		if err != nil {
 			return nil, "", err
 		}
 		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "argo_pod_logs":
-		op, err := s.enqueueArgoPodLogOperationTx(ctx, tx, mapFromAny(payload["input"]))
+		op, err := s.enqueueArgoPodLogOperationGorm(ctx, tx, mapFromAny(payload["input"]))
 		if err != nil {
 			return nil, "", err
 		}
 		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "argo_pod_restart":
-		op, err := s.enqueueArgoPodRestartOperationTx(ctx, tx, mapFromAny(payload["input"]))
+		op, err := s.enqueueArgoPodRestartOperationGorm(ctx, tx, mapFromAny(payload["input"]))
 		if err != nil {
 			return nil, "", err
 		}
@@ -20299,7 +18940,7 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 		if commitPlan["plan_state"] != "planned" {
 			return nil, "", fmt.Errorf("config git workflow is not ready")
 		}
-		op, err := enqueueConfigRepositoryGitWorkflowTx(ctx, tx, projectID, repo, remotes, preview, actorID)
+		op, err := enqueueConfigRepositoryGitWorkflowGorm(ctx, tx, projectID, repo, remotes, preview, actorID)
 		if err != nil {
 			return nil, "", err
 		}
@@ -20313,14 +18954,14 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			"secret_included":          false,
 		}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "operation_cancel":
-		op, err := s.cancelOperationRun(ctx, tx, stringFromMap(payload, "operation_id"))
+		op, err := s.cancelOperationRunGorm(ctx, tx, stringFromMap(payload, "operation_id"))
 		if err != nil {
 			return nil, "", err
 		}
 		return map[string]any{"operation": op}, cleanOptionalID(fmt.Sprint(op["id"])), nil
 	case "project_template_provider_review_execute":
 		request := mapFromAny(payload["execution_request"])
-		starterFilePayload := providerReviewStarterFilePayloadForExecution(ctx, tx, payload)
+		starterFilePayload := s.providerReviewStarterFilePayloadForExecution(ctx, payload)
 		providerAPIRequestPlan := templateProviderReviewAPIRequestPlan(
 			stringFromMap(request, "provider_type"),
 			stringFromMap(request, "review_kind"),
@@ -20356,7 +18997,7 @@ func (s *Server) executeApprovedOperation(ctx context.Context, tx *sqlx.Tx, appr
 			starterFilePayload,
 			reconciliation,
 		)
-		attemptLedger, err := s.recordProviderReviewAttemptLedger(
+		attemptLedger, err := s.recordProviderReviewAttemptLedgerGorm(
 			ctx,
 			tx,
 			cleanOptionalID(fmt.Sprint(approval["id"])),
@@ -20394,7 +19035,7 @@ func decodePayloadField(payload map[string]any, key string, target any) error {
 	return json.Unmarshal(data, target)
 }
 
-func (s *Server) recordProviderReviewAttemptLedger(ctx context.Context, tx *sqlx.Tx, approvalID, runID string, reconciliation map[string]any) (map[string]any, error) {
+func (s *Server) recordProviderReviewAttemptLedgerGorm(ctx context.Context, tx *gorm.DB, approvalID, runID string, reconciliation map[string]any) (map[string]any, error) {
 	summary := providerReviewAttemptLedgerSummary(nil)
 	if tx == nil || approvalID == "" {
 		return summary, nil
@@ -20417,98 +19058,50 @@ func (s *Server) recordProviderReviewAttemptLedger(ctx context.Context, tx *sqlx
 		dependency := providerReviewAttemptDependency(name)
 		requestSummary := providerReviewAttemptRequestSummary(operation, providerReviewExecutionBlueprintOperationForEndpoint(reconciliation, endpointKey))
 		responseDiagnostics := providerReviewAttemptResponseDiagnostics(reconciliation, endpointKey)
-		requestJSON, err := jsonParam(requestSummary)
-		if err != nil {
-			return summary, fmt.Errorf("encoding provider review attempt request summary: %w", err)
+		attempt := GormProviderReviewAttempt{
+			OperationApprovalID:    approvalID,
+			ProjectTemplateRunID:   validNullString(projectTemplateRunID),
+			ProviderType:           provider,
+			ReviewKind:             reviewKind,
+			OperationName:          name,
+			EndpointKey:            endpointKey,
+			Status:                 "planned",
+			ReplayCheck:            cleanOptionalText(stringFromMap(operation, "replay_check")),
+			ConflictPolicy:         cleanOptionalText(stringFromMap(operation, "conflict_policy")),
+			RetryPolicy:            cleanOptionalText(stringFromMap(operation, "retry_policy")),
+			OperationOrder:         intFromAny(dependency["operation_order"], 0),
+			DependsOnOperation:     cleanOptionalText(fmt.Sprint(dependency["depends_on_operation"])),
+			DependencyStatus:       cleanOptionalText(fmt.Sprint(dependency["dependency_status"])),
+			IdempotencyKeyKind:     "operation_scope_hash",
+			IdempotencyKeyHash:     "",
+			IdempotencyKeyMaterial: JSONValue{Data: map[string]any{"material": "redacted_required_material_only"}},
+			RequestSummary:         JSONValue{Data: requestSummary},
+			ResponseDiagnostics:    JSONValue{Data: responseDiagnostics},
+			ProviderAPICallMade:    false,
+			ProviderAPIMutation:    "disabled",
+			ExternalCallMade:       false,
 		}
-		responseJSON, err := jsonParam(responseDiagnostics)
-		if err != nil {
-			return summary, fmt.Errorf("encoding provider review attempt response diagnostics: %w", err)
-		}
-		idempotencyJSON, err := jsonParam(map[string]any{"material": "redacted_required_material_only"})
-		if err != nil {
-			return summary, fmt.Errorf("encoding provider review attempt idempotency material: %w", err)
-		}
-		attempt, err := queryOne(ctx, tx, `
-			INSERT INTO provider_review_attempts(
-				operation_approval_id,
-				project_template_run_id,
-				provider_type,
-				review_kind,
-				operation_name,
-				endpoint_key,
-				status,
-				replay_check,
-				conflict_policy,
-				retry_policy,
-				operation_order,
-				depends_on_operation,
-				dependency_status,
-				idempotency_key_kind,
-				idempotency_key_hash,
-				idempotency_key_material,
-				request_summary,
-				response_diagnostics,
-				provider_api_call_made,
-				provider_api_mutation,
-				external_call_made
-			)
-			VALUES (
-				$1,
-				NULLIF($2,'')::uuid,
-				$3,
-				$4,
-				$5,
-				$6,
-				'planned',
-				$7,
-				$8,
-				$9,
-				$10,
-				$11,
-				$12,
-				'operation_scope_hash',
-				'',
-				$13::jsonb,
-				$14::jsonb,
-				$15::jsonb,
-				false,
-				'disabled',
-				false
-			)
-			ON CONFLICT (operation_approval_id, operation_name) DO UPDATE
-			SET endpoint_key=EXCLUDED.endpoint_key,
-				status=EXCLUDED.status,
-				replay_check=EXCLUDED.replay_check,
-				conflict_policy=EXCLUDED.conflict_policy,
-				retry_policy=EXCLUDED.retry_policy,
-				operation_order=EXCLUDED.operation_order,
-				depends_on_operation=EXCLUDED.depends_on_operation,
-				dependency_status=EXCLUDED.dependency_status,
-				request_summary=EXCLUDED.request_summary,
-				response_diagnostics=EXCLUDED.response_diagnostics,
-				updated_at=now()
-			RETURNING id, operation_name, endpoint_key, status, replay_check, conflict_policy, retry_policy, operation_order, depends_on_operation, dependency_status, request_summary, response_diagnostics, provider_api_call_made, provider_api_mutation, external_call_made`,
-			approvalID,
-			projectTemplateRunID,
-			provider,
-			reviewKind,
-			name,
-			endpointKey,
-			cleanOptionalText(stringFromMap(operation, "replay_check")),
-			cleanOptionalText(stringFromMap(operation, "conflict_policy")),
-			cleanOptionalText(stringFromMap(operation, "retry_policy")),
-			dependency["operation_order"],
-			dependency["depends_on_operation"],
-			dependency["dependency_status"],
-			idempotencyJSON,
-			requestJSON,
-			responseJSON,
-		)
-		if err != nil {
+		if err := tx.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "operation_approval_id"}, {Name: "operation_name"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"endpoint_key":         attempt.EndpointKey,
+				"status":               attempt.Status,
+				"replay_check":         attempt.ReplayCheck,
+				"conflict_policy":      attempt.ConflictPolicy,
+				"retry_policy":         attempt.RetryPolicy,
+				"operation_order":      attempt.OperationOrder,
+				"depends_on_operation": attempt.DependsOnOperation,
+				"dependency_status":    attempt.DependencyStatus,
+				"request_summary":      attempt.RequestSummary,
+				"response_diagnostics": attempt.ResponseDiagnostics,
+			}),
+		}).Create(&attempt).Error; err != nil {
 			return summary, fmt.Errorf("recording provider review attempt: %w", err)
 		}
-		attempts = append(attempts, attempt)
+		if err := tx.WithContext(ctx).Where(&GormProviderReviewAttempt{OperationApprovalID: approvalID, OperationName: name}).First(&attempt).Error; err != nil {
+			return summary, fmt.Errorf("loading provider review attempt: %w", err)
+		}
+		attempts = append(attempts, providerReviewAttemptMap(attempt, nil))
 	}
 	return providerReviewAttemptLedgerSummary(attempts), nil
 }
@@ -22736,38 +21329,39 @@ func safeProviderReviewAttemptDependencyName(value string) string {
 }
 
 func (s *Server) getOperation(w http.ResponseWriter, r *http.Request) {
-	item, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM operation_runs WHERE id=$1", chi.URLParam(r, "id"))
+	item, err := operationRunByID(r.Context(), s.store.Gorm, chi.URLParam(r, "id"))
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	if !s.requireOperationRead(w, r, item) {
+	itemMap := operationRunMap(item)
+	if !s.requireOperationRead(w, r, itemMap) {
 		return
 	}
-	writeQueryOne(w, item, err)
+	writeQueryOne(w, itemMap, nil)
 }
 
 func (s *Server) getOperationLogs(w http.ResponseWriter, r *http.Request) {
-	op, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM operation_runs WHERE id=$1", chi.URLParam(r, "id"))
+	op, err := operationRunByID(r.Context(), s.store.Gorm, chi.URLParam(r, "id"))
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	if !s.requireOperationRead(w, r, op) {
+	if !s.requireOperationRead(w, r, operationRunMap(op)) {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, "SELECT * FROM operation_logs WHERE operation_run_id=$1 ORDER BY created_at", chi.URLParam(r, "id"))
+	items, err := operationLogMaps(r.Context(), s.store.Gorm, chi.URLParam(r, "id"), operationLogCursor{}, false)
 	writeQueryResult(w, items, err)
 }
 
 func (s *Server) streamOperationLogs(w http.ResponseWriter, r *http.Request) {
 	opID := chi.URLParam(r, "id")
-	op, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	op, err := operationRunByID(r.Context(), s.store.Gorm, opID)
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	if !s.requireOperationRead(w, r, op) {
+	if !s.requireOperationRead(w, r, operationRunMap(op)) {
 		return
 	}
 	flusher, ok := w.(http.Flusher)
@@ -22826,7 +21420,7 @@ type operationLogCursor struct {
 }
 
 func (s *Server) writeOperationLogStreamTick(ctx context.Context, w io.Writer, opID string, cursor *operationLogCursor) (bool, error) {
-	items, err := operationLogStreamBatch(ctx, s.store.DB, opID, *cursor)
+	items, err := operationLogStreamBatch(ctx, s.store.Gorm, opID, *cursor)
 	if err != nil {
 		return false, fmt.Errorf("loading operation logs: %w", err)
 	}
@@ -22838,7 +21432,7 @@ func (s *Server) writeOperationLogStreamTick(ctx context.Context, w io.Writer, o
 		cursor.CreatedAt = operationLogCursorTime(item["created_at"])
 		cursor.ID = strings.TrimSpace(fmt.Sprint(item["id"]))
 	}
-	status, err := operationStatus(ctx, s.store.DB, opID)
+	status, err := operationStatus(ctx, s.store.Gorm, opID)
 	if err != nil {
 		return false, fmt.Errorf("loading operation status: %w", err)
 	}
@@ -22905,30 +21499,72 @@ func operationLogStreamShouldClose(status string, batchSize, limit int) bool {
 	return operationStreamTerminal(status) && batchSize < limit
 }
 
-func operationLogStreamBatch(ctx context.Context, db sqlx.ExtContext, opID string, cursor operationLogCursor) ([]map[string]any, error) {
-	if cursor.CreatedAt == "" || cursor.ID == "" {
-		return queryMaps(ctx, db, `
-			SELECT id, operation_run_id, worker_job_id, level, message, fields, created_at
-			FROM operation_logs
-			WHERE operation_run_id=$1
-			ORDER BY created_at, id
-			LIMIT $2`, opID, operationLogStreamBatchLimit)
-	}
-	return queryMaps(ctx, db, `
-		SELECT id, operation_run_id, worker_job_id, level, message, fields, created_at
-		FROM operation_logs
-		WHERE operation_run_id=$1
-			AND (created_at > $2::timestamptz OR (created_at = $2::timestamptz AND id::text > $3))
-		ORDER BY created_at, id
-		LIMIT $4`, opID, cursor.CreatedAt, cursor.ID, operationLogStreamBatchLimit)
+func operationLogStreamBatch(ctx context.Context, db *gorm.DB, opID string, cursor operationLogCursor) ([]map[string]any, error) {
+	return operationLogMaps(ctx, db, opID, cursor, true)
 }
 
-func operationStatus(ctx context.Context, db sqlx.ExtContext, opID string) (string, error) {
-	var status string
-	if err := sqlx.GetContext(ctx, db, &status, "SELECT status FROM operation_runs WHERE id=$1", opID); err != nil {
+func operationStatus(ctx context.Context, db *gorm.DB, opID string) (string, error) {
+	var run GormOperationRun
+	if err := db.WithContext(ctx).First(&run, &GormOperationRun{GormBase: GormBase{ID: opID}}).Error; err != nil {
 		return "", err
 	}
-	return status, nil
+	return run.Status, nil
+}
+
+func operationRunMap(run GormOperationRun) map[string]any {
+	return map[string]any{
+		"id":             run.ID,
+		"project_id":     nullableStringValue(run.ProjectID),
+		"git_remote_id":  nullableStringValue(run.GitRemoteID),
+		"operation_type": run.OperationType,
+		"status":         run.Status,
+		"title":          run.Title,
+		"input":          mapFromAny(run.Input.Data),
+		"result":         mapFromAny(run.Result.Data),
+		"error":          run.Error,
+		"started_at":     nullableTimeAny(run.StartedAt),
+		"finished_at":    nullableTimeAny(run.FinishedAt),
+		"created_at":     run.CreatedAt,
+		"updated_at":     run.UpdatedAt,
+	}
+}
+
+func operationLogMaps(ctx context.Context, db *gorm.DB, opID string, cursor operationLogCursor, limited bool) ([]map[string]any, error) {
+	var logs []GormOperationLog
+	query := db.WithContext(ctx).
+		Where(&GormOperationLog{OperationRunID: validNullString(opID)}).
+		Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}}, {Column: clause.Column{Name: "id"}}}})
+	if err := query.Find(&logs).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(logs))
+	for _, log := range logs {
+		if limited && !operationLogAfterCursor(log, cursor) {
+			continue
+		}
+		items = append(items, operationLogMap(log))
+		if limited && len(items) >= operationLogStreamBatchLimit {
+			break
+		}
+	}
+	return items, nil
+}
+
+func operationLogAfterCursor(log GormOperationLog, cursor operationLogCursor) bool {
+	if cursor.CreatedAt == "" || cursor.ID == "" {
+		return true
+	}
+	cursorTime, err := time.Parse(time.RFC3339Nano, cursor.CreatedAt)
+	if err != nil {
+		return true
+	}
+	if log.CreatedAt.After(cursorTime) {
+		return true
+	}
+	if log.CreatedAt.Equal(cursorTime) && log.ID > cursor.ID {
+		return true
+	}
+	return false
 }
 
 func operationStreamTerminal(status string) bool {
@@ -22973,61 +21609,67 @@ func (s *Server) requireOperationRead(w http.ResponseWriter, r *http.Request, op
 
 func (s *Server) cancelOperation(w http.ResponseWriter, r *http.Request) {
 	opID := chi.URLParam(r, "id")
-	op, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	op, err := operationRunByID(r.Context(), s.store.Gorm, opID)
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := strings.TrimSpace(fmt.Sprint(op["project_id"]))
+	opMap := operationRunMap(op)
+	projectID := strings.TrimSpace(fmt.Sprint(opMap["project_id"]))
 	resource := PolicyResource{Type: "operation", ID: opID, ProjectID: projectID}
 	payload := map[string]any{"kind": "operation_cancel", "operation_id": opID}
 	if projectID != "" && projectID != "<nil>" {
-		if !s.requireProjectPolicyOrApproval(w, r, resource, "operation.cancel", "cancel "+fmt.Sprint(op["title"]), payload) {
+		if !s.requireProjectPolicyOrApproval(w, r, resource, "operation.cancel", "cancel "+op.Title, payload) {
 			return
 		}
-	} else if !s.requirePolicyOrApproval(w, r, resource, "operation.cancel", "cancel "+fmt.Sprint(op["title"]), payload) {
+	} else if !s.requirePolicyOrApproval(w, r, resource, "operation.cancel", "cancel "+op.Title, payload) {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	var item map[string]any
+	err = s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		item, err = s.cancelOperationRunGorm(r.Context(), tx, opID)
+		if err != nil {
+			return err
+		}
+		if _, err := syncCanonicalAssetsGorm(r.Context(), tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for operation cancel: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start operation cancel transaction")
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	defer tx.Rollback()
-	item, err := s.cancelOperationRun(r.Context(), tx, opID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "operation.cancel") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit operation cancel")
-		return
-	}
-	writeQueryOne(w, item, err)
+	writeQueryOne(w, item, nil)
 }
 
-func (s *Server) cancelOperationRun(ctx context.Context, db sqlx.ExtContext, operationID string) (map[string]any, error) {
-	item, err := queryOne(ctx, db, `
-		UPDATE operation_runs SET status='canceled', finished_at=now(), updated_at=now()
-		WHERE id=$1
-			AND status NOT IN ('completed', 'failed', 'canceled', 'cancelled')
-		RETURNING *`, operationID)
-	if err != nil {
+func (s *Server) cancelOperationRunGorm(ctx context.Context, db *gorm.DB, operationID string) (map[string]any, error) {
+	var run GormOperationRun
+	if err := db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).First(&run, &GormOperationRun{GormBase: GormBase{ID: operationID}}).Error; err != nil {
 		return nil, err
 	}
-	if _, err := db.ExecContext(ctx, `
-		UPDATE worker_jobs
-		SET status='canceled',
-			finished_at=now(),
-			updated_at=now()
-		WHERE operation_run_id=$1
-			AND status='queued'`, operationID); err != nil {
+	if operationStreamTerminal(run.Status) {
+		return nil, ErrNotFound
+	}
+	now := time.Now().UTC()
+	run.Status = "canceled"
+	run.FinishedAt = validNullTime(now)
+	if err := db.WithContext(ctx).Save(&run).Error; err != nil {
 		return nil, err
 	}
-	return item, nil
+	var jobs []GormWorkerJob
+	if err := db.WithContext(ctx).Where(&GormWorkerJob{OperationRunID: validNullString(operationID), Status: "queued"}).Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	for i := range jobs {
+		jobs[i].Status = "canceled"
+		jobs[i].FinishedAt = validNullTime(now)
+		if err := db.WithContext(ctx).Save(&jobs[i]).Error; err != nil {
+			return nil, err
+		}
+	}
+	return operationRunMap(run), nil
 }
 
 func (s *Server) createNodeTestJob(w http.ResponseWriter, r *http.Request) {
@@ -23044,13 +21686,24 @@ func (s *Server) createNodeTestJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listAIRuntimes(w http.ResponseWriter, r *http.Request) {
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT ar.*, cc.name AS credential_name, cc.kind AS credential_kind,
-			(cc.secret_ciphertext <> '') AS credential_configured
-		FROM ai_runtimes ar
-		LEFT JOIN connection_credentials cc ON cc.id=ar.credential_id
-		ORDER BY ar.created_at DESC`)
-	writeQueryResult(w, sanitizeAIRuntimes(items), err)
+	var runtimes []GormAIRuntime
+	err := s.store.Gorm.WithContext(r.Context()).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true}).
+		Find(&runtimes).Error
+	if err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	credentials, err := s.connectionCredentialsForRuntimes(r.Context(), runtimes)
+	if err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		items = append(items, aiRuntimeMap(runtime, credentials[runtime.CredentialID.String]))
+	}
+	writeQueryResult(w, items, nil)
 }
 
 func (s *Server) createAIRuntime(w http.ResponseWriter, r *http.Request) {
@@ -23084,79 +21737,63 @@ func (s *Server) createAIRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "api_base_url must be a public http or https URL")
 		return
 	}
-	config, err := jsonParam(sanitizeAIRuntimeConfig(req.Config))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "config must be valid JSON")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start AI runtime transaction")
-		return
-	}
-	defer tx.Rollback()
-	var credential map[string]any
+	config := sanitizeAIRuntimeConfig(req.Config)
+	var credential *GormConnectionCredential
+	var err error
 	if credentialID != "" {
-		credential, err = requireConnectionCredentialForProjectOrGlobal(r.Context(), tx, req.ProjectID, credentialID, "ai_provider_api_key")
+		credential, err = s.connectionCredentialForProjectOrGlobal(r.Context(), req.ProjectID, credentialID, "ai_provider_api_key")
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "credential_id must reference an AI provider API key credential in this project or globally")
 			return
 		}
 	}
-	credentialArg := nullableIDArg(credentialID)
-	item, err := queryOne(r.Context(), tx, `
-		WITH inserted AS (
-			INSERT INTO ai_runtimes(project_id, name, runtime_type, codex_binary, provider_type, api_base_url, credential_id, model, config)
-			VALUES (NULLIF($1,'')::uuid, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
-			RETURNING *
-		)
-		SELECT inserted.*, $10::text AS credential_name, $11::text AS credential_kind,
-			($7::uuid IS NOT NULL) AS credential_configured
-		FROM inserted`, req.ProjectID, req.Name, req.RuntimeType, req.CodexBinary, req.ProviderType, req.APIBaseURL, credentialArg, req.Model, config, credentialText(credential, "name"), credentialText(credential, "kind"))
-	if err != nil {
+	runtime := GormAIRuntime{
+		ProjectID:    validNullString(cleanOptionalID(req.ProjectID)),
+		Name:         cleanOptionalText(req.Name),
+		RuntimeType:  req.RuntimeType,
+		CodexBinary:  req.CodexBinary,
+		ProviderType: req.ProviderType,
+		APIBaseURL:   req.APIBaseURL,
+		CredentialID: validNullString(credentialID),
+		Model:        strings.TrimSpace(req.Model),
+		Config:       JSONValue{Data: config},
+		Status:       "unknown",
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Create(&runtime).Error; err != nil {
 		writeError(w, http.StatusBadRequest, "could not create AI runtime")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ai_runtime.create") {
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync AI runtime asset")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit AI runtime")
-		return
-	}
-	writeJSON(w, http.StatusCreated, sanitizeAIRuntime(item))
+	writeJSON(w, http.StatusCreated, aiRuntimeMap(runtime, credential))
 }
 
 func (s *Server) verifyAIRuntime(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "ai_runtime", ID: chi.URLParam(r, "id")}, "update") {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
+	var runtime GormAIRuntime
+	if err := s.store.Gorm.WithContext(r.Context()).Where(map[string]any{"id": chi.URLParam(r, "id")}).First(&runtime).Error; err != nil {
+		writeQueryOne(w, nil, err)
+		return
+	}
+	runtime.Status = "verified"
+	if err := s.store.Gorm.WithContext(r.Context()).Save(&runtime).Error; err != nil {
+		writeError(w, http.StatusBadRequest, "could not verify AI runtime")
+		return
+	}
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync AI runtime asset")
+		return
+	}
+	credential, err := s.connectionCredentialByID(r.Context(), runtime.CredentialID.String)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start AI runtime verification transaction")
+		writeQueryOne(w, nil, err)
 		return
 	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		WITH updated AS (
-			UPDATE ai_runtimes SET status='verified', updated_at=now() WHERE id=$1 RETURNING *
-		)
-		SELECT updated.*, cc.name AS credential_name, cc.kind AS credential_kind,
-			(cc.secret_ciphertext <> '') AS credential_configured
-		FROM updated
-		LEFT JOIN connection_credentials cc ON cc.id=updated.credential_id`, chi.URLParam(r, "id"))
-	if err != nil {
-		writeQueryOne(w, item, err)
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ai_runtime.verify") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit AI runtime verification")
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeAIRuntime(item))
+	writeJSON(w, http.StatusOK, aiRuntimeMap(runtime, credential))
 }
 
 func cleanAIProviderType(value string) string {
@@ -23203,6 +21840,553 @@ func sanitizeAIRuntimeConfig(config map[string]any) map[string]any {
 	return out
 }
 
+func aiRuntimeMap(runtime GormAIRuntime, credential *GormConnectionCredential) map[string]any {
+	item := map[string]any{
+		"id":                 runtime.ID,
+		"project_id":         nullableStringValue(runtime.ProjectID),
+		"name":               runtime.Name,
+		"runtime_type":       runtime.RuntimeType,
+		"codex_binary":       runtime.CodexBinary,
+		"provider_type":      runtime.ProviderType,
+		"api_base_url":       runtime.APIBaseURL,
+		"credential_id":      nullableStringValue(runtime.CredentialID),
+		"model":              runtime.Model,
+		"config":             sanitizeAIRuntimeConfig(mapFromAny(runtime.Config.Data)),
+		"status":             runtime.Status,
+		"created_at":         runtime.CreatedAt,
+		"updated_at":         runtime.UpdatedAt,
+		"api_key_configured": false,
+	}
+	if credential != nil {
+		item["credential_name"] = credential.Name
+		item["credential_kind"] = credential.Kind
+		item["credential_configured"] = credential.SecretCiphertext != ""
+		item["api_key_configured"] = credential.SecretCiphertext != ""
+	} else {
+		item["credential_configured"] = false
+	}
+	return item
+}
+
+func nullableStringValue(value sql.NullString) any {
+	if !value.Valid || cleanOptionalText(value.String) == "" {
+		return nil
+	}
+	return value.String
+}
+
+func (s *Server) connectionCredentialsForRuntimes(ctx context.Context, runtimes []GormAIRuntime) (map[string]*GormConnectionCredential, error) {
+	ids := make([]string, 0, len(runtimes))
+	seen := map[string]bool{}
+	for _, runtime := range runtimes {
+		id := cleanOptionalID(runtime.CredentialID.String)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return map[string]*GormConnectionCredential{}, nil
+	}
+	var credentials []GormConnectionCredential
+	if err := s.store.Gorm.WithContext(ctx).Find(&credentials, ids).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]*GormConnectionCredential, len(credentials))
+	for i := range credentials {
+		credential := credentials[i]
+		out[credential.ID] = &credential
+	}
+	return out, nil
+}
+
+func (s *Server) projectByIDGorm(ctx context.Context, projectID string) (GormProject, error) {
+	projectID = cleanOptionalID(projectID)
+	if projectID == "" {
+		return GormProject{}, ErrNotFound
+	}
+	var project GormProject
+	err := s.store.Gorm.WithContext(ctx).Where(map[string]any{"id": projectID}).First(&project).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return project, ErrNotFound
+	}
+	return project, err
+}
+
+func projectVersionMap(version GormProjectVersion) map[string]any {
+	return map[string]any{"id": version.ID, "project_id": version.ProjectID, "version": version.Version, "source": version.Source, "metadata": mapFromAny(version.Metadata.Data), "created_at": version.CreatedAt}
+}
+
+func projectVersionMaps(versions []GormProjectVersion) []map[string]any {
+	items := make([]map[string]any, 0, len(versions))
+	for _, version := range versions {
+		items = append(items, projectVersionMap(version))
+	}
+	return items
+}
+
+func projectVersionRemoteMapsGorm(ctx context.Context, db *gorm.DB, projectID string) ([]map[string]any, error) {
+	var repos []GormProjectGitRepository
+	if err := db.WithContext(ctx).Where(&GormProjectGitRepository{ProjectID: projectID}).Find(&repos).Error; err != nil {
+		return nil, err
+	}
+	repoByID := make(map[string]GormProjectGitRepository, len(repos))
+	repoIDs := make([]string, 0, len(repos))
+	for _, repo := range repos {
+		repoByID[repo.ID] = repo
+		repoIDs = append(repoIDs, repo.ID)
+	}
+	if len(repoIDs) == 0 {
+		return []map[string]any{}, nil
+	}
+	var remotes []GormGitRemote
+	if err := db.WithContext(ctx).Where(map[string]any{"project_git_repository_id": repoIDs}).Find(&remotes).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(remotes))
+	for _, remote := range remotes {
+		repo := repoByID[remote.ProjectGitRepositoryID]
+		items = append(items, map[string]any{"id": remote.ID, "remote_key": remote.RemoteKey, "provider_type": remote.ProviderType, "latest_sha": remote.LatestSHA, "default_branch": remote.DefaultBranch, "repo_key": repo.RepoKey, "repo_role": repo.RepoRole, "repository_name": repo.Name, "project_id": repo.ProjectID, "repository_id": repo.ID, "repository_status": repo.Status})
+	}
+	return items, nil
+}
+
+func projectVersionTagRunMapsGorm(ctx context.Context, db *gorm.DB, projectID string) ([]map[string]any, error) {
+	var runs []GormRepoTagRun
+	if err := db.WithContext(ctx).Where(&GormRepoTagRun{ProjectID: validNullString(projectID)}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}, Desc: true}}}).Limit(500).Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(runs))
+	for _, run := range runs {
+		items = append(items, map[string]any{"id": run.ID, "project_git_repository_id": nullableStringValue(run.ProjectGitRepositoryID), "target_remote_id": nullableStringValue(run.TargetRemoteID), "git_remote_id": run.GitRemoteID, "tag_name": run.TagName, "target_sha": run.TargetSHA, "status": run.Status, "created_at": run.CreatedAt, "finished_at": nullableTimeAny(run.FinishedAt)})
+	}
+	return items, nil
+}
+
+func projectVersionActionRunMapsGorm(ctx context.Context, db *gorm.DB, projectID string) ([]map[string]any, error) {
+	remotes, err := projectVersionRemoteMapsGorm(ctx, db, projectID)
+	if err != nil {
+		return nil, err
+	}
+	remoteIDs := make([]string, 0, len(remotes))
+	for _, remote := range remotes {
+		if remoteID := cleanOptionalID(fmt.Sprint(remote["id"])); remoteID != "" {
+			remoteIDs = append(remoteIDs, remoteID)
+		}
+	}
+	if len(remoteIDs) == 0 {
+		return []map[string]any{}, nil
+	}
+	var runs []GormGitHubActionRun
+	if err := db.WithContext(ctx).Where(map[string]any{"git_remote_id": remoteIDs}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "updated_at"}, Desc: true}}}).Limit(500).Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(runs))
+	for _, run := range runs {
+		items = append(items, map[string]any{"id": run.ID, "git_remote_id": run.GitRemoteID, "run_id": run.RunID, "workflow_name": run.WorkflowName, "branch": run.Branch, "commit_sha": run.CommitSHA, "status": run.Status, "conclusion": run.Conclusion, "started_at": nullableTimeAny(run.StartedAt), "updated_at": nullableTimeAny(run.UpdatedAt)})
+	}
+	return items, nil
+}
+
+func projectVersionArgoAppMapsGorm(ctx context.Context, db *gorm.DB, projectID string) ([]map[string]any, error) {
+	var apps []GormArgoApp
+	if err := db.WithContext(ctx).Where(&GormArgoApp{ProjectID: projectID}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "updated_at"}, Desc: true}}}).Limit(500).Find(&apps).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(apps))
+	for _, app := range apps {
+		items = append(items, map[string]any{"id": app.ID, "name": app.Name, "namespace": app.Namespace, "status": app.Status, "metadata": mapFromAny(app.Metadata.Data), "synced_at": nullableTimeAny(app.SyncedAt), "updated_at": app.UpdatedAt})
+	}
+	return items, nil
+}
+
+func projectVersionArgoConnectionMapsGorm(ctx context.Context, db *gorm.DB, projectID string) ([]map[string]any, error) {
+	var connections []GormArgoConnection
+	if err := db.WithContext(ctx).Where(&GormArgoConnection{ProjectID: projectID}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "updated_at"}, Desc: true}}}).Limit(100).Find(&connections).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(connections))
+	for _, connection := range connections {
+		items = append(items, map[string]any{"id": connection.ID, "name": connection.Name, "last_sync_status": connection.LastSyncStatus})
+	}
+	return items, nil
+}
+
+func projectMaps(projects []GormProject) []map[string]any {
+	items := make([]map[string]any, 0, len(projects))
+	for _, project := range projects {
+		items = append(items, projectMap(project))
+	}
+	return items
+}
+
+func projectMap(project GormProject) map[string]any {
+	return map[string]any{
+		"id":          project.ID,
+		"name":        project.Name,
+		"slug":        project.Slug,
+		"description": project.Description,
+		"created_at":  project.CreatedAt,
+		"updated_at":  project.UpdatedAt,
+	}
+}
+
+func (s *Server) gitRepositoryByIDGorm(ctx context.Context, repoID string) (GormProjectGitRepository, error) {
+	repoID = cleanOptionalID(repoID)
+	if repoID == "" {
+		return GormProjectGitRepository{}, ErrNotFound
+	}
+	var repo GormProjectGitRepository
+	err := s.store.Gorm.WithContext(ctx).Where(map[string]any{"id": repoID}).First(&repo).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return repo, ErrNotFound
+	}
+	return repo, err
+}
+
+func gitRepositoryMaps(repos []GormProjectGitRepository) []map[string]any {
+	items := make([]map[string]any, 0, len(repos))
+	for _, repo := range repos {
+		items = append(items, gitRepositoryMap(repo))
+	}
+	return items
+}
+
+func gitRepositoryMap(repo GormProjectGitRepository) map[string]any {
+	return map[string]any{
+		"id":             repo.ID,
+		"project_id":     repo.ProjectID,
+		"name":           repo.Name,
+		"repo_key":       repo.RepoKey,
+		"display_name":   repo.DisplayName,
+		"repo_role":      repo.RepoRole,
+		"status":         repo.Status,
+		"description":    repo.Description,
+		"default_branch": repo.DefaultBranch,
+		"created_at":     repo.CreatedAt,
+		"updated_at":     repo.UpdatedAt,
+	}
+}
+
+func applyGitRepositoryPatch(repo *GormProjectGitRepository, req struct {
+	Name          *string `json:"name"`
+	RepoKey       *string `json:"repo_key"`
+	DisplayName   *string `json:"display_name"`
+	RepoRole      *string `json:"repo_role"`
+	Status        *string `json:"status"`
+	Description   *string `json:"description"`
+	DefaultBranch *string `json:"default_branch"`
+}) {
+	if req.Name != nil && strings.TrimSpace(*req.Name) != "" {
+		repo.Name = strings.TrimSpace(*req.Name)
+	}
+	if req.RepoKey != nil && strings.TrimSpace(*req.RepoKey) != "" {
+		repo.RepoKey = strings.TrimSpace(*req.RepoKey)
+	}
+	if req.DisplayName != nil {
+		repo.DisplayName = *req.DisplayName
+	}
+	if req.RepoRole != nil && strings.TrimSpace(*req.RepoRole) != "" {
+		repo.RepoRole = strings.TrimSpace(*req.RepoRole)
+	}
+	if req.Status != nil && strings.TrimSpace(*req.Status) != "" {
+		repo.Status = strings.TrimSpace(*req.Status)
+	}
+	if req.Description != nil {
+		repo.Description = *req.Description
+	}
+	if req.DefaultBranch != nil && strings.TrimSpace(*req.DefaultBranch) != "" {
+		repo.DefaultBranch = strings.TrimSpace(*req.DefaultBranch)
+	}
+}
+
+func (s *Server) projectIDForRepositoryGorm(ctx context.Context, repoID string) (string, error) {
+	repoID = cleanOptionalID(repoID)
+	if repoID == "" {
+		return "", ErrNotFound
+	}
+	var repo GormProjectGitRepository
+	err := s.store.Gorm.WithContext(ctx).Where(map[string]any{"id": repoID}).First(&repo).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if cleanOptionalID(repo.ProjectID) == "" {
+		return "", ErrNotFound
+	}
+	return repo.ProjectID, nil
+}
+
+func (s *Server) gitRemoteWithProjectGorm(ctx context.Context, remoteID string) (GormGitRemote, string, error) {
+	remoteID = cleanOptionalID(remoteID)
+	if remoteID == "" {
+		return GormGitRemote{}, "", ErrNotFound
+	}
+	var remote GormGitRemote
+	err := s.store.Gorm.WithContext(ctx).Where(map[string]any{"id": remoteID}).First(&remote).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return remote, "", ErrNotFound
+	}
+	if err != nil {
+		return remote, "", err
+	}
+	projectID, err := s.projectIDForRepositoryGorm(ctx, remote.ProjectGitRepositoryID)
+	return remote, projectID, err
+}
+
+func (s *Server) connectionCredentialsForGitRemotes(ctx context.Context, remotes []GormGitRemote) (map[string]*GormConnectionCredential, error) {
+	ids := make([]string, 0, len(remotes))
+	seen := map[string]bool{}
+	for _, remote := range remotes {
+		id := cleanOptionalID(remote.CredentialID.String)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return map[string]*GormConnectionCredential{}, nil
+	}
+	var credentials []GormConnectionCredential
+	if err := s.store.Gorm.WithContext(ctx).Find(&credentials, ids).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]*GormConnectionCredential, len(credentials))
+	for i := range credentials {
+		credential := credentials[i]
+		out[credential.ID] = &credential
+	}
+	return out, nil
+}
+
+func (s *Server) connectionCredentialsForArgoConnections(ctx context.Context, connections []GormArgoConnection) (map[string]*GormConnectionCredential, error) {
+	ids := make([]string, 0, len(connections))
+	seen := map[string]bool{}
+	for _, connection := range connections {
+		id := cleanOptionalID(connection.CredentialID.String)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return s.connectionCredentialsByIDs(ctx, ids)
+}
+
+func argoConnectionMaps(connections []GormArgoConnection, credentials map[string]*GormConnectionCredential) []map[string]any {
+	items := make([]map[string]any, 0, len(connections))
+	for _, connection := range connections {
+		items = append(items, argoConnectionMap(connection, credentials[connection.CredentialID.String]))
+	}
+	return items
+}
+
+func argoConnectionMap(connection GormArgoConnection, credential *GormConnectionCredential) map[string]any {
+	item := map[string]any{
+		"id":                    connection.ID,
+		"project_id":            connection.ProjectID,
+		"name":                  connection.Name,
+		"server_url":            connection.ServerURL,
+		"auth_type":             connection.AuthType,
+		"credential_id":         nullableStringValue(connection.CredentialID),
+		"config":                mapFromAny(connection.Config.Data),
+		"last_sync_status":      connection.LastSyncStatus,
+		"last_sync_error":       connection.LastSyncError,
+		"created_at":            connection.CreatedAt,
+		"updated_at":            connection.UpdatedAt,
+		"credential_configured": false,
+	}
+	if credential != nil {
+		item["credential_name"] = credential.Name
+		item["credential_kind"] = credential.Kind
+		item["credential_configured"] = credential.SecretCiphertext != ""
+	}
+	return item
+}
+
+func (s *Server) connectionCredentialsForSSHMachine(ctx context.Context, machines []GormSSHMachine) (map[string]*GormConnectionCredential, error) {
+	ids := make([]string, 0, len(machines))
+	seen := map[string]bool{}
+	for _, machine := range machines {
+		id := cleanOptionalID(machine.CredentialID.String)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return s.connectionCredentialsByIDs(ctx, ids)
+}
+
+func sshMachineMaps(machines []GormSSHMachine, credentials map[string]*GormConnectionCredential) []map[string]any {
+	items := make([]map[string]any, 0, len(machines))
+	for _, machine := range machines {
+		items = append(items, sshMachineMap(machine, credentials[machine.CredentialID.String]))
+	}
+	return items
+}
+
+func sshMachineMap(machine GormSSHMachine, credential *GormConnectionCredential) map[string]any {
+	item := map[string]any{
+		"id":                    machine.ID,
+		"project_id":            machine.ProjectID,
+		"name":                  machine.Name,
+		"host":                  machine.Host,
+		"port":                  machine.Port,
+		"username":              machine.Username,
+		"auth_type":             machine.AuthType,
+		"credential_id":         nullableStringValue(machine.CredentialID),
+		"metadata":              mapFromAny(machine.Metadata.Data),
+		"created_at":            machine.CreatedAt,
+		"updated_at":            machine.UpdatedAt,
+		"credential_configured": false,
+	}
+	if credential != nil {
+		item["credential_name"] = credential.Name
+		item["credential_kind"] = credential.Kind
+		item["credential_configured"] = credential.SecretCiphertext != ""
+	}
+	return item
+}
+
+func (s *Server) connectionCredentialsByIDs(ctx context.Context, ids []string) (map[string]*GormConnectionCredential, error) {
+	if len(ids) == 0 {
+		return map[string]*GormConnectionCredential{}, nil
+	}
+	var credentials []GormConnectionCredential
+	if err := s.store.Gorm.WithContext(ctx).Find(&credentials, ids).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]*GormConnectionCredential, len(credentials))
+	for i := range credentials {
+		credential := credentials[i]
+		out[credential.ID] = &credential
+	}
+	return out, nil
+}
+
+func gitRemoteMaps(remotes []GormGitRemote, credentials map[string]*GormConnectionCredential, projectID string) []map[string]any {
+	items := make([]map[string]any, 0, len(remotes))
+	for _, remote := range remotes {
+		items = append(items, gitRemoteMap(remote, credentials[remote.CredentialID.String], projectID))
+	}
+	return items
+}
+
+func gitRemoteMap(remote GormGitRemote, credential *GormConnectionCredential, projectID string) map[string]any {
+	item := map[string]any{
+		"id":                        remote.ID,
+		"project_id":                nullableStringValue(sql.NullString{String: projectID, Valid: cleanOptionalID(projectID) != ""}),
+		"project_git_repository_id": remote.ProjectGitRepositoryID,
+		"name":                      remote.Name,
+		"kind":                      remote.Kind,
+		"remote_key":                remote.RemoteKey,
+		"provider_type":             remote.ProviderType,
+		"source_provider_id":        nullableStringValue(remote.SourceProviderID),
+		"source_account_id":         nullableStringValue(remote.SourceAccountID),
+		"credential_id":             nullableStringValue(remote.CredentialID),
+		"remote_url":                remote.RemoteURL,
+		"web_url":                   remote.WebURL,
+		"remote_role":               remote.RemoteRole,
+		"is_primary":                remote.IsPrimary,
+		"sync_enabled":              remote.SyncEnabled,
+		"protected":                 remote.Protected,
+		"latest_sha":                remote.LatestSHA,
+		"last_sync_status":          remote.LastSyncStatus,
+		"urls":                      stringSliceFromAny(remote.URLs.Data),
+		"default_branch":            remote.DefaultBranch,
+		"metadata":                  mapFromAny(remote.Metadata.Data),
+		"created_at":                remote.CreatedAt,
+		"updated_at":                remote.UpdatedAt,
+		"credential_configured":     false,
+	}
+	if credential != nil {
+		item["credential_name"] = credential.Name
+		item["credential_kind"] = credential.Kind
+		item["credential_configured"] = credential.SecretCiphertext != ""
+	}
+	return item
+}
+
+func applyGitRemotePatch(remote *GormGitRemote, req gitRemotePatchRequest) {
+	if req.Name != nil && strings.TrimSpace(*req.Name) != "" {
+		remote.Name = strings.TrimSpace(*req.Name)
+	}
+	if req.Kind != nil && strings.TrimSpace(*req.Kind) != "" {
+		remote.Kind = strings.TrimSpace(*req.Kind)
+	}
+	if req.RemoteKey != nil && strings.TrimSpace(*req.RemoteKey) != "" {
+		remote.RemoteKey = strings.TrimSpace(*req.RemoteKey)
+	}
+	if req.ProviderType != nil && strings.TrimSpace(*req.ProviderType) != "" {
+		remote.ProviderType = strings.TrimSpace(*req.ProviderType)
+	}
+	if req.RemoteURL != nil {
+		remote.RemoteURL = strings.TrimSpace(*req.RemoteURL)
+	}
+	if req.WebURL != nil {
+		remote.WebURL = strings.TrimSpace(*req.WebURL)
+	}
+	if req.RemoteRole != nil && strings.TrimSpace(*req.RemoteRole) != "" {
+		remote.RemoteRole = strings.TrimSpace(*req.RemoteRole)
+	}
+	if req.IsPrimary != nil {
+		remote.IsPrimary = *req.IsPrimary
+	}
+	if req.SyncEnabled != nil {
+		remote.SyncEnabled = *req.SyncEnabled
+	}
+	if req.Protected != nil {
+		remote.Protected = *req.Protected
+	}
+	if req.LatestSHA != nil {
+		remote.LatestSHA = strings.TrimSpace(*req.LatestSHA)
+	}
+	if req.LastSyncStatus != nil && strings.TrimSpace(*req.LastSyncStatus) != "" {
+		remote.LastSyncStatus = strings.TrimSpace(*req.LastSyncStatus)
+	}
+	if req.URLs != nil {
+		remote.URLs = JSONValue{Data: *req.URLs}
+	}
+	if req.DefaultBranch != nil && strings.TrimSpace(*req.DefaultBranch) != "" {
+		remote.DefaultBranch = strings.TrimSpace(*req.DefaultBranch)
+	}
+	if req.Metadata != nil {
+		remote.Metadata = JSONValue{Data: *req.Metadata}
+	}
+}
+
+func (s *Server) connectionCredentialByID(ctx context.Context, id string) (*GormConnectionCredential, error) {
+	id = cleanOptionalID(id)
+	if id == "" {
+		return nil, nil
+	}
+	var credential GormConnectionCredential
+	if err := s.store.Gorm.WithContext(ctx).Where(map[string]any{"id": id}).Take(&credential).Error; err != nil {
+		return nil, err
+	}
+	return &credential, nil
+}
+
+func (s *Server) connectionCredentialForProjectOrGlobal(ctx context.Context, projectID, credentialID, kind string) (*GormConnectionCredential, error) {
+	credential, err := s.connectionCredentialByID(ctx, credentialID)
+	if err != nil {
+		return nil, err
+	}
+	if credential == nil || credential.Kind != kind || credential.SecretCiphertext == "" {
+		return nil, ErrNotFound
+	}
+	projectID = cleanOptionalID(projectID)
+	if credential.ProjectID.Valid && cleanOptionalID(credential.ProjectID.String) != projectID {
+		return nil, ErrNotFound
+	}
+	return credential, nil
+}
+
 func (s *Server) createAgentTask(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "agent_task", ProjectID: projectID}, "create") {
@@ -23215,28 +22399,20 @@ func (s *Server) createAgentTask(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start agent task transaction")
+	task := GormAgentTask{ProjectID: projectID, Title: req.Title, Prompt: req.Prompt, CreatedBy: validNullString(currentUser(r).ID)}
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&task).Error; err != nil {
+			return err
+		}
+		if _, err := syncCanonicalAssetsGorm(r.Context(), tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for agent task create: %w", err)
+		}
+		return nil
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, "could not create agent task")
 		return
 	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO agent_tasks(project_id, title, prompt, created_by)
-		VALUES ($1, $2, $3, $4)
-		RETURNING *`, projectID, req.Title, req.Prompt, currentUser(r).ID)
-	if err != nil {
-		writeCreatedOne(w, item, err)
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.create") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit agent task")
-		return
-	}
-	writeJSON(w, http.StatusCreated, item)
+	writeJSON(w, http.StatusCreated, agentTaskMap(task, nil))
 }
 
 func (s *Server) listAgentTasks(w http.ResponseWriter, r *http.Request) {
@@ -23244,43 +22420,37 @@ func (s *Server) listAgentTasks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "agent_task", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT at.*,
-			latest_plan.id AS latest_plan_id,
-			latest_plan.status AS latest_plan_status,
-			latest_plan.created_at AS latest_plan_created_at
-		FROM agent_tasks at
-		LEFT JOIN LATERAL (
-			SELECT id, status, created_at
-			FROM agent_plans ap
-			WHERE ap.agent_task_id=at.id
-			ORDER BY created_at DESC
-			LIMIT 1
-		) latest_plan ON true
-		WHERE at.project_id=$1
-		ORDER BY at.created_at DESC
-		LIMIT 100`, projectID)
+	var tasks []GormAgentTask
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormAgentTask{ProjectID: projectID}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}, Desc: true}}}).Limit(100).Find(&tasks).Error; err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	plans, err := latestAgentPlansByTaskID(r.Context(), s.store.Gorm, agentTaskIDs(tasks))
+	if err != nil {
+		writeQueryResult(w, nil, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(tasks))
+	for _, task := range tasks {
+		items = append(items, agentTaskMap(task, plans[task.ID]))
+	}
 	writeQueryResult(w, items, err)
 }
 
 func (s *Server) getAgentTask(w http.ResponseWriter, r *http.Request) {
-	task, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM agent_tasks WHERE id=$1", chi.URLParam(r, "id"))
+	taskModel, err := agentTaskByID(r.Context(), s.store.Gorm, chi.URLParam(r, "id"))
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := strings.TrimSpace(fmt.Sprint(task["project_id"]))
+	projectID := strings.TrimSpace(taskModel.ProjectID)
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "agent_task", ID: chi.URLParam(r, "id"), ProjectID: projectID}, "read") {
 		return
 	}
-	plans, _ := queryMaps(r.Context(), s.store.DB, "SELECT * FROM agent_plans WHERE agent_task_id=$1 ORDER BY created_at DESC", chi.URLParam(r, "id"))
+	task := agentTaskMap(taskModel, nil)
+	plans, _ := agentPlanMaps(r.Context(), s.store.Gorm, chi.URLParam(r, "id"))
 	task["plans"] = plans
-	toolCalls, _ := queryMaps(r.Context(), s.store.DB, `
-		SELECT *
-		FROM agent_tool_calls
-		WHERE agent_task_id=$1
-		ORDER BY created_at DESC, id DESC
-		LIMIT 100`, chi.URLParam(r, "id"))
+	toolCalls, _ := agentToolCallMaps(r.Context(), s.store.Gorm, chi.URLParam(r, "id"))
 	task["tool_calls"] = toolCalls
 	toolCallEvidence := agentToolCallAuditEvidence(toolCalls)
 	task["tool_call_audit_evidence"] = toolCallEvidence
@@ -23290,22 +22460,108 @@ func (s *Server) getAgentTask(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listAgentTaskToolCalls(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
-	task, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM agent_tasks WHERE id=$1", taskID)
+	task, err := agentTaskByID(r.Context(), s.store.Gorm, taskID)
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := strings.TrimSpace(fmt.Sprint(task["project_id"]))
+	projectID := strings.TrimSpace(task.ProjectID)
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "agent_task", ID: taskID, ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT *
-		FROM agent_tool_calls
-		WHERE agent_task_id=$1
-		ORDER BY created_at DESC, id DESC
-		LIMIT 100`, taskID)
+	items, err := agentToolCallMaps(r.Context(), s.store.Gorm, taskID)
 	writeQueryResult(w, items, err)
+}
+
+func agentTaskByID(ctx context.Context, db *gorm.DB, taskID string) (GormAgentTask, error) {
+	var task GormAgentTask
+	if err := db.WithContext(ctx).First(&task, &GormAgentTask{GormBase: GormBase{ID: taskID}}).Error; err != nil {
+		return GormAgentTask{}, err
+	}
+	return task, nil
+}
+
+func agentTaskIDs(tasks []GormAgentTask) []string {
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		ids = append(ids, task.ID)
+	}
+	return ids
+}
+
+func agentTaskMap(task GormAgentTask, latestPlan *GormAgentPlan) map[string]any {
+	item := map[string]any{
+		"id":         task.ID,
+		"project_id": task.ProjectID,
+		"title":      task.Title,
+		"prompt":     task.Prompt,
+		"status":     task.Status,
+		"created_by": nullableStringValue(task.CreatedBy),
+		"created_at": task.CreatedAt,
+		"updated_at": task.UpdatedAt,
+	}
+	if latestPlan != nil {
+		item["latest_plan_id"] = latestPlan.ID
+		item["latest_plan_status"] = latestPlan.Status
+		item["latest_plan_created_at"] = latestPlan.CreatedAt
+	}
+	return item
+}
+
+func latestAgentPlansByTaskID(ctx context.Context, db *gorm.DB, taskIDs []string) (map[string]*GormAgentPlan, error) {
+	if len(taskIDs) == 0 {
+		return map[string]*GormAgentPlan{}, nil
+	}
+	wanted := map[string]bool{}
+	for _, id := range taskIDs {
+		wanted[id] = true
+	}
+	var plans []GormAgentPlan
+	if err := db.WithContext(ctx).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}, Desc: true}}}).Find(&plans).Error; err != nil {
+		return nil, err
+	}
+	out := map[string]*GormAgentPlan{}
+	for i := range plans {
+		if !wanted[plans[i].AgentTaskID] {
+			continue
+		}
+		if _, exists := out[plans[i].AgentTaskID]; !exists {
+			out[plans[i].AgentTaskID] = &plans[i]
+		}
+	}
+	return out, nil
+}
+
+func agentPlanMaps(ctx context.Context, db *gorm.DB, taskID string) ([]map[string]any, error) {
+	var plans []GormAgentPlan
+	if err := db.WithContext(ctx).Where(&GormAgentPlan{AgentTaskID: taskID}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}, Desc: true}}}).Find(&plans).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(plans))
+	for _, plan := range plans {
+		items = append(items, agentPlanMap(plan))
+	}
+	return items, nil
+}
+
+func agentPlanMap(plan GormAgentPlan) map[string]any {
+	return map[string]any{"id": plan.ID, "agent_task_id": plan.AgentTaskID, "status": plan.Status, "content": plan.Content, "created_at": plan.CreatedAt, "approved_at": nullableTimeAny(plan.ApprovedAt)}
+}
+
+func agentToolCallMaps(ctx context.Context, db *gorm.DB, taskID string) ([]map[string]any, error) {
+	var calls []GormAgentToolCall
+	if err := db.WithContext(ctx).Where(&GormAgentToolCall{AgentTaskID: taskID}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}, Desc: true}, {Column: clause.Column{Name: "id"}, Desc: true}}}).Limit(100).Find(&calls).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(calls))
+	for _, call := range calls {
+		items = append(items, agentToolCallMap(call))
+	}
+	return items, nil
+}
+
+func agentToolCallMap(call GormAgentToolCall) map[string]any {
+	return map[string]any{"id": call.ID, "agent_task_id": call.AgentTaskID, "operation_run_id": nullableStringValue(call.OperationRunID), "project_id": nullableStringValue(call.ProjectID), "tool_name": call.ToolName, "input": mapFromAny(call.Input.Data), "output": mapFromAny(call.Output.Data), "status": call.Status, "started_at": nullableTimeAny(call.StartedAt), "finished_at": nullableTimeAny(call.FinishedAt), "error_message": call.ErrorMessage, "metadata": mapFromAny(call.Metadata.Data), "created_at": call.CreatedAt}
 }
 
 func (s *Server) recordAgentToolAuditSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -23316,7 +22572,7 @@ func (s *Server) recordAgentToolAuditSnapshot(w http.ResponseWriter, r *http.Req
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	task, err := agentTaskForToolAuditSnapshot(r.Context(), s.store.DB, taskID)
+	task, err := agentTaskForToolAuditSnapshot(r.Context(), s.store.Gorm, taskID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -23352,7 +22608,7 @@ func (s *Server) recordAgentToolArmingSnapshot(w http.ResponseWriter, r *http.Re
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	task, err := agentTaskForToolAuditSnapshot(r.Context(), s.store.DB, taskID)
+	task, err := agentTaskForToolAuditSnapshot(r.Context(), s.store.Gorm, taskID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -23388,7 +22644,7 @@ func (s *Server) recordAgentCodeAuditSnapshot(w http.ResponseWriter, r *http.Req
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	task, err := agentTaskForToolAuditSnapshot(r.Context(), s.store.DB, taskID)
+	task, err := agentTaskForToolAuditSnapshot(r.Context(), s.store.Gorm, taskID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -23418,43 +22674,36 @@ func (s *Server) recordAgentCodeAuditSnapshot(w http.ResponseWriter, r *http.Req
 
 func (s *Server) generatePlan(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
-	task, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM agent_tasks WHERE id=$1", taskID)
+	taskModel, err := agentTaskByID(r.Context(), s.store.Gorm, taskID)
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := strings.TrimSpace(fmt.Sprint(task["project_id"]))
+	projectID := strings.TrimSpace(taskModel.ProjectID)
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "agent_task", ID: taskID, ProjectID: projectID}, "agent.generate_plan") {
 		return
 	}
-	_, snapshot, err := s.BuildContextFiles(r.Context(), fmt.Sprint(task["project_id"]))
+	_, snapshot, err := s.BuildContextFiles(r.Context(), projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not build agent context")
 		return
 	}
+	task := agentTaskMap(taskModel, nil)
 	content := agentPlanContent(task, snapshot)
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start agent plan transaction")
+	plan := GormAgentPlan{AgentTaskID: taskID, Content: content, Status: "generated"}
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&plan).Error; err != nil {
+			return err
+		}
+		if _, err := syncCanonicalAssetsGorm(r.Context(), tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for agent plan generate: %w", err)
+		}
+		return nil
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, "could not create agent plan")
 		return
 	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO agent_plans(agent_task_id, content)
-		VALUES ($1, $2)
-		RETURNING *`, taskID, content)
-	if err != nil {
-		writeCreatedOne(w, item, err)
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.generate_plan") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit agent plan")
-		return
-	}
-	writeJSON(w, http.StatusCreated, item)
+	writeJSON(w, http.StatusCreated, agentPlanMap(plan))
 }
 
 func agentPlanContent(task, snapshot map[string]any) string {
@@ -23597,7 +22846,7 @@ func rollbackPointReadiness(row map[string]any) (string, string) {
 	}
 }
 
-// rollbackExecutionPlan mirrors rollbackPointReadinessSQL's redacted JSON contract for unit tests and fallback callers.
+// rollbackExecutionPlan builds the redacted JSON contract for unit tests and fallback callers.
 func rollbackExecutionPlan(readiness, mode string) map[string]any {
 	prerequisiteState := "metadata_blocked"
 	if strings.EqualFold(strings.TrimSpace(readiness), "previewable") {
@@ -23709,56 +22958,71 @@ func formatCountMap(counts map[string]int) string {
 
 func (s *Server) approvePlan(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
-	task, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM agent_tasks WHERE id=$1", taskID)
+	task, err := agentTaskByID(r.Context(), s.store.Gorm, taskID)
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := strings.TrimSpace(fmt.Sprint(task["project_id"]))
+	projectID := strings.TrimSpace(task.ProjectID)
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "agent_task", ID: taskID, ProjectID: projectID}, "agent.approve_plan") {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start agent plan approval transaction")
+	var plan GormAgentPlan
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		plan, err = latestAgentPlanModel(r.Context(), tx, taskID)
+		if err != nil {
+			return err
+		}
+		plan.Status = "approved"
+		plan.ApprovedAt = validNullTime(time.Now().UTC())
+		if err := tx.Save(&plan).Error; err != nil {
+			return err
+		}
+		if _, err := syncCanonicalAssetsGorm(r.Context(), tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for agent plan approve: %w", err)
+		}
+		return nil
+	}); err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE agent_plans SET status='approved', approved_at=now()
-		WHERE agent_task_id=$1 AND id=(SELECT id FROM agent_plans WHERE agent_task_id=$1 ORDER BY created_at DESC LIMIT 1)
-		RETURNING *`, taskID)
-	if err != nil {
-		writeQueryOne(w, item, err)
-		return
+	writeJSON(w, http.StatusOK, agentPlanMap(plan))
+}
+
+func latestAgentPlanModel(ctx context.Context, db *gorm.DB, taskID string) (GormAgentPlan, error) {
+	var plans []GormAgentPlan
+	if err := db.WithContext(ctx).Where(&GormAgentPlan{AgentTaskID: taskID}).Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}, Desc: true}}}).Limit(1).Find(&plans).Error; err != nil {
+		return GormAgentPlan{}, err
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.approve_plan") {
-		return
+	if len(plans) == 0 {
+		return GormAgentPlan{}, gorm.ErrRecordNotFound
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit agent plan approval")
-		return
-	}
-	writeJSON(w, http.StatusOK, item)
+	return plans[0], nil
 }
 
 func (s *Server) executePlan(w http.ResponseWriter, r *http.Request) {
-	task, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM agent_tasks WHERE id=$1", chi.URLParam(r, "id"))
+	task, err := agentTaskByID(r.Context(), s.store.Gorm, chi.URLParam(r, "id"))
 	if err != nil {
-		writeQueryOne(w, nil, err)
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
 	payload := map[string]any{"kind": "agent_execute", "agent_task_id": chi.URLParam(r, "id")}
-	if !s.requireProjectPolicyOrApproval(w, r, PolicyResource{Type: "agent_task", ID: chi.URLParam(r, "id"), ProjectID: fmt.Sprint(task["project_id"])}, "agent.execute", "execute agent task "+fmt.Sprint(task["title"]), payload) {
+	if !s.requireProjectPolicyOrApproval(w, r, PolicyResource{Type: "agent_task", ID: chi.URLParam(r, "id"), ProjectID: task.ProjectID}, "agent.execute", "execute agent task "+task.Title, payload) {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start agent execution transaction")
-		return
-	}
-	defer tx.Rollback()
-	op, err := s.enqueueAgentTaskExecutionTx(r.Context(), tx, chi.URLParam(r, "id"))
+	var op map[string]any
+	err = s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		op, err = s.enqueueAgentTaskExecutionGorm(r.Context(), tx, chi.URLParam(r, "id"))
+		if err != nil {
+			return err
+		}
+		if _, err := syncCanonicalAssetsGorm(r.Context(), tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for agent task execute: %w", err)
+		}
+		return nil
+	})
 	if errors.Is(err, errAgentPlanNotApproved) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -23767,55 +23031,42 @@ func (s *Server) executePlan(w http.ResponseWriter, r *http.Request) {
 		writeCreatedOne(w, op, err)
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "agent_task.execute") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit agent execution")
-		return
-	}
 	writeJSON(w, http.StatusCreated, op)
 }
 
-func (s *Server) enqueueAgentTaskExecutionTx(ctx context.Context, tx *sqlx.Tx, taskID string) (map[string]any, error) {
-	task, err := queryOne(ctx, tx, "SELECT * FROM agent_tasks WHERE id=$1 FOR UPDATE", taskID)
+func (s *Server) enqueueAgentTaskExecutionGorm(ctx context.Context, tx *gorm.DB, taskID string) (map[string]any, error) {
+	var task GormAgentTask
+	if err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).First(&task, &GormAgentTask{GormBase: GormBase{ID: taskID}}).Error; err != nil {
+		return nil, gormNotFoundAsErrNotFound(err)
+	}
+	plan, err := latestApprovedAgentPlanGorm(ctx, tx, taskID)
 	if err != nil {
 		return nil, err
 	}
-	plan, err := latestApprovedAgentPlan(ctx, tx, taskID)
+	op, err := enqueueOperationGorm(ctx, tx, task.ProjectID, "", "agent.execute", "execute agent task "+task.Title, map[string]any{"agent_task_id": task.ID}, []string{"ai"}, "")
 	if err != nil {
 		return nil, err
 	}
-	op, err := enqueueOperationTx(ctx, tx, fmt.Sprint(task["project_id"]), "", "agent.execute", "execute agent task "+fmt.Sprint(task["title"]), map[string]any{"agent_task_id": task["id"]}, []string{"ai"}, "")
-	if err == nil {
-		if err = enqueueAgentToolCallAuditTx(ctx, tx, task, plan, op); err != nil {
-			return nil, err
-		}
-		_, err = tx.ExecContext(ctx, "UPDATE agent_tasks SET status='queued', updated_at=now() WHERE id=$1", taskID)
+	if err = enqueueAgentToolCallAuditGorm(ctx, tx, task, plan, op); err != nil {
+		return nil, err
 	}
-	return op, err
+	task.Status = "queued"
+	if err := tx.WithContext(ctx).Save(&task).Error; err != nil {
+		return nil, err
+	}
+	return op, nil
 }
 
-func requireLatestAgentPlanApproved(ctx context.Context, db sqlx.ExtContext, taskID string) error {
-	_, err := latestApprovedAgentPlan(ctx, db, taskID)
-	return err
-}
-
-func latestApprovedAgentPlan(ctx context.Context, db sqlx.ExtContext, taskID string) (map[string]any, error) {
-	plan, err := queryOne(ctx, db, `
-		SELECT *
-		FROM agent_plans
-		WHERE agent_task_id=$1
-		ORDER BY created_at DESC
-		LIMIT 1`, taskID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, errAgentPlanNotApproved
-		}
-		return nil, err
+func latestApprovedAgentPlanGorm(ctx context.Context, db *gorm.DB, taskID string) (GormAgentPlan, error) {
+	plan, err := latestAgentPlanModel(ctx, db, taskID)
+	if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, ErrNotFound) {
+		return GormAgentPlan{}, errAgentPlanNotApproved
 	}
-	if !agentPlanStatusApproved(plan["status"]) {
-		return nil, errAgentPlanNotApproved
+	if err != nil {
+		return GormAgentPlan{}, err
+	}
+	if !agentPlanStatusApproved(plan.Status) {
+		return GormAgentPlan{}, errAgentPlanNotApproved
 	}
 	return plan, nil
 }
@@ -23824,48 +23075,51 @@ func agentPlanStatusApproved(status any) bool {
 	return fmt.Sprint(status) == "approved"
 }
 
-func enqueueAgentToolCallAuditTx(ctx context.Context, tx *sqlx.Tx, task, plan, op map[string]any) error {
-	runtime, err := latestProjectAIRuntime(ctx, tx, strings.TrimSpace(fmt.Sprint(task["project_id"])))
+func enqueueAgentToolCallAuditGorm(ctx context.Context, tx *gorm.DB, task GormAgentTask, plan GormAgentPlan, op map[string]any) error {
+	taskMap := agentTaskMap(task, &plan)
+	planMap := agentPlanMap(plan)
+	runtime, err := latestProjectAIRuntimeGorm(ctx, tx, strings.TrimSpace(task.ProjectID))
 	if err != nil {
 		return err
 	}
-	for _, call := range agentExecutionAuditSteps(task, plan, op, runtime) {
-		input, err := jsonParam(call["input"])
-		if err != nil {
-			return fmt.Errorf("marshaling agent tool call input: %w", err)
-		}
-		output, err := jsonParam(call["output"])
-		if err != nil {
-			return fmt.Errorf("marshaling agent tool call output: %w", err)
-		}
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO agent_tool_calls(agent_task_id, operation_run_id, project_id, tool_name, input, output, status)
-			VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, 'queued')`,
-			task["id"], op["id"], task["project_id"], call["tool_name"], input, output)
-		if err != nil {
+	for _, call := range agentExecutionAuditSteps(taskMap, planMap, op, runtime) {
+		row := GormAgentToolCall{AgentTaskID: task.ID, OperationRunID: validNullString(cleanOptionalID(fmt.Sprint(op["id"]))), ProjectID: validNullString(task.ProjectID), ToolName: cleanOptionalText(fmt.Sprint(call["tool_name"])), Input: JSONValue{Data: mapFromAny(call["input"])}, Output: JSONValue{Data: mapFromAny(call["output"])}, Status: "queued"}
+		if err := tx.WithContext(ctx).Create(&row).Error; err != nil {
 			return fmt.Errorf("inserting agent tool call audit: %w", err)
 		}
 	}
 	return nil
 }
 
-func latestProjectAIRuntime(ctx context.Context, db sqlx.ExtContext, projectID string) (map[string]any, error) {
-	runtime, err := queryOne(ctx, db, `
-		SELECT id, project_id, name, runtime_type, codex_binary, model, status, updated_at
-		FROM ai_runtimes
-		WHERE project_id=$1 OR project_id IS NULL
-		ORDER BY
-			CASE WHEN project_id=$1 THEN 0 ELSE 1 END,
-			CASE WHEN status='verified' THEN 0 ELSE 1 END,
-			updated_at DESC
-		LIMIT 1`, projectID)
-	if errors.Is(err, ErrNotFound) {
-		return nil, nil
-	}
-	if err != nil {
+func latestProjectAIRuntimeGorm(ctx context.Context, db *gorm.DB, projectID string) (map[string]any, error) {
+	var runtimes []GormAIRuntime
+	if err := db.WithContext(ctx).Find(&runtimes).Error; err != nil {
 		return nil, fmt.Errorf("loading AI runtime for agent execution audit: %w", err)
 	}
-	return runtime, nil
+	filtered := make([]GormAIRuntime, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		runtimeProjectID := cleanOptionalID(runtime.ProjectID.String)
+		if runtimeProjectID == "" || runtimeProjectID == projectID {
+			filtered = append(filtered, runtime)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil, nil
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		leftProject := cleanOptionalID(filtered[i].ProjectID.String) == projectID
+		rightProject := cleanOptionalID(filtered[j].ProjectID.String) == projectID
+		if leftProject != rightProject {
+			return leftProject
+		}
+		leftVerified := filtered[i].Status == "verified"
+		rightVerified := filtered[j].Status == "verified"
+		if leftVerified != rightVerified {
+			return leftVerified
+		}
+		return filtered[i].UpdatedAt.After(filtered[j].UpdatedAt)
+	})
+	return aiRuntimeMap(filtered[0], nil), nil
 }
 
 func agentExecutionAuditSteps(task, plan, op, runtime map[string]any) []map[string]any {
@@ -25166,21 +24420,19 @@ func (s *Server) createConnectionCredentialForProject(w http.ResponseWriter, r *
 		writeError(w, http.StatusInternalServerError, "could not encrypt credential secret")
 		return
 	}
-	metadata, err := jsonParam(req.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "metadata must be valid JSON")
+	credential := GormConnectionCredential{
+		ProjectID:        validNullString(projectID),
+		Name:             req.Name,
+		Kind:             req.Kind,
+		SecretCiphertext: secretCiphertext,
+		PublicValue:      req.PublicValue,
+		Metadata:         JSONValue{Data: req.Metadata},
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Create(&credential).Error; err != nil {
+		writeCreatedOne(w, nil, err)
 		return
 	}
-	var projectArg any = projectID
-	if projectID == "" {
-		projectArg = nil
-	}
-	item, err := queryOne(r.Context(), s.store.DB, `
-		INSERT INTO connection_credentials(project_id, name, kind, secret_ciphertext, public_value, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-		RETURNING id, project_id, name, kind, public_value, metadata, created_at, updated_at,
-			(secret_ciphertext <> '') AS secret_configured`, projectArg, req.Name, req.Kind, secretCiphertext, req.PublicValue, metadata)
-	writeCreatedOne(w, item, err)
+	writeJSON(w, http.StatusCreated, connectionCredentialMap(credential))
 }
 
 func (s *Server) listConnectionCredentials(w http.ResponseWriter, r *http.Request) {
@@ -25188,26 +24440,46 @@ func (s *Server) listConnectionCredentials(w http.ResponseWriter, r *http.Reques
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "connection_credential", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, project_id, name, kind, public_value, metadata, created_at, updated_at,
-			(secret_ciphertext <> '') AS secret_configured
-		FROM connection_credentials
-		WHERE project_id=$1
-		ORDER BY created_at DESC`, projectID)
-	writeQueryResult(w, items, err)
+	var credentials []GormConnectionCredential
+	err := s.store.Gorm.WithContext(r.Context()).
+		Where(map[string]any{"project_id": projectID}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true}).
+		Find(&credentials).Error
+	writeQueryResult(w, connectionCredentialMaps(credentials), err)
 }
 
 func (s *Server) listGlobalConnectionCredentials(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w, r, PolicyResource{Type: "connection_credential"}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, project_id, name, kind, public_value, metadata, created_at, updated_at,
-			(secret_ciphertext <> '') AS secret_configured
-		FROM connection_credentials
-		WHERE project_id IS NULL
-		ORDER BY created_at DESC`)
-	writeQueryResult(w, items, err)
+	var credentials []GormConnectionCredential
+	err := s.store.Gorm.WithContext(r.Context()).
+		Where(map[string]any{"project_id": nil}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true}).
+		Find(&credentials).Error
+	writeQueryResult(w, connectionCredentialMaps(credentials), err)
+}
+
+func connectionCredentialMaps(credentials []GormConnectionCredential) []map[string]any {
+	out := make([]map[string]any, 0, len(credentials))
+	for _, credential := range credentials {
+		out = append(out, connectionCredentialMap(credential))
+	}
+	return out
+}
+
+func connectionCredentialMap(credential GormConnectionCredential) map[string]any {
+	return map[string]any{
+		"id":                credential.ID,
+		"project_id":        nullableStringValue(credential.ProjectID),
+		"name":              credential.Name,
+		"kind":              credential.Kind,
+		"public_value":      credential.PublicValue,
+		"metadata":          mapFromAny(credential.Metadata.Data),
+		"created_at":        credential.CreatedAt,
+		"updated_at":        credential.UpdatedAt,
+		"secret_configured": credential.SecretCiphertext != "",
+	}
 }
 
 func cleanConnectionCredentialKind(kind string) string {
@@ -25228,43 +24500,6 @@ func connectionCredentialKindForSSHAuth(authType string) string {
 	default:
 		return ""
 	}
-}
-
-func requireConnectionCredential(ctx context.Context, db sqlx.ExtContext, projectID, credentialID, kind string) (map[string]any, error) {
-	credentialID = cleanOptionalID(credentialID)
-	if credentialID == "" {
-		return nil, fmt.Errorf("credential_id is required")
-	}
-	credential, err := queryOne(ctx, db, `
-		SELECT id, name, kind, secret_ciphertext
-		FROM connection_credentials
-		WHERE id=$1 AND kind=$3 AND (($2 = '' AND project_id IS NULL) OR project_id::text=$2)`, credentialID, projectID, kind)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(fmt.Sprint(credential["secret_ciphertext"])) == "" {
-		return nil, fmt.Errorf("credential has no secret configured")
-	}
-	return credential, nil
-}
-
-func requireConnectionCredentialForProjectOrGlobal(ctx context.Context, db sqlx.ExtContext, projectID, credentialID, kind string) (map[string]any, error) {
-	credentialID = cleanOptionalID(credentialID)
-	projectID = cleanOptionalID(projectID)
-	if credentialID == "" {
-		return nil, fmt.Errorf("credential_id is required")
-	}
-	credential, err := queryOne(ctx, db, `
-		SELECT id, name, kind, secret_ciphertext
-		FROM connection_credentials
-		WHERE id=$1 AND kind=$3 AND (project_id IS NULL OR project_id::text=$2)`, credentialID, projectID, kind)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(fmt.Sprint(credential["secret_ciphertext"])) == "" {
-		return nil, fmt.Errorf("credential has no secret configured")
-	}
-	return credential, nil
 }
 
 func credentialText(credential map[string]any, key string) string {
@@ -25308,40 +24543,28 @@ func (s *Server) createArgoConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "auth_type must be token")
 		return
 	}
-	config, err := jsonParam(req.Config)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "config must be valid JSON")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start argo connection transaction")
-		return
-	}
-	defer tx.Rollback()
-	credential, err := requireConnectionCredential(r.Context(), tx, projectID, req.CredentialID, "argo_token")
+	credential, err := s.connectionCredentialForProjectOrGlobal(r.Context(), projectID, req.CredentialID, "argo_token")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "credential_id must reference an Argo token credential in this project")
 		return
 	}
-	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO argo_connections(project_id, name, server_url, auth_type, credential_id, config)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-		RETURNING id, project_id, name, server_url, auth_type, credential_id, config,
-			last_sync_status, last_sync_error, created_at, updated_at,
-			$7::text AS credential_name, $8::text AS credential_kind, true AS credential_configured`, projectID, req.Name, req.ServerURL, req.AuthType, req.CredentialID, config, credential["name"], credential["kind"])
-	if err != nil {
+	connection := GormArgoConnection{
+		ProjectID:    projectID,
+		Name:         req.Name,
+		ServerURL:    req.ServerURL,
+		AuthType:     req.AuthType,
+		CredentialID: validNullString(req.CredentialID),
+		Config:       JSONValue{Data: req.Config},
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Create(&connection).Error; err != nil {
 		writeError(w, http.StatusBadRequest, "could not create resource")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "argo_connection.create") {
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync argo connection asset")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit argo connection")
-		return
-	}
-	writeJSON(w, http.StatusCreated, item)
+	writeJSON(w, http.StatusCreated, argoConnectionMap(connection, credential))
 }
 
 func (s *Server) listArgoConnections(w http.ResponseWriter, r *http.Request) {
@@ -25349,75 +24572,63 @@ func (s *Server) listArgoConnections(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "argo_connection", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT ac.*, cc.name AS credential_name, cc.kind AS credential_kind,
-			(cc.secret_ciphertext <> '') AS credential_configured
-		FROM argo_connections ac
-		LEFT JOIN connection_credentials cc ON cc.id=ac.credential_id
-		WHERE ac.project_id=$1
-		ORDER BY ac.created_at DESC`, projectID)
-	writeQueryResult(w, items, err)
+	var connections []GormArgoConnection
+	err := s.store.Gorm.WithContext(r.Context()).
+		Where(map[string]any{"project_id": projectID}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true}).
+		Find(&connections).Error
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	credentials, err := s.connectionCredentialsForArgoConnections(r.Context(), connections)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": argoConnectionMaps(connections, credentials)})
 }
 
 func (s *Server) syncArgoApps(w http.ResponseWriter, r *http.Request) {
 	connectionID := chi.URLParam(r, "id")
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start Argo sync transaction")
+	var connection GormArgoConnection
+	if err := s.store.Gorm.WithContext(r.Context()).First(&connection, &GormArgoConnection{GormBase: GormBase{ID: connectionID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(r.Context(), "SELECT pg_advisory_xact_lock(hashtext($1))", "argo.apps.sync:"+connectionID); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not lock Argo sync")
-		return
-	}
-	connection, err := queryOne(r.Context(), tx, "SELECT * FROM argo_connections WHERE id=$1 FOR SHARE", connectionID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	projectID := fmt.Sprint(connection["project_id"])
+	projectID := connection.ProjectID
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "argo_connection", ID: connectionID, ProjectID: projectID}, "argo.apps.sync") {
 		return
 	}
-	existing, err := queryMaps(r.Context(), tx, `
-		SELECT id FROM operation_runs
-		WHERE operation_type='argo.apps.sync'
-			AND status IN ('queued', 'running')
-			AND input->>'argo_connection_id'=$1
-		LIMIT 1`, connectionID)
-	if err != nil {
+	var existingOps []GormOperationRun
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormOperationRun{OperationType: "argo.apps.sync"}).Find(&existingOps).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "could not check existing Argo sync")
 		return
 	}
-	if len(existing) > 0 {
-		writeError(w, http.StatusConflict, "Argo app sync is already queued or running")
-		return
+	for _, existing := range existingOps {
+		if existing.Status != "queued" && existing.Status != "running" {
+			continue
+		}
+		if stringFromMap(mapFromAny(existing.Input.Data), "argo_connection_id") == connectionID {
+			writeError(w, http.StatusConflict, "Argo app sync is already queued or running")
+			return
+		}
 	}
 	title := "sync Argo apps"
-	if name := strings.TrimSpace(fmt.Sprint(connection["name"])); name != "" && name != "<nil>" {
+	if name := strings.TrimSpace(connection.Name); name != "" {
 		title += " " + name
 	}
-	op, err := enqueueOperationTx(
-		r.Context(),
-		tx,
-		projectID,
-		"",
-		"argo.apps.sync",
-		title,
-		map[string]any{"argo_connection_id": connectionID},
-		[]string{"argo"},
-		"control-worker",
-	)
-	if err != nil {
+	var op map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		op, err = enqueueOperationGorm(r.Context(), tx, projectID, "", "argo.apps.sync", title, map[string]any{"argo_connection_id": connectionID}, []string{"argo"}, "control-worker")
+		if err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
 		writeCreatedOne(w, op, err)
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "argo_apps_sync.enqueue") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit Argo sync")
 		return
 	}
 	writeJSON(w, http.StatusCreated, op)
@@ -25428,14 +24639,276 @@ func (s *Server) listArgoApps(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "argo_app", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT aa.*, dt.name AS deployment_target_name, dt.environment, dt.cluster_name
-		FROM argo_apps aa
-		LEFT JOIN deployment_targets dt ON dt.id=aa.deployment_target_id
-		WHERE aa.project_id=$1
-		ORDER BY aa.created_at DESC
-		LIMIT 500`, projectID)
+	items, err := s.argoAppMapsGorm(r.Context(), projectID)
 	writeQueryResult(w, items, err)
+}
+
+func (s *Server) argoAppMapsGorm(ctx context.Context, projectID string) ([]map[string]any, error) {
+	var apps []GormArgoApp
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormArgoApp{ProjectID: projectID}).Order(gormOrderDesc("created_at")).Limit(500).Find(&apps).Error; err != nil {
+		return nil, err
+	}
+	targets, err := s.deploymentTargetsByIDGorm(ctx, deploymentTargetIDsFromArgoApps(apps))
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(apps))
+	for _, app := range apps {
+		item := map[string]any{"id": app.ID, "project_id": app.ProjectID, "argo_connection_id": nullableStringValue(app.ArgoConnectionID), "deployment_target_id": nullableStringValue(app.DeploymentTargetID), "name": app.Name, "namespace": app.Namespace, "status": app.Status, "metadata": mapFromAny(app.Metadata.Data), "synced_at": nullableTimeAny(app.SyncedAt), "created_at": app.CreatedAt, "updated_at": app.UpdatedAt}
+		if target, ok := targets[cleanOptionalID(app.DeploymentTargetID.String)]; ok {
+			item["deployment_target_name"] = target.Name
+			item["environment"] = target.Environment
+			item["cluster_name"] = target.ClusterName
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func deploymentTargetIDsFromArgoApps(apps []GormArgoApp) []string {
+	ids := make([]string, 0, len(apps))
+	seen := map[string]bool{}
+	for _, app := range apps {
+		id := cleanOptionalID(app.DeploymentTargetID.String)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func (s *Server) deploymentTargetsByIDGorm(ctx context.Context, ids []string) (map[string]GormDeploymentTarget, error) {
+	out := map[string]GormDeploymentTarget{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var targets []GormDeploymentTarget
+	if err := s.store.Gorm.WithContext(ctx).Find(&targets, ids).Error; err != nil {
+		return nil, err
+	}
+	for _, target := range targets {
+		out[target.ID] = target
+	}
+	return out, nil
+}
+
+func kubernetesEnvironmentMap(env GormKubernetesEnvironment) map[string]any {
+	return map[string]any{"id": env.ID, "project_id": env.ProjectID, "name": env.Name, "environment": env.Environment, "cluster_name": env.ClusterName, "namespace": env.Namespace, "kubeconfig_secret_ref": env.KubeconfigSecretRef, "service_account": env.ServiceAccount, "token_subject_review_status": env.TokenSubjectReviewStatus, "rbac_read_logs_status": env.RBACReadLogsStatus, "rbac_restart_pods_status": env.PodRestartStatus, "status": env.Status, "metadata": mapFromAny(env.Metadata.Data), "created_at": env.CreatedAt, "updated_at": env.UpdatedAt, "kubeconfig_secret_ref_present": env.KubeconfigSecretRef != "", "service_account_present": env.ServiceAccount != "", "token_subject_review_ready": env.TokenSubjectReviewStatus == "reviewed", "rbac_read_logs_ready": env.RBACReadLogsStatus == "reviewed", "rbac_restart_pods_ready": env.PodRestartStatus == "reviewed", "log_access_metadata_ready": env.KubeconfigSecretRef != "" && env.TokenSubjectReviewStatus == "reviewed" && env.RBACReadLogsStatus == "reviewed", "pod_restart_metadata_ready": env.KubeconfigSecretRef != "" && env.TokenSubjectReviewStatus == "reviewed" && env.PodRestartStatus == "reviewed"}
+}
+
+func (s *Server) kubernetesEnvironmentMapsGorm(ctx context.Context, projectID string) ([]map[string]any, error) {
+	var envs []GormKubernetesEnvironment
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormKubernetesEnvironment{ProjectID: projectID}).Order(gormOrderAsc("environment")).Order(gormOrderAsc("namespace")).Order(gormOrderDesc("created_at")).Find(&envs).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(envs))
+	for _, env := range envs {
+		items = append(items, kubernetesEnvironmentMap(env))
+	}
+	return items, nil
+}
+
+func (s *Server) deploymentTargetMapsGorm(ctx context.Context, projectID string, limit int) ([]map[string]any, error) {
+	var targets []GormDeploymentTarget
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormDeploymentTarget{ProjectID: projectID}).Order(gormOrderAsc("environment")).Order(gormOrderAsc("namespace")).Order(gormOrderDesc("created_at")).Limit(limit).Find(&targets).Error; err != nil {
+		return nil, err
+	}
+	connections, err := s.argoConnectionNamesByIDGorm(ctx, targets)
+	if err != nil {
+		return nil, err
+	}
+	appCounts, err := s.argoAppCountsByTargetGorm(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	envs, err := s.kubernetesEnvironmentsForProjectGorm(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(targets))
+	for _, target := range targets {
+		item := deploymentTargetMap(target)
+		item["argo_connection_name"] = connections[cleanOptionalID(target.ArgoConnectionID.String)]
+		item["argo_app_count"] = appCounts[target.ID]
+		if env, ok := envs[kubernetesEnvironmentScopeKey(target.ProjectID, target.Environment, target.ClusterName, target.Namespace)]; ok {
+			item = mergeMaps(item, kubernetesEnvironmentTargetFields(env))
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func deploymentTargetMap(target GormDeploymentTarget) map[string]any {
+	return map[string]any{"id": target.ID, "project_id": target.ProjectID, "name": target.Name, "environment": target.Environment, "cluster_name": target.ClusterName, "namespace": target.Namespace, "source": target.Source, "argo_connection_id": nullableStringValue(target.ArgoConnectionID), "status": target.Status, "metadata": mapFromAny(target.Metadata.Data), "created_at": target.CreatedAt, "updated_at": target.UpdatedAt}
+}
+
+func kubernetesEnvironmentTargetFields(env GormKubernetesEnvironment) map[string]any {
+	return map[string]any{"kubernetes_environment_id": env.ID, "kubernetes_environment_name": env.Name, "kubeconfig_secret_ref_present": env.KubeconfigSecretRef != "", "kubeconfig_secret_ref": env.KubeconfigSecretRef, "service_account_present": env.ServiceAccount != "", "token_subject_review_status": env.TokenSubjectReviewStatus, "rbac_read_logs_status": env.RBACReadLogsStatus, "rbac_restart_pods_status": env.PodRestartStatus, "kubernetes_environment_status": env.Status}
+}
+
+func (s *Server) argoConnectionNamesByIDGorm(ctx context.Context, targets []GormDeploymentTarget) (map[string]string, error) {
+	ids := make([]string, 0, len(targets))
+	seen := map[string]bool{}
+	for _, target := range targets {
+		id := cleanOptionalID(target.ArgoConnectionID.String)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var connections []GormArgoConnection
+	if err := s.store.Gorm.WithContext(ctx).Find(&connections, ids).Error; err != nil {
+		return nil, err
+	}
+	for _, connection := range connections {
+		out[connection.ID] = connection.Name
+	}
+	return out, nil
+}
+
+func (s *Server) argoAppCountsByTargetGorm(ctx context.Context, projectID string) (map[string]int, error) {
+	var apps []GormArgoApp
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormArgoApp{ProjectID: projectID}).Find(&apps).Error; err != nil {
+		return nil, err
+	}
+	out := map[string]int{}
+	for _, app := range apps {
+		id := cleanOptionalID(app.DeploymentTargetID.String)
+		if id != "" {
+			out[id]++
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) kubernetesEnvironmentsForProjectGorm(ctx context.Context, projectID string) (map[string]GormKubernetesEnvironment, error) {
+	var envs []GormKubernetesEnvironment
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormKubernetesEnvironment{ProjectID: projectID}).Find(&envs).Error; err != nil {
+		return nil, err
+	}
+	out := map[string]GormKubernetesEnvironment{}
+	for _, env := range envs {
+		out[kubernetesEnvironmentScopeKey(env.ProjectID, env.Environment, env.ClusterName, env.Namespace)] = env
+	}
+	return out, nil
+}
+
+func kubernetesEnvironmentScopeKey(projectID, environment, clusterName, namespace string) string {
+	return projectID + "\x00" + environment + "\x00" + clusterName + "\x00" + namespace
+}
+
+func (s *Server) loadDeploymentTargetForKubernetesAccessGorm(ctx context.Context, deploymentTargetID string) (map[string]any, error) {
+	var target GormDeploymentTarget
+	if err := s.store.Gorm.WithContext(ctx).First(&target, &GormDeploymentTarget{GormBase: GormBase{ID: deploymentTargetID}}).Error; err != nil {
+		return nil, gormNotFoundAsErrNotFound(err)
+	}
+	item := deploymentTargetMap(target)
+	if env, ok, err := s.kubernetesEnvironmentForTargetGorm(ctx, target); err != nil {
+		return nil, err
+	} else if ok {
+		item = mergeMaps(item, kubernetesEnvironmentTargetFields(env))
+	}
+	return item, nil
+}
+
+func (s *Server) loadDeploymentTargetForExecutionGateGorm(ctx context.Context, deploymentTargetID string) (map[string]any, error) {
+	item, err := s.loadDeploymentTargetForKubernetesAccessGorm(ctx, deploymentTargetID)
+	if err != nil {
+		return nil, err
+	}
+	targetID := cleanOptionalID(fmt.Sprint(item["id"]))
+	appCounts, err := s.argoAppCountsByTargetGorm(ctx, cleanOptionalID(fmt.Sprint(item["project_id"])))
+	if err != nil {
+		return nil, err
+	}
+	item["argo_app_count"] = appCounts[targetID]
+	return item, nil
+}
+
+func (s *Server) kubernetesEnvironmentForTargetGorm(ctx context.Context, target GormDeploymentTarget) (GormKubernetesEnvironment, bool, error) {
+	var env GormKubernetesEnvironment
+	err := s.store.Gorm.WithContext(ctx).Where(&GormKubernetesEnvironment{ProjectID: target.ProjectID, Environment: target.Environment, ClusterName: target.ClusterName, Namespace: target.Namespace}).First(&env).Error
+	if errorsIsRecordNotFound(err) {
+		return env, false, nil
+	}
+	return env, err == nil, err
+}
+
+func (s *Server) deploymentRecordMapsGorm(ctx context.Context, projectID string, limit int) ([]map[string]any, error) {
+	var records []GormDeploymentRecord
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormDeploymentRecord{ProjectID: projectID}).Order(gormOrderDesc("observed_at")).Limit(limit).Find(&records).Error; err != nil {
+		return nil, err
+	}
+	targets, err := s.deploymentTargetsByIDGorm(ctx, deploymentTargetIDsFromDeploymentRecords(records))
+	if err != nil {
+		return nil, err
+	}
+	apps, err := s.argoAppsByIDGorm(ctx, argoAppIDsFromDeploymentRecords(records))
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		item := deploymentRecordMap(record)
+		if target, ok := targets[cleanOptionalID(record.DeploymentTargetID.String)]; ok {
+			item["deployment_target_name"] = target.Name
+		}
+		if app, ok := apps[cleanOptionalID(record.ArgoAppID.String)]; ok {
+			item["argo_app_name"] = app.Name
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func deploymentRecordMap(record GormDeploymentRecord) map[string]any {
+	return map[string]any{"id": record.ID, "project_id": record.ProjectID, "deployment_target_id": nullableStringValue(record.DeploymentTargetID), "argo_connection_id": nullableStringValue(record.ArgoConnectionID), "argo_app_id": nullableStringValue(record.ArgoAppID), "name": record.Name, "environment": record.Environment, "namespace": record.Namespace, "cluster_name": record.ClusterName, "source": record.Source, "status": record.Status, "revision": record.Revision, "image_refs": mapFromAny(record.ImageRefs.Data), "metadata": mapFromAny(record.Metadata.Data), "observed_at": record.ObservedAt, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt}
+}
+
+func deploymentTargetIDsFromDeploymentRecords(records []GormDeploymentRecord) []string {
+	ids := []string{}
+	seen := map[string]bool{}
+	for _, record := range records {
+		id := cleanOptionalID(record.DeploymentTargetID.String)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func argoAppIDsFromDeploymentRecords(records []GormDeploymentRecord) []string {
+	ids := []string{}
+	seen := map[string]bool{}
+	for _, record := range records {
+		id := cleanOptionalID(record.ArgoAppID.String)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func (s *Server) argoAppsByIDGorm(ctx context.Context, ids []string) (map[string]GormArgoApp, error) {
+	out := map[string]GormArgoApp{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var apps []GormArgoApp
+	if err := s.store.Gorm.WithContext(ctx).Find(&apps, ids).Error; err != nil {
+		return nil, err
+	}
+	for _, app := range apps {
+		out[app.ID] = app
+	}
+	return out, nil
 }
 
 func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -25481,44 +24954,19 @@ func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "kubernetes environment metadata must reference names only, not credential material")
 		return
 	}
-	metadata, err := jsonParam(req.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "metadata must be valid JSON")
+	model := GormKubernetesEnvironment{ProjectID: projectID, Name: req.Name, Environment: req.Environment, ClusterName: req.ClusterName, Namespace: req.Namespace, KubeconfigSecretRef: req.KubeconfigSecretRef, ServiceAccount: req.ServiceAccount, TokenSubjectReviewStatus: req.TokenSubjectReviewStatus, RBACReadLogsStatus: req.RBACReadLogsStatus, PodRestartStatus: req.RBACRestartPodsStatus, Status: req.Status, Metadata: JSONValue{Data: req.Metadata}}
+	if err := s.store.Gorm.WithContext(r.Context()).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "project_id"}, {Name: "environment"}, {Name: "cluster_name"}, {Name: "namespace"}},
+		DoUpdates: clause.Assignments(map[string]any{"name": model.Name, "kubeconfig_secret_ref": model.KubeconfigSecretRef, "service_account": model.ServiceAccount, "token_subject_review_status": model.TokenSubjectReviewStatus, "rbac_read_logs_status": model.RBACReadLogsStatus, "pod_restart_status": model.PodRestartStatus, "status": model.Status, "metadata": model.Metadata}),
+	}).Create(&model).Error; err != nil {
+		writeCreatedOne(w, nil, err)
 		return
 	}
-	item, err := queryOne(r.Context(), s.store.DB, `
-		INSERT INTO kubernetes_environments(
-			project_id, name, environment, cluster_name, namespace,
-			kubeconfig_secret_ref, service_account, token_subject_review_status,
-			rbac_read_logs_status, rbac_restart_pods_status, status, metadata, updated_at
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, now())
-		ON CONFLICT (project_id, environment, cluster_name, namespace)
-		DO UPDATE SET
-			name=EXCLUDED.name,
-			kubeconfig_secret_ref=EXCLUDED.kubeconfig_secret_ref,
-			service_account=EXCLUDED.service_account,
-			token_subject_review_status=EXCLUDED.token_subject_review_status,
-			rbac_read_logs_status=EXCLUDED.rbac_read_logs_status,
-			rbac_restart_pods_status=EXCLUDED.rbac_restart_pods_status,
-			status=EXCLUDED.status,
-			metadata=EXCLUDED.metadata,
-			updated_at=now()
-		RETURNING *`,
-		projectID,
-		req.Name,
-		req.Environment,
-		req.ClusterName,
-		req.Namespace,
-		req.KubeconfigSecretRef,
-		req.ServiceAccount,
-		req.TokenSubjectReviewStatus,
-		req.RBACReadLogsStatus,
-		req.RBACRestartPodsStatus,
-		req.Status,
-		metadata,
-	)
-	writeCreatedOne(w, item, err)
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormKubernetesEnvironment{ProjectID: projectID, Environment: req.Environment, ClusterName: req.ClusterName, Namespace: req.Namespace}).First(&model).Error; err != nil {
+		writeCreatedOne(w, nil, err)
+		return
+	}
+	writeCreatedOne(w, kubernetesEnvironmentMap(model), nil)
 }
 
 func (s *Server) listKubernetesEnvironments(w http.ResponseWriter, r *http.Request) {
@@ -25526,19 +24974,7 @@ func (s *Server) listKubernetesEnvironments(w http.ResponseWriter, r *http.Reque
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "kubernetes_environment", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT id, project_id, name, environment, cluster_name, namespace,
-			kubeconfig_secret_ref, service_account, token_subject_review_status,
-			rbac_read_logs_status, rbac_restart_pods_status, status, metadata, created_at, updated_at,
-			(kubeconfig_secret_ref <> '') AS kubeconfig_secret_ref_present,
-			(token_subject_review_status='reviewed') AS token_subject_review_ready,
-			(rbac_read_logs_status='reviewed') AS rbac_read_logs_ready,
-			(rbac_restart_pods_status='reviewed') AS rbac_restart_pods_ready,
-			(kubeconfig_secret_ref <> '' AND token_subject_review_status='reviewed' AND rbac_read_logs_status='reviewed') AS log_access_metadata_ready,
-			(kubeconfig_secret_ref <> '' AND token_subject_review_status='reviewed' AND rbac_restart_pods_status='reviewed') AS pod_restart_metadata_ready
-		FROM kubernetes_environments
-		WHERE project_id=$1
-		ORDER BY environment, namespace, created_at DESC`, projectID)
+	items, err := s.kubernetesEnvironmentMapsGorm(r.Context(), projectID)
 	writeQueryResult(w, items, err)
 }
 
@@ -25547,30 +24983,7 @@ func (s *Server) listDeploymentTargets(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "deployment_target", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT dt.*,
-			ac.name AS argo_connection_name,
-			COUNT(aa.id) AS argo_app_count,
-			ke.id AS kubernetes_environment_id,
-			ke.name AS kubernetes_environment_name,
-			(ke.kubeconfig_secret_ref <> '') AS kubeconfig_secret_ref_present,
-			(ke.service_account <> '') AS service_account_present,
-			ke.token_subject_review_status,
-			ke.rbac_read_logs_status,
-			ke.rbac_restart_pods_status,
-			ke.status AS kubernetes_environment_status
-		FROM deployment_targets dt
-		LEFT JOIN argo_connections ac ON ac.id=dt.argo_connection_id
-		LEFT JOIN argo_apps aa ON aa.deployment_target_id=dt.id
-		LEFT JOIN kubernetes_environments ke
-			ON ke.project_id=dt.project_id
-			AND ke.environment=dt.environment
-			AND ke.cluster_name=dt.cluster_name
-			AND ke.namespace=dt.namespace
-		WHERE dt.project_id=$1
-		GROUP BY dt.id, ac.name, ke.id
-		ORDER BY dt.environment, dt.namespace, dt.created_at DESC
-		LIMIT 500`, projectID)
+	items, err := s.deploymentTargetMapsGorm(r.Context(), projectID, 500)
 	enrichDeploymentTargetsWithExecutionReadiness(items)
 	writeQueryResult(w, items, err)
 }
@@ -25581,9 +24994,9 @@ func (s *Server) deploymentTargetExecutionGate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "deployment target id is required")
 		return
 	}
-	target, err := loadDeploymentTargetForExecutionGate(r.Context(), s.store.DB, targetID)
+	target, err := s.loadDeploymentTargetForExecutionGateGorm(r.Context(), targetID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, ErrNotFound) {
 			writeError(w, http.StatusNotFound, "deployment target not found")
 			return
 		}
@@ -25603,9 +25016,9 @@ func (s *Server) listDeploymentTargetPods(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "deployment target id is required")
 		return
 	}
-	target, err := loadDeploymentTargetForKubernetesAccess(r.Context(), s.store.DB, targetID)
+	target, err := s.loadDeploymentTargetForKubernetesAccessGorm(r.Context(), targetID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, ErrNotFound) {
 			writeError(w, http.StatusNotFound, "deployment target not found")
 			return
 		}
@@ -25671,56 +25084,8 @@ func (s *Server) listDeploymentRecords(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "deployment_record", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT dr.*, dt.name AS deployment_target_name, aa.name AS argo_app_name
-		FROM deployment_records dr
-		LEFT JOIN deployment_targets dt ON dt.id=dr.deployment_target_id
-		LEFT JOIN argo_apps aa ON aa.id=dr.argo_app_id
-		WHERE dr.project_id=$1
-		ORDER BY dr.observed_at DESC
-		LIMIT 500`, projectID)
+	items, err := s.deploymentRecordMapsGorm(r.Context(), projectID, 500)
 	writeQueryResult(w, items, err)
-}
-
-func loadDeploymentTargetForKubernetesAccess(ctx context.Context, db sqlx.ExtContext, deploymentTargetID string) (map[string]any, error) {
-	return queryOne(ctx, db, `
-		SELECT dt.id, dt.project_id, dt.name, dt.environment, dt.cluster_name, dt.namespace, dt.status,
-			ke.id AS kubernetes_environment_id,
-			ke.name AS kubernetes_environment_name,
-			(ke.kubeconfig_secret_ref <> '') AS kubeconfig_secret_ref_present,
-			ke.kubeconfig_secret_ref,
-			(ke.service_account <> '') AS service_account_present,
-			ke.token_subject_review_status,
-			ke.rbac_read_logs_status,
-			ke.rbac_restart_pods_status,
-			ke.status AS kubernetes_environment_status
-		FROM deployment_targets dt
-		LEFT JOIN kubernetes_environments ke
-			ON ke.project_id=dt.project_id
-			AND ke.environment=dt.environment
-			AND ke.cluster_name=dt.cluster_name
-			AND ke.namespace=dt.namespace
-		WHERE dt.id=$1`, deploymentTargetID)
-}
-
-func loadDeploymentTargetForExecutionGate(ctx context.Context, db sqlx.ExtContext, deploymentTargetID string) (map[string]any, error) {
-	return queryOne(ctx, db, `
-		SELECT dt.id,
-			dt.project_id,
-			dt.name,
-			dt.environment,
-			dt.cluster_name,
-			dt.namespace,
-			dt.status,
-			dt.created_at,
-			dt.updated_at,
-			ac.name AS argo_connection_name,
-			COUNT(aa.id) AS argo_app_count
-		FROM deployment_targets dt
-		LEFT JOIN argo_connections ac ON ac.id=dt.argo_connection_id
-		LEFT JOIN argo_apps aa ON aa.deployment_target_id=dt.id
-		WHERE dt.id=$1
-		GROUP BY dt.id, ac.name`, deploymentTargetID)
 }
 
 func sanitizedDeploymentTargetForPodMetadata(target map[string]any) map[string]any {
@@ -25741,29 +25106,6 @@ func sanitizedDeploymentTargetForPodMetadata(target map[string]any) map[string]a
 		"rbac_restart_pods_status":      cleanPreviewString(target["rbac_restart_pods_status"]),
 		"kubernetes_environment_status": cleanPreviewString(target["kubernetes_environment_status"]),
 	}
-}
-
-func loadRollbackPointForExecutionGate(ctx context.Context, db sqlx.ExtContext, rollbackPointID string) (map[string]any, error) {
-	return queryOne(ctx, db, `
-		SELECT rp.id,
-			rp.project_id,
-			rp.deployment_record_id,
-			rp.deployment_target_id,
-			rp.name,
-			rp.environment,
-			rp.revision,
-			rp.source,
-			rp.status,
-			rp.captured_at,
-			rp.created_at,
-			dt.name AS deployment_target_name,
-			dt.namespace AS deployment_namespace,
-			dt.cluster_name AS deployment_cluster_name,
-			dr.status AS deployment_status
-		FROM rollback_points rp
-		LEFT JOIN deployment_targets dt ON dt.id=rp.deployment_target_id
-		LEFT JOIN deployment_records dr ON dr.id=rp.deployment_record_id
-		WHERE rp.id=$1`, rollbackPointID)
 }
 
 func deploymentTargetExecutionGatePayload(target map[string]any) map[string]any {
@@ -25879,12 +25221,39 @@ func rollbackPointExecutionGatePayload(rollbackPoint map[string]any) map[string]
 	}
 }
 
+func (s *Server) loadRollbackPointForExecutionGateGorm(ctx context.Context, rollbackPointID string) (map[string]any, error) {
+	var point GormRollbackPoint
+	if err := s.store.Gorm.WithContext(ctx).First(&point, &GormRollbackPoint{ID: rollbackPointID}).Error; err != nil {
+		return nil, gormNotFoundAsErrNotFound(err)
+	}
+	item := map[string]any{"id": point.ID, "project_id": point.ProjectID, "deployment_record_id": nullableStringValue(point.DeploymentRecordID), "deployment_target_id": nullableStringValue(point.DeploymentTargetID), "name": point.Name, "environment": point.Environment, "revision": point.Revision, "source": point.Source, "status": point.Status, "captured_at": point.CapturedAt, "created_at": point.CreatedAt}
+	if targetID := cleanOptionalID(point.DeploymentTargetID.String); targetID != "" {
+		var target GormDeploymentTarget
+		if err := s.store.Gorm.WithContext(ctx).First(&target, &GormDeploymentTarget{GormBase: GormBase{ID: targetID}}).Error; err == nil {
+			item["deployment_target_name"] = target.Name
+			item["deployment_namespace"] = target.Namespace
+			item["deployment_cluster_name"] = target.ClusterName
+		} else if !errorsIsRecordNotFound(err) {
+			return nil, err
+		}
+	}
+	if recordID := cleanOptionalID(point.DeploymentRecordID.String); recordID != "" {
+		var record GormDeploymentRecord
+		if err := s.store.Gorm.WithContext(ctx).First(&record, &GormDeploymentRecord{GormBase: GormBase{ID: recordID}}).Error; err == nil {
+			item["deployment_status"] = record.Status
+		} else if !errorsIsRecordNotFound(err) {
+			return nil, err
+		}
+	}
+	return item, nil
+}
+
 func (s *Server) listRollbackPoints(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "rollback_point", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, rollbackPointReadinessSQL(500), projectID)
+	items, err := contextRollbackPointMaps(r.Context(), s.store.Gorm, projectID, 500)
 	writeQueryResult(w, items, err)
 }
 
@@ -25894,9 +25263,9 @@ func (s *Server) rollbackPointExecutionGate(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "rollback point id is required")
 		return
 	}
-	rollbackPoint, err := loadRollbackPointForExecutionGate(r.Context(), s.store.DB, rollbackPointID)
+	rollbackPoint, err := s.loadRollbackPointForExecutionGateGorm(r.Context(), rollbackPointID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, ErrNotFound) {
 			writeError(w, http.StatusNotFound, "rollback point not found")
 			return
 		}
@@ -25924,12 +25293,12 @@ func (s *Server) previewArgoPodLogQuery(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	target, err := loadArgoPodLogTarget(r.Context(), s.store.DB, projectID, cleaned.DeploymentTargetID)
+	target, err := s.loadArgoPodLogTargetGorm(r.Context(), projectID, cleaned.DeploymentTargetID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
 	}
-	auditRows, err := queryArgoPodLogAuditOperations(r.Context(), s.store.DB, projectID, cleaned.DeploymentTargetID, cleaned.PodName, cleaned.ContainerName)
+	auditRows, err := s.queryArgoPodLogAuditOperationsGorm(r.Context(), projectID, cleaned.DeploymentTargetID, cleaned.PodName, cleaned.ContainerName)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load pod log audit evidence")
 		return
@@ -25990,41 +25359,46 @@ func cleanArgoPodLogRequest(req argoPodLogRequest) (argoPodLogRequest, error) {
 	return req, nil
 }
 
-func loadArgoPodLogTarget(ctx context.Context, db sqlx.ExtContext, projectID, deploymentTargetID string) (map[string]any, error) {
-	return queryOne(ctx, db, `
-		SELECT dt.id, dt.project_id, dt.name, dt.environment, dt.cluster_name, dt.namespace, dt.status,
-			ke.id AS kubernetes_environment_id,
-			ke.name AS kubernetes_environment_name,
-			(ke.kubeconfig_secret_ref <> '') AS kubeconfig_secret_ref_present,
-			ke.kubeconfig_secret_ref,
-			(ke.service_account <> '') AS service_account_present,
-			ke.token_subject_review_status,
-			ke.rbac_read_logs_status,
-			ke.rbac_restart_pods_status,
-			ke.status AS kubernetes_environment_status
-		FROM deployment_targets dt
-		LEFT JOIN kubernetes_environments ke
-			ON ke.project_id=dt.project_id
-			AND ke.environment=dt.environment
-			AND ke.cluster_name=dt.cluster_name
-			AND ke.namespace=dt.namespace
-		WHERE dt.id=$1 AND dt.project_id=$2`, deploymentTargetID, projectID)
+func (s *Server) loadArgoPodLogTargetGorm(ctx context.Context, projectID, deploymentTargetID string) (map[string]any, error) {
+	target, err := s.loadDeploymentTargetForKubernetesAccessGorm(ctx, deploymentTargetID)
+	if err != nil {
+		return nil, err
+	}
+	if cleanOptionalID(fmt.Sprint(target["project_id"])) != cleanOptionalID(projectID) {
+		return nil, ErrNotFound
+	}
+	return target, nil
 }
 
-func queryArgoPodLogAuditOperations(ctx context.Context, db sqlx.ExtContext, projectID, deploymentTargetID, podName, containerName string) ([]map[string]any, error) {
-	return queryMaps(ctx, db, `
-		SELECT op.id, op.status, op.result, op.created_at, op.updated_at, op.finished_at,
-			COUNT(ol.id)::int AS operation_log_count
-		FROM operation_runs op
-		LEFT JOIN operation_logs ol ON ol.operation_run_id=op.id
-		WHERE op.project_id=$1
-			AND op.operation_type='argo.pod_logs'
-			AND op.input->>'deployment_target_id'=$2
-			AND op.input->>'pod_name'=$3
-			AND COALESCE(op.input->>'container_name', '')=$4
-		GROUP BY op.id
-		ORDER BY op.created_at DESC
-		LIMIT 20`, projectID, deploymentTargetID, podName, containerName)
+func (s *Server) queryArgoPodLogAuditOperationsGorm(ctx context.Context, projectID, deploymentTargetID, podName, containerName string) ([]map[string]any, error) {
+	var ops []GormOperationRun
+	if err := s.store.Gorm.WithContext(ctx).Where(&GormOperationRun{ProjectID: validNullString(projectID), OperationType: "argo.pod_logs"}).Order(gormOrderDesc("created_at")).Limit(200).Find(&ops).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, 20)
+	for _, op := range ops {
+		input := mapFromAny(op.Input.Data)
+		if stringFromMap(input, "deployment_target_id") != deploymentTargetID || stringFromMap(input, "pod_name") != podName || stringFromMap(input, "container_name") != containerName {
+			continue
+		}
+		logCount, err := operationLogCountGorm(ctx, s.store.Gorm, op.ID)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, map[string]any{"id": op.ID, "status": op.Status, "result": mapFromAny(op.Result.Data), "created_at": op.CreatedAt, "updated_at": op.UpdatedAt, "finished_at": nullableTimeAny(op.FinishedAt), "operation_log_count": logCount})
+		if len(items) >= 20 {
+			break
+		}
+	}
+	return items, nil
+}
+
+func operationLogCountGorm(ctx context.Context, db *gorm.DB, operationID string) (int, error) {
+	var count int64
+	if err := db.WithContext(ctx).Model(&GormOperationLog{}).Where(&GormOperationLog{OperationRunID: validNullString(operationID)}).Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return int(count), nil
 }
 
 func (s *Server) requestArgoPodLogRetrieval(w http.ResponseWriter, r *http.Request) {
@@ -26038,7 +25412,7 @@ func (s *Server) requestArgoPodLogRetrieval(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	target, err := loadArgoPodLogTarget(r.Context(), s.store.DB, projectID, cleaned.DeploymentTargetID)
+	target, err := s.loadArgoPodLogTargetGorm(r.Context(), projectID, cleaned.DeploymentTargetID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -26101,7 +25475,7 @@ func (s *Server) requestArgoPodRestart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	target, err := loadArgoPodLogTarget(r.Context(), s.store.DB, projectID, cleaned.DeploymentTargetID)
+	target, err := s.loadArgoPodLogTargetGorm(r.Context(), projectID, cleaned.DeploymentTargetID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -26243,7 +25617,7 @@ func argoPodRestartOperationInput(projectID string, target map[string]any, deplo
 	}
 }
 
-func (s *Server) enqueueArgoPodRestartOperationTx(ctx context.Context, tx *sqlx.Tx, input map[string]any) (map[string]any, error) {
+func (s *Server) enqueueArgoPodRestartOperationGorm(ctx context.Context, tx *gorm.DB, input map[string]any) (map[string]any, error) {
 	projectID := cleanOptionalID(fmt.Sprint(input["project_id"]))
 	targetID := cleanOptionalID(fmt.Sprint(input["deployment_target_id"]))
 	deploymentName := cleanOptionalText(fmt.Sprint(input["deployment_name"]))
@@ -26251,14 +25625,14 @@ func (s *Server) enqueueArgoPodRestartOperationTx(ctx context.Context, tx *sqlx.
 		return nil, fmt.Errorf("invalid pod restart operation input")
 	}
 	title := "restart deployment " + deploymentName
-	op, err := enqueueOperationTx(ctx, tx, projectID, "", "argo.pod_restart", title, input, []string{"argo", "kubernetes"}, "control-worker")
+	op, err := enqueueOperationGorm(ctx, tx, projectID, "", "argo.pod_restart", title, input, []string{"argo", "kubernetes"}, "control-worker")
 	if err != nil {
 		return nil, fmt.Errorf("could not enqueue pod restart operation")
 	}
 	return op, nil
 }
 
-func (s *Server) enqueueArgoPodLogOperationTx(ctx context.Context, tx *sqlx.Tx, input map[string]any) (map[string]any, error) {
+func (s *Server) enqueueArgoPodLogOperationGorm(ctx context.Context, tx *gorm.DB, input map[string]any) (map[string]any, error) {
 	projectID := cleanOptionalID(fmt.Sprint(input["project_id"]))
 	targetID := cleanOptionalID(fmt.Sprint(input["deployment_target_id"]))
 	podName := cleanOptionalText(fmt.Sprint(input["pod_name"]))
@@ -26266,7 +25640,7 @@ func (s *Server) enqueueArgoPodLogOperationTx(ctx context.Context, tx *sqlx.Tx, 
 		return nil, fmt.Errorf("invalid pod log operation input")
 	}
 	title := "retrieve pod logs for " + podName
-	op, err := enqueueOperationTx(ctx, tx, projectID, "", "argo.pod_logs", title, input, []string{"argo", "kubernetes"}, "control-worker")
+	op, err := enqueueOperationGorm(ctx, tx, projectID, "", "argo.pod_logs", title, input, []string{"argo", "kubernetes"}, "control-worker")
 	if err != nil {
 		return nil, fmt.Errorf("could not enqueue pod log operation")
 	}
@@ -27201,86 +26575,6 @@ func podLogPlanStatus(ready bool) string {
 	return "blocked"
 }
 
-func rollbackPointReadinessSQL(limit int) string {
-	if limit <= 0 {
-		limit = 20
-	}
-	// Keep rollback_execution_plan in sync with rollbackExecutionPlan; tests lock
-	// the redacted preview contract because this SQL feeds API/context surfaces.
-	return fmt.Sprintf(`
-		SELECT rp.*,
-			dt.name AS deployment_target_name,
-			dt.namespace AS deployment_namespace,
-			dt.cluster_name AS deployment_cluster_name,
-			dr.status AS deployment_status,
-			false AS rollback_executable,
-			'read_only_preview' AS rollback_execution_mode,
-			CASE
-				WHEN COALESCE(rp.status, '')='expired' THEN 'blocked'
-				WHEN COALESCE(rp.revision, '')='' THEN 'incomplete'
-				WHEN COALESCE(rp.status, '')='available' THEN 'previewable'
-				ELSE 'blocked'
-			END AS rollback_readiness,
-			CASE
-				WHEN COALESCE(rp.status, '')='expired' THEN 'rollback point is expired'
-				WHEN COALESCE(rp.revision, '')='' THEN 'rollback point has no captured revision'
-				WHEN COALESCE(rp.status, '')='available' THEN 'rollback point has revision metadata; execution remains disabled in this first version'
-				ELSE 'rollback point is not available'
-			END AS rollback_readiness_reason,
-			jsonb_build_object(
-				'mode', 'redacted_rollback_execution_plan',
-				'plan_state', 'blocked',
-				'prerequisite_state', CASE WHEN COALESCE(rp.status, '')='available' AND COALESCE(rp.revision, '')<>'' THEN 'metadata_available' ELSE 'metadata_blocked' END,
-				'plan_ready', false,
-				'plan_ready_reason', 'rollback_execution_backend_disabled',
-				'execution_enabled', false,
-				'execution_mode', 'read_only_preview',
-				'requires_approval', true,
-				'approval_action', 'deployment.rollback',
-				'requires_environment_review', true,
-				'requires_kubeconfig_binding', true,
-				'requires_revision_verification', true,
-				'requires_manifest_diff', true,
-				'requires_dry_run_preflight', true,
-				'requires_operator_confirmation', true,
-				'rollback_request_materialized', false,
-				'revision_verified', false,
-				'manifest_diff_rendered', false,
-				'dry_run_performed', false,
-				'kubernetes_client_constructed', false,
-				'helm_rollback_invoked', false,
-				'kubectl_rollout_invoked', false,
-				'argocd_rollback_invoked', false,
-				'rollback_started', false,
-				'external_call_made', false,
-				'kubernetes_api_call_made', false,
-				'helm_command_invoked', false,
-				'rollback_mutation', 'disabled',
-				'kubeconfig_included', false,
-				'secret_included', false,
-				'manifest_body_included', false,
-				'helm_values_included', false,
-				'cluster_credential_included', false,
-				'revision_value_included', false,
-				'contains_token', false,
-				'contains_kubeconfig', false,
-				'contains_secret', false,
-				'contains_manifest_body', false,
-				'rollback_boundary_redacted', true,
-				'blocked_reasons', jsonb_build_array('rollback_execution_backend_disabled', 'rollback_mutation_not_armed'),
-				'required_controls', jsonb_build_array('operation_approval', 'environment_review', 'kubeconfig_binding', 'revision_verification', 'manifest_diff', 'server_side_dry_run', 'operator_confirmation'),
-				'disabled_backends', jsonb_build_array('helm_rollback', 'kubectl_rollout_undo', 'argocd_rollback', 'rollback_execute'),
-				'suppressed_fields', jsonb_build_array('kubeconfig', 'cluster_token', 'authorization_header', 'secret_manifest', 'rendered_manifest', 'helm_values', 'image_pull_secret', 'environment_secret', 'revision_value'),
-				'execution_sequence', jsonb_build_array('request_approval', 'bind_environment', 'bind_kubeconfig', 'verify_revision', 'render_manifest_diff', 'run_server_side_dry_run', 'record_rollback_audit', 'start_rollback')
-			) AS rollback_execution_plan
-		FROM rollback_points rp
-		LEFT JOIN deployment_targets dt ON dt.id=rp.deployment_target_id
-		LEFT JOIN deployment_records dr ON dr.id=rp.deployment_record_id
-		WHERE rp.project_id=$1
-		ORDER BY rp.captured_at DESC
-		LIMIT %d`, limit)
-}
-
 func enrichDeploymentTargetsWithExecutionReadiness(rows []map[string]any) {
 	for _, row := range rows {
 		row["deployment_execution_readiness"] = deploymentExecutionReadiness(row)
@@ -27448,17 +26742,12 @@ func isPublicIP(ip net.IP) bool {
 func (s *Server) requireProjectPolicy(w http.ResponseWriter, r *http.Request, resource PolicyResource, action string) bool {
 	user := currentUser(r)
 	if user != nil && resource.ProjectID != "" && user.Role != "admin" && user.Role != "owner" {
-		var exists bool
-		err := s.store.DB.GetContext(r.Context(), &exists, `
-			SELECT EXISTS(
-				SELECT 1 FROM project_members
-				WHERE project_id=$1 AND user_id=$2
-			)`, resource.ProjectID, user.ID)
-		if err != nil {
+		var count int64
+		if err := s.store.Gorm.WithContext(r.Context()).Model(&GormProjectMember{}).Where(&GormProjectMember{ProjectID: resource.ProjectID, UserID: user.ID}).Count(&count).Error; err != nil {
 			writeError(w, http.StatusInternalServerError, "could not check project membership")
 			return false
 		}
-		if !exists {
+		if count == 0 {
 			writeJSON(w, http.StatusForbidden, PolicyDecision{Effect: PolicyDeny, Reason: "user is not a member of this project"})
 			return false
 		}
@@ -27497,39 +26786,30 @@ func (s *Server) createSSHMachine(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "auth_type must be key or password")
 		return
 	}
-	metadata, err := jsonParam(req.Metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "metadata must be valid JSON")
-		return
-	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start ssh machine transaction")
-		return
-	}
-	defer tx.Rollback()
-	credential, err := requireConnectionCredential(r.Context(), tx, projectID, req.CredentialID, credentialKind)
+	credential, err := s.connectionCredentialForProjectOrGlobal(r.Context(), projectID, req.CredentialID, credentialKind)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "credential_id must reference a matching SSH credential in this project")
 		return
 	}
-	item, err := queryOne(r.Context(), tx, `
-		INSERT INTO ssh_machines(project_id, name, host, port, username, auth_type, credential_id, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-		RETURNING id, project_id, name, host, port, username, auth_type, credential_id, metadata, created_at, updated_at,
-			$9::text AS credential_name, $10::text AS credential_kind, true AS credential_configured`, projectID, req.Name, req.Host, req.Port, req.Username, req.AuthType, req.CredentialID, metadata, credential["name"], credential["kind"])
-	if err != nil {
+	machine := GormSSHMachine{
+		ProjectID:    projectID,
+		Name:         req.Name,
+		Host:         req.Host,
+		Port:         req.Port,
+		Username:     req.Username,
+		AuthType:     req.AuthType,
+		CredentialID: validNullString(req.CredentialID),
+		Metadata:     JSONValue{Data: req.Metadata},
+	}
+	if err := s.store.Gorm.WithContext(r.Context()).Create(&machine).Error; err != nil {
 		writeError(w, http.StatusBadRequest, "could not create resource")
 		return
 	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ssh_machine.create") {
+	if _, err := s.store.SyncCanonicalAssets(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not sync ssh machine asset")
 		return
 	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit ssh machine")
-		return
-	}
-	writeJSON(w, http.StatusCreated, item)
+	writeJSON(w, http.StatusCreated, sshMachineMap(machine, credential))
 }
 
 func (s *Server) listSSHMachines(w http.ResponseWriter, r *http.Request) {
@@ -27537,27 +26817,32 @@ func (s *Server) listSSHMachines(w http.ResponseWriter, r *http.Request) {
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "ssh_machine", ProjectID: projectID}, "read") {
 		return
 	}
-	items, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT sm.*, cc.name AS credential_name, cc.kind AS credential_kind,
-			(cc.secret_ciphertext <> '') AS credential_configured
-		FROM ssh_machines sm
-		LEFT JOIN connection_credentials cc ON cc.id=sm.credential_id
-		WHERE sm.project_id=$1
-		ORDER BY sm.created_at DESC`, projectID)
-	writeQueryResult(w, items, err)
+	var machines []GormSSHMachine
+	err := s.store.Gorm.WithContext(r.Context()).
+		Where(map[string]any{"project_id": projectID}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true}).
+		Find(&machines).Error
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	credentials, err := s.connectionCredentialsForSSHMachine(r.Context(), machines)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": sshMachineMaps(machines, credentials)})
 }
 
 func (s *Server) getSSHMachineRehearsal(w http.ResponseWriter, r *http.Request) {
 	machineID := chi.URLParam(r, "id")
-	machine, err := queryOne(r.Context(), s.store.DB, `
-		SELECT id, project_id, name, host, port, username, auth_type, metadata, created_at, updated_at
-		FROM ssh_machines
-		WHERE id=$1`, machineID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var machineModel GormSSHMachine
+	if err := s.store.Gorm.WithContext(r.Context()).First(&machineModel, &GormSSHMachine{GormBase: GormBase{ID: machineID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
-	projectID := cleanPreviewString(machine["project_id"])
+	machine := sshMachineMap(machineModel, nil)
+	projectID := cleanPreviewString(machineModel.ProjectID)
 	if projectID == "" {
 		writeError(w, http.StatusInternalServerError, "SSH machine has no project")
 		return
@@ -27565,23 +26850,73 @@ func (s *Server) getSSHMachineRehearsal(w http.ResponseWriter, r *http.Request) 
 	if !s.requireProjectPolicy(w, r, PolicyResource{Type: "ssh_machine", ID: machineID, ProjectID: projectID}, "read") {
 		return
 	}
-	runs, err := queryMaps(r.Context(), s.store.DB, `
-		SELECT scr.id, scr.status, scr.exit_code, scr.created_at, scr.finished_at, op.operation_type
-		FROM ssh_command_runs scr
-		LEFT JOIN operation_runs op ON op.id=scr.operation_run_id
-		WHERE scr.ssh_machine_id=$1
-		ORDER BY scr.created_at DESC
-		LIMIT 50`, machineID)
+	runs, err := sshMachineRehearsalRunMaps(r.Context(), s.store.Gorm, machineID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load SSH rehearsal evidence")
 		return
 	}
-	proofEvidence, err := sshMachineTargetEnvironmentProofEvidence(r.Context(), s.store.DB, machineID)
+	proofEvidence, err := sshMachineTargetEnvironmentProofEvidence(r.Context(), s.store.Gorm, machineID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not load SSH target environment proof evidence")
 		return
 	}
 	writeJSON(w, http.StatusOK, buildSSHMachineRehearsalPreview(machine, runs, proofEvidence))
+}
+
+func sshMachineRehearsalRunMaps(ctx context.Context, db *gorm.DB, machineID string) ([]map[string]any, error) {
+	var runs []GormSSHCommandRun
+	if err := db.WithContext(ctx).
+		Where(&GormSSHCommandRun{SSHMachineID: validNullString(machineID)}).
+		Clauses(clause.OrderBy{Columns: []clause.OrderByColumn{{Column: clause.Column{Name: "created_at"}, Desc: true}}}).
+		Limit(50).
+		Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	opTypes, err := operationTypesByID(ctx, db, sshRunOperationIDs(runs))
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(runs))
+	for _, run := range runs {
+		items = append(items, map[string]any{
+			"id":             run.ID,
+			"status":         run.Status,
+			"exit_code":      nullableInt64Any(run.ExitCode),
+			"created_at":     run.CreatedAt,
+			"finished_at":    nullableTimeAny(run.FinishedAt),
+			"operation_type": opTypes[cleanOptionalID(run.OperationRunID.String)],
+		})
+	}
+	return items, nil
+}
+
+func sshRunOperationIDs(runs []GormSSHCommandRun) []string {
+	ids := make([]string, 0, len(runs))
+	seen := map[string]bool{}
+	for _, run := range runs {
+		id := cleanOptionalID(run.OperationRunID.String)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func operationTypesByID(ctx context.Context, db *gorm.DB, ids []string) (map[string]string, error) {
+	if len(ids) == 0 {
+		return map[string]string{}, nil
+	}
+	var runs []GormOperationRun
+	if err := db.WithContext(ctx).Find(&runs, ids).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(runs))
+	for _, run := range runs {
+		out[run.ID] = run.OperationType
+	}
+	return out, nil
 }
 
 func (s *Server) recordSSHMachineTargetEnvironmentProof(w http.ResponseWriter, r *http.Request) {
@@ -27592,7 +26927,7 @@ func (s *Server) recordSSHMachineTargetEnvironmentProof(w http.ResponseWriter, r
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	machine, err := sshMachineForRehearsalSnapshot(r.Context(), s.store.DB, machineID)
+	machine, err := sshMachineForRehearsalSnapshot(r.Context(), s.store.Gorm, machineID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -27627,7 +26962,7 @@ func (s *Server) recordSSHMachineRehearsalSnapshot(w http.ResponseWriter, r *htt
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	machine, err := sshMachineForRehearsalSnapshot(r.Context(), s.store.DB, machineID)
+	machine, err := sshMachineForRehearsalSnapshot(r.Context(), s.store.Gorm, machineID)
 	if err != nil {
 		writeQueryOne(w, nil, err)
 		return
@@ -28448,11 +27783,12 @@ func reasonWhen(ok bool, ready, blocked string) string {
 
 func (s *Server) createSSHCommand(w http.ResponseWriter, r *http.Request) {
 	machineID := chi.URLParam(r, "id")
-	machine, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM ssh_machines WHERE id=$1", machineID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var machineModel GormSSHMachine
+	if err := s.store.Gorm.WithContext(r.Context()).First(&machineModel, &GormSSHMachine{GormBase: GormBase{ID: machineID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
+	machine := sshMachineMap(machineModel, nil)
 	var req struct {
 		Command        string `json:"command"`
 		TimeoutSeconds int    `json:"timeout_seconds"`
@@ -28490,11 +27826,12 @@ func (s *Server) createSSHCommand(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) verifySSHMachine(w http.ResponseWriter, r *http.Request) {
 	machineID := chi.URLParam(r, "id")
-	machine, err := queryOne(r.Context(), s.store.DB, "SELECT * FROM ssh_machines WHERE id=$1", machineID)
-	if err != nil {
-		writeQueryOne(w, nil, err)
+	var machineModel GormSSHMachine
+	if err := s.store.Gorm.WithContext(r.Context()).First(&machineModel, &GormSSHMachine{GormBase: GormBase{ID: machineID}}).Error; err != nil {
+		writeQueryOne(w, nil, gormNotFoundAsErrNotFound(err))
 		return
 	}
+	machine := sshMachineMap(machineModel, nil)
 	input := map[string]any{
 		"ssh_machine_id":  machineID,
 		"command":         "true",
@@ -28508,38 +27845,27 @@ func (s *Server) verifySSHMachine(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createSSHRun(w http.ResponseWriter, r *http.Request, machineID string, input map[string]any, operationType, title, syncReason string) {
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start SSH command transaction")
-		return
-	}
-	defer tx.Rollback()
-	op, run, err := s.enqueueSSHCommandRun(r.Context(), tx, machineID, input, currentUser(r).ID, operationType, title)
-	if err != nil {
+	var op map[string]any
+	var run map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var err error
+		op, run, err = s.enqueueSSHCommandRunGorm(r.Context(), tx, machineID, input, currentUser(r).ID, operationType, title)
+		if err != nil {
+			return err
+		}
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	switch syncReason {
-	case "ssh_verify.enqueue":
-		if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ssh_verify.enqueue") {
-			return
-		}
-	default:
-		if !s.syncCanonicalAssetsInTransaction(w, r, tx, "ssh_command.enqueue") {
-			return
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit SSH command")
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"operation": op, "run": run})
 }
 
-func (s *Server) enqueueSSHCommandRun(ctx context.Context, tx *sqlx.Tx, machineID string, input map[string]any, actorID, operationType, title string) (map[string]any, map[string]any, error) {
-	machine, err := queryOne(ctx, tx, "SELECT * FROM ssh_machines WHERE id=$1 FOR SHARE", machineID)
-	if err != nil {
-		return nil, nil, err
+func (s *Server) enqueueSSHCommandRunGorm(ctx context.Context, tx *gorm.DB, machineID string, input map[string]any, actorID, operationType, title string) (map[string]any, map[string]any, error) {
+	var machine GormSSHMachine
+	if err := tx.First(&machine, &GormSSHMachine{GormBase: GormBase{ID: machineID}}).Error; err != nil {
+		return nil, nil, gormNotFoundAsErrNotFound(err)
 	}
 	command := strings.TrimSpace(stringFromMap(input, "command"))
 	if command == "" {
@@ -28549,38 +27875,28 @@ func (s *Server) enqueueSSHCommandRun(ctx context.Context, tx *sqlx.Tx, machineI
 		operationType = "ssh.exec"
 	}
 	if title == "" {
-		title = "ssh " + fmt.Sprint(machine["name"])
+		title = "ssh " + machine.Name
 	}
-	op, err := enqueueOperationTx(
-		ctx,
-		tx,
-		fmt.Sprint(machine["project_id"]),
-		"",
-		operationType,
-		title,
-		input,
-		[]string{"ssh"},
-		"control-worker",
-	)
+	op, err := enqueueOperationGorm(ctx, tx, machine.ProjectID, "", operationType, title, input, []string{"ssh"}, "control-worker")
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not enqueue SSH command")
 	}
-	run, err := queryOne(ctx, tx, `
-		INSERT INTO ssh_command_runs(
-			operation_run_id, ssh_machine_id, project_id, command, actor_user_id, status
-		)
-		VALUES ($1, $2, $3, $4, $5, 'queued')
-		RETURNING *`,
-		op["id"],
-		machineID,
-		machine["project_id"],
-		command,
-		actorID,
-	)
-	if err != nil {
+	run := GormSSHCommandRun{OperationRunID: validNullString(cleanOptionalID(fmt.Sprint(op["id"]))), SSHMachineID: validNullString(machineID), ProjectID: validNullString(machine.ProjectID), ActorUserID: validNullString(actorID), Command: command, Status: "queued"}
+	if err := tx.Create(&run).Error; err != nil {
 		return nil, nil, fmt.Errorf("could not create SSH command run")
 	}
-	return op, run, nil
+	return op, sshCommandRunMap(run, operationType), nil
+}
+
+func sshCommandRunMap(run GormSSHCommandRun, operationType string) map[string]any {
+	return map[string]any{"id": run.ID, "operation_run_id": nullableStringValue(run.OperationRunID), "ssh_machine_id": nullableStringValue(run.SSHMachineID), "project_id": nullableStringValue(run.ProjectID), "actor_user_id": nullableStringValue(run.ActorUserID), "command": run.Command, "status": run.Status, "exit_code": nullableInt64Any(run.ExitCode), "stdout": run.Stdout, "stderr": run.Stderr, "error_message": run.ErrorMessage, "started_at": nullableTimeAny(run.StartedAt), "finished_at": nullableTimeAny(run.FinishedAt), "created_at": run.CreatedAt, "operation_type": operationType}
+}
+
+func nullableInt64Any(value sql.NullInt64) any {
+	if value.Valid {
+		return value.Int64
+	}
+	return nil
 }
 
 func (s *Server) listSSHCommandRuns(w http.ResponseWriter, r *http.Request) {
@@ -28591,26 +27907,52 @@ func (s *Server) listSSHCommandRuns(w http.ResponseWriter, r *http.Request) {
 	machineID := r.URL.Query().Get("machine_id")
 	switch {
 	case machineID != "":
-		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT scr.*, op.operation_type
-			FROM ssh_command_runs scr
-			LEFT JOIN operation_runs op ON op.id=scr.operation_run_id
-			WHERE scr.ssh_machine_id=$1
-			ORDER BY scr.created_at DESC
-			LIMIT 100`, machineID)
+		items, err := s.sshCommandRunMaps(r.Context(), GormSSHCommandRun{SSHMachineID: validNullString(machineID)})
 		writeQueryResult(w, items, err)
 	case projectID != "":
-		items, err := queryMaps(r.Context(), s.store.DB, `
-			SELECT scr.*, op.operation_type
-			FROM ssh_command_runs scr
-			LEFT JOIN operation_runs op ON op.id=scr.operation_run_id
-			WHERE scr.project_id=$1
-			ORDER BY scr.created_at DESC
-			LIMIT 100`, projectID)
+		items, err := s.sshCommandRunMaps(r.Context(), GormSSHCommandRun{ProjectID: validNullString(projectID)})
 		writeQueryResult(w, items, err)
 	default:
 		writeError(w, http.StatusBadRequest, "project_id or machine_id is required")
 	}
+}
+
+func (s *Server) sshCommandRunMaps(ctx context.Context, filter GormSSHCommandRun) ([]map[string]any, error) {
+	if s.store == nil || s.store.Gorm == nil {
+		return nil, fmt.Errorf("gorm store is not initialized")
+	}
+	var runs []GormSSHCommandRun
+	if err := s.store.Gorm.WithContext(ctx).
+		Where(&filter).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true}).
+		Limit(100).
+		Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	operationTypes := map[string]string{}
+	opIDs := make([]string, 0, len(runs))
+	seen := map[string]bool{}
+	for _, run := range runs {
+		opID := cleanOptionalID(run.OperationRunID.String)
+		if opID != "" && !seen[opID] {
+			seen[opID] = true
+			opIDs = append(opIDs, opID)
+		}
+	}
+	if len(opIDs) > 0 {
+		var ops []GormOperationRun
+		if err := s.store.Gorm.WithContext(ctx).Find(&ops, opIDs).Error; err != nil {
+			return nil, err
+		}
+		for _, op := range ops {
+			operationTypes[op.ID] = op.OperationType
+		}
+	}
+	items := make([]map[string]any, 0, len(runs))
+	for _, run := range runs {
+		items = append(items, sshCommandRunMap(run, operationTypes[cleanOptionalID(run.OperationRunID.String)]))
+	}
+	return items, nil
 }
 
 func (s *Server) registerNode(w http.ResponseWriter, r *http.Request) {
@@ -28633,39 +27975,50 @@ func (s *Server) registerNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "reserved worker node kind")
 		return
 	}
-	metadata, _ := jsonParam(req.Metadata)
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start worker node registration transaction")
-		return
-	}
-	defer tx.Rollback()
-	node, err := queryOne(r.Context(), tx, `
-		INSERT INTO worker_nodes(name, kind, capabilities, metadata)
-		VALUES ($1, $2, $3, $4::jsonb)
-		ON CONFLICT(name) DO UPDATE SET kind=EXCLUDED.kind, capabilities=EXCLUDED.capabilities, metadata=EXCLUDED.metadata, status='online', last_heartbeat_at=now(), updated_at=now()
-		RETURNING *`, req.Name, req.Kind, pq.Array(req.Capabilities), metadata)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "could not register node")
-		return
-	}
 	token := newToken()
-	_, err = tx.ExecContext(r.Context(), `
-		INSERT INTO worker_node_tokens(worker_node_id, token_hash)
-		VALUES ($1, $2)`, node["id"], tokenHash(token))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not create node token")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "worker_node.register") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit worker node registration")
+	var node map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var model GormWorkerNode
+		err := tx.Where(&GormWorkerNode{Name: req.Name}).First(&model).Error
+		if err != nil && !errorsIsRecordNotFound(err) {
+			return err
+		}
+		model.Name = req.Name
+		model.Kind = req.Kind
+		model.Capabilities = pq.StringArray(req.Capabilities)
+		model.Metadata = JSONValue{Data: req.Metadata}
+		model.Status = "online"
+		model.LastHeartbeatAt = time.Now()
+		if err := tx.Save(&model).Error; err != nil {
+			return err
+		}
+		tokenModel := GormWorkerNodeToken{WorkerNodeID: model.ID, TokenHash: tokenHash(token)}
+		if err := tx.Create(&tokenModel).Error; err != nil {
+			return err
+		}
+		node = workerNodeMap(model)
+		_, err = syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, "could not register node")
 		return
 	}
 	node["token"] = token
 	writeJSON(w, http.StatusCreated, node)
+}
+
+func workerNodeMap(node GormWorkerNode) map[string]any {
+	return map[string]any{
+		"id":                node.ID,
+		"name":              node.Name,
+		"kind":              node.Kind,
+		"capabilities":      []string(node.Capabilities),
+		"status":            node.Status,
+		"last_heartbeat_at": node.LastHeartbeatAt,
+		"metadata":          mapFromAny(node.Metadata.Data),
+		"created_at":        node.CreatedAt,
+		"updated_at":        node.UpdatedAt,
+	}
 }
 
 func (s *Server) nodeHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -28673,25 +28026,26 @@ func (s *Server) nodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start worker node heartbeat transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE worker_nodes SET status='online', last_heartbeat_at=now(), updated_at=now()
-		WHERE id=$1 RETURNING *`, node["id"])
-	if err != nil {
-		writeQueryOne(w, nil, err)
-		return
-	}
-	if _, err := SyncWorkerNodeCanonicalAssetWith(r.Context(), tx, node["id"]); err != nil {
+	var item map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var model GormWorkerNode
+		if err := tx.First(&model, &GormWorkerNode{GormBase: GormBase{ID: cleanOptionalID(fmt.Sprint(node["id"]))}}).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		model.Status = "online"
+		model.LastHeartbeatAt = time.Now()
+		if err := tx.Save(&model).Error; err != nil {
+			return err
+		}
+		item = workerNodeMap(model)
+		_, err := syncWorkerNodeCanonicalAssetGorm(r.Context(), tx, fmt.Sprint(model.ID))
+		return err
+	}); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeQueryOne(w, nil, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not sync worker node canonical asset")
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit worker node heartbeat")
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -28702,41 +28056,53 @@ func (s *Server) claimJob(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start claim transaction")
-		return
-	}
-	defer tx.Rollback()
-	item, err := queryOne(r.Context(), tx, `
-		UPDATE worker_jobs
-		SET status='running', assigned_worker_node_id=$1, claimed_at=now(), started_at=now(), updated_at=now()
-		WHERE id = (
-			SELECT id FROM worker_jobs
-			WHERE status='queued'
-			  AND (preferred_node_kind='' OR preferred_node_kind=(SELECT kind FROM worker_nodes WHERE id=$1))
-			ORDER BY created_at
-			FOR UPDATE SKIP LOCKED
-			LIMIT 1
-		)
-		RETURNING *`, node["id"])
+	var item map[string]any
+	err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var jobs []GormWorkerJob
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where(&GormWorkerJob{Status: "queued"}).
+			Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}}).
+			Find(&jobs).Error; err != nil {
+			return err
+		}
+		nodeKind := strings.TrimSpace(fmt.Sprint(node["kind"]))
+		selected := -1
+		for i, job := range jobs {
+			preferred := strings.TrimSpace(job.PreferredNodeKind)
+			if preferred == "" || preferred == nodeKind {
+				selected = i
+				break
+			}
+		}
+		if selected < 0 {
+			return ErrNotFound
+		}
+		job := jobs[selected]
+		now := time.Now()
+		job.Status = "running"
+		job.AssignedWorkerNodeID = validNullString(cleanOptionalID(fmt.Sprint(node["id"])))
+		job.ClaimedAt = validNullTime(now)
+		job.StartedAt = validNullTime(now)
+		if err := tx.Save(&job).Error; err != nil {
+			return err
+		}
+		if opID := cleanOptionalID(job.OperationRunID.String); opID != "" {
+			if err := tx.Model(&GormOperationRun{}).
+				Where(&GormOperationRun{GormBase: GormBase{ID: opID}}).
+				Updates(map[string]any{"status": "running", "started_at": validNullTime(now)}).Error; err != nil {
+				return err
+			}
+		}
+		item = workerJobMap(job)
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	})
 	if errors.Is(err, ErrNotFound) {
 		writeJSON(w, http.StatusOK, map[string]any{"job": nil})
 		return
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not claim job")
-		return
-	}
-	if _, err := tx.ExecContext(r.Context(), "UPDATE operation_runs SET status='running', started_at=COALESCE(started_at, now()), updated_at=now() WHERE id=$1", item["operation_run_id"]); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update operation status")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "worker_job.claim") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit claimed job")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"job": item})
@@ -28758,13 +28124,21 @@ func (s *Server) nodeJobLog(w http.ResponseWriter, r *http.Request) {
 	if req.Level == "" {
 		req.Level = "info"
 	}
-	fields, _ := jsonParam(req.Fields)
-	item, err := queryOne(r.Context(), s.store.DB, `
-		INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-		SELECT operation_run_id, id, $3, $4, $5::jsonb FROM worker_jobs
-		WHERE id=$1 AND assigned_worker_node_id=$2
-		RETURNING *`, chi.URLParam(r, "id"), node["id"], req.Level, req.Message, fields)
-	writeCreatedOne(w, item, err)
+	var job GormWorkerJob
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormWorkerJob{GormBase: GormBase{ID: chi.URLParam(r, "id")}, AssignedWorkerNodeID: validNullString(cleanOptionalID(fmt.Sprint(node["id"])))}).First(&job).Error; err != nil {
+		writeCreatedOne(w, nil, gormNotFoundAsErrNotFound(err))
+		return
+	}
+	log := GormOperationLog{OperationRunID: job.OperationRunID, WorkerJobID: validNullString(job.ID), Level: req.Level, Message: req.Message, Fields: JSONValue{Data: req.Fields}}
+	if err := s.store.Gorm.WithContext(r.Context()).Create(&log).Error; err != nil {
+		writeCreatedOne(w, nil, err)
+		return
+	}
+	writeCreatedOne(w, operationLogMap(log), nil)
+}
+
+func operationLogMap(log GormOperationLog) map[string]any {
+	return map[string]any{"id": log.ID, "operation_run_id": nullableStringValue(log.OperationRunID), "worker_job_id": nullableStringValue(log.WorkerJobID), "level": log.Level, "message": log.Message, "fields": mapFromAny(log.Fields.Data), "created_at": log.CreatedAt}
 }
 
 func (s *Server) nodeJobComplete(w http.ResponseWriter, r *http.Request) {
@@ -28785,36 +28159,35 @@ func (s *Server) finishNodeJob(w http.ResponseWriter, r *http.Request, status st
 		Error  string         `json:"error"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	result, _ := jsonParam(req.Result)
-	tx, err := s.store.DB.BeginTxx(r.Context(), nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start job finish transaction")
-		return
-	}
-	defer tx.Rollback()
-	job, err := queryOne(r.Context(), tx, `
-		UPDATE worker_jobs SET status=$3, result=$4::jsonb, error=$5, finished_at=now(), updated_at=now()
-		WHERE id=$1 AND assigned_worker_node_id=$2
-		RETURNING *`, chi.URLParam(r, "id"), node["id"], status, result, req.Error)
-	if err != nil {
+	var job map[string]any
+	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		var jobModel GormWorkerJob
+		if err := tx.Where(&GormWorkerJob{GormBase: GormBase{ID: chi.URLParam(r, "id")}, AssignedWorkerNodeID: validNullString(cleanOptionalID(fmt.Sprint(node["id"])))}).First(&jobModel).Error; err != nil {
+			return gormNotFoundAsErrNotFound(err)
+		}
+		jobModel.Status = status
+		jobModel.Result = JSONValue{Data: req.Result}
+		jobModel.Error = req.Error
+		jobModel.FinishedAt = validNullTime(time.Now())
+		if err := tx.Save(&jobModel).Error; err != nil {
+			return err
+		}
+		opStatus := "completed"
+		if status == "failed" {
+			opStatus = "failed"
+		}
+		opID := cleanOptionalID(jobModel.OperationRunID.String)
+		if opID != "" {
+			updates := map[string]any{"status": opStatus, "result": JSONValue{Data: req.Result}, "error": req.Error, "finished_at": validNullTime(time.Now())}
+			if err := tx.Model(&GormOperationRun{}).Where(&GormOperationRun{GormBase: GormBase{ID: opID}}).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		job = workerJobMap(jobModel)
+		_, err := syncCanonicalAssetsGorm(r.Context(), tx)
+		return err
+	}); err != nil {
 		writeQueryOne(w, nil, err)
-		return
-	}
-	opStatus := "completed"
-	if status == "failed" {
-		opStatus = "failed"
-	}
-	if _, err := tx.ExecContext(r.Context(), `
-		UPDATE operation_runs SET status=$2, result=$3::jsonb, error=$4, finished_at=now(), updated_at=now()
-		WHERE id=$1`, job["operation_run_id"], opStatus, result, req.Error); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update operation status")
-		return
-	}
-	if !s.syncCanonicalAssetsInTransaction(w, r, tx, "worker_job.finish") {
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not commit job finish")
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
@@ -28833,16 +28206,20 @@ func (s *Server) authenticateNode(w http.ResponseWriter, r *http.Request) (map[s
 		writeError(w, http.StatusUnauthorized, "missing node token")
 		return nil, false
 	}
-	node, err := queryOne(r.Context(), s.store.DB, `
-		SELECT wn.* FROM worker_nodes wn
-		JOIN worker_node_tokens wnt ON wnt.worker_node_id=wn.id
-		WHERE wnt.token_hash=$1`, tokenHash(token))
-	if err != nil {
+	var tokenModel GormWorkerNodeToken
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormWorkerNodeToken{TokenHash: tokenHash(token)}).First(&tokenModel).Error; err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid node token")
 		return nil, false
 	}
-	_, _ = s.store.DB.ExecContext(r.Context(), "UPDATE worker_node_tokens SET last_used_at=now() WHERE token_hash=$1", tokenHash(token))
-	return node, true
+	var nodeModel GormWorkerNode
+	if err := s.store.Gorm.WithContext(r.Context()).First(&nodeModel, &GormWorkerNode{GormBase: GormBase{ID: tokenModel.WorkerNodeID}}).Error; err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid node token")
+		return nil, false
+	}
+	_ = s.store.Gorm.WithContext(r.Context()).Model(&GormWorkerNodeToken{}).
+		Where(&GormWorkerNodeToken{ID: tokenModel.ID}).
+		Updates(map[string]any{"last_used_at": validNullTime(time.Now())}).Error
+	return workerNodeMap(nodeModel), true
 }
 
 func (s *Server) generateContext(w http.ResponseWriter, r *http.Request) {
@@ -28859,135 +28236,110 @@ func (s *Server) generateContext(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) BuildContextFiles(ctx context.Context, projectID string) (map[string]string, map[string]any, error) {
-	project, err := queryOne(ctx, s.store.DB, "SELECT * FROM projects WHERE id=$1", projectID)
+	db := s.store.Gorm.WithContext(ctx)
+	var projectModel GormProject
+	if err := db.First(&projectModel, &GormProject{GormBase: GormBase{ID: projectID}}).Error; err != nil {
+		return nil, nil, gormNotFoundAsErrNotFound(err)
+	}
+	project := projectMap(projectModel)
+	var repoModels []GormProjectGitRepository
+	if err := db.Where(&GormProjectGitRepository{ProjectID: projectID}).Order(gormOrderAsc("name")).Find(&repoModels).Error; err != nil {
+		return nil, nil, err
+	}
+	repos := gitRepositoryMaps(repoModels)
+	repoIDs := make([]string, 0, len(repoModels))
+	for _, repo := range repoModels {
+		repoIDs = append(repoIDs, repo.ID)
+	}
+	var remoteModels []GormGitRemote
+	if len(repoIDs) > 0 {
+		if err := db.Where(gormField("project_git_repository_id", repoIDs)).Order(gormOrderAsc("name")).Find(&remoteModels).Error; err != nil {
+			return nil, nil, err
+		}
+	}
+	remoteCredentials, err := s.connectionCredentialsForGitRemotes(ctx, remoteModels)
 	if err != nil {
 		return nil, nil, err
 	}
-	repos, err := queryMaps(ctx, s.store.DB, "SELECT * FROM project_git_repositories WHERE project_id=$1 ORDER BY name", projectID)
-	if err != nil {
+	remotes := gitRemoteMaps(remoteModels, remoteCredentials, projectID)
+	remoteIDs := make([]string, 0, len(remoteModels))
+	for _, remote := range remoteModels {
+		remoteIDs = append(remoteIDs, remote.ID)
+	}
+	var operationModels []GormOperationRun
+	if err := db.Where(&GormOperationRun{ProjectID: validNullString(projectID)}).Order(gormOrderDesc("created_at")).Limit(20).Find(&operationModels).Error; err != nil {
 		return nil, nil, err
 	}
-	remotes, err := queryMaps(ctx, s.store.DB, `
-		SELECT gr.* FROM git_remotes gr
-		JOIN project_git_repositories pgr ON pgr.id=gr.project_git_repository_id
-		WHERE pgr.project_id=$1 ORDER BY gr.name`, projectID)
-	if err != nil {
+	operations := make([]map[string]any, 0, len(operationModels))
+	for _, operation := range operationModels {
+		item := operationRunMap(operation)
+		delete(item, "input")
+		delete(item, "result")
+		delete(item, "started_at")
+		delete(item, "finished_at")
+		operations = append(operations, item)
+	}
+	var approvalModels []GormOperationApproval
+	if err := db.Where(&GormOperationApproval{ProjectID: validNullString(projectID)}).Order(gormOrderDesc("created_at")).Limit(20).Find(&approvalModels).Error; err != nil {
 		return nil, nil, err
 	}
-	operations, err := queryMaps(ctx, s.store.DB, `
-		SELECT id, operation_type, status, title, error, created_at, updated_at
-		FROM operation_runs
-		WHERE project_id=$1
-		ORDER BY created_at DESC
-		LIMIT 20`, projectID)
-	if err != nil {
+	approvals := contextOperationApprovalMaps(approvalModels)
+	var deploymentTargetModels []GormDeploymentTarget
+	if err := db.Where(&GormDeploymentTarget{ProjectID: projectID}).Order(gormOrderDesc("updated_at")).Limit(20).Find(&deploymentTargetModels).Error; err != nil {
 		return nil, nil, err
 	}
-	approvals, err := queryMaps(ctx, s.store.DB, `
-		SELECT id, resource_type, resource_id, action, title, status, expires_at, created_at, updated_at
-		FROM operation_approvals
-		WHERE project_id=$1
-		ORDER BY created_at DESC
-		LIMIT 20`, projectID)
-	if err != nil {
-		return nil, nil, err
-	}
-	deploymentTargets, err := queryMaps(ctx, s.store.DB, `
-		SELECT id, name, environment, cluster_name, namespace, source, status, updated_at
-		FROM deployment_targets
-		WHERE project_id=$1
-		ORDER BY updated_at DESC
-		LIMIT 20`, projectID)
-	if err != nil {
-		return nil, nil, err
-	}
+	deploymentTargets := contextDeploymentTargetMaps(deploymentTargetModels)
 	enrichDeploymentTargetsWithExecutionReadiness(deploymentTargets)
-	deploymentRecords, err := queryMaps(ctx, s.store.DB, `
-		SELECT id, deployment_target_id, name, environment, namespace, cluster_name, source, status, revision, observed_at
-		FROM deployment_records
-		WHERE project_id=$1
-		ORDER BY observed_at DESC
-		LIMIT 20`, projectID)
-	if err != nil {
+	var deploymentRecordModels []GormDeploymentRecord
+	if err := db.Where(&GormDeploymentRecord{ProjectID: projectID}).Order(gormOrderDesc("observed_at")).Limit(20).Find(&deploymentRecordModels).Error; err != nil {
 		return nil, nil, err
 	}
-	rollbackPoints, err := queryMaps(ctx, s.store.DB, rollbackPointReadinessSQL(20), projectID)
+	deploymentRecords := contextDeploymentRecordMaps(deploymentRecordModels)
+	rollbackPoints, err := contextRollbackPointMaps(ctx, s.store.Gorm, projectID, 20)
 	if err != nil {
 		return nil, nil, err
 	}
 	sanitizeContextRowsMetadata(rollbackPoints)
-	sshMachines, err := queryMaps(ctx, s.store.DB, `
-		SELECT id, name, host, port, username, auth_type, created_at, updated_at
-		FROM ssh_machines
-		WHERE project_id=$1
-		ORDER BY updated_at DESC
-		LIMIT 20`, projectID)
+	var sshMachineModels []GormSSHMachine
+	if err := db.Where(&GormSSHMachine{ProjectID: projectID}).Order(gormOrderDesc("updated_at")).Limit(20).Find(&sshMachineModels).Error; err != nil {
+		return nil, nil, err
+	}
+	sshCredentials, err := s.connectionCredentialsForSSHMachine(ctx, sshMachineModels)
 	if err != nil {
 		return nil, nil, err
 	}
-	githubRuns, err := queryMaps(ctx, s.store.DB, `
-		SELECT gar.id, gar.git_remote_id, gar.workflow_name, gar.run_id, gar.branch, gar.commit_sha, gar.status, gar.conclusion, gar.html_url, gar.started_at, gar.updated_at, gar.synced_at
-		FROM github_action_runs gar
-		JOIN git_remotes gr ON gr.id=gar.git_remote_id
-		JOIN project_git_repositories pgr ON pgr.id=gr.project_git_repository_id
-		WHERE pgr.project_id=$1
-		ORDER BY gar.created_at DESC
-		LIMIT 20`, projectID)
+	sshMachines := sshMachineMaps(sshMachineModels, sshCredentials)
+	var githubRunModels []GormGitHubActionRun
+	if len(remoteIDs) > 0 {
+		if err := db.Where(gormField("git_remote_id", remoteIDs)).Order(gormOrderDesc("created_at")).Limit(20).Find(&githubRunModels).Error; err != nil {
+			return nil, nil, err
+		}
+	}
+	githubRuns := make([]map[string]any, 0, len(githubRunModels))
+	for _, run := range githubRunModels {
+		item := gitHubActionRunMap(run)
+		delete(item, "operation_run_id")
+		delete(item, "external_run_id")
+		delete(item, "metadata")
+		delete(item, "created_at")
+		githubRuns = append(githubRuns, item)
+	}
+	var assetModels []GormAsset
+	if err := db.Where(&GormAsset{ProjectID: validNullString(projectID)}).Order(gormOrder(gormOrderColumn("asset_type", false), gormOrderColumn("name", false))).Limit(200).Find(&assetModels).Error; err != nil {
+		return nil, nil, err
+	}
+	assets := assetMaps(assetModels)
+	assetIndex := map[string]GormAsset{}
+	assetIDs := make([]string, 0, len(assetModels))
+	for _, asset := range assetModels {
+		assetIndex[asset.ID] = asset
+		assetIDs = append(assetIDs, asset.ID)
+	}
+	assetRelations, err := contextAssetRelationMaps(ctx, s.store.Gorm, projectID, assetIndex, 300)
 	if err != nil {
 		return nil, nil, err
 	}
-	assets, err := queryMaps(ctx, s.store.DB, `
-		SELECT id, project_id, asset_type, source_table, source_id, name, display_name, source, external_id, status, risk_level, metadata, updated_at
-		FROM assets
-		WHERE project_id=$1
-		ORDER BY asset_type, name
-		LIMIT 200`, projectID)
-	if err != nil {
-		return nil, nil, err
-	}
-	assetRelations, err := queryMaps(ctx, s.store.DB, `
-		SELECT
-			ar.id,
-			ar.project_id,
-			ar.relation_type,
-			ar.metadata,
-			ar.created_at,
-			from_asset.id AS from_asset_id,
-			from_asset.asset_type AS from_asset_type,
-			from_asset.name AS from_asset_name,
-			from_asset.source_table AS from_source_table,
-			from_asset.source_id AS from_source_id,
-			to_asset.id AS to_asset_id,
-			to_asset.asset_type AS to_asset_type,
-			to_asset.name AS to_asset_name,
-			to_asset.source_table AS to_source_table,
-			to_asset.source_id AS to_source_id
-		FROM asset_relations ar
-		JOIN assets from_asset ON from_asset.id=ar.from_asset_id
-		JOIN assets to_asset ON to_asset.id=ar.to_asset_id
-		WHERE ar.project_id=$1
-			AND from_asset.project_id=$1
-			AND to_asset.project_id=$1
-		ORDER BY ar.relation_type, from_asset.name, to_asset.name
-		LIMIT 300`, projectID)
-	if err != nil {
-		return nil, nil, err
-	}
-	assetStatusSnapshots, err := queryMaps(ctx, s.store.DB, `
-		SELECT
-			ass.id,
-			ass.asset_id,
-			a.asset_type,
-			a.name AS asset_name,
-			ass.status,
-			ass.health,
-			ass.summary,
-			ass.collected_at
-		FROM asset_status_snapshots ass
-		JOIN assets a ON a.id=ass.asset_id
-		WHERE a.project_id=$1
-		ORDER BY ass.collected_at DESC, ass.id DESC
-		LIMIT 100`, projectID)
+	assetStatusSnapshots, err := contextAssetStatusSnapshotMaps(ctx, s.store.Gorm, assetIndex, assetIDs, 100)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -29044,13 +28396,100 @@ func (s *Server) BuildContextFiles(ctx context.Context, projectID string) (map[s
 	if err := writeJSONFile(files["tool-manifest.json"], manifest); err != nil {
 		return nil, nil, err
 	}
-	contextBytes, _ := json.Marshal(contextJSON)
-	manifestBytes, _ := json.Marshal(manifest)
-	snapshot, err := queryOne(ctx, s.store.DB, `
-		INSERT INTO agent_context_snapshots(project_id, summary_markdown, context_json, tool_manifest)
-		VALUES ($1, $2, $3::jsonb, $4::jsonb)
-		RETURNING *`, projectID, brief, string(contextBytes), string(manifestBytes))
-	return files, snapshot, err
+	snapshotModel := GormAgentContextSnapshot{ProjectID: projectID, SummaryMarkdown: brief, ContextJSON: JSONValue{Data: contextJSON}, ToolManifest: JSONValue{Data: manifest}}
+	if err := db.Create(&snapshotModel).Error; err != nil {
+		return nil, nil, err
+	}
+	return files, agentContextSnapshotMap(snapshotModel), nil
+}
+
+func agentContextSnapshotMap(snapshot GormAgentContextSnapshot) map[string]any {
+	return map[string]any{"id": snapshot.ID, "project_id": snapshot.ProjectID, "agent_task_id": nullableStringValue(snapshot.AgentTaskID), "summary_markdown": snapshot.SummaryMarkdown, "context_json": mapFromAny(snapshot.ContextJSON.Data), "tool_manifest": mapFromAny(snapshot.ToolManifest.Data), "created_at": snapshot.CreatedAt}
+}
+
+func contextOperationApprovalMaps(approvals []GormOperationApproval) []map[string]any {
+	items := make([]map[string]any, 0, len(approvals))
+	for _, approval := range approvals {
+		items = append(items, map[string]any{"id": approval.ID, "resource_type": approval.ResourceType, "resource_id": approval.ResourceID, "action": approval.Action, "title": approval.Title, "status": approval.Status, "expires_at": nullableTimeAny(approval.ExpiresAt), "created_at": approval.CreatedAt, "updated_at": approval.UpdatedAt})
+	}
+	return items
+}
+
+func contextDeploymentTargetMaps(targets []GormDeploymentTarget) []map[string]any {
+	items := make([]map[string]any, 0, len(targets))
+	for _, target := range targets {
+		items = append(items, map[string]any{"id": target.ID, "name": target.Name, "environment": target.Environment, "cluster_name": target.ClusterName, "namespace": target.Namespace, "source": target.Source, "status": target.Status, "updated_at": target.UpdatedAt})
+	}
+	return items
+}
+
+func contextDeploymentRecordMaps(records []GormDeploymentRecord) []map[string]any {
+	items := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		items = append(items, map[string]any{"id": record.ID, "deployment_target_id": nullableStringValue(record.DeploymentTargetID), "name": record.Name, "environment": record.Environment, "namespace": record.Namespace, "cluster_name": record.ClusterName, "source": record.Source, "status": record.Status, "revision": record.Revision, "observed_at": record.ObservedAt})
+	}
+	return items
+}
+
+func contextRollbackPointMaps(ctx context.Context, db *gorm.DB, projectID string, limit int) ([]map[string]any, error) {
+	var points []GormRollbackPoint
+	if err := db.WithContext(ctx).Where(&GormRollbackPoint{ProjectID: projectID}).Order(gormOrderDesc("captured_at")).Limit(limit).Find(&points).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(points))
+	for _, point := range points {
+		item := map[string]any{"id": point.ID, "project_id": point.ProjectID, "deployment_record_id": nullableStringValue(point.DeploymentRecordID), "deployment_target_id": nullableStringValue(point.DeploymentTargetID), "name": point.Name, "environment": point.Environment, "revision": point.Revision, "image_refs": mapFromAny(point.ImageRefs.Data), "source": point.Source, "status": point.Status, "metadata": sanitizeMetadata(mapFromAny(point.Metadata.Data)), "captured_at": point.CapturedAt, "created_at": point.CreatedAt}
+		readiness, reason := rollbackPointReadiness(item)
+		item["rollback_readiness"] = readiness
+		item["rollback_readiness_reason"] = reason
+		item["rollback_execution_mode"] = "read_only_preview"
+		item["rollback_executable"] = false
+		item["rollback_execution_plan"] = rollbackExecutionPlan(readiness, "read_only_preview")
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func contextAssetRelationMaps(ctx context.Context, db *gorm.DB, projectID string, assets map[string]GormAsset, limit int) ([]map[string]any, error) {
+	var relations []GormAssetRelation
+	if err := db.WithContext(ctx).Where(&GormAssetRelation{ProjectID: validNullString(projectID)}).Order(gormOrderAsc("relation_type")).Limit(limit).Find(&relations).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(relations))
+	for _, relation := range relations {
+		fromAsset, fromOK := assets[relation.FromAssetID]
+		toAsset, toOK := assets[relation.ToAssetID]
+		if !fromOK || !toOK {
+			continue
+		}
+		items = append(items, map[string]any{"id": relation.ID, "project_id": nullableStringValue(relation.ProjectID), "relation_type": relation.RelationType, "metadata": mapFromAny(relation.Metadata.Data), "created_at": relation.CreatedAt, "from_asset_id": fromAsset.ID, "from_asset_type": fromAsset.AssetType, "from_asset_name": fromAsset.Name, "from_source_table": fromAsset.SourceTable, "from_source_id": nullableStringValue(fromAsset.SourceID), "to_asset_id": toAsset.ID, "to_asset_type": toAsset.AssetType, "to_asset_name": toAsset.Name, "to_source_table": toAsset.SourceTable, "to_source_id": nullableStringValue(toAsset.SourceID)})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if fmt.Sprint(items[i]["relation_type"]) != fmt.Sprint(items[j]["relation_type"]) {
+			return fmt.Sprint(items[i]["relation_type"]) < fmt.Sprint(items[j]["relation_type"])
+		}
+		if fmt.Sprint(items[i]["from_asset_name"]) != fmt.Sprint(items[j]["from_asset_name"]) {
+			return fmt.Sprint(items[i]["from_asset_name"]) < fmt.Sprint(items[j]["from_asset_name"])
+		}
+		return fmt.Sprint(items[i]["to_asset_name"]) < fmt.Sprint(items[j]["to_asset_name"])
+	})
+	return items, nil
+}
+
+func contextAssetStatusSnapshotMaps(ctx context.Context, db *gorm.DB, assets map[string]GormAsset, assetIDs []string, limit int) ([]map[string]any, error) {
+	if len(assetIDs) == 0 {
+		return []map[string]any{}, nil
+	}
+	var snapshots []GormAssetStatusSnapshot
+	if err := db.WithContext(ctx).Where(gormField("asset_id", assetIDs)).Order(gormOrder(gormOrderColumn("collected_at", true), gormOrderColumn("id", true))).Limit(limit).Find(&snapshots).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		asset := assets[snapshot.AssetID]
+		items = append(items, map[string]any{"id": snapshot.ID, "asset_id": snapshot.AssetID, "asset_type": asset.AssetType, "asset_name": asset.Name, "status": snapshot.Status, "health": snapshot.Health, "summary": snapshot.Summary, "collected_at": snapshot.CollectedAt})
+	}
+	return items, nil
 }
 
 func writeJSONFile(path string, value any) error {
@@ -29116,8 +28555,8 @@ func writeCreatedOne(w http.ResponseWriter, item map[string]any, err error) {
 	writeJSON(w, http.StatusCreated, item)
 }
 
-func (s *Server) syncCanonicalAssetsInTransaction(w http.ResponseWriter, r *http.Request, tx *sqlx.Tx, reason string) bool {
-	result, err := SyncCanonicalAssetsWith(r.Context(), tx)
+func (s *Server) syncCanonicalAssetsInGormTransaction(w http.ResponseWriter, r *http.Request, tx *gorm.DB, reason string) bool {
+	result, err := syncCanonicalAssetsGorm(r.Context(), tx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not sync canonical assets")
 		return false

@@ -2,11 +2,12 @@ package app
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
+	"strings"
+	"time"
 
-	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
+	"gorm.io/gorm"
 )
 
 type DemoSeedResult struct {
@@ -31,7 +32,16 @@ type demoSeedDefaults struct {
 	RepoSyncEnabled bool
 }
 
-const demoSeedAdvisoryLockID int64 = 451127631724520
+type demoRemoteSeed struct {
+	Name         string
+	Kind         string
+	RemoteKey    string
+	ProviderType string
+	RemoteURL    string
+	WebURL       string
+	RemoteRole   string
+	IsPrimary    bool
+}
 
 func defaultDemoSeedDefaults() demoSeedDefaults {
 	return demoSeedDefaults{
@@ -52,341 +62,177 @@ func (s *Store) SeedDemoData(ctx context.Context, cfg Config) (*DemoSeedResult, 
 	if err != nil {
 		return nil, fmt.Errorf("loading seed admin: %w", err)
 	}
+	if s.Gorm == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
 
 	defaults := defaultDemoSeedDefaults()
-	tx, err := s.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("starting demo seed transaction: %w", err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", demoSeedAdvisoryLockID); err != nil {
-		return nil, fmt.Errorf("locking demo seed transaction: %w", err)
-	}
-
-	projectID, err := upsertDemoProject(ctx, tx)
-	if err != nil {
+	var result DemoSeedResult
+	if err := s.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		projectID, err := upsertDemoProject(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if err := upsertDemoProjectMember(ctx, tx, projectID, admin.ID); err != nil {
+			return err
+		}
+		repositoryID, err := upsertDemoRepository(ctx, tx, projectID)
+		if err != nil {
+			return err
+		}
+		sourceRemoteID, err := upsertDemoRemote(ctx, tx, repositoryID, demoRemoteSeed{
+			Name: "Demo Gitea Origin", Kind: "gitea", RemoteKey: defaults.SourceRemoteKey,
+			ProviderType: "gitea", RemoteURL: "ssh://git@gitea.example.com/demo/demo-service.git",
+			WebURL: "https://gitea.example.com/demo/demo-service", RemoteRole: "source", IsPrimary: true,
+		})
+		if err != nil {
+			return err
+		}
+		targetRemoteID, err := upsertDemoRemote(ctx, tx, repositoryID, demoRemoteSeed{
+			Name: "Demo GitHub Mirror", Kind: "github", RemoteKey: defaults.TargetRemoteKey,
+			ProviderType: "github", RemoteURL: "git@github.com:example/demo-service.git",
+			WebURL: "https://github.com/example/demo-service", RemoteRole: "mirror", IsPrimary: false,
+		})
+		if err != nil {
+			return err
+		}
+		repoSyncAssetID, err := upsertDemoRepoSyncAsset(ctx, tx, defaults, projectID, repositoryID, sourceRemoteID, targetRemoteID)
+		if err != nil {
+			return err
+		}
+		webhookConnectionID, err := upsertDemoWebhookConnection(ctx, tx, cfg, projectID, sourceRemoteID)
+		if err != nil {
+			return err
+		}
+		sshMachineID, err := upsertDemoSSHMachine(ctx, tx, defaults, projectID)
+		if err != nil {
+			return err
+		}
+		argoID, err := upsertDemoArgoConnection(ctx, tx, projectID)
+		if err != nil {
+			return err
+		}
+		aiRuntimeID, err := upsertDemoAIRuntime(ctx, tx, projectID)
+		if err != nil {
+			return err
+		}
+		agentTaskID, err := upsertDemoAgentTask(ctx, tx, projectID, admin.ID)
+		if err != nil {
+			return err
+		}
+		if err := upsertDemoOperationalHistory(ctx, tx, projectID, repositoryID, sourceRemoteID, targetRemoteID, repoSyncAssetID, webhookConnectionID, argoID, admin.ID); err != nil {
+			return err
+		}
+		result = DemoSeedResult{ProjectID: projectID, RepositoryID: repositoryID, SourceRemote: sourceRemoteID, TargetRemote: targetRemoteID, RepoSyncAsset: repoSyncAssetID, WebhookConnection: webhookConnectionID, SSHMachineID: sshMachineID, ArgoID: argoID, AIRuntimeID: aiRuntimeID, AgentTaskID: agentTaskID}
+		return nil
+	}); err != nil {
 		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO project_members(project_id, user_id, role)
-		VALUES ($1, $2, 'owner')
-		ON CONFLICT(project_id, user_id) DO UPDATE SET role='owner'`,
-		projectID, admin.ID); err != nil {
-		return nil, fmt.Errorf("upserting demo project membership: %w", err)
-	}
-	repositoryID, err := upsertDemoRepository(ctx, tx, projectID)
-	if err != nil {
-		return nil, err
-	}
-	sourceRemoteID, err := upsertDemoRemote(ctx, tx, repositoryID, demoRemoteSeed{
-		Name:         "Demo Gitea Origin",
-		Kind:         "gitea",
-		RemoteKey:    defaults.SourceRemoteKey,
-		ProviderType: "gitea",
-		RemoteURL:    "ssh://git@gitea.example.com/demo/demo-service.git",
-		WebURL:       "https://gitea.example.com/demo/demo-service",
-		RemoteRole:   "source",
-		IsPrimary:    true,
-	})
-	if err != nil {
-		return nil, err
-	}
-	targetRemoteID, err := upsertDemoRemote(ctx, tx, repositoryID, demoRemoteSeed{
-		Name:         "Demo GitHub Mirror",
-		Kind:         "github",
-		RemoteKey:    defaults.TargetRemoteKey,
-		ProviderType: "github",
-		RemoteURL:    "git@github.com:example/demo-service.git",
-		WebURL:       "https://github.com/example/demo-service",
-		RemoteRole:   "mirror",
-		IsPrimary:    false,
-	})
-	if err != nil {
-		return nil, err
-	}
-	repoSyncAssetID, err := upsertDemoRepoSyncAsset(ctx, tx, defaults, projectID, repositoryID, sourceRemoteID, targetRemoteID)
-	if err != nil {
-		return nil, err
-	}
-	webhookConnectionID, err := upsertDemoWebhookConnection(ctx, tx, projectID, sourceRemoteID)
-	if err != nil {
-		return nil, err
-	}
-	sshMachineID, err := upsertDemoSSHMachine(ctx, tx, defaults, projectID)
-	if err != nil {
-		return nil, err
-	}
-	argoID, err := upsertDemoArgoConnection(ctx, tx, projectID)
-	if err != nil {
-		return nil, err
-	}
-	aiRuntimeID, err := upsertDemoAIRuntime(ctx, tx, projectID)
-	if err != nil {
-		return nil, err
-	}
-	agentTaskID, err := upsertDemoAgentTask(ctx, tx, projectID, admin.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := upsertDemoOperationalHistory(ctx, tx, projectID, repositoryID, sourceRemoteID, targetRemoteID, repoSyncAssetID, webhookConnectionID, argoID, admin.ID); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing demo seed transaction: %w", err)
 	}
 	if _, err := s.SyncCanonicalAssets(ctx); err != nil {
 		return nil, fmt.Errorf("syncing canonical assets after demo seed: %w", err)
 	}
-	if err := s.seedDemoManualAssetRelation(ctx, projectID, repositoryID, repoSyncAssetID); err != nil {
+	if err := s.seedDemoManualAssetRelation(ctx, result.ProjectID, result.RepositoryID, result.RepoSyncAsset); err != nil {
 		return nil, err
 	}
-	return &DemoSeedResult{
-		ProjectID:         projectID,
-		RepositoryID:      repositoryID,
-		SourceRemote:      sourceRemoteID,
-		TargetRemote:      targetRemoteID,
-		RepoSyncAsset:     repoSyncAssetID,
-		WebhookConnection: webhookConnectionID,
-		SSHMachineID:      sshMachineID,
-		ArgoID:            argoID,
-		AIRuntimeID:       aiRuntimeID,
-		AgentTaskID:       agentTaskID,
-	}, nil
+	return &result, nil
 }
 
-func upsertDemoProject(ctx context.Context, tx *sqlx.Tx) (string, error) {
-	var id string
-	if err := tx.GetContext(ctx, &id, `
-		INSERT INTO projects(name, slug, description)
-		VALUES ('ASSOPS Demo', 'assops-demo', 'Demo project seeded by assops-tool db seed-demo.')
-		ON CONFLICT(slug) DO UPDATE SET
-			name=EXCLUDED.name,
-			description=EXCLUDED.description,
-			updated_at=now()
-		RETURNING id`); err != nil {
+func upsertDemoProject(ctx context.Context, tx *gorm.DB) (string, error) {
+	project := GormProject{Name: "ASSOPS Demo", Slug: "assops-demo", Description: "Demo project seeded by assops-tool db seed-demo."}
+	if err := tx.WithContext(ctx).Where(&GormProject{Slug: project.Slug}).Assign(project).FirstOrCreate(&project).Error; err != nil {
 		return "", fmt.Errorf("upserting demo project: %w", err)
 	}
-	return id, nil
+	return project.ID, nil
 }
 
-func upsertDemoRepository(ctx context.Context, tx *sqlx.Tx, projectID string) (string, error) {
-	var id string
-	if err := tx.GetContext(ctx, &id, `
-		INSERT INTO project_git_repositories(
-			project_id, name, repo_key, display_name, repo_role, status, description, default_branch
-		)
-		VALUES (
-			$1, 'Demo Service', 'demo-service', 'Demo Service', 'service', 'active',
-			'Demo repository pair for source-to-mirror workflows.', 'main'
-		)
-		ON CONFLICT(project_id, repo_key) DO UPDATE SET
-			name=EXCLUDED.name,
-			display_name=EXCLUDED.display_name,
-			repo_role=EXCLUDED.repo_role,
-			status=EXCLUDED.status,
-			description=EXCLUDED.description,
-			default_branch=EXCLUDED.default_branch,
-			updated_at=now()
-		RETURNING id`, projectID); err != nil {
+func upsertDemoProjectMember(ctx context.Context, tx *gorm.DB, projectID, userID string) error {
+	member := GormProjectMember{ProjectID: projectID, UserID: userID, Role: "owner"}
+	if err := tx.WithContext(ctx).Where(&GormProjectMember{ProjectID: projectID, UserID: userID}).Assign(member).FirstOrCreate(&member).Error; err != nil {
+		return fmt.Errorf("upserting demo project membership: %w", err)
+	}
+	return nil
+}
+
+func upsertDemoRepository(ctx context.Context, tx *gorm.DB, projectID string) (string, error) {
+	repo := GormProjectGitRepository{ProjectID: projectID, Name: "Demo Service", RepoKey: "demo-service", DisplayName: "Demo Service", RepoRole: "service", Status: "active", Description: "Demo repository pair for source-to-mirror workflows.", DefaultBranch: "main"}
+	if err := tx.WithContext(ctx).Where(&GormProjectGitRepository{ProjectID: projectID, RepoKey: repo.RepoKey}).Assign(repo).FirstOrCreate(&repo).Error; err != nil {
 		return "", fmt.Errorf("upserting demo repository: %w", err)
 	}
-	return id, nil
+	return repo.ID, nil
 }
 
-type demoRemoteSeed struct {
-	Name         string
-	Kind         string
-	RemoteKey    string
-	ProviderType string
-	RemoteURL    string
-	WebURL       string
-	RemoteRole   string
-	IsPrimary    bool
-}
-
-func upsertDemoRemote(ctx context.Context, tx *sqlx.Tx, repositoryID string, seed demoRemoteSeed) (string, error) {
-	var id string
-	if err := tx.GetContext(ctx, &id, `
-		INSERT INTO git_remotes(
-			project_git_repository_id, name, kind, remote_key, provider_type, remote_url, web_url,
-			remote_role, is_primary, sync_enabled, protected, urls, default_branch, metadata
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, false, $10, 'main', $11)
-		ON CONFLICT(project_git_repository_id, name) DO UPDATE SET
-			kind=EXCLUDED.kind,
-			remote_key=EXCLUDED.remote_key,
-			provider_type=EXCLUDED.provider_type,
-			remote_url=EXCLUDED.remote_url,
-			web_url=EXCLUDED.web_url,
-			remote_role=EXCLUDED.remote_role,
-			is_primary=EXCLUDED.is_primary,
-			sync_enabled=EXCLUDED.sync_enabled,
-			protected=EXCLUDED.protected,
-			urls=EXCLUDED.urls,
-			default_branch=EXCLUDED.default_branch,
-			metadata=EXCLUDED.metadata,
-			updated_at=now()
-		RETURNING id`,
-		repositoryID,
-		seed.Name,
-		seed.Kind,
-		seed.RemoteKey,
-		seed.ProviderType,
-		seed.RemoteURL,
-		seed.WebURL,
-		seed.RemoteRole,
-		seed.IsPrimary,
-		JSONValue{Data: []string{seed.RemoteURL}},
-		JSONValue{Data: map[string]any{"source": "demo_seed"}},
-	); err != nil {
+func upsertDemoRemote(ctx context.Context, tx *gorm.DB, repositoryID string, seed demoRemoteSeed) (string, error) {
+	remote := GormGitRemote{
+		ProjectGitRepositoryID: repositoryID, Name: seed.Name, Kind: seed.Kind, RemoteKey: seed.RemoteKey,
+		ProviderType: seed.ProviderType, RemoteURL: seed.RemoteURL, WebURL: seed.WebURL, RemoteRole: seed.RemoteRole,
+		IsPrimary: seed.IsPrimary, SyncEnabled: true, Protected: false, URLs: JSONValue{Data: []string{seed.RemoteURL}},
+		DefaultBranch: "main", Metadata: JSONValue{Data: map[string]any{"source": "demo_seed"}},
+	}
+	if err := tx.WithContext(ctx).Where(&GormGitRemote{ProjectGitRepositoryID: repositoryID, Name: seed.Name}).Assign(remote).FirstOrCreate(&remote).Error; err != nil {
 		return "", fmt.Errorf("upserting demo remote %q: %w", seed.Name, err)
 	}
-	return id, nil
+	return remote.ID, nil
 }
 
-func upsertDemoRepoSyncAsset(ctx context.Context, tx *sqlx.Tx, defaults demoSeedDefaults, projectID, repositoryID, sourceRemoteID, targetRemoteID string) (string, error) {
-	var id string
-	if err := tx.GetContext(ctx, &id, `
-		INSERT INTO repo_sync_assets(
-			project_id, project_git_repository_id, name, source_remote_id, target_remote_id,
-			trigger_mode, sync_mode, transport, driver, refs, enabled, metadata
-		)
-		VALUES (
-			$1, $2, 'Demo Gitea to GitHub mirror', $3, $4,
-			'manual_or_webhook', 'selected_refs', 'ssh', 'projectops_worker_git_ssh', $5, $6, $7
-		)
-		ON CONFLICT(project_git_repository_id, name) DO UPDATE SET
-			source_remote_id=EXCLUDED.source_remote_id,
-			target_remote_id=EXCLUDED.target_remote_id,
-			trigger_mode=EXCLUDED.trigger_mode,
-			sync_mode=EXCLUDED.sync_mode,
-			transport=EXCLUDED.transport,
-			driver=EXCLUDED.driver,
-			refs=EXCLUDED.refs,
-			enabled=EXCLUDED.enabled,
-			metadata=EXCLUDED.metadata,
-			updated_at=now()
-		RETURNING id`,
-		projectID,
-		repositoryID,
-		sourceRemoteID,
-		targetRemoteID,
-		JSONValue{Data: map[string]any{"branches": []string{"main"}, "tags": []string{}}},
-		defaults.RepoSyncEnabled,
-		JSONValue{Data: map[string]any{"source": "demo_seed", "note": "disabled by default to avoid accidental sync"}},
-	); err != nil {
+func upsertDemoRepoSyncAsset(ctx context.Context, tx *gorm.DB, defaults demoSeedDefaults, projectID, repositoryID, sourceRemoteID, targetRemoteID string) (string, error) {
+	asset := GormRepoSyncAsset{
+		ProjectID: projectID, ProjectGitRepositoryID: repositoryID, Name: "Demo Gitea to GitHub mirror",
+		SourceRemoteID: sourceRemoteID, TargetRemoteID: targetRemoteID, TriggerMode: "manual_or_webhook",
+		SyncMode: "selected_refs", Transport: "ssh", Driver: "projectops_worker_git_ssh",
+		Refs: JSONValue{Data: map[string]any{"branches": []string{"main"}, "tags": []string{}}}, Enabled: defaults.RepoSyncEnabled,
+		Metadata: JSONValue{Data: map[string]any{"source": "demo_seed", "note": "disabled by default to avoid accidental sync"}},
+	}
+	if err := tx.WithContext(ctx).Where(&GormRepoSyncAsset{ProjectGitRepositoryID: repositoryID, Name: asset.Name}).Assign(asset).FirstOrCreate(&asset).Error; err != nil {
 		return "", fmt.Errorf("upserting demo repo sync asset: %w", err)
 	}
-	return id, nil
+	return asset.ID, nil
 }
 
-func upsertDemoWebhookConnection(ctx context.Context, tx *sqlx.Tx, projectID, sourceRemoteID string) (string, error) {
-	return upsertByProjectName(ctx, tx, "webhook_connections", projectID, "Demo Gitea push webhook", func() (string, []any) {
-		return `
-			INSERT INTO webhook_connections(project_id, provider, name, source_remote_id, secret_token, secret_ciphertext, enabled, event_types, last_delivery_status, metadata)
-			VALUES ($1, 'gitea', 'Demo Gitea push webhook', $2, 'demo-webhook-secret', '', true, $3, 'verified', $4)
-			RETURNING id`,
-			[]any{projectID, sourceRemoteID, JSONValue{Data: []string{"push"}}, JSONValue{Data: map[string]any{"source": "demo_seed", "note": "sample secret for local demo only"}}}
-	}, func() (string, []any) {
-		return `
-			UPDATE webhook_connections
-			SET provider='gitea',
-				source_remote_id=$3,
-				enabled=true,
-				event_types=$4,
-				last_delivery_status='verified',
-				last_delivery_error='',
-				metadata=$5,
-				updated_at=now()
-			WHERE project_id=$1 AND name=$2
-			RETURNING id`,
-			[]any{projectID, "Demo Gitea push webhook", sourceRemoteID, JSONValue{Data: []string{"push"}}, JSONValue{Data: map[string]any{"source": "demo_seed", "note": "sample secret for local demo only"}}}
-	})
-}
-
-func upsertDemoSSHMachine(ctx context.Context, tx *sqlx.Tx, defaults demoSeedDefaults, projectID string) (string, error) {
-	return upsertByProjectName(ctx, tx, "ssh_machines", projectID, "Demo Deploy Host", func() (string, []any) {
-		return `
-			INSERT INTO ssh_machines(project_id, name, host, port, username, auth_type, metadata)
-			VALUES ($1, 'Demo Deploy Host', $2, 22, 'deploy', 'key', $3)
-			RETURNING id`,
-			[]any{projectID, defaults.SSHHost, JSONValue{Data: map[string]any{"source": "demo_seed", "environment": "demo"}}}
-	}, func() (string, []any) {
-		return `
-			UPDATE ssh_machines
-			SET host=$3, port=22, username='deploy', auth_type='key', metadata=$4, updated_at=now()
-			WHERE project_id=$1 AND name=$2
-			RETURNING id`,
-			[]any{projectID, "Demo Deploy Host", defaults.SSHHost, JSONValue{Data: map[string]any{"source": "demo_seed", "environment": "demo"}}}
-	})
-}
-
-func upsertDemoArgoConnection(ctx context.Context, tx *sqlx.Tx, projectID string) (string, error) {
-	return upsertByProjectName(ctx, tx, "argo_connections", projectID, "Demo Argo CD", func() (string, []any) {
-		return `
-			INSERT INTO argo_connections(project_id, name, server_url, auth_type, config)
-			VALUES ($1, 'Demo Argo CD', 'https://argocd.example.com', 'token', $2)
-			RETURNING id`,
-			[]any{projectID, JSONValue{Data: map[string]any{"source": "demo_seed", "project": "demo"}}}
-	}, func() (string, []any) {
-		return `
-			UPDATE argo_connections
-			SET server_url='https://argocd.example.com', auth_type='token', config=$3, updated_at=now()
-			WHERE project_id=$1 AND name=$2
-			RETURNING id`,
-			[]any{projectID, "Demo Argo CD", JSONValue{Data: map[string]any{"source": "demo_seed", "project": "demo"}}}
-	})
-}
-
-func upsertDemoAIRuntime(ctx context.Context, tx *sqlx.Tx, projectID string) (string, error) {
-	return upsertByProjectName(ctx, tx, "ai_runtimes", projectID, "Demo Codex Runtime", func() (string, []any) {
-		return `
-			INSERT INTO ai_runtimes(project_id, name, runtime_type, codex_binary, model, config, status)
-			VALUES ($1, 'Demo Codex Runtime', 'codex-cli', 'codex', '', $2, 'unknown')
-			RETURNING id`,
-			[]any{projectID, JSONValue{Data: map[string]any{"source": "demo_seed", "mode": "read_only_first"}}}
-	}, func() (string, []any) {
-		return `
-			UPDATE ai_runtimes
-			SET runtime_type='codex-cli', codex_binary='codex', model='', config=$3, status='unknown', updated_at=now()
-			WHERE project_id=$1 AND name=$2
-			RETURNING id`,
-			[]any{projectID, "Demo Codex Runtime", JSONValue{Data: map[string]any{"source": "demo_seed", "mode": "read_only_first"}}}
-	})
-}
-
-func upsertDemoAgentTask(ctx context.Context, tx *sqlx.Tx, projectID, adminID string) (string, error) {
-	title := "Review demo operations"
-	var id string
-	err := tx.GetContext(ctx, &id, `
-		SELECT id
-		FROM agent_tasks
-		WHERE project_id=$1 AND title=$2
-		ORDER BY created_at
-		LIMIT 1`, projectID, title)
-	if err == nil {
-		if err := tx.GetContext(ctx, &id, `
-			UPDATE agent_tasks
-			SET prompt=$3, created_by=$4, status='draft', updated_at=now()
-			WHERE id=$1 AND project_id=$2
-			RETURNING id`, id, projectID, demoAgentPrompt(), adminID); err != nil {
-			return "", fmt.Errorf("updating demo agent task: %w", err)
-		}
-		return id, nil
+func upsertDemoWebhookConnection(ctx context.Context, tx *gorm.DB, cfg Config, projectID, sourceRemoteID string) (string, error) {
+	secretCiphertext, err := (&Server{cfg: cfg}).encryptWebhookSecret("demo-webhook-secret")
+	if err != nil {
+		return "", fmt.Errorf("encrypting demo webhook secret: %w", err)
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("checking demo agent task: %w", err)
+	conn := GormWebhookConnection{ProjectID: projectID, Provider: "gitea", Name: "Demo Gitea push webhook", SourceRemoteID: validNullString(sourceRemoteID), SecretCiphertext: secretCiphertext, Enabled: true, EventTypes: JSONValue{Data: []string{"push"}}, LastDeliveryStatus: "verified", Metadata: JSONValue{Data: map[string]any{"source": "demo_seed", "secret_configured": true}}}
+	if err := tx.WithContext(ctx).Where(&GormWebhookConnection{ProjectID: projectID, Name: conn.Name}).Assign(conn).FirstOrCreate(&conn).Error; err != nil {
+		return "", fmt.Errorf("upserting demo webhook connection: %w", err)
 	}
-	if err := tx.GetContext(ctx, &id, `
-		INSERT INTO agent_tasks(project_id, title, prompt, created_by, status)
-		VALUES ($1, $2, $3, $4, 'draft')
-		RETURNING id`, projectID, title, demoAgentPrompt(), adminID); err != nil {
-		return "", fmt.Errorf("inserting demo agent task: %w", err)
-	}
-	return id, nil
+	return conn.ID, nil
 }
 
-func upsertDemoOperationalHistory(ctx context.Context, tx *sqlx.Tx, projectID, repositoryID, sourceRemoteID, targetRemoteID, repoSyncAssetID, webhookConnectionID, argoID, adminID string) error {
+func upsertDemoSSHMachine(ctx context.Context, tx *gorm.DB, defaults demoSeedDefaults, projectID string) (string, error) {
+	machine := GormSSHMachine{ProjectID: projectID, Name: "Demo Deploy Host", Host: defaults.SSHHost, Port: 22, Username: "deploy", AuthType: "key", Metadata: JSONValue{Data: map[string]any{"source": "demo_seed", "environment": "demo"}}}
+	if err := tx.WithContext(ctx).Where(&GormSSHMachine{ProjectID: projectID, Name: machine.Name}).Assign(machine).FirstOrCreate(&machine).Error; err != nil {
+		return "", fmt.Errorf("upserting demo SSH machine: %w", err)
+	}
+	return machine.ID, nil
+}
+
+func upsertDemoArgoConnection(ctx context.Context, tx *gorm.DB, projectID string) (string, error) {
+	conn := GormArgoConnection{ProjectID: projectID, Name: "Demo Argo CD", ServerURL: "https://argocd.example.com", AuthType: "token", Config: JSONValue{Data: map[string]any{"source": "demo_seed", "project": "demo"}}}
+	if err := tx.WithContext(ctx).Where(&GormArgoConnection{ProjectID: projectID, Name: conn.Name}).Assign(conn).FirstOrCreate(&conn).Error; err != nil {
+		return "", fmt.Errorf("upserting demo Argo connection: %w", err)
+	}
+	return conn.ID, nil
+}
+
+func upsertDemoAIRuntime(ctx context.Context, tx *gorm.DB, projectID string) (string, error) {
+	runtime := GormAIRuntime{ProjectID: validNullString(projectID), Name: "Demo Codex Runtime", RuntimeType: "codex-cli", CodexBinary: "codex", Model: "", Config: JSONValue{Data: map[string]any{"source": "demo_seed", "mode": "read_only_first"}}, Status: "unknown"}
+	if err := tx.WithContext(ctx).Where(&GormAIRuntime{ProjectID: validNullString(projectID), Name: runtime.Name}).Assign(runtime).FirstOrCreate(&runtime).Error; err != nil {
+		return "", fmt.Errorf("upserting demo AI runtime: %w", err)
+	}
+	return runtime.ID, nil
+}
+
+func upsertDemoAgentTask(ctx context.Context, tx *gorm.DB, projectID, adminID string) (string, error) {
+	task := GormAgentTask{ProjectID: projectID, Title: "Review demo operations", Prompt: demoAgentPrompt(), CreatedBy: validNullString(adminID), Status: "draft"}
+	if err := tx.WithContext(ctx).Where(&GormAgentTask{ProjectID: projectID, Title: task.Title}).Assign(task).FirstOrCreate(&task).Error; err != nil {
+		return "", fmt.Errorf("upserting demo agent task: %w", err)
+	}
+	return task.ID, nil
+}
+
+func upsertDemoOperationalHistory(ctx context.Context, tx *gorm.DB, projectID, repositoryID, sourceRemoteID, targetRemoteID, repoSyncAssetID, webhookConnectionID, argoID, adminID string) error {
 	completedOpID, err := upsertDemoOperationRun(ctx, tx, projectID, targetRemoteID, "repo.sync", "Demo completed mirror sync", "completed", "", map[string]any{"ref": "refs/heads/main"}, map[string]any{"after_sha": "0123456789abcdef0123456789abcdef01234567"}, -72)
 	if err != nil {
 		return err
@@ -433,473 +279,169 @@ func upsertDemoOperationalHistory(ctx context.Context, tx *sqlx.Tx, projectID, r
 	if err := upsertDemoApproval(ctx, tx, projectID, repoSyncAssetID, adminID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE repo_sync_assets
-		SET last_sync_status='failed',
-			last_sync_run_id=$2,
-			last_synced_at=now() - interval '30 hours',
-			updated_at=now()
-		WHERE id=$1`, repoSyncAssetID, failedOpID); err != nil {
+	if err := tx.WithContext(ctx).Model(&GormRepoSyncAsset{}).Where(&GormRepoSyncAsset{GormBase: GormBase{ID: repoSyncAssetID}}).Updates(map[string]any{"last_sync_status": "failed", "last_sync_run_id": validNullString(failedOpID), "last_synced_at": validNullTime(demoSeedTime(-30))}).Error; err != nil {
 		return fmt.Errorf("updating demo repo sync asset status: %w", err)
 	}
 	return nil
 }
 
-func upsertDemoOperationRun(ctx context.Context, tx *sqlx.Tx, projectID, remoteID, operationType, title, status, errorMessage string, input, result map[string]any, hoursAgo int) (string, error) {
-	var id string
-	err := tx.GetContext(ctx, &id, `
-		SELECT id
-		FROM operation_runs
-		WHERE project_id=$1 AND operation_type=$2 AND title=$3
-		ORDER BY created_at
-		LIMIT 1`, projectID, operationType, title)
-	if err == nil {
-		if err := tx.GetContext(ctx, &id, `
-			UPDATE operation_runs
-			SET git_remote_id=NULLIF($4,'')::uuid,
-				status=$5,
-				input=$6,
-				result=$7,
-				error=$8,
-				started_at=now() + ($9::int * interval '1 hour'),
-				finished_at=now() + (($9::int * interval '1 hour') + interval '4 minutes'),
-				updated_at=now()
-			WHERE id=$1 AND project_id=$2 AND operation_type=$3
-			RETURNING id`,
-			id,
-			projectID,
-			operationType,
-			remoteID,
-			status,
-			JSONValue{Data: input},
-			JSONValue{Data: result},
-			errorMessage,
-			hoursAgo,
-		); err != nil {
-			return "", fmt.Errorf("updating demo operation %q: %w", title, err)
-		}
-		return id, nil
+func upsertDemoOperationRun(ctx context.Context, tx *gorm.DB, projectID, remoteID, operationType, title, status, errorMessage string, input, result map[string]any, hoursAgo int) (string, error) {
+	started := demoSeedTime(hoursAgo)
+	run := GormOperationRun{ProjectID: validNullString(projectID), GitRemoteID: validNullString(remoteID), OperationType: operationType, Status: status, Title: title, Input: JSONValue{Data: input}, Result: JSONValue{Data: result}, Error: errorMessage, StartedAt: validNullTime(started), FinishedAt: validNullTime(started.Add(4 * time.Minute))}
+	if err := tx.WithContext(ctx).Where(&GormOperationRun{ProjectID: validNullString(projectID), OperationType: operationType, Title: title}).Assign(run).FirstOrCreate(&run).Error; err != nil {
+		return "", fmt.Errorf("upserting demo operation %q: %w", title, err)
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("checking demo operation %q: %w", title, err)
-	}
-	if err := tx.GetContext(ctx, &id, `
-		INSERT INTO operation_runs(project_id, git_remote_id, operation_type, status, title, input, result, error, started_at, finished_at, created_at, updated_at)
-		VALUES ($1, NULLIF($2,'')::uuid, $3, $4, $5, $6, $7, $8, now() + ($9::int * interval '1 hour'), now() + (($9::int * interval '1 hour') + interval '4 minutes'), now() + ($9::int * interval '1 hour'), now())
-		RETURNING id`,
-		projectID,
-		remoteID,
-		operationType,
-		status,
-		title,
-		JSONValue{Data: input},
-		JSONValue{Data: result},
-		errorMessage,
-		hoursAgo,
-	); err != nil {
-		return "", fmt.Errorf("inserting demo operation %q: %w", title, err)
-	}
-	return id, nil
+	return run.ID, nil
 }
 
-func upsertDemoRepoSyncRun(ctx context.Context, tx *sqlx.Tx, operationRunID, projectID, repositoryID, sourceRemoteID, targetRemoteID, repoSyncAssetID, adminID, ref, status, errorMessage string, hoursAgo int) error {
-	if _, err := tx.ExecContext(ctx, "DELETE FROM repo_sync_runs WHERE operation_run_id=$1", operationRunID); err != nil {
+func upsertDemoRepoSyncRun(ctx context.Context, tx *gorm.DB, operationRunID, projectID, repositoryID, sourceRemoteID, targetRemoteID, repoSyncAssetID, adminID, ref, status, errorMessage string, hoursAgo int) error {
+	if err := tx.WithContext(ctx).Where(&GormRepoSyncRun{OperationRunID: operationRunID}).Delete(&GormRepoSyncRun{}).Error; err != nil {
 		return fmt.Errorf("deleting existing demo repo sync run: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO repo_sync_runs(
-			operation_run_id, git_remote_id, project_id, project_git_repository_id, repo_sync_asset_id,
-			source_remote_id, target_remote_id, ref, before_sha, after_sha, actor_user_id,
-			status, stdout, stderr, error_message, started_at, finished_at, created_at
-		)
-		VALUES (
-			$1, $5, $2, $3, $6,
-			$4, $5, $8, '0000000000000000000000000000000000000000', '0123456789abcdef0123456789abcdef01234567', $7,
-			$9, $10, '', $11, now() + ($12::int * interval '1 hour'), now() + (($12::int * interval '1 hour') + interval '4 minutes'), now() + ($12::int * interval '1 hour')
-		)`,
-		operationRunID,
-		projectID,
-		repositoryID,
-		sourceRemoteID,
-		targetRemoteID,
-		repoSyncAssetID,
-		adminID,
-		ref,
-		status,
-		demoRepoSyncStdout(status),
-		errorMessage,
-		hoursAgo,
-	); err != nil {
+	started := demoSeedTime(hoursAgo)
+	run := GormRepoSyncRun{OperationRunID: operationRunID, GitRemoteID: targetRemoteID, ProjectID: validNullString(projectID), ProjectGitRepositoryID: validNullString(repositoryID), RepoSyncAssetID: validNullString(repoSyncAssetID), SourceRemoteID: validNullString(sourceRemoteID), TargetRemoteID: validNullString(targetRemoteID), Ref: ref, BeforeSHA: "0000000000000000000000000000000000000000", AfterSHA: "0123456789abcdef0123456789abcdef01234567", ActorUserID: validNullString(adminID), Status: status, Stdout: demoRepoSyncStdout(status), ErrorMessage: errorMessage, StartedAt: validNullTime(started), FinishedAt: validNullTime(started.Add(4 * time.Minute)), CreatedAt: started}
+	if err := tx.WithContext(ctx).Create(&run).Error; err != nil {
 		return fmt.Errorf("inserting demo repo sync run: %w", err)
 	}
 	return nil
 }
 
-func upsertDemoGitHubActionRun(ctx context.Context, tx *sqlx.Tx, operationRunID, targetRemoteID string) (string, error) {
-	var id string
-	err := tx.GetContext(ctx, &id, `
-		INSERT INTO github_action_runs(
-			operation_run_id, git_remote_id, external_run_id, run_id, workflow_name, branch, commit_sha,
-			status, conclusion, html_url, metadata, started_at, updated_at, synced_at, created_at
-		)
-		VALUES ($1, $2, '100200300', '100200300', 'CI', 'main', '0123456789abcdef0123456789abcdef01234567', 'completed', 'success', 'https://github.com/example/demo-service/actions/runs/100200300', $3, now() - interval '70 hours', now() - interval '69 hours', now() - interval '69 hours', now() - interval '70 hours')
-		ON CONFLICT (git_remote_id, external_run_id) WHERE external_run_id <> '' DO UPDATE SET
-			operation_run_id=EXCLUDED.operation_run_id,
-			run_id=EXCLUDED.run_id,
-			workflow_name=EXCLUDED.workflow_name,
-			branch=EXCLUDED.branch,
-			commit_sha=EXCLUDED.commit_sha,
-			status=EXCLUDED.status,
-			conclusion=EXCLUDED.conclusion,
-			html_url=EXCLUDED.html_url,
-			metadata=EXCLUDED.metadata,
-			started_at=EXCLUDED.started_at,
-			updated_at=EXCLUDED.updated_at,
-			synced_at=EXCLUDED.synced_at
-		RETURNING id`,
-		operationRunID,
-		targetRemoteID,
-		JSONValue{Data: map[string]any{"source": "demo_seed"}},
-	)
-	if err != nil {
+func upsertDemoGitHubActionRun(ctx context.Context, tx *gorm.DB, operationRunID, targetRemoteID string) (string, error) {
+	started := demoSeedTime(-70)
+	run := GormGitHubActionRun{OperationRunID: validNullString(operationRunID), GitRemoteID: targetRemoteID, ExternalRunID: "100200300", RunID: "100200300", WorkflowName: "CI", Branch: "main", CommitSHA: "0123456789abcdef0123456789abcdef01234567", Status: "completed", Conclusion: "success", HTMLURL: "https://github.com/example/demo-service/actions/runs/100200300", Metadata: JSONValue{Data: map[string]any{"source": "demo_seed"}}, StartedAt: validNullTime(started), UpdatedAt: validNullTime(demoSeedTime(-69)), SyncedAt: validNullTime(demoSeedTime(-69)), CreatedAt: started}
+	if err := tx.WithContext(ctx).Where(&GormGitHubActionRun{GitRemoteID: targetRemoteID, ExternalRunID: run.ExternalRunID}).Assign(run).FirstOrCreate(&run).Error; err != nil {
 		return "", fmt.Errorf("upserting demo GitHub Action run: %w", err)
 	}
-	return id, nil
+	return run.ID, nil
 }
 
-func upsertDemoGitHubActionArtifact(ctx context.Context, tx *sqlx.Tx, githubActionRunID, targetRemoteID string) error {
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO github_action_artifacts(
-			git_remote_id, github_action_run_id, external_artifact_id, name, size_in_bytes, expired, metadata, created_at, updated_at, expires_at, synced_at
-		)
-		VALUES ($1, $2, 'artifact-demo-build', 'demo-service-linux-amd64.tar.gz', 1048576, false, $3, now() - interval '69 hours', now() - interval '69 hours', now() + interval '21 days', now() - interval '69 hours')
-		ON CONFLICT (github_action_run_id, external_artifact_id) WHERE external_artifact_id <> '' DO UPDATE SET
-			git_remote_id=EXCLUDED.git_remote_id,
-			name=EXCLUDED.name,
-			size_in_bytes=EXCLUDED.size_in_bytes,
-			expired=EXCLUDED.expired,
-			metadata=EXCLUDED.metadata,
-			created_at=EXCLUDED.created_at,
-			updated_at=EXCLUDED.updated_at,
-			expires_at=EXCLUDED.expires_at,
-			synced_at=EXCLUDED.synced_at`,
-		targetRemoteID,
-		githubActionRunID,
-		JSONValue{Data: map[string]any{"source": "demo_seed"}},
-	)
-	if err != nil {
+func upsertDemoGitHubActionArtifact(ctx context.Context, tx *gorm.DB, githubActionRunID, targetRemoteID string) error {
+	artifact := GormGitHubActionArtifact{GitRemoteID: targetRemoteID, GitHubActionRunID: githubActionRunID, ExternalArtifactID: "artifact-demo-build", Name: "demo-service-linux-amd64.tar.gz", SizeInBytes: 1048576, Expired: false, Metadata: JSONValue{Data: map[string]any{"source": "demo_seed"}}, CreatedAt: validNullTime(demoSeedTime(-69)), UpdatedAt: validNullTime(demoSeedTime(-69)), ExpiresAt: validNullTime(time.Now().Add(21 * 24 * time.Hour)), SyncedAt: demoSeedTime(-69)}
+	if err := tx.WithContext(ctx).Where(&GormGitHubActionArtifact{GitHubActionRunID: githubActionRunID, ExternalArtifactID: artifact.ExternalArtifactID}).Assign(artifact).FirstOrCreate(&artifact).Error; err != nil {
 		return fmt.Errorf("upserting demo GitHub Action artifact: %w", err)
 	}
 	return nil
 }
 
-func upsertDemoGitHubRepositoryLabels(ctx context.Context, tx *sqlx.Tx, operationRunID, targetRemoteID string) error {
-	for _, label := range []struct {
-		externalID  string
-		nodeID      string
-		name        string
-		color       string
-		description string
-		isDefault   bool
-	}{
-		{"label-demo-bug", "LA_demo_bug", "bug", "d73a4a", "Something is not working", true},
-		{"label-demo-deploy", "LA_demo_deploy", "deploy", "0e8a16", "Deployment or release work", false},
+func upsertDemoGitHubRepositoryLabels(ctx context.Context, tx *gorm.DB, operationRunID, targetRemoteID string) error {
+	for _, label := range []GormGitHubRepositoryLabel{
+		{OperationRunID: validNullString(operationRunID), GitRemoteID: targetRemoteID, ExternalLabelID: "label-demo-bug", NodeID: "LA_demo_bug", Name: "bug", Color: "d73a4a", Description: "Something is not working", IsDefault: true, SyncedAt: demoSeedTime(-69), CreatedAt: demoSeedTime(-69)},
+		{OperationRunID: validNullString(operationRunID), GitRemoteID: targetRemoteID, ExternalLabelID: "label-demo-deploy", NodeID: "LA_demo_deploy", Name: "deploy", Color: "0e8a16", Description: "Deployment or release work", IsDefault: false, SyncedAt: demoSeedTime(-69), CreatedAt: demoSeedTime(-69)},
 	} {
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO github_repository_labels(
-				operation_run_id, git_remote_id, external_label_id, node_id, name, color, description, is_default, synced_at, created_at
-			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() - interval '69 hours', now() - interval '69 hours')
-			ON CONFLICT (git_remote_id, lower(name)) DO UPDATE SET
-				operation_run_id=EXCLUDED.operation_run_id,
-				external_label_id=EXCLUDED.external_label_id,
-				node_id=EXCLUDED.node_id,
-				color=EXCLUDED.color,
-				description=EXCLUDED.description,
-				is_default=EXCLUDED.is_default,
-				synced_at=EXCLUDED.synced_at`,
-			operationRunID,
-			targetRemoteID,
-			label.externalID,
-			label.nodeID,
-			label.name,
-			label.color,
-			label.description,
-			label.isDefault,
-		)
-		if err != nil {
-			return fmt.Errorf("upserting demo GitHub repository label %q: %w", label.name, err)
+		if err := upsertDemoGitHubRepositoryLabel(ctx, tx, label); err != nil {
+			return fmt.Errorf("upserting demo GitHub repository label %q: %w", label.Name, err)
 		}
 	}
 	return nil
 }
 
-func upsertDemoRepoTagRun(ctx context.Context, tx *sqlx.Tx, operationRunID, projectID, repositoryID, targetRemoteID, adminID string) error {
-	if _, err := tx.ExecContext(ctx, "DELETE FROM repo_tag_runs WHERE operation_run_id=$1", operationRunID); err != nil {
+func upsertDemoGitHubRepositoryLabel(ctx context.Context, tx *gorm.DB, label GormGitHubRepositoryLabel) error {
+	var existing []GormGitHubRepositoryLabel
+	if err := tx.WithContext(ctx).Where(&GormGitHubRepositoryLabel{GitRemoteID: label.GitRemoteID}).Find(&existing).Error; err != nil {
+		return err
+	}
+	for _, row := range existing {
+		if strings.EqualFold(row.Name, label.Name) {
+			label.ID = row.ID
+			label.CreatedAt = row.CreatedAt
+			return tx.WithContext(ctx).Save(&label).Error
+		}
+	}
+	return tx.WithContext(ctx).Create(&label).Error
+}
+
+func upsertDemoRepoTagRun(ctx context.Context, tx *gorm.DB, operationRunID, projectID, repositoryID, targetRemoteID, adminID string) error {
+	if err := tx.WithContext(ctx).Where(&GormRepoTagRun{OperationRunID: operationRunID}).Delete(&GormRepoTagRun{}).Error; err != nil {
 		return fmt.Errorf("deleting existing demo repo tag run: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO repo_tag_runs(
-			operation_run_id, git_remote_id, project_id, project_git_repository_id, target_remote_id,
-			tag_name, target_sha, tag_message, actor_user_id, status, stdout, stderr, error_message,
-			started_at, finished_at, created_at
-		)
-		VALUES (
-			$1, $4, $2, $3, $4,
-			'v0.1.0', '0123456789abcdef0123456789abcdef01234567', 'Demo release tag', $5, 'completed',
-			'created demo tag v0.1.0', '', '',
-			now() - interval '68 hours', now() - interval '67 hours 56 minutes', now() - interval '68 hours'
-		)`,
-		operationRunID,
-		projectID,
-		repositoryID,
-		targetRemoteID,
-		adminID,
-	); err != nil {
+	started := demoSeedTime(-68)
+	run := GormRepoTagRun{OperationRunID: operationRunID, GitRemoteID: targetRemoteID, ProjectID: validNullString(projectID), ProjectGitRepositoryID: validNullString(repositoryID), TargetRemoteID: validNullString(targetRemoteID), TagName: "v0.1.0", TargetSHA: "0123456789abcdef0123456789abcdef01234567", TagMessage: "Demo release tag", ActorUserID: validNullString(adminID), Status: "completed", Stdout: "created demo tag v0.1.0", StartedAt: validNullTime(started), FinishedAt: validNullTime(started.Add(4 * time.Minute)), CreatedAt: started}
+	if err := tx.WithContext(ctx).Create(&run).Error; err != nil {
 		return fmt.Errorf("inserting demo repo tag run: %w", err)
 	}
 	return nil
 }
 
-func upsertDemoWebhookEvents(ctx context.Context, tx *sqlx.Tx, webhookConnectionID, projectID, repoSyncAssetID, operationRunID string) error {
+func upsertDemoWebhookEvents(ctx context.Context, tx *gorm.DB, webhookConnectionID, projectID, repoSyncAssetID, operationRunID string) error {
 	for _, event := range []struct {
-		deliveryID string
-		status     string
-		error      string
-		hoursAgo   int
-	}{
-		{"demo-delivery-main", "processed", "", -71},
-		{"demo-delivery-ignored", "ignored", "push ref refs/heads/docs did not match enabled RepoSyncAsset refs", -18},
-	} {
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO webhook_events(webhook_connection_id, project_id, provider, event_type, delivery_id, signature_valid, matched_repo_sync_asset_id, operation_run_id, status, error_message, payload, result, received_at, processed_at)
-			VALUES ($1, $2, 'gitea', 'push', $3, true, $4, $5, $6, $7, $8, $9, now() + ($10::int * interval '1 hour'), now() + (($10::int * interval '1 hour') + interval '1 minute'))
-			ON CONFLICT (webhook_connection_id, delivery_id) WHERE delivery_id <> '' AND signature_valid DO UPDATE SET
-				matched_repo_sync_asset_id=EXCLUDED.matched_repo_sync_asset_id,
-				operation_run_id=EXCLUDED.operation_run_id,
-				status=EXCLUDED.status,
-				error_message=EXCLUDED.error_message,
-				payload=EXCLUDED.payload,
-				result=EXCLUDED.result,
-				received_at=EXCLUDED.received_at,
-				processed_at=EXCLUDED.processed_at`,
-			webhookConnectionID,
-			projectID,
-			event.deliveryID,
-			repoSyncAssetID,
-			operationRunID,
-			event.status,
-			event.error,
-			JSONValue{Data: map[string]any{"ref": "refs/heads/main", "repository": map[string]any{"full_name": "demo/demo-service"}}},
-			JSONValue{Data: map[string]any{"source": "demo_seed", "status": event.status}},
-			event.hoursAgo,
-		)
-		if err != nil {
+		deliveryID, status, err string
+		hoursAgo                int
+	}{{"demo-delivery-main", "processed", "", -71}, {"demo-delivery-ignored", "ignored", "push ref refs/heads/docs did not match enabled RepoSyncAsset refs", -18}} {
+		received := demoSeedTime(event.hoursAgo)
+		row := GormWebhookEvent{WebhookConnectionID: validNullString(webhookConnectionID), ProjectID: validNullString(projectID), Provider: "gitea", EventType: "push", DeliveryID: event.deliveryID, SignatureValid: true, MatchedRepoSyncAssetID: validNullString(repoSyncAssetID), OperationRunID: validNullString(operationRunID), Status: event.status, ErrorMessage: event.err, Payload: JSONValue{Data: map[string]any{"ref": "refs/heads/main", "repository": map[string]any{"full_name": "demo/demo-service"}}}, Result: JSONValue{Data: map[string]any{"source": "demo_seed", "status": event.status}}, ReceivedAt: received, ProcessedAt: validNullTime(received.Add(time.Minute))}
+		if err := tx.WithContext(ctx).Where(&GormWebhookEvent{WebhookConnectionID: validNullString(webhookConnectionID), DeliveryID: event.deliveryID, SignatureValid: true}).Assign(row).FirstOrCreate(&row).Error; err != nil {
 			return fmt.Errorf("upserting demo webhook event %q: %w", event.deliveryID, err)
 		}
 	}
 	return nil
 }
 
-func upsertDemoKubernetesEnvironment(ctx context.Context, tx *sqlx.Tx, projectID string) error {
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO kubernetes_environments(
-			project_id, name, environment, cluster_name, namespace,
-			kubeconfig_secret_ref, service_account, token_subject_review_status,
-			rbac_read_logs_status, rbac_restart_pods_status, status, metadata, updated_at
-		)
-		VALUES (
-			$1, 'Demo Kubernetes Environment', 'staging', 'demo-cluster', 'demo',
-			'demo/assops-reader.yaml', 'system:serviceaccount:demo:assops-reader',
-			'reviewed', 'reviewed', 'reviewed', 'ready', $2, now()
-		)
-		ON CONFLICT(project_id, environment, cluster_name, namespace) DO UPDATE SET
-			name=EXCLUDED.name,
-			kubeconfig_secret_ref=EXCLUDED.kubeconfig_secret_ref,
-			service_account=EXCLUDED.service_account,
-			token_subject_review_status=EXCLUDED.token_subject_review_status,
-			rbac_read_logs_status=EXCLUDED.rbac_read_logs_status,
-			rbac_restart_pods_status=EXCLUDED.rbac_restart_pods_status,
-			status=EXCLUDED.status,
-			metadata=EXCLUDED.metadata,
-			updated_at=now()`,
-		projectID,
-		JSONValue{Data: map[string]any{"source": "demo_seed", "scope": "namespace_readonly"}},
-	); err != nil {
+func upsertDemoKubernetesEnvironment(ctx context.Context, tx *gorm.DB, projectID string) error {
+	env := GormKubernetesEnvironment{ProjectID: projectID, Name: "Demo Kubernetes Environment", Environment: "staging", ClusterName: "demo-cluster", Namespace: "demo", KubeconfigSecretRef: "demo/assops-reader.yaml", ServiceAccount: "system:serviceaccount:demo:assops-reader", TokenSubjectReviewStatus: "reviewed", RBACReadLogsStatus: "reviewed", PodRestartStatus: "reviewed", Status: "ready", Metadata: JSONValue{Data: map[string]any{"source": "demo_seed", "scope": "namespace_readonly"}}}
+	if err := tx.WithContext(ctx).Where(&GormKubernetesEnvironment{ProjectID: projectID, Environment: env.Environment, ClusterName: env.ClusterName, Namespace: env.Namespace}).Assign(env).FirstOrCreate(&env).Error; err != nil {
 		return fmt.Errorf("upserting demo Kubernetes environment: %w", err)
 	}
 	return nil
 }
 
-func upsertDemoDeploymentReadModel(ctx context.Context, tx *sqlx.Tx, projectID, argoID string) error {
-	var targetID string
-	if err := tx.GetContext(ctx, &targetID, `
-		INSERT INTO deployment_targets(project_id, name, environment, cluster_name, namespace, source, argo_connection_id, status, metadata)
-		VALUES ($1, 'demo-cluster/demo', 'staging', 'demo-cluster', 'demo', 'argocd', $2, 'Synced', $3)
-		ON CONFLICT(project_id, environment, cluster_name, namespace) DO UPDATE SET
-			name=EXCLUDED.name,
-			source=EXCLUDED.source,
-			argo_connection_id=EXCLUDED.argo_connection_id,
-			status=EXCLUDED.status,
-			metadata=EXCLUDED.metadata,
-			updated_at=now()
-		RETURNING id`, projectID, argoID, JSONValue{Data: map[string]any{"source": "demo_seed"}}); err != nil {
+func upsertDemoDeploymentReadModel(ctx context.Context, tx *gorm.DB, projectID, argoID string) error {
+	target := GormDeploymentTarget{ProjectID: projectID, Name: "demo-cluster/demo", Environment: "staging", ClusterName: "demo-cluster", Namespace: "demo", Source: "argocd", ArgoConnectionID: validNullString(argoID), Status: "Synced", Metadata: JSONValue{Data: map[string]any{"source": "demo_seed"}}}
+	if err := tx.WithContext(ctx).Where(&GormDeploymentTarget{ProjectID: projectID, Environment: target.Environment, ClusterName: target.ClusterName, Namespace: target.Namespace}).Assign(target).FirstOrCreate(&target).Error; err != nil {
 		return fmt.Errorf("upserting demo deployment target: %w", err)
 	}
-	var appID string
-	if err := tx.GetContext(ctx, &appID, `
-		INSERT INTO argo_apps(project_id, argo_connection_id, deployment_target_id, name, namespace, status, metadata)
-		VALUES ($1, $2, $3, 'demo-service', 'demo', 'Synced', $4)
-		ON CONFLICT(argo_connection_id, name) DO UPDATE SET
-			deployment_target_id=EXCLUDED.deployment_target_id,
-			namespace=EXCLUDED.namespace,
-			status=EXCLUDED.status,
-			metadata=EXCLUDED.metadata,
-			updated_at=now()
-		RETURNING id`, projectID, argoID, targetID, JSONValue{Data: map[string]any{"source": "demo_seed"}}); err != nil {
+	app := GormArgoApp{ProjectID: projectID, ArgoConnectionID: validNullString(argoID), DeploymentTargetID: validNullString(target.ID), Name: "demo-service", Namespace: "demo", Status: "Synced", Metadata: JSONValue{Data: map[string]any{"source": "demo_seed"}}}
+	if err := tx.WithContext(ctx).Where(&GormArgoApp{ArgoConnectionID: validNullString(argoID), Name: app.Name}).Assign(app).FirstOrCreate(&app).Error; err != nil {
 		return fmt.Errorf("upserting demo Argo app: %w", err)
 	}
-	var recordID string
-	if err := tx.GetContext(ctx, &recordID, `
-		INSERT INTO deployment_records(project_id, deployment_target_id, argo_connection_id, argo_app_id, name, environment, namespace, cluster_name, source, status, revision, image_refs, metadata, observed_at)
-		VALUES ($1, $2, $3, $4, 'demo-service', 'staging', 'demo', 'demo-cluster', 'argocd', 'Synced', '0123456789abcdef0123456789abcdef01234567', $5, $6, now() - interval '69 hours')
-		ON CONFLICT(project_id, source, name, environment, namespace, cluster_name) DO UPDATE SET
-			deployment_target_id=EXCLUDED.deployment_target_id,
-			argo_connection_id=EXCLUDED.argo_connection_id,
-			argo_app_id=EXCLUDED.argo_app_id,
-			status=EXCLUDED.status,
-			revision=EXCLUDED.revision,
-			image_refs=EXCLUDED.image_refs,
-			metadata=EXCLUDED.metadata,
-			observed_at=EXCLUDED.observed_at,
-			updated_at=now()
-		RETURNING id`, projectID, targetID, argoID, appID, JSONValue{Data: []string{"ghcr.io/example/demo-service:demo"}}, JSONValue{Data: map[string]any{"source": "demo_seed"}}); err != nil {
+	record := GormDeploymentRecord{ProjectID: projectID, DeploymentTargetID: validNullString(target.ID), ArgoConnectionID: validNullString(argoID), ArgoAppID: validNullString(app.ID), Name: "demo-service", Environment: "staging", Namespace: "demo", ClusterName: "demo-cluster", Source: "argocd", Status: "Synced", Revision: "0123456789abcdef0123456789abcdef01234567", ImageRefs: JSONValue{Data: []string{"ghcr.io/example/demo-service:demo"}}, Metadata: JSONValue{Data: map[string]any{"source": "demo_seed"}}, ObservedAt: demoSeedTime(-69)}
+	if err := tx.WithContext(ctx).Where(&GormDeploymentRecord{ProjectID: projectID, Source: record.Source, Name: record.Name, Environment: record.Environment, Namespace: record.Namespace, ClusterName: record.ClusterName}).Assign(record).FirstOrCreate(&record).Error; err != nil {
 		return fmt.Errorf("upserting demo deployment record: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO rollback_points(project_id, deployment_record_id, deployment_target_id, name, environment, revision, image_refs, source, status, metadata, captured_at)
-		VALUES ($1, $2, $3, 'demo-service', 'staging', '0123456789abcdef0123456789abcdef01234567', $4, 'argocd', 'available', $5, now() - interval '69 hours')
-		ON CONFLICT(project_id, source, name, environment, revision) DO UPDATE SET
-			deployment_record_id=EXCLUDED.deployment_record_id,
-			deployment_target_id=EXCLUDED.deployment_target_id,
-			image_refs=EXCLUDED.image_refs,
-			status=EXCLUDED.status,
-			metadata=EXCLUDED.metadata,
-			captured_at=EXCLUDED.captured_at`, projectID, recordID, targetID, JSONValue{Data: []string{"ghcr.io/example/demo-service:demo"}}, JSONValue{Data: map[string]any{"source": "demo_seed"}}); err != nil {
+	rollback := GormRollbackPoint{ProjectID: projectID, DeploymentRecordID: validNullString(record.ID), DeploymentTargetID: validNullString(target.ID), Name: "demo-service", Environment: "staging", Revision: record.Revision, ImageRefs: record.ImageRefs, Source: "argocd", Status: "available", Metadata: JSONValue{Data: map[string]any{"source": "demo_seed"}}, CapturedAt: demoSeedTime(-69)}
+	if err := tx.WithContext(ctx).Where(&GormRollbackPoint{ProjectID: projectID, Source: rollback.Source, Name: rollback.Name, Environment: rollback.Environment, Revision: rollback.Revision}).Assign(rollback).FirstOrCreate(&rollback).Error; err != nil {
 		return fmt.Errorf("upserting demo rollback point: %w", err)
 	}
 	return nil
 }
 
-func upsertDemoApproval(ctx context.Context, tx *sqlx.Tx, projectID, repoSyncAssetID, adminID string) error {
-	var approvalID string
-	err := tx.GetContext(ctx, &approvalID, `
-		SELECT id
-		FROM operation_approvals
-		WHERE resource_type='repo_sync_asset' AND resource_id=$1 AND action='repo.sync'
-		ORDER BY created_at
-		LIMIT 1`, repoSyncAssetID)
-	if err == nil {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE operation_approvals
-			SET project_id=$2,
-				title='Demo pending mirror sync approval',
-				request_payload=$3,
-				status='pending',
-				required_approver_roles=ARRAY['admin','owner']::TEXT[],
-				required_approval_count=2,
-				notification_channels=ARRAY['ui']::TEXT[],
-				notification_status='pending',
-				requested_by=$4,
-				decided_by=$4,
-				decision_reason='seeded first approval; waiting for another approver',
-				decided_at=NULL,
-				expires_at=now() + interval '24 hours',
-				expired_at=NULL,
-				updated_at=now()
-			WHERE id=$1`, approvalID, projectID, JSONValue{Data: map[string]any{"source": "demo_seed", "repo_sync_asset_id": repoSyncAssetID}}, adminID)
-		if err != nil {
-			return fmt.Errorf("updating demo approval: %w", err)
-		}
-	} else {
-		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("checking demo approval: %w", err)
-		}
-		if err := tx.GetContext(ctx, &approvalID, `
-			INSERT INTO operation_approvals(project_id, resource_type, resource_id, action, title, request_payload, status, required_approver_roles, required_approval_count, notification_channels, notification_status, requested_by, decided_by, decision_reason, expires_at)
-			VALUES ($1, 'repo_sync_asset', $2, 'repo.sync', 'Demo pending mirror sync approval', $3, 'pending', ARRAY['admin','owner']::TEXT[], 2, ARRAY['ui']::TEXT[], 'pending', $4, $4, 'seeded first approval; waiting for another approver', now() + interval '24 hours')
-			RETURNING id`, projectID, repoSyncAssetID, JSONValue{Data: map[string]any{"source": "demo_seed", "repo_sync_asset_id": repoSyncAssetID}}, adminID); err != nil {
-			return fmt.Errorf("inserting demo approval: %w", err)
-		}
+func upsertDemoApproval(ctx context.Context, tx *gorm.DB, projectID, repoSyncAssetID, adminID string) error {
+	approval := GormOperationApproval{ProjectID: validNullString(projectID), ResourceType: "repo_sync_asset", ResourceID: repoSyncAssetID, Action: "repo.sync", Title: "Demo pending mirror sync approval", RequestPayload: JSONValue{Data: map[string]any{"source": "demo_seed", "repo_sync_asset_id": repoSyncAssetID}}, Status: "pending", RequiredApproverRoles: pq.StringArray{"admin", "owner"}, RequiredApprovalCount: 2, NotificationChannels: pq.StringArray{"ui"}, NotificationStatus: "pending", RequestedBy: validNullString(adminID), DecidedBy: validNullString(adminID), DecisionReason: "seeded first approval; waiting for another approver", ExpiresAt: validNullTime(time.Now().Add(24 * time.Hour))}
+	if err := tx.WithContext(ctx).Where(&GormOperationApproval{ResourceType: approval.ResourceType, ResourceID: repoSyncAssetID, Action: approval.Action}).Assign(approval).FirstOrCreate(&approval).Error; err != nil {
+		return fmt.Errorf("upserting demo approval: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO operation_approval_decisions(operation_approval_id, user_id, decision, reason)
-		VALUES ($1, $2, 'approved', 'Seeded first approval for demo multi-approver progress')
-		ON CONFLICT(operation_approval_id, user_id) DO UPDATE SET
-			decision=EXCLUDED.decision,
-			reason=EXCLUDED.reason,
-			decided_at=now(),
-			updated_at=now()`, approvalID, adminID); err != nil {
+	decision := GormOperationApprovalDecision{OperationApprovalID: approval.ID, UserID: validNullString(adminID), Decision: "approved", Reason: "Seeded first approval for demo multi-approver progress", DecidedAt: time.Now()}
+	if err := tx.WithContext(ctx).Where(&GormOperationApprovalDecision{OperationApprovalID: approval.ID, UserID: validNullString(adminID)}).Assign(decision).FirstOrCreate(&decision).Error; err != nil {
 		return fmt.Errorf("upserting demo approval decision: %w", err)
 	}
 	return nil
 }
 
 func (s *Store) seedDemoManualAssetRelation(ctx context.Context, projectID, repositoryID, repoSyncAssetID string) error {
-	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO asset_relations(project_id, from_asset_id, to_asset_id, relation_type, metadata)
-		SELECT $1, from_asset.id, to_asset.id, 'observes', $4
-		FROM assets from_asset
-		JOIN assets to_asset ON to_asset.asset_type='repo_sync' AND to_asset.source_table='repo_sync_assets' AND to_asset.source_id=$3::uuid
-		WHERE from_asset.asset_type='repository' AND from_asset.source_table='project_git_repositories' AND from_asset.source_id=$2::uuid
-		ON CONFLICT(from_asset_id, to_asset_id, relation_type) DO UPDATE SET
-			metadata=asset_relations.metadata || EXCLUDED.metadata`,
-		projectID,
-		repositoryID,
-		repoSyncAssetID,
-		JSONValue{Data: map[string]any{"source": "manual", "demo_seed": true, "note": "operator-curated demo relation"}},
-	)
-	if err != nil {
+	if s.Gorm == nil {
+		return fmt.Errorf("gorm database is not configured")
+	}
+	var fromAsset GormAsset
+	if err := s.Gorm.WithContext(ctx).Where(&GormAsset{AssetType: "repository", SourceTable: "project_git_repositories", SourceID: validNullString(repositoryID)}).First(&fromAsset).Error; err != nil {
+		return fmt.Errorf("loading demo repository asset: %w", err)
+	}
+	var toAsset GormAsset
+	if err := s.Gorm.WithContext(ctx).Where(&GormAsset{AssetType: "repo_sync", SourceTable: "repo_sync_assets", SourceID: validNullString(repoSyncAssetID)}).First(&toAsset).Error; err != nil {
+		return fmt.Errorf("loading demo repo sync asset: %w", err)
+	}
+	relation := GormAssetRelation{ProjectID: validNullString(projectID), FromAssetID: fromAsset.ID, ToAssetID: toAsset.ID, RelationType: "observes", Metadata: JSONValue{Data: map[string]any{"source": "manual", "demo_seed": true, "note": "operator-curated demo relation"}}}
+	if err := s.Gorm.WithContext(ctx).Where(&GormAssetRelation{FromAssetID: fromAsset.ID, ToAssetID: toAsset.ID, RelationType: relation.RelationType}).Assign(relation).FirstOrCreate(&relation).Error; err != nil {
 		return fmt.Errorf("upserting demo manual asset relation: %w", err)
 	}
 	return nil
 }
+
+func demoSeedTime(hoursAgo int) time.Time { return time.Now().Add(time.Duration(hoursAgo) * time.Hour) }
 
 func demoRepoSyncStdout(status string) string {
 	if status == "completed" {
 		return "Fetched refs/heads/main from Demo Gitea Origin and pushed to Demo GitHub Mirror."
 	}
 	return "Fetched refs/heads/release from Demo Gitea Origin; push was rejected by target policy."
-}
-
-func upsertByProjectName(
-	ctx context.Context,
-	tx *sqlx.Tx,
-	table string,
-	projectID string,
-	name string,
-	insertSQL func() (string, []any),
-	updateSQL func() (string, []any),
-) (string, error) {
-	var existing string
-	err := tx.GetContext(ctx, &existing, fmt.Sprintf("SELECT id FROM %s WHERE project_id=$1 AND name=$2 ORDER BY created_at LIMIT 1", table), projectID, name)
-	if err == nil {
-		query, args := updateSQL()
-		var id string
-		if err := tx.GetContext(ctx, &id, query, args...); err != nil {
-			return "", fmt.Errorf("updating demo %s %q: %w", table, name, err)
-		}
-		return id, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("checking demo %s %q: %w", table, name, err)
-	}
-	query, args := insertSQL()
-	var id string
-	if err := tx.GetContext(ctx, &id, query, args...); err != nil {
-		return "", fmt.Errorf("inserting demo %s %q: %w", table, name, err)
-	}
-	return id, nil
 }
 
 func demoAgentPrompt() string {

@@ -13,7 +13,7 @@ type ProviderReviewAttemptActivationSnapshotOptions struct {
 }
 
 func RecordProviderReviewAttemptActivationSnapshot(ctx context.Context, store *Store, opts ProviderReviewAttemptActivationSnapshotOptions) (map[string]any, error) {
-	if store == nil || store.DB == nil {
+	if store == nil || store.Gorm == nil {
 		return nil, fmt.Errorf("store is required")
 	}
 	attemptID := cleanOptionalID(opts.AttemptID)
@@ -36,7 +36,7 @@ func RecordProviderReviewAttemptActivationSnapshot(ctx context.Context, store *S
 			return nil, err
 		}
 	}
-	assetID, assetErr := providerReviewAttemptAssetID(ctx, store.DB, attemptID)
+	assetID, assetErr := providerReviewAttemptAssetID(ctx, store.Gorm, attemptID)
 	snapshot := providerReviewAttemptActivationSnapshotPayload(attempt, ledger, assetErr == nil)
 	ready, state, missing := providerReviewAttemptActivationSnapshotReadiness(snapshot)
 	result := map[string]any{
@@ -89,103 +89,25 @@ func RecordProviderReviewAttemptActivationSnapshot(ctx context.Context, store *S
 		return result, nil
 	}
 	status, health := providerReviewAttemptActivationSnapshotStatusHealth(state)
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "provider review attempt activation snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting provider review attempt activation snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording provider review attempt activation snapshot recorded: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, status); err != nil {
-		return nil, fmt.Errorf("locking provider review attempt activation snapshot asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'provider review attempt activation snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting provider review attempt activation snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing provider review attempt activation snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = state
 	result["snapshot_status"] = status
 	result["snapshot_health"] = health
 	result["snapshots_written"] = written
 	result["snapshot_commit_attempted"] = true
 	result["canonical_asset_status_snapshot_try"] = true
-	if written >= 0 {
-		result["snapshots_skipped_as_duplicate"] = 1 - written
-		result["provider_review_attempt_activation_snapshot_written"] = written > 0
-		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["provider_review_attempt_activation_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
+	result["snapshots_skipped_as_duplicate"] = 1 - written
+	result["provider_review_attempt_activation_snapshot_written"] = written > 0
+	result["asset_status_snapshot_written"] = written > 0
 	result["message"] = "Sanitized provider review attempt activation snapshot recorded from local dispatch and provider-call boundary evidence."
 	return result, nil
 }
 
 func providerReviewAttemptForActivationSnapshot(ctx context.Context, store *Store, attemptID string) (map[string]any, error) {
-	return queryOne(ctx, store.DB, `
-		SELECT
-			pra.id,
-			pra.operation_approval_id,
-			pra.project_template_run_id,
-			pra.provider_type,
-			pra.review_kind,
-			pra.operation_name,
-			pra.endpoint_key,
-			pra.status,
-			pra.replay_check,
-			pra.conflict_policy,
-			pra.retry_policy,
-			pra.operation_order,
-			pra.depends_on_operation,
-			pra.dependency_status,
-			pra.request_summary,
-			pra.response_diagnostics,
-			pra.provider_api_call_made,
-			pra.provider_api_mutation,
-			pra.external_call_made,
-			pra.claimed_at,
-			oa.id AS approval_id,
-			oa.project_id AS approval_project_id,
-			oa.action AS approval_action,
-			oa.status AS approval_status
-		FROM provider_review_attempts pra
-		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
-		WHERE pra.id=$1`, attemptID)
+	return providerReviewAttemptForSnapshot(ctx, store.Gorm, attemptID)
 }
 
 func providerReviewAttemptActivationSnapshotPayload(attempt, ledger map[string]any, assetObserved bool) map[string]any {

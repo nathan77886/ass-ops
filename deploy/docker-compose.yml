@@ -40,33 +40,6 @@ services:
       - "${ASSOPS_POSTGRES_PORT:-5432}:5432"
     volumes:
       - assops_pg:/var/lib/postgresql/data
-      - ../backend/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
-      - ../backend/migrations/002_git_first_version.sql:/docker-entrypoint-initdb.d/002_git_first_version.sql:ro
-      - ../backend/migrations/003_provider_accounts.sql:/docker-entrypoint-initdb.d/003_provider_accounts.sql:ro
-      - ../backend/migrations/004_approval_saved_views.sql:/docker-entrypoint-initdb.d/004_approval_saved_views.sql:ro
-      - ../backend/migrations/005_agent_tool_call_audit.sql:/docker-entrypoint-initdb.d/005_agent_tool_call_audit.sql:ro
-      - ../backend/migrations/006_asset_graph_saved_views.sql:/docker-entrypoint-initdb.d/006_asset_graph_saved_views.sql:ro
-      - ../backend/migrations/007_multi_approver_approvals.sql:/docker-entrypoint-initdb.d/007_multi_approver_approvals.sql:ro
-      - ../backend/migrations/008_asset_status_snapshots.sql:/docker-entrypoint-initdb.d/008_asset_status_snapshots.sql:ro
-      - ../backend/migrations/009_approval_reminders.sql:/docker-entrypoint-initdb.d/009_approval_reminders.sql:ro
-      - ../backend/migrations/010_approval_rule_audit.sql:/docker-entrypoint-initdb.d/010_approval_rule_audit.sql:ro
-      - ../backend/migrations/011_approval_escalations.sql:/docker-entrypoint-initdb.d/011_approval_escalations.sql:ro
-      - ../backend/migrations/012_approval_delegations.sql:/docker-entrypoint-initdb.d/012_approval_delegations.sql:ro
-      - ../backend/migrations/013_provider_review_approval_rule.sql:/docker-entrypoint-initdb.d/013_provider_review_approval_rule.sql:ro
-      - ../backend/migrations/014_provider_review_attempts.sql:/docker-entrypoint-initdb.d/014_provider_review_attempts.sql:ro
-      - ../backend/migrations/015_provider_review_attempt_dependencies.sql:/docker-entrypoint-initdb.d/015_provider_review_attempt_dependencies.sql:ro
-      - ../backend/migrations/016_project_versions_unique.sql:/docker-entrypoint-initdb.d/016_project_versions_unique.sql:ro
-      - ../backend/migrations/017_webhook_threshold_decision_audits.sql:/docker-entrypoint-initdb.d/017_webhook_threshold_decision_audits.sql:ro
-      - ../backend/migrations/018_webhook_threshold_configurations.sql:/docker-entrypoint-initdb.d/018_webhook_threshold_configurations.sql:ro
-      - ../backend/migrations/019_provider_review_attempt_claims.sql:/docker-entrypoint-initdb.d/019_provider_review_attempt_claims.sql:ro
-      - ../backend/migrations/020_github_action_artifacts.sql:/docker-entrypoint-initdb.d/020_github_action_artifacts.sql:ro
-      - ../backend/migrations/021_kubernetes_environments.sql:/docker-entrypoint-initdb.d/021_kubernetes_environments.sql:ro
-      - ../backend/migrations/022_github_repository_labels.sql:/docker-entrypoint-initdb.d/022_github_repository_labels.sql:ro
-      - ../backend/migrations/023_kubernetes_pod_restart_access.sql:/docker-entrypoint-initdb.d/023_kubernetes_pod_restart_access.sql:ro
-      - ../backend/migrations/024_provider_review_live_execution.sql:/docker-entrypoint-initdb.d/024_provider_review_live_execution.sql:ro
-      - ../backend/migrations/025_connection_credentials.sql:/docker-entrypoint-initdb.d/025_connection_credentials.sql:ro
-      - ../backend/migrations/026_provider_git_credentials.sql:/docker-entrypoint-initdb.d/026_provider_git_credentials.sql:ro
-      - ../backend/migrations/027_ai_runtime_provider_credentials.sql:/docker-entrypoint-initdb.d/027_ai_runtime_provider_credentials.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U assops -d assops"]
       interval: 5s

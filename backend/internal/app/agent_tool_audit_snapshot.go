@@ -2,12 +2,11 @@ package app
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type AgentToolAuditSnapshotOptions struct {
@@ -24,18 +23,18 @@ func RecordAgentToolAuditSnapshot(ctx context.Context, store *Store, opts AgentT
 	task := opts.Task
 	if len(task) == 0 {
 		var err error
-		task, err = agentTaskForToolAuditSnapshot(ctx, store.DB, taskID)
+		task, err = agentTaskForToolAuditSnapshot(ctx, store.Gorm, taskID)
 		if err != nil {
 			return nil, err
 		}
 	}
-	toolCalls, err := agentTaskToolCallsForSnapshot(ctx, store.DB, taskID)
+	toolCalls, err := agentTaskToolCallsForSnapshot(ctx, store.Gorm, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("loading agent tool-call audit evidence: %w", err)
 	}
 	evidence := agentToolCallAuditEvidence(toolCalls)
 	callbackPlan := agentWorkerResultCallbackPlan(evidence)
-	assetID, assetErr := agentTaskAssetID(ctx, store.DB, taskID)
+	assetID, assetErr := agentTaskAssetID(ctx, store.Gorm, taskID)
 	snapshot := agentToolAuditSnapshotPayload(task, evidence, callbackPlan, assetErr == nil)
 	ready, state, missing := agentToolAuditSnapshotReadiness(snapshot)
 	projectID := strings.TrimSpace(fmt.Sprint(task["project_id"]))
@@ -93,78 +92,41 @@ func RecordAgentToolAuditSnapshot(ctx context.Context, store *Store, opts AgentT
 		return result, nil
 	}
 	status, health := agentToolAuditSnapshotStatusHealth(state)
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "agent tool-call audit snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting agent tool-call audit snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording agent tool-call audit snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, status); err != nil {
-		return nil, fmt.Errorf("locking agent tool-call audit snapshot asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'agent tool-call audit snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting agent tool-call audit snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing agent tool-call audit snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = state
 	result["snapshot_status"] = status
 	result["snapshot_health"] = health
 	result["snapshots_written"] = written
 	result["snapshot_commit_attempted"] = true
 	result["canonical_asset_status_snapshot_try"] = true
-	if written >= 0 {
-		result["snapshots_skipped_as_duplicate"] = 1 - written
-		result["agent_tool_audit_snapshot_written"] = written > 0
-		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["agent_tool_audit_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
+	result["snapshots_skipped_as_duplicate"] = 1 - written
+	result["agent_tool_audit_snapshot_written"] = written > 0
+	result["asset_status_snapshot_written"] = written > 0
 	result["message"] = "Sanitized agent tool-call audit snapshot recorded from local audit evidence."
 	return result, nil
 }
 
-func agentTaskForToolAuditSnapshot(ctx context.Context, db sqlx.ExtContext, taskID string) (map[string]any, error) {
-	return queryOne(ctx, db, `
-		SELECT id, project_id, status, created_at, updated_at
-		FROM agent_tasks
-		WHERE id=$1`, taskID)
+func agentTaskForToolAuditSnapshot(ctx context.Context, db *gorm.DB, taskID string) (map[string]any, error) {
+	if db == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
+	var task GormAgentTask
+	if err := db.WithContext(ctx).First(&task, &GormAgentTask{GormBase: GormBase{ID: taskID}}).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return map[string]any{
+		"id":         task.ID,
+		"project_id": task.ProjectID,
+		"status":     task.Status,
+		"created_at": task.CreatedAt,
+		"updated_at": task.UpdatedAt,
+	}, nil
 }
 
 func agentToolAuditSnapshotStatusHealth(state string) (string, string) {
@@ -179,30 +141,51 @@ func agentToolAuditSnapshotStatusHealth(state string) (string, string) {
 	return status, health
 }
 
-func agentTaskToolCallsForSnapshot(ctx context.Context, db sqlx.ExtContext, taskID string) ([]map[string]any, error) {
-	return queryMaps(ctx, db, `
-		SELECT id, agent_task_id, operation_run_id, project_id, tool_name, status, started_at, finished_at, created_at, updated_at
-		FROM agent_tool_calls
-		WHERE agent_task_id=$1
-		ORDER BY created_at DESC, id DESC
-		LIMIT 100`, taskID)
+func agentTaskToolCallsForSnapshot(ctx context.Context, db *gorm.DB, taskID string) ([]map[string]any, error) {
+	if db == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
+	var calls []GormAgentToolCall
+	if err := db.WithContext(ctx).
+		Where(&GormAgentToolCall{AgentTaskID: taskID}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "id"}, Desc: true}).
+		Limit(100).
+		Find(&calls).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(calls))
+	for _, call := range calls {
+		items = append(items, map[string]any{
+			"id":               call.ID,
+			"agent_task_id":    call.AgentTaskID,
+			"operation_run_id": call.OperationRunID,
+			"project_id":       call.ProjectID,
+			"tool_name":        call.ToolName,
+			"status":           call.Status,
+			"started_at":       call.StartedAt,
+			"finished_at":      call.FinishedAt,
+			"created_at":       call.CreatedAt,
+			"updated_at":       call.CreatedAt,
+		})
+	}
+	return items, nil
 }
 
-func agentTaskAssetID(ctx context.Context, db sqlx.ExtContext, taskID string) (string, error) {
-	row, err := queryOne(ctx, db, `
-		SELECT id::text AS id
-		FROM assets
-		WHERE asset_type='agent_task'
-			AND source_table='agent_tasks'
-			AND source_id=$1::uuid
-		LIMIT 1`, taskID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+func agentTaskAssetID(ctx context.Context, db *gorm.DB, taskID string) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("gorm database is not configured")
+	}
+	var asset GormAsset
+	if err := db.WithContext(ctx).
+		Where(&GormAsset{AssetType: "agent_task", SourceTable: "agent_tasks", SourceID: validNullString(taskID)}).
+		First(&asset).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
 			return "", fmt.Errorf("agent_task asset for %s not found; run db sync-assets first", taskID)
 		}
 		return "", err
 	}
-	assetID := strings.TrimSpace(fmt.Sprint(row["id"]))
+	assetID := strings.TrimSpace(asset.ID)
 	if assetID == "" || assetID == "<nil>" {
 		return "", fmt.Errorf("agent_task asset for %s has empty id", taskID)
 	}

@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -18,22 +16,22 @@ type DemoReadinessSnapshotOptions struct {
 }
 
 type demoReadinessAssetRow struct {
-	ID          string    `db:"id"`
-	ProjectID   string    `db:"project_id"`
-	AssetType   string    `db:"asset_type"`
-	SourceTable string    `db:"source_table"`
-	SourceID    string    `db:"source_id"`
-	Name        string    `db:"name"`
-	DisplayName string    `db:"display_name"`
-	Status      string    `db:"status"`
-	RiskLevel   string    `db:"risk_level"`
-	Metadata    JSONValue `db:"metadata"`
+	ID          string
+	ProjectID   string
+	AssetType   string
+	SourceTable string
+	SourceID    string
+	Name        string
+	DisplayName string
+	Status      string
+	RiskLevel   string
+	Metadata    JSONValue
 }
 
 type demoReadinessRelationRow struct {
-	FromAssetID  string `db:"from_asset_id"`
-	ToAssetID    string `db:"to_asset_id"`
-	RelationType string `db:"relation_type"`
+	FromAssetID  string
+	ToAssetID    string
+	RelationType string
 }
 
 type demoReadinessSnapshotPath struct {
@@ -84,62 +82,19 @@ func RecordDemoReadinessSnapshot(ctx context.Context, store *Store, opts DemoRea
 		}
 	}
 
-	tx, err := store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("starting demo readiness snapshot transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
 	written := 0
-	rowsAffectedUnknown := false
 	for _, target := range targets {
-		execResult, err := tx.ExecContext(ctx, `
-			INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-			SELECT $1, $2, $3, 'first-version demo project/repository/remote graph snapshot recorded', $4
-			WHERE NOT EXISTS (
-				SELECT 1
-				FROM asset_status_snapshots latest
-				WHERE latest.asset_id=$1
-					AND latest.status=$2
-					AND latest.health=$3
-					AND latest.raw=$4
-					AND latest.collected_at=(
-						SELECT max(collected_at)
-						FROM asset_status_snapshots newest
-						WHERE newest.asset_id=$1
-					)
-			)`,
-			target, snapshotStatus, snapshotHealth, JSONValue{Data: snapshot})
+		count, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, target, snapshotStatus, snapshotHealth, "first-version demo project/repository/remote graph snapshot recorded", snapshot)
 		if err != nil {
-			return nil, fmt.Errorf("inserting demo readiness snapshot: %w", err)
+			return nil, fmt.Errorf("recording demo readiness snapshot: %w", err)
 		}
-		if rows, err := execResult.RowsAffected(); err == nil {
-			written += int(rows)
-		} else {
-			rowsAffectedUnknown = true
-		}
+		written += count
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing demo readiness snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = "recorded"
-	if rowsAffectedUnknown {
-		result["rows_affected_unknown"] = true
-		result["snapshots_written"] = -1
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["readiness_snapshot_written"] = false
-		result["asset_graph_snapshot_written"] = false
-	} else {
-		result["snapshots_written"] = written
-		result["snapshots_skipped_as_duplicate"] = len(targets) - written
-		result["readiness_snapshot_written"] = written > 0
-		result["asset_graph_snapshot_written"] = written > 0
-	}
+	result["snapshots_written"] = written
+	result["snapshots_skipped_as_duplicate"] = len(targets) - written
+	result["readiness_snapshot_written"] = written > 0
+	result["asset_graph_snapshot_written"] = written > 0
 	return result, nil
 }
 
@@ -156,69 +111,80 @@ func ResolveDemoReadinessSnapshotProjectID(ctx context.Context, store *Store, op
 		return projectID, nil
 	}
 	if projectSlug != "" {
-		var id string
-		if err := store.DB.GetContext(ctx, &id, `SELECT id::text FROM projects WHERE slug=$1`, projectSlug); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+		var project GormProject
+		if err := store.Gorm.WithContext(ctx).Where(&GormProject{Slug: projectSlug}).First(&project).Error; err != nil {
+			if errorsIsRecordNotFound(err) {
 				return "", fmt.Errorf("project slug %q not found", projectSlug)
 			}
 			return "", fmt.Errorf("resolving project slug %q: %w", projectSlug, err)
 		}
-		return id, nil
+		return project.ID, nil
 	}
-	var count int
-	if err := store.DB.GetContext(ctx, &count, `SELECT count(*) FROM assets WHERE asset_type='project'`); err != nil {
+	var projectAssets []GormAsset
+	if err := store.Gorm.WithContext(ctx).Where(&GormAsset{AssetType: "project"}).Find(&projectAssets).Error; err != nil {
 		return "", fmt.Errorf("counting project assets: %w", err)
 	}
-	if count == 0 {
+	if len(projectAssets) == 0 {
 		return "", fmt.Errorf("no project asset found; run db sync-assets or pass a project after creating/importing it")
 	}
-	if count > 1 {
+	if len(projectAssets) > 1 {
 		return "", fmt.Errorf("multiple project assets found; pass project_slug or project_id")
 	}
-	var id string
-	if err := store.DB.GetContext(ctx, &id, `SELECT source_id::text FROM assets WHERE asset_type='project' LIMIT 1`); err != nil {
-		return "", fmt.Errorf("loading only project asset id: %w", err)
+	if !projectAssets[0].SourceID.Valid || strings.TrimSpace(projectAssets[0].SourceID.String) == "" {
+		return "", fmt.Errorf("loading only project asset id: empty source_id")
 	}
-	return id, nil
+	return projectAssets[0].SourceID.String, nil
 }
 
 func loadCanonicalDemoReadinessEvidence(ctx context.Context, store *Store, projectID string) ([]demoReadinessAssetRow, []demoReadinessRelationRow, error) {
-	var assets []demoReadinessAssetRow
-	if err := store.DB.SelectContext(ctx, &assets, `
-		SELECT
-			id::text AS id,
-			COALESCE(project_id::text, '') AS project_id,
-			asset_type,
-			source_table,
-			COALESCE(source_id::text, '') AS source_id,
-			name,
-			display_name,
-			status,
-			risk_level,
-			metadata
-		FROM assets
-		WHERE asset_type IN ('project', 'repository', 'git_remote')
-			AND (
-				project_id=$1::uuid
-				OR (asset_type='project' AND source_id=$1::uuid)
-			)
-		ORDER BY asset_type, created_at, id`, projectID); err != nil {
+	var assetModels []GormAsset
+	if err := store.Gorm.WithContext(ctx).Find(&assetModels).Error; err != nil {
 		return nil, nil, fmt.Errorf("loading canonical demo assets: %w", err)
 	}
+	assets := make([]demoReadinessAssetRow, 0, len(assetModels))
+	for _, asset := range assetModels {
+		if asset.AssetType != "project" && asset.AssetType != "repository" && asset.AssetType != "git_remote" {
+			continue
+		}
+		assetProjectID := ""
+		if asset.ProjectID.Valid {
+			assetProjectID = asset.ProjectID.String
+		}
+		assetSourceID := ""
+		if asset.SourceID.Valid {
+			assetSourceID = asset.SourceID.String
+		}
+		if assetProjectID != projectID && !(asset.AssetType == "project" && assetSourceID == projectID) {
+			continue
+		}
+		assets = append(assets, demoReadinessAssetRow{ID: asset.ID, ProjectID: assetProjectID, AssetType: asset.AssetType, SourceTable: asset.SourceTable, SourceID: assetSourceID, Name: asset.Name, DisplayName: asset.DisplayName, Status: asset.Status, RiskLevel: asset.RiskLevel, Metadata: asset.Metadata})
+	}
+	sort.SliceStable(assets, func(i, j int) bool {
+		if assets[i].AssetType != assets[j].AssetType {
+			return assets[i].AssetType < assets[j].AssetType
+		}
+		return assets[i].ID < assets[j].ID
+	})
 	if len(assets) == 0 {
 		return nil, nil, fmt.Errorf("no canonical project/repository/remote assets found for project %s; run db sync-assets first", projectID)
 	}
-	var relations []demoReadinessRelationRow
-	if err := store.DB.SelectContext(ctx, &relations, `
-		SELECT from_asset_id::text AS from_asset_id, to_asset_id::text AS to_asset_id, relation_type
-		FROM asset_relations
-		WHERE relation_type IN ('owns', 'has_remote')
-			AND (
-				from_asset_id IN (SELECT id FROM assets WHERE project_id=$1::uuid OR (asset_type='project' AND source_id=$1::uuid))
-				OR to_asset_id IN (SELECT id FROM assets WHERE project_id=$1::uuid OR (asset_type='project' AND source_id=$1::uuid))
-			)
-		ORDER BY created_at, id`, projectID); err != nil {
+	assetIDs := map[string]bool{}
+	for _, asset := range assets {
+		assetIDs[asset.ID] = true
+	}
+	var relationModels []GormAssetRelation
+	if err := store.Gorm.WithContext(ctx).Find(&relationModels).Error; err != nil {
 		return nil, nil, fmt.Errorf("loading canonical demo asset relations: %w", err)
+	}
+	relations := make([]demoReadinessRelationRow, 0, len(relationModels))
+	for _, relation := range relationModels {
+		if relation.RelationType != "owns" && relation.RelationType != "has_remote" {
+			continue
+		}
+		if !assetIDs[relation.FromAssetID] && !assetIDs[relation.ToAssetID] {
+			continue
+		}
+		relations = append(relations, demoReadinessRelationRow{FromAssetID: relation.FromAssetID, ToAssetID: relation.ToAssetID, RelationType: relation.RelationType})
 	}
 	return assets, relations, nil
 }

@@ -12,7 +12,6 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/assops-
 FROM alpine:3.21 AS go-runtime
 WORKDIR /app
 RUN apk add --no-cache ca-certificates git openssh-client postgresql-client kubectl
-COPY backend/migrations ./backend/migrations
 COPY --from=go-builder /out/assops-tool /usr/local/bin/assops-tool
 
 FROM go-runtime AS gateway

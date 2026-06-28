@@ -20,12 +20,12 @@ func RecordAgentCodeAuditSnapshot(ctx context.Context, store *Store, opts AgentC
 	task := opts.Task
 	if len(task) == 0 {
 		var err error
-		task, err = agentTaskForToolAuditSnapshot(ctx, store.DB, taskID)
+		task, err = agentTaskForToolAuditSnapshot(ctx, store.Gorm, taskID)
 		if err != nil {
 			return nil, err
 		}
 	}
-	toolCalls, err := agentTaskToolCallsForSnapshot(ctx, store.DB, taskID)
+	toolCalls, err := agentTaskToolCallsForSnapshot(ctx, store.Gorm, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("loading agent code audit evidence: %w", err)
 	}
@@ -34,7 +34,7 @@ func RecordAgentCodeAuditSnapshot(ctx context.Context, store *Store, opts AgentC
 	executionArmingPlan := agentCodeModificationExecutionArmingPlan(codeEvidence)
 	sourceReviewPlan := agentCodeModificationSourceCheckoutBranchReviewPlan(codeEvidence, executionArmingPlan)
 	resultRecordingPlan := agentCodeModificationResultRecordingPlan(codeEvidence)
-	assetID, assetErr := agentTaskAssetID(ctx, store.DB, taskID)
+	assetID, assetErr := agentTaskAssetID(ctx, store.Gorm, taskID)
 	snapshot := agentCodeAuditSnapshotPayload(task, codeEvidence, resultRecordingPlan, executionArmingPlan, sourceReviewPlan, assetErr == nil)
 	ready, state, missing := agentCodeAuditSnapshotReadiness(snapshot)
 	projectID := strings.TrimSpace(fmt.Sprint(task["project_id"]))
@@ -106,69 +106,19 @@ func RecordAgentCodeAuditSnapshot(ctx context.Context, store *Store, opts AgentC
 		return result, nil
 	}
 	status, health := agentCodeAuditSnapshotStatusHealth(state)
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "agent code audit snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting agent code audit snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording agent code audit snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, status); err != nil {
-		return nil, fmt.Errorf("locking agent code audit snapshot asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'agent code audit snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting agent code audit snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing agent code audit snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = state
 	result["snapshot_status"] = status
 	result["snapshot_health"] = health
 	result["snapshots_written"] = written
 	result["snapshot_commit_attempted"] = true
 	result["canonical_asset_status_snapshot_try"] = true
-	if written >= 0 {
-		result["snapshots_skipped_as_duplicate"] = 1 - written
-		result["agent_code_audit_snapshot_written"] = written > 0
-		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["agent_code_audit_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
+	result["snapshots_skipped_as_duplicate"] = 1 - written
+	result["agent_code_audit_snapshot_written"] = written > 0
+	result["asset_status_snapshot_written"] = written > 0
 	result["message"] = "Sanitized agent code audit snapshot recorded from local audit evidence."
 	return result, nil
 }

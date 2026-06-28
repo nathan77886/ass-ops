@@ -31,13 +31,10 @@ for container in \
   fi
 done
 
-latest_migration="$(find backend/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort | tail -n 1)"
-db_status="$(docker exec "$pg_container" psql -U "$pg_user" -d "$pg_database" -v ON_ERROR_STOP=1 -tAc \
-  "SELECT count(*) || ' ' || max(version) FROM schema_migrations;")"
-db_count="${db_status%% *}"
-db_latest="${db_status#* }"
-if [[ "$db_latest" != "$latest_migration" ]]; then
-  echo "PG18 migration mismatch: got $db_latest, want $latest_migration" >&2
+schema_table_count="$(docker exec "$pg_container" psql -U "$pg_user" -d "$pg_database" -v ON_ERROR_STOP=1 -tAc \
+  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('users','projects','connection_credentials','provider_accounts','git_remotes','ai_runtimes','argo_connections','ssh_machines','operation_runs','worker_jobs','assets','provider_review_attempts');")"
+if [[ "$schema_table_count" != "12" ]]; then
+  echo "PG18 GORM schema incomplete: got $schema_table_count/12 required tables" >&2
   exit 1
 fi
 
@@ -61,4 +58,4 @@ else
   echo "cloudflare api route pending: $cf_code $cf_type"
 fi
 
-echo "docker PG18 runtime check passed for $base_url with $db_count migrations ($db_latest)"
+echo "docker PG18 runtime check passed for $base_url with GORM schema tables: $schema_table_count/12"

@@ -13,7 +13,7 @@ type ProviderReviewAttemptExecutionLockSnapshotOptions struct {
 }
 
 func RecordProviderReviewAttemptExecutionLockSnapshot(ctx context.Context, store *Store, opts ProviderReviewAttemptExecutionLockSnapshotOptions) (map[string]any, error) {
-	if store == nil || store.DB == nil {
+	if store == nil || store.Gorm == nil {
 		return nil, fmt.Errorf("store is required")
 	}
 	attemptID := cleanOptionalID(opts.AttemptID)
@@ -36,7 +36,7 @@ func RecordProviderReviewAttemptExecutionLockSnapshot(ctx context.Context, store
 			return nil, err
 		}
 	}
-	assetID, assetErr := providerReviewAttemptAssetID(ctx, store.DB, attemptID)
+	assetID, assetErr := providerReviewAttemptAssetID(ctx, store.Gorm, attemptID)
 	snapshot := providerReviewAttemptExecutionLockSnapshotPayload(attempt, ledger, assetErr == nil)
 	ready, state, missing := providerReviewAttemptExecutionLockSnapshotReadiness(snapshot)
 	result := map[string]any{
@@ -92,69 +92,19 @@ func RecordProviderReviewAttemptExecutionLockSnapshot(ctx context.Context, store
 		return result, nil
 	}
 	status, health := providerReviewAttemptExecutionLockSnapshotStatusHealth(state)
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "provider review attempt execution lock snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting provider review attempt execution lock snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording provider review attempt execution lock snapshot recorded: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, status); err != nil {
-		return nil, fmt.Errorf("locking provider review attempt execution lock snapshot asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'provider review attempt execution lock snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting provider review attempt execution lock snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing provider review attempt execution lock snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = state
 	result["snapshot_status"] = status
 	result["snapshot_health"] = health
 	result["snapshots_written"] = written
 	result["snapshot_commit_attempted"] = true
 	result["canonical_asset_status_snapshot_try"] = true
-	if written >= 0 {
-		result["snapshots_skipped_as_duplicate"] = 1 - written
-		result["provider_review_attempt_execution_lock_snapshot_written"] = written > 0
-		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["provider_review_attempt_execution_lock_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
+	result["snapshots_skipped_as_duplicate"] = 1 - written
+	result["provider_review_attempt_execution_lock_snapshot_written"] = written > 0
+	result["asset_status_snapshot_written"] = written > 0
 	result["message"] = "Sanitized provider review attempt execution lock snapshot recorded from local execution lock metadata."
 	return result, nil
 }

@@ -41,7 +41,7 @@ func TestFetchArgoApps(t *testing.T) {
 	})}
 
 	syncer := &ArgoSyncer{HTTPClient: client}
-	apps, err := syncer.fetchApps(context.Background(), &ArgoConnection{
+	apps, err := syncer.fetchApps(context.Background(), &GormArgoConnection{
 		ServerURL: "https://93.184.216.34",
 		Config:    JSONValue{Data: map[string]any{"token": "test-token"}},
 	})
@@ -95,7 +95,7 @@ func TestFetchArgoAppsFollowsContinueToken(t *testing.T) {
 	})}
 
 	syncer := &ArgoSyncer{HTTPClient: client}
-	apps, err := syncer.fetchApps(context.Background(), &ArgoConnection{ServerURL: "https://93.184.216.34"})
+	apps, err := syncer.fetchApps(context.Background(), &GormArgoConnection{ServerURL: "https://93.184.216.34"})
 	if err != nil {
 		t.Fatalf("fetchApps returned error: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestFetchArgoAppsFollowsContinueToken(t *testing.T) {
 
 func TestArgoTokenFallsBackToEnvWhenEnabled(t *testing.T) {
 	t.Setenv("ASSOPS_ARGO_READ_TOKEN", "env-token")
-	got := argoToken(&ArgoConnection{Config: JSONValue{Data: map[string]any{"use_env_token": true}}})
+	got := argoToken(&GormArgoConnection{Config: JSONValue{Data: map[string]any{"use_env_token": true}}})
 	if got != "env-token" {
 		t.Fatalf("argoToken = %q, want env-token", got)
 	}
@@ -117,7 +117,7 @@ func TestArgoTokenFallsBackToEnvWhenEnabled(t *testing.T) {
 
 func TestArgoTokenDoesNotUseEnvByDefault(t *testing.T) {
 	t.Setenv("ASSOPS_ARGO_READ_TOKEN", "env-token")
-	got := argoToken(&ArgoConnection{Config: JSONValue{Data: map[string]any{}}})
+	got := argoToken(&GormArgoConnection{Config: JSONValue{Data: map[string]any{}}})
 	if got != "" {
 		t.Fatalf("argoToken = %q, want empty token", got)
 	}
@@ -125,7 +125,7 @@ func TestArgoTokenDoesNotUseEnvByDefault(t *testing.T) {
 
 func TestFetchArgoAppsRejectsInvalidURL(t *testing.T) {
 	syncer := NewArgoSyncer()
-	_, err := syncer.fetchApps(context.Background(), &ArgoConnection{ServerURL: "file:///tmp/argocd"})
+	_, err := syncer.fetchApps(context.Background(), &GormArgoConnection{ServerURL: "file:///tmp/argocd"})
 	if err == nil {
 		t.Fatal("expected invalid URL to fail")
 	}
@@ -133,7 +133,7 @@ func TestFetchArgoAppsRejectsInvalidURL(t *testing.T) {
 
 func TestFetchArgoAppsRejectsPrivateAddress(t *testing.T) {
 	syncer := NewArgoSyncer()
-	_, err := syncer.fetchApps(context.Background(), &ArgoConnection{ServerURL: "http://169.254.169.254"})
+	_, err := syncer.fetchApps(context.Background(), &GormArgoConnection{ServerURL: "http://169.254.169.254"})
 	if err == nil {
 		t.Fatal("expected private URL to fail")
 	}

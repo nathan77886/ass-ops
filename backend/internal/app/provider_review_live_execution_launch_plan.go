@@ -12,7 +12,7 @@ type ProviderReviewAttemptLiveExecutionLaunchPlanOptions struct {
 }
 
 func ProviderReviewAttemptLiveExecutionLaunchPlan(ctx context.Context, store *Store, opts ProviderReviewAttemptLiveExecutionLaunchPlanOptions) (map[string]any, error) {
-	if store == nil || store.DB == nil {
+	if store == nil || store.Gorm == nil {
 		return nil, fmt.Errorf("store is required")
 	}
 	attemptID := cleanOptionalID(opts.AttemptID)

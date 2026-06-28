@@ -6,7 +6,6 @@ import (
 	"crypto/cipher"
 	"crypto/sha256"
 	"crypto/tls"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
 )
 
 type ArgoSyncer struct {
@@ -46,12 +45,15 @@ func NewArgoSyncer() *ArgoSyncer {
 	return &ArgoSyncer{SecretKeyMaterial: argoCredentialSecretKeyMaterial()}
 }
 
-func (s *ArgoSyncer) SyncApps(ctx context.Context, db *sqlx.DB, opID string) (*ArgoSyncResult, error) {
-	op, err := queryOne(ctx, db, "SELECT * FROM operation_runs WHERE id=$1", opID)
-	if err != nil {
+func (s *ArgoSyncer) SyncApps(ctx context.Context, db *gorm.DB, opID string) (*ArgoSyncResult, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database is not configured")
+	}
+	var op GormOperationRun
+	if err := db.WithContext(ctx).First(&op, "id = ?", opID).Error; err != nil {
 		return nil, err
 	}
-	input := mapFromAny(op["input"])
+	input := mapFromAny(op.Input.Data)
 	connectionID := strings.TrimSpace(fmt.Sprint(input["argo_connection_id"]))
 	if connectionID == "" || connectionID == "<nil>" {
 		return nil, fmt.Errorf("operation is missing argo_connection_id")
@@ -73,11 +75,10 @@ func (s *ArgoSyncer) SyncApps(ctx context.Context, db *sqlx.DB, opID string) (*A
 	return result, nil
 }
 
-func rawArgoConnection(ctx context.Context, db *sqlx.DB, id string) (*ArgoConnection, error) {
-	var connection ArgoConnection
-	err := db.GetContext(ctx, &connection, "SELECT * FROM argo_connections WHERE id=$1", id)
-	if err != nil {
-		if err == sql.ErrNoRows {
+func rawArgoConnection(ctx context.Context, db *gorm.DB, id string) (*GormArgoConnection, error) {
+	var connection GormArgoConnection
+	if err := db.WithContext(ctx).First(&connection, "id = ?", id).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -85,8 +86,8 @@ func rawArgoConnection(ctx context.Context, db *sqlx.DB, id string) (*ArgoConnec
 	return &connection, nil
 }
 
-func (s *ArgoSyncer) fetchApps(ctx context.Context, connection *ArgoConnection, dbOpt ...*sqlx.DB) ([]ArgoAppInput, error) {
-	var db *sqlx.DB
+func (s *ArgoSyncer) fetchApps(ctx context.Context, connection *GormArgoConnection, dbOpt ...*gorm.DB) ([]ArgoAppInput, error) {
+	var db *gorm.DB
 	if len(dbOpt) > 0 {
 		db = dbOpt[0]
 	}
@@ -230,7 +231,7 @@ func argoAppClusterName(labels map[string]any) string {
 	return ""
 }
 
-func argoHTTPClient(connection *ArgoConnection) *http.Client {
+func argoHTTPClient(connection *GormArgoConnection) *http.Client {
 	config := mapFromAny(connection.Config.Data)
 	insecure := false
 	if value, ok := config["insecure_skip_verify"].(bool); ok {
@@ -266,7 +267,7 @@ func dialPublicOnly(ctx context.Context, network, addr string) (net.Conn, error)
 	return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 }
 
-func (s *ArgoSyncer) argoToken(ctx context.Context, db *sqlx.DB, connection *ArgoConnection) (string, error) {
+func (s *ArgoSyncer) argoToken(ctx context.Context, db *gorm.DB, connection *GormArgoConnection) (string, error) {
 	config := mapFromAny(connection.Config.Data)
 	for _, key := range []string{"token", "access_token", "ARGO_TOKEN"} {
 		if value := strings.TrimSpace(fmt.Sprint(config[key])); value != "" && value != "<nil>" {
@@ -289,7 +290,7 @@ func (s *ArgoSyncer) argoToken(ctx context.Context, db *sqlx.DB, connection *Arg
 	return strings.TrimSpace(os.Getenv("ASSOPS_ARGO_READ_TOKEN")), nil
 }
 
-func argoToken(connection *ArgoConnection) string {
+func argoToken(connection *GormArgoConnection) string {
 	token, err := NewArgoSyncer().argoToken(context.Background(), nil, connection)
 	if err != nil {
 		return ""
@@ -297,22 +298,22 @@ func argoToken(connection *ArgoConnection) string {
 	return token
 }
 
-func (s *ArgoSyncer) argoCredentialCiphertext(ctx context.Context, db *sqlx.DB, connection *ArgoConnection) (string, error) {
-	var ciphertext string
-	err := db.GetContext(ctx, &ciphertext, `
-		SELECT secret_ciphertext
-		FROM connection_credentials
-		WHERE id=$1 AND project_id=$2 AND kind='argo_token'`, connection.CredentialID.String, connection.ProjectID)
+func (s *ArgoSyncer) argoCredentialCiphertext(ctx context.Context, db *gorm.DB, connection *GormArgoConnection) (string, error) {
+	var credential GormConnectionCredential
+	err := db.WithContext(ctx).
+		Where(&GormConnectionCredential{Kind: "argo_token"}).
+		Where("id = ? AND project_id = ?", connection.CredentialID.String, connection.ProjectID).
+		First(&credential).Error
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if err == gorm.ErrRecordNotFound {
 			return "", ErrNotFound
 		}
 		return "", err
 	}
-	if strings.TrimSpace(ciphertext) == "" {
+	if strings.TrimSpace(credential.SecretCiphertext) == "" {
 		return "", fmt.Errorf("Argo credential has no token configured")
 	}
-	return ciphertext, nil
+	return credential.SecretCiphertext, nil
 }
 
 func decryptArgoCredentialSecret(ciphertext, material string) (string, error) {

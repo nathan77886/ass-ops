@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
 )
 
 type commandRunner interface {
@@ -72,21 +72,162 @@ func NewGitExecutor(workDir string) *GitExecutor {
 	return &GitExecutor{Runner: execCommandRunner{}, WorkDir: workDir}
 }
 
-func (e *GitExecutor) Sync(ctx context.Context, db sqlx.ExtContext, opID string) (*gitExecutionResult, error) {
-	run, err := queryOne(ctx, db, `
-		SELECT rsr.*, opr.input
-		FROM repo_sync_runs rsr
-		JOIN operation_runs opr ON opr.id=rsr.operation_run_id
-		WHERE rsr.operation_run_id=$1
-		LIMIT 1`, opID)
+func operationRunByID(ctx context.Context, db *gorm.DB, id string) (GormOperationRun, error) {
+	if db == nil {
+		return GormOperationRun{}, fmt.Errorf("database is not configured")
+	}
+	var op GormOperationRun
+	if err := db.WithContext(ctx).Where(map[string]any{"id": id}).First(&op).Error; err != nil {
+		return GormOperationRun{}, err
+	}
+	return op, nil
+}
+
+func gitRemoteMapByID(ctx context.Context, db *gorm.DB, id string) (map[string]any, error) {
+	var remote GormGitRemote
+	if err := db.WithContext(ctx).Where(map[string]any{"id": id}).First(&remote).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return gitRemoteMap(remote, nil, ""), nil
+}
+
+func projectGitRepositoryMapByID(ctx context.Context, db *gorm.DB, id string) (map[string]any, error) {
+	var repo GormProjectGitRepository
+	if err := db.WithContext(ctx).Where(map[string]any{"id": id}).First(&repo).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return gitRepositoryMap(repo), nil
+}
+
+func remoteForRepositoryGorm(ctx context.Context, db *gorm.DB, repoID, remoteID string) (map[string]any, error) {
+	var remote GormGitRemote
+	if err := db.WithContext(ctx).
+		Where(&GormGitRemote{ProjectGitRepositoryID: repoID}).
+		Where(map[string]any{"id": remoteID}).
+		First(&remote).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return gitRemoteMap(remote, nil, ""), nil
+}
+
+func repoSyncRunMapForOperation(ctx context.Context, db *gorm.DB, opID string) (map[string]any, error) {
+	op, err := operationRunByID(ctx, db, opID)
 	if err != nil {
 		return nil, err
 	}
-	source, err := queryOne(ctx, db, "SELECT * FROM git_remotes WHERE id=$1", run["source_remote_id"])
+	var run GormRepoSyncRun
+	if err := db.WithContext(ctx).Where(&GormRepoSyncRun{OperationRunID: opID}).First(&run).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	item := map[string]any{
+		"id":                        run.ID,
+		"operation_run_id":          run.OperationRunID,
+		"git_remote_id":             run.GitRemoteID,
+		"project_id":                nullableStringValue(run.ProjectID),
+		"project_git_repository_id": nullableStringValue(run.ProjectGitRepositoryID),
+		"repo_sync_asset_id":        nullableStringValue(run.RepoSyncAssetID),
+		"source_remote_id":          nullableStringValue(run.SourceRemoteID),
+		"target_remote_id":          nullableStringValue(run.TargetRemoteID),
+		"ref":                       run.Ref,
+		"before_sha":                run.BeforeSHA,
+		"after_sha":                 run.AfterSHA,
+		"actor_user_id":             nullableStringValue(run.ActorUserID),
+		"status":                    run.Status,
+		"stdout":                    run.Stdout,
+		"stderr":                    run.Stderr,
+		"error_message":             run.ErrorMessage,
+		"started_at":                nullableTimeAny(run.StartedAt),
+		"finished_at":               nullableTimeAny(run.FinishedAt),
+		"created_at":                run.CreatedAt,
+		"input":                     mapFromAny(op.Input.Data),
+	}
+	return item, nil
+}
+
+func repoTagRunMapForOperation(ctx context.Context, db *gorm.DB, opID string) (map[string]any, error) {
+	op, err := operationRunByID(ctx, db, opID)
+	if err != nil {
+		return nil, err
+	}
+	var run GormRepoTagRun
+	if err := db.WithContext(ctx).Where(&GormRepoTagRun{OperationRunID: opID}).First(&run).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	item := repoTagRunMap(run)
+	item["input"] = mapFromAny(op.Input.Data)
+	if run.TargetRemoteID.Valid {
+		if remote, err := gitRemoteMapByID(ctx, db, run.TargetRemoteID.String); err == nil {
+			item["default_branch"] = remote["default_branch"]
+		}
+	}
+	return item, nil
+}
+
+func repoTagRunMapByID(ctx context.Context, db *gorm.DB, id string) (map[string]any, error) {
+	var run GormRepoTagRun
+	if err := db.WithContext(ctx).Where(map[string]any{"id": id}).First(&run).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return repoTagRunMap(run), nil
+}
+
+func repoTagRunMap(run GormRepoTagRun) map[string]any {
+	return map[string]any{
+		"id":                        run.ID,
+		"operation_run_id":          run.OperationRunID,
+		"git_remote_id":             run.GitRemoteID,
+		"project_id":                nullableStringValue(run.ProjectID),
+		"project_git_repository_id": nullableStringValue(run.ProjectGitRepositoryID),
+		"target_remote_id":          nullableStringValue(run.TargetRemoteID),
+		"tag_name":                  run.TagName,
+		"target_sha":                run.TargetSHA,
+		"tag_message":               run.TagMessage,
+		"actor_user_id":             nullableStringValue(run.ActorUserID),
+		"status":                    run.Status,
+		"stdout":                    run.Stdout,
+		"stderr":                    run.Stderr,
+		"error_message":             run.ErrorMessage,
+		"started_at":                nullableTimeAny(run.StartedAt),
+		"finished_at":               nullableTimeAny(run.FinishedAt),
+		"created_at":                run.CreatedAt,
+	}
+}
+
+func nullableTimeAny(value sql.NullTime) any {
+	if value.Valid {
+		return value.Time
+	}
+	return nil
+}
+
+func (e *GitExecutor) Sync(ctx context.Context, db *gorm.DB, opID string) (*gitExecutionResult, error) {
+	run, err := repoSyncRunMapForOperation(ctx, db, opID)
+	if err != nil {
+		return nil, err
+	}
+	source, err := gitRemoteMapByID(ctx, db, strings.TrimSpace(fmt.Sprint(run["source_remote_id"])))
 	if err != nil {
 		return nil, fmt.Errorf("loading source remote: %w", err)
 	}
-	target, err := queryOne(ctx, db, "SELECT * FROM git_remotes WHERE id=$1", run["target_remote_id"])
+	target, err := gitRemoteMapByID(ctx, db, strings.TrimSpace(fmt.Sprint(run["target_remote_id"])))
 	if err != nil {
 		return nil, fmt.Errorf("loading target remote: %w", err)
 	}
@@ -173,20 +314,20 @@ func (e *GitExecutor) Sync(ctx context.Context, db sqlx.ExtContext, opID string)
 	return result, nil
 }
 
-func (e *GitExecutor) RefreshRemoteRefs(ctx context.Context, db sqlx.ExtContext, opID string) (*gitExecutionResult, error) {
-	op, err := queryOne(ctx, db, "SELECT git_remote_id, input FROM operation_runs WHERE id=$1", opID)
+func (e *GitExecutor) RefreshRemoteRefs(ctx context.Context, db *gorm.DB, opID string) (*gitExecutionResult, error) {
+	op, err := operationRunByID(ctx, db, opID)
 	if err != nil {
 		return nil, err
 	}
-	remoteID := strings.TrimSpace(fmt.Sprint(op["git_remote_id"]))
+	remoteID := strings.TrimSpace(op.GitRemoteID.String)
 	if remoteID == "" || remoteID == "<nil>" {
-		input := mapFromAny(op["input"])
+		input := mapFromAny(op.Input.Data)
 		remoteID = strings.TrimSpace(fmt.Sprint(input["remote_id"]))
 	}
 	if remoteID == "" || remoteID == "<nil>" {
 		return nil, fmt.Errorf("git remote id is required")
 	}
-	remote, err := queryOne(ctx, db, "SELECT * FROM git_remotes WHERE id=$1", remoteID)
+	remote, err := gitRemoteMapByID(ctx, db, remoteID)
 	if err != nil {
 		return nil, fmt.Errorf("loading remote: %w", err)
 	}
@@ -194,7 +335,7 @@ func (e *GitExecutor) RefreshRemoteRefs(ctx context.Context, db sqlx.ExtContext,
 	if remoteURL == "" {
 		return nil, fmt.Errorf("remote must have remote_url or urls")
 	}
-	input := mapFromAny(op["input"])
+	input := mapFromAny(op.Input.Data)
 	defaultBranch := strings.TrimSpace(firstNonEmptyString(stringFromMap(input, "branch"), defaultBranchFromRow(remote)))
 	if defaultBranch == "" {
 		defaultBranch = "main"
@@ -250,18 +391,12 @@ func (e *GitExecutor) RefreshRemoteRefs(ctx context.Context, db sqlx.ExtContext,
 	return result, nil
 }
 
-func (e *GitExecutor) Tag(ctx context.Context, db sqlx.ExtContext, opID string) (*gitExecutionResult, error) {
-	run, err := queryOne(ctx, db, `
-		SELECT rtr.*, opr.input, gr.default_branch
-		FROM repo_tag_runs rtr
-		JOIN operation_runs opr ON opr.id=rtr.operation_run_id
-		JOIN git_remotes gr ON gr.id=rtr.target_remote_id
-		WHERE rtr.operation_run_id=$1
-		LIMIT 1`, opID)
+func (e *GitExecutor) Tag(ctx context.Context, db *gorm.DB, opID string) (*gitExecutionResult, error) {
+	run, err := repoTagRunMapForOperation(ctx, db, opID)
 	if err != nil {
 		return nil, err
 	}
-	target, err := queryOne(ctx, db, "SELECT * FROM git_remotes WHERE id=$1", run["target_remote_id"])
+	target, err := gitRemoteMapByID(ctx, db, strings.TrimSpace(fmt.Sprint(run["target_remote_id"])))
 	if err != nil {
 		return nil, fmt.Errorf("loading target remote: %w", err)
 	}
@@ -333,12 +468,15 @@ func (e *GitExecutor) Tag(ctx context.Context, db sqlx.ExtContext, opID string) 
 	return result, nil
 }
 
-func (e *GitExecutor) LookupTag(ctx context.Context, db sqlx.ExtContext, opID string) (*gitExecutionResult, error) {
-	op, err := queryOne(ctx, db, "SELECT input FROM operation_runs WHERE id=$1 AND operation_type='repo.tag.lookup'", opID)
+func (e *GitExecutor) LookupTag(ctx context.Context, db *gorm.DB, opID string) (*gitExecutionResult, error) {
+	op, err := operationRunByID(ctx, db, opID)
 	if err != nil {
 		return nil, err
 	}
-	input := mapFromAny(op["input"])
+	if op.OperationType != "repo.tag.lookup" {
+		return nil, ErrNotFound
+	}
+	input := mapFromAny(op.Input.Data)
 	runID := strings.TrimSpace(stringFromMap(input, "repo_tag_run_id"))
 	targetRemoteID := strings.TrimSpace(stringFromMap(input, "target_remote_id"))
 	tagName := strings.TrimSpace(stringFromMap(input, "tag_name"))
@@ -351,11 +489,7 @@ func (e *GitExecutor) LookupTag(ctx context.Context, db sqlx.ExtContext, opID st
 	if tagName == "" || !isSafeGitRefPart(tagName) {
 		return nil, fmt.Errorf("unsafe tag ref")
 	}
-	run, err := queryOne(ctx, db, `
-		SELECT id, target_remote_id, git_remote_id, tag_name
-		FROM repo_tag_runs
-		WHERE id=$1
-		LIMIT 1`, runID)
+	run, err := repoTagRunMapByID(ctx, db, runID)
 	if err != nil {
 		return nil, fmt.Errorf("loading repo tag run: %w", err)
 	}
@@ -367,7 +501,7 @@ func (e *GitExecutor) LookupTag(ctx context.Context, db sqlx.ExtContext, opID st
 	if runTagName != "" && runTagName != tagName {
 		return nil, fmt.Errorf("tag_name does not match repo tag run")
 	}
-	remote, err := queryOne(ctx, db, "SELECT * FROM git_remotes WHERE id=$1", targetRemoteID)
+	remote, err := gitRemoteMapByID(ctx, db, targetRemoteID)
 	if err != nil {
 		return nil, fmt.Errorf("loading target remote: %w", err)
 	}
@@ -574,35 +708,34 @@ func (e *GitExecutor) pushTemplateFiles(ctx context.Context, result *gitExecutio
 	return nil
 }
 
-func (e *GitExecutor) CommitConfigScaffold(ctx context.Context, db sqlx.ExtContext, repoID, remoteID string) (*gitExecutionResult, error) {
+func (e *GitExecutor) CommitConfigScaffold(ctx context.Context, db *gorm.DB, repoID, remoteID string) (*gitExecutionResult, error) {
 	result := &gitExecutionResult{Details: map[string]any{
 		"project_git_repository_id": repoID,
 		"config_remote_id":          remoteID,
 		"result_scope":              "sanitized_config_git_workflow_local_bare",
 	}}
-	repo, err := queryOne(ctx, db, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+	repo, err := projectGitRepositoryMapByID(ctx, db, repoID)
 	if err != nil {
 		return result, fmt.Errorf("loading config repository: %w", err)
 	}
 	if strings.ToLower(strings.TrimSpace(stringFromMap(repo, "repo_role"))) != "config" {
 		return result, fmt.Errorf("repository role must be config")
 	}
-	remote, err := remoteForRepository(ctx, db, repoID, remoteID)
+	remote, err := remoteForRepositoryGorm(ctx, db, repoID, remoteID)
 	if err != nil {
 		return result, fmt.Errorf("loading config remote: %w", err)
 	}
 	if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(remote["provider_type"])), "local_bare") {
 		return result, fmt.Errorf("config git local write requires local_bare provider")
 	}
-	countRow, err := queryOne(ctx, db, `
-		SELECT count(*) AS candidate_count
-		FROM git_remotes
-		WHERE project_git_repository_id=$1
-			AND lower(provider_type)='local_bare'`, repoID)
-	if err != nil {
+	var candidateCount int64
+	if err := db.WithContext(ctx).
+		Model(&GormGitRemote{}).
+		Where(&GormGitRemote{ProjectGitRepositoryID: repoID, ProviderType: "local_bare"}).
+		Count(&candidateCount).Error; err != nil {
 		return result, fmt.Errorf("counting local_bare config remotes: %w", err)
 	}
-	if count := intFromAny(countRow["candidate_count"], 0); count != 1 {
+	if candidateCount != 1 {
 		return result, fmt.Errorf("config git local write requires exactly one local_bare remote")
 	}
 	remoteURL := remoteURLFromRow(remote)

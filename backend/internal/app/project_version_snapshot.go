@@ -2,12 +2,12 @@ package app
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
 )
 
 type ProjectVersionValidationSnapshotOptions struct {
@@ -22,7 +22,7 @@ func RecordProjectVersionValidationSnapshot(ctx context.Context, store *Store, o
 	if versionID == "" {
 		return nil, fmt.Errorf("project version id is required")
 	}
-	preview, err := projectVersionValidationPreviewFromDB(ctx, store.DB, versionID)
+	preview, err := projectVersionValidationPreviewFromDB(ctx, store.Gorm, versionID)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +30,7 @@ func RecordProjectVersionValidationSnapshot(ctx context.Context, store *Store, o
 	if recordingTrigger == "" {
 		recordingTrigger = "operator_request"
 	}
-	assetID, assetErr := projectVersionAssetID(ctx, store.DB, versionID)
+	assetID, assetErr := projectVersionAssetID(ctx, store.Gorm, versionID)
 	snapshot := projectVersionValidationSnapshotPayload(preview, assetErr == nil)
 	result := map[string]any{
 		"mode":                           "project_version_validation_snapshot_recording",
@@ -88,59 +88,16 @@ func RecordProjectVersionValidationSnapshot(ctx context.Context, store *Store, o
 	case "blocked":
 		health = "high"
 	}
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "project version validation snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting project version validation snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording project version validation snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'project version validation snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting project version validation snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing project version validation snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = "recorded"
 	result["snapshots_written"] = written
 	if written >= 0 {
 		result["snapshots_skipped_as_duplicate"] = 1 - written
 		result["validation_snapshot_written"] = written > 0
 		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
 	}
 	result["message"] = "Sanitized ProjectVersion validation snapshot recorded from local synced database state."
 	return result, nil
@@ -186,97 +143,222 @@ func projectVersionValidationSnapshotAutoRecordReadiness(preview map[string]any,
 	return false, state, missing
 }
 
-func projectVersionValidationPreviewFromDB(ctx context.Context, db sqlx.ExtContext, versionID string) (map[string]any, error) {
-	projectID, err := projectIDForProjectVersion(ctx, db, versionID)
+func projectVersionValidationPreviewFromDB(ctx context.Context, db *gorm.DB, versionID string) (map[string]any, error) {
+	version, err := projectVersionByIDGorm(ctx, db, versionID)
 	if err != nil {
 		return nil, err
 	}
-	version, err := queryOne(ctx, db, `
-		SELECT id, project_id, version, source, metadata, created_at
-		FROM project_versions
-		WHERE id=$1`, versionID)
-	if err != nil {
-		return nil, err
-	}
-	remotes, err := queryMaps(ctx, db, `
-		SELECT gr.id, gr.remote_key, gr.provider_type, gr.latest_sha, gr.default_branch, r.repo_key, r.repo_role, r.name AS repository_name
-		FROM git_remotes gr
-		JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-		WHERE r.project_id=$1`, projectID)
+	projectID := version.ProjectID
+	versionMap := projectVersionSnapshotMap(version)
+	remotes, repoIDs, remoteIDs, err := projectVersionRemoteMaps(ctx, db, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("loading version remotes: %w", err)
 	}
-	tagRuns, err := queryMaps(ctx, db, `
-		SELECT id, project_git_repository_id, target_remote_id, git_remote_id, tag_name, target_sha, status, created_at, finished_at
-		FROM repo_tag_runs
-		WHERE project_id=$1
-		ORDER BY created_at DESC
-		LIMIT 500`, projectID)
+	tagRuns, err := projectVersionTagRunMaps(ctx, db, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("loading version tag runs: %w", err)
 	}
-	actionRuns, err := queryMaps(ctx, db, `
-		SELECT id, git_remote_id, run_id, workflow_name, branch, commit_sha, status, conclusion, started_at, updated_at
-		FROM github_action_runs
-		WHERE git_remote_id IN (
-			SELECT gr.id
-			FROM git_remotes gr
-			JOIN project_git_repositories r ON r.id=gr.project_git_repository_id
-			WHERE r.project_id=$1
-		)
-		ORDER BY updated_at DESC
-		LIMIT 500`, projectID)
+	actionRuns, err := projectVersionActionRunMaps(ctx, db, remoteIDs)
 	if err != nil {
 		return nil, fmt.Errorf("loading version action runs: %w", err)
 	}
-	argoApps, err := queryMaps(ctx, db, `
-		SELECT id, name, namespace, status, metadata, synced_at, updated_at
-		FROM argo_apps
-		WHERE project_id=$1
-		ORDER BY updated_at DESC
-		LIMIT 500`, projectID)
+	argoApps, err := projectVersionArgoAppMaps(ctx, db, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("loading version Argo apps: %w", err)
 	}
-	argoConnections, err := queryMaps(ctx, db, `
-		SELECT id, name, last_sync_status
-		FROM argo_connections
-		WHERE project_id=$1
-		ORDER BY updated_at DESC
-		LIMIT 100`, projectID)
+	argoConnections, err := projectVersionArgoConnectionMaps(ctx, db, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("loading version Argo connections: %w", err)
 	}
-	refreshOperations, err := queryProjectVersionRefreshOperations(ctx, db, versionID)
+	refreshOperations, err := queryProjectVersionRefreshOperationsGorm(ctx, db, versionID, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("loading project version refresh operations: %w", err)
 	}
-	backgroundOperations, err := queryProjectVersionValidationRerunOperations(ctx, db, versionID)
+	backgroundOperations, err := queryProjectVersionValidationRerunOperationsGorm(ctx, db, versionID, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("loading project version validation rerun operations: %w", err)
 	}
-	return projectVersionValidationPreview(version, remotes, tagRuns, actionRuns, argoApps, argoConnections, refreshOperations, backgroundOperations), nil
+	_ = repoIDs
+	return projectVersionValidationPreview(versionMap, remotes, tagRuns, actionRuns, argoApps, argoConnections, refreshOperations, backgroundOperations), nil
 }
 
-func projectVersionAssetID(ctx context.Context, db sqlx.ExtContext, versionID string) (string, error) {
-	row, err := queryOne(ctx, db, `
-		SELECT id::text AS id
-		FROM assets
-		WHERE asset_type='project_version'
-			AND source_table='project_versions'
-			AND source_id=$1::uuid
-		LIMIT 1`, versionID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+func projectVersionAssetID(ctx context.Context, db *gorm.DB, versionID string) (string, error) {
+	var asset GormAsset
+	if err := db.WithContext(ctx).Where(&GormAsset{AssetType: "project_version", SourceTable: "project_versions", SourceID: validNullString(versionID)}).First(&asset).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
 			return "", fmt.Errorf("project_version asset for %s not found; run db sync-assets first", versionID)
 		}
 		return "", err
 	}
-	assetID := strings.TrimSpace(fmt.Sprint(row["id"]))
-	if assetID == "" || assetID == "<nil>" {
+	assetID := strings.TrimSpace(asset.ID)
+	if assetID == "" {
 		return "", fmt.Errorf("project_version asset for %s has empty id", versionID)
 	}
 	return assetID, nil
+}
+
+func projectVersionByIDGorm(ctx context.Context, db *gorm.DB, versionID string) (GormProjectVersion, error) {
+	if db == nil {
+		return GormProjectVersion{}, fmt.Errorf("gorm database is not configured")
+	}
+	var version GormProjectVersion
+	if err := db.WithContext(ctx).First(&version, &GormProjectVersion{ID: versionID}).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return GormProjectVersion{}, ErrNotFound
+		}
+		return GormProjectVersion{}, err
+	}
+	return version, nil
+}
+
+func projectVersionSnapshotMap(version GormProjectVersion) map[string]any {
+	return map[string]any{"id": version.ID, "project_id": version.ProjectID, "version": version.Version, "source": version.Source, "metadata": mapFromAny(version.Metadata.Data), "created_at": version.CreatedAt}
+}
+
+func projectVersionRemoteMaps(ctx context.Context, db *gorm.DB, projectID string) ([]map[string]any, map[string]bool, map[string]bool, error) {
+	var repos []GormProjectGitRepository
+	if err := db.WithContext(ctx).Where(&GormProjectGitRepository{ProjectID: projectID}).Find(&repos).Error; err != nil {
+		return nil, nil, nil, err
+	}
+	repoByID := map[string]GormProjectGitRepository{}
+	repoIDs := map[string]bool{}
+	for _, repo := range repos {
+		repoByID[repo.ID] = repo
+		repoIDs[repo.ID] = true
+	}
+	var remotes []GormGitRemote
+	if err := db.WithContext(ctx).Find(&remotes).Error; err != nil {
+		return nil, nil, nil, err
+	}
+	items := []map[string]any{}
+	remoteIDs := map[string]bool{}
+	for _, remote := range remotes {
+		repo, ok := repoByID[remote.ProjectGitRepositoryID]
+		if !ok {
+			continue
+		}
+		remoteIDs[remote.ID] = true
+		items = append(items, map[string]any{"id": remote.ID, "remote_key": remote.RemoteKey, "provider_type": remote.ProviderType, "latest_sha": remote.LatestSHA, "default_branch": remote.DefaultBranch, "repo_key": repo.RepoKey, "repo_role": repo.RepoRole, "repository_name": repo.Name})
+	}
+	return items, repoIDs, remoteIDs, nil
+}
+
+func projectVersionTagRunMaps(ctx context.Context, db *gorm.DB, projectID string) ([]map[string]any, error) {
+	var runs []GormRepoTagRun
+	if err := db.WithContext(ctx).Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	items := []map[string]any{}
+	for _, run := range runs {
+		if !run.ProjectID.Valid || run.ProjectID.String != projectID {
+			continue
+		}
+		items = append(items, map[string]any{"id": run.ID, "project_git_repository_id": nullableStringValue(run.ProjectGitRepositoryID), "target_remote_id": nullableStringValue(run.TargetRemoteID), "git_remote_id": run.GitRemoteID, "tag_name": run.TagName, "target_sha": run.TargetSHA, "status": run.Status, "created_at": run.CreatedAt, "finished_at": nullableTimeAny(run.FinishedAt)})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return projectVersionTimeFromAny(items[i]["created_at"]).After(projectVersionTimeFromAny(items[j]["created_at"]))
+	})
+	return limitMaps(items, 500), nil
+}
+
+func projectVersionActionRunMaps(ctx context.Context, db *gorm.DB, remoteIDs map[string]bool) ([]map[string]any, error) {
+	var runs []GormGitHubActionRun
+	if err := db.WithContext(ctx).Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	items := []map[string]any{}
+	for _, run := range runs {
+		if !remoteIDs[run.GitRemoteID] {
+			continue
+		}
+		items = append(items, map[string]any{"id": run.ID, "git_remote_id": run.GitRemoteID, "run_id": run.RunID, "workflow_name": run.WorkflowName, "branch": run.Branch, "commit_sha": run.CommitSHA, "status": run.Status, "conclusion": run.Conclusion, "started_at": nullableTimeAny(run.StartedAt), "updated_at": nullableTimeAny(run.UpdatedAt)})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return projectVersionTimeFromAny(items[i]["updated_at"]).After(projectVersionTimeFromAny(items[j]["updated_at"]))
+	})
+	return limitMaps(items, 500), nil
+}
+
+func projectVersionArgoAppMaps(ctx context.Context, db *gorm.DB, projectID string) ([]map[string]any, error) {
+	var apps []GormArgoApp
+	if err := db.WithContext(ctx).Where(&GormArgoApp{ProjectID: projectID}).Find(&apps).Error; err != nil {
+		return nil, err
+	}
+	items := []map[string]any{}
+	for _, app := range apps {
+		items = append(items, map[string]any{"id": app.ID, "name": app.Name, "namespace": app.Namespace, "status": app.Status, "metadata": mapFromAny(app.Metadata.Data), "synced_at": nullableTimeAny(app.SyncedAt), "updated_at": app.UpdatedAt})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return projectVersionTimeFromAny(items[i]["updated_at"]).After(projectVersionTimeFromAny(items[j]["updated_at"]))
+	})
+	return limitMaps(items, 500), nil
+}
+
+func projectVersionArgoConnectionMaps(ctx context.Context, db *gorm.DB, projectID string) ([]map[string]any, error) {
+	var connections []GormArgoConnection
+	if err := db.WithContext(ctx).Where(&GormArgoConnection{ProjectID: projectID}).Find(&connections).Error; err != nil {
+		return nil, err
+	}
+	items := []map[string]any{}
+	for _, connection := range connections {
+		items = append(items, map[string]any{"id": connection.ID, "name": connection.Name, "last_sync_status": connection.LastSyncStatus, "updated_at": connection.UpdatedAt})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return projectVersionTimeFromAny(items[i]["updated_at"]).After(projectVersionTimeFromAny(items[j]["updated_at"]))
+	})
+	return limitMaps(items, 100), nil
+}
+
+func queryProjectVersionRefreshOperationsGorm(ctx context.Context, db *gorm.DB, versionID, projectID string) ([]map[string]any, error) {
+	return queryProjectVersionOperationsGorm(ctx, db, versionID, projectID, map[string]bool{"git.refs.refresh": true, "github.actions.sync": true, "argo.apps.sync": true}, 50)
+}
+
+func queryProjectVersionValidationRerunOperationsGorm(ctx context.Context, db *gorm.DB, versionID, projectID string) ([]map[string]any, error) {
+	return queryProjectVersionOperationsGorm(ctx, db, versionID, projectID, map[string]bool{"project_version.validation_rerun": true}, 20)
+}
+
+func queryProjectVersionOperationsGorm(ctx context.Context, db *gorm.DB, versionID, projectID string, types map[string]bool, limit int) ([]map[string]any, error) {
+	var runs []GormOperationRun
+	if err := db.WithContext(ctx).Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	items := []map[string]any{}
+	for _, run := range runs {
+		if !types[run.OperationType] {
+			continue
+		}
+		if run.ProjectID.Valid && run.ProjectID.String != projectID {
+			continue
+		}
+		input := mapFromAny(run.Input.Data)
+		if strings.TrimSpace(fmt.Sprint(input["project_version_id"])) != versionID {
+			continue
+		}
+		items = append(items, map[string]any{"id": run.ID, "operation_type": run.OperationType, "status": run.Status, "error": run.Error, "input": input, "result": mapFromAny(run.Result.Data), "started_at": nullableTimeAny(run.StartedAt), "finished_at": nullableTimeAny(run.FinishedAt), "created_at": run.CreatedAt, "updated_at": run.UpdatedAt})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return projectVersionTimeFromAny(items[i]["created_at"]).After(projectVersionTimeFromAny(items[j]["created_at"]))
+	})
+	return limitMaps(items, limit), nil
+}
+
+func limitMaps(items []map[string]any, limit int) []map[string]any {
+	if limit > 0 && len(items) > limit {
+		return items[:limit]
+	}
+	return items
+}
+
+func projectVersionTimeFromAny(value any) time.Time {
+	switch typed := value.(type) {
+	case time.Time:
+		return typed
+	case *time.Time:
+		if typed != nil {
+			return *typed
+		}
+	}
+	return time.Time{}
 }
 
 func projectVersionValidationSnapshotPayload(preview map[string]any, assetObserved bool) map[string]any {

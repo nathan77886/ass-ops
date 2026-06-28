@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ControlWorker struct {
@@ -56,51 +57,46 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 	if err := w.recoverStaleRunningJobs(ctx); err != nil {
 		w.log.Warn("stale job recovery failed", "error", err)
 	}
-	claimTx, err := w.store.DB.BeginTxx(ctx, nil)
+	var job map[string]any
+	err := w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var jobModel GormWorkerJob
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where("status = ? AND preferred_node_kind IN ?", "queued", []string{"", "control-worker"}).
+			Order("created_at ASC").
+			First(&jobModel).Error; err != nil {
+			if errorsIsRecordNotFound(err) {
+				return ErrNotFound
+			}
+			return err
+		}
+		now := time.Now()
+		jobModel.Status = "running"
+		jobModel.StartedAt = validNullTime(now)
+		if err := tx.Save(&jobModel).Error; err != nil {
+			return err
+		}
+		job = workerJobMap(jobModel)
+		opID := cleanOptionalID(jobModel.OperationRunID.String)
+		if opID == "" {
+			return fmt.Errorf("worker job %s is missing operation_run_id", jobModel.ID)
+		}
+		if err := tx.Model(&GormOperationRun{}).
+			Where(&GormOperationRun{GormBase: GormBase{ID: opID}}).
+			Updates(map[string]any{"status": "running", "started_at": validNullTime(now)}).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&GormOperationLog{OperationRunID: validNullString(opID), WorkerJobID: validNullString(jobModel.ID), Level: "info", Message: "dispatching " + jobModel.ToolName, Fields: JSONValue{Data: map[string]any{}}}).Error; err != nil {
+			return err
+		}
+		return w.markAdapterRunning(ctx, tx, job)
+	})
 	if err != nil {
-		return err
-	}
-	job, err := queryOne(ctx, claimTx, `
-		UPDATE worker_jobs
-		SET status='running', started_at=now(), updated_at=now()
-		WHERE id = (
-			SELECT id FROM worker_jobs
-			WHERE status='queued' AND preferred_node_kind IN ('', 'control-worker')
-			ORDER BY created_at
-			FOR UPDATE SKIP LOCKED
-			LIMIT 1
-		)
-		RETURNING *`)
-	if err != nil {
-		_ = claimTx.Rollback()
 		return err
 	}
 	opID := fmt.Sprint(job["operation_run_id"])
-	if _, err := claimTx.ExecContext(ctx, "UPDATE operation_runs SET status='running', started_at=COALESCE(started_at, now()), updated_at=now() WHERE id=$1", opID); err != nil {
-		_ = claimTx.Rollback()
-		return err
-	}
-	if _, err := claimTx.ExecContext(ctx, `
-		INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message)
-		VALUES ($1, $2, 'info', $3)`, opID, job["id"], "dispatching "+fmt.Sprint(job["tool_name"])); err != nil {
-		_ = claimTx.Rollback()
-		return err
-	}
-	if err := w.markAdapterRunning(ctx, claimTx, job); err != nil {
-		_ = claimTx.Rollback()
-		return err
-	}
-	if err := claimTx.Commit(); err != nil {
-		return err
-	}
 
 	result, adapterErr := w.executeAdapterRun(ctx, job)
 
-	tx, err := w.store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	if adapterErr != nil {
 		if result == nil {
 			result = map[string]any{"adapter": true}
@@ -110,76 +106,38 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 			adapterErrorMessage = sanitizeLookupError(adapterErr)
 		}
 		result["error"] = adapterErrorMessage
-		if err := w.recordAdapterFailure(ctx, tx, job, result, adapterErr); err != nil {
+		if err := w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return w.recordAdapterFailure(ctx, tx, job, result, adapterErr)
+		}); err != nil {
 			return err
 		}
-		errJSON, _ := jsonParam(result)
-		opErrJSON, _ := jsonParam(operationRunResult(job, result))
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE worker_jobs SET status='failed', result=$2::jsonb, error=$3, finished_at=now(), updated_at=now()
-			WHERE id=$1`, job["id"], errJSON, adapterErrorMessage); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE operation_runs SET status='failed', result=$2::jsonb, error=$3, finished_at=now(), updated_at=now()
-			WHERE id=$1`, opID, opErrJSON, adapterErrorMessage); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
+		if err := w.markWorkerOperationFinished(ctx, job, opID, "failed", result, adapterErrorMessage); err != nil {
 			return err
 		}
 		w.refreshCanonicalAssetsAfterOperation(ctx, job, opID, "failed")
 		w.autoRecordProjectVersionValidationSnapshotAfterRefresh(ctx, opID, "failed")
 		return adapterErr
 	}
-	if err := w.recordAdapterSuccess(ctx, tx, job, result); err != nil {
-		_ = tx.Rollback()
+	if err := w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return w.recordAdapterSuccess(ctx, tx, job, result)
+	}); err != nil {
 		if result == nil {
 			result = map[string]any{"adapter": true}
 		}
 		result["error"] = err.Error()
-		failTx, beginErr := w.store.DB.BeginTxx(ctx, nil)
-		if beginErr != nil {
-			return errors.Join(err, beginErr)
-		}
-		defer failTx.Rollback()
-		if failErr := w.recordAdapterFailure(ctx, failTx, job, result, err); failErr != nil {
+		if failErr := w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return w.recordAdapterFailure(ctx, tx, job, result, err)
+		}); failErr != nil {
 			return errors.Join(err, failErr)
 		}
-		errJSON, _ := jsonParam(result)
-		opErrJSON, _ := jsonParam(operationRunResult(job, result))
-		if _, failErr := failTx.ExecContext(ctx, `
-			UPDATE worker_jobs SET status='failed', result=$2::jsonb, error=$3, finished_at=now(), updated_at=now()
-			WHERE id=$1`, job["id"], errJSON, err.Error()); failErr != nil {
-			return errors.Join(err, failErr)
-		}
-		if _, failErr := failTx.ExecContext(ctx, `
-			UPDATE operation_runs SET status='failed', result=$2::jsonb, error=$3, finished_at=now(), updated_at=now()
-			WHERE id=$1`, opID, opErrJSON, err.Error()); failErr != nil {
-			return errors.Join(err, failErr)
-		}
-		if failErr := failTx.Commit(); failErr != nil {
+		if failErr := w.markWorkerOperationFinished(ctx, job, opID, "failed", result, err.Error()); failErr != nil {
 			return errors.Join(err, failErr)
 		}
 		w.refreshCanonicalAssetsAfterOperation(ctx, job, opID, "failed")
 		w.autoRecordProjectVersionValidationSnapshotAfterRefresh(ctx, opID, "failed")
 		return err
 	}
-	resultJSON, _ := jsonParam(result)
-	opResultJSON, _ := jsonParam(operationRunResult(job, result))
-	_, err = tx.ExecContext(ctx, `
-		UPDATE worker_jobs SET status='completed', result=$2::jsonb, finished_at=now(), updated_at=now()
-		WHERE id=$1`, job["id"], resultJSON)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `
-		UPDATE operation_runs SET status='completed', result=$2::jsonb, finished_at=now(), updated_at=now()
-		WHERE id=$1`, opID, opResultJSON)
-	if err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
+	if err := w.markWorkerOperationFinished(ctx, job, opID, "completed", result, ""); err != nil {
 		return err
 	}
 	w.refreshCanonicalAssetsAfterOperation(ctx, job, opID, "completed")
@@ -187,17 +145,66 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 	return nil
 }
 
+func (w *ControlWorker) markWorkerOperationFinished(ctx context.Context, job map[string]any, opID, status string, result map[string]any, errorMessage string) error {
+	now := time.Now()
+	return w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		jobUpdates := map[string]any{"status": status, "result": JSONValue{Data: result}, "finished_at": validNullTime(now)}
+		if errorMessage != "" {
+			jobUpdates["error"] = errorMessage
+		} else {
+			jobUpdates["error"] = ""
+		}
+		if err := tx.Model(&GormWorkerJob{}).Where(&GormWorkerJob{GormBase: GormBase{ID: cleanOptionalID(fmt.Sprint(job["id"]))}}).Updates(jobUpdates).Error; err != nil {
+			return err
+		}
+		opUpdates := map[string]any{"status": status, "result": JSONValue{Data: operationRunResult(job, result)}, "finished_at": validNullTime(now)}
+		if errorMessage != "" {
+			opUpdates["error"] = errorMessage
+		} else {
+			opUpdates["error"] = ""
+		}
+		return tx.Model(&GormOperationRun{}).Where(&GormOperationRun{GormBase: GormBase{ID: opID}}).Updates(opUpdates).Error
+	})
+}
+
+func (w *ControlWorker) recordOperationLogGorm(ctx context.Context, opID string, job map[string]any, level, message string, fields map[string]any) error {
+	return w.store.Gorm.WithContext(ctx).Create(&GormOperationLog{
+		OperationRunID: validNullString(opID),
+		WorkerJobID:    validNullString(cleanOptionalID(fmt.Sprint(job["id"]))),
+		Level:          level,
+		Message:        message,
+		Fields:         JSONValue{Data: fields},
+	}).Error
+}
+
+func workerJobMap(job GormWorkerJob) map[string]any {
+	return map[string]any{
+		"id":                      job.ID,
+		"operation_run_id":        nullableStringValue(job.OperationRunID),
+		"tool_name":               job.ToolName,
+		"status":                  job.Status,
+		"payload":                 mapFromAny(job.Payload.Data),
+		"result":                  mapFromAny(job.Result.Data),
+		"error":                   job.Error,
+		"required_capabilities":   []string(job.RequiredCapabilities),
+		"preferred_node_kind":     job.PreferredNodeKind,
+		"assigned_worker_node_id": nullableStringValue(job.AssignedWorkerNodeID),
+		"claimed_at":              nullableTimeAny(job.ClaimedAt),
+		"started_at":              nullableTimeAny(job.StartedAt),
+		"finished_at":             nullableTimeAny(job.FinishedAt),
+		"created_at":              job.CreatedAt,
+		"updated_at":              job.UpdatedAt,
+	}
+}
+
 func (w *ControlWorker) autoRecordProjectVersionValidationSnapshotAfterRefresh(ctx context.Context, operationID, operationStatus string) {
-	if w == nil || w.store == nil || w.store.DB == nil {
+	if w == nil || w.store == nil || w.store.Gorm == nil {
 		return
 	}
-	row, err := queryOne(ctx, w.store.DB, `
-		SELECT input->>'project_version_id' AS project_version_id, operation_type
-		FROM operation_runs
-		WHERE id=$1
-			AND operation_type IN ('git.refs.refresh', 'github.actions.sync', 'argo.apps.sync')`, operationID)
+	var op GormOperationRun
+	err := w.store.Gorm.WithContext(ctx).First(&op, &GormOperationRun{GormBase: GormBase{ID: operationID}}).Error
 	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		if errorsIsRecordNotFound(err) {
 			return
 		}
 		if w.log != nil {
@@ -205,7 +212,10 @@ func (w *ControlWorker) autoRecordProjectVersionValidationSnapshotAfterRefresh(c
 		}
 		return
 	}
-	versionID := strings.TrimSpace(fmt.Sprint(row["project_version_id"]))
+	if op.OperationType != "git.refs.refresh" && op.OperationType != "github.actions.sync" && op.OperationType != "argo.apps.sync" {
+		return
+	}
+	versionID := cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "project_version_id"))
 	if versionID == "" || versionID == "<nil>" {
 		return
 	}
@@ -252,7 +262,7 @@ func canonicalAssetsSyncedInAdapterTransaction(job map[string]any) bool {
 }
 
 func (w *ControlWorker) sweepExpiredApprovals(ctx context.Context) error {
-	return w.server.expirePendingOperationApprovals(ctx, w.store.DB)
+	return w.server.expirePendingOperationApprovalsGorm(ctx, w.store.Gorm)
 }
 
 func (w *ControlWorker) dispatchDueApprovalReminders(ctx context.Context) error {
@@ -282,337 +292,251 @@ func operationRunResult(job map[string]any, result map[string]any) map[string]an
 }
 
 func (w *ControlWorker) recoverStaleRunningJobs(ctx context.Context) error {
-	tx, err := w.store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	recoveryResult, err := jsonParam(map[string]any{"adapter": true, "recovered": true, "reason": "worker timeout"})
-	if err != nil {
-		return err
-	}
-	rows, err := queryMaps(ctx, tx, `
-		WITH stale AS (
-			SELECT id, operation_run_id
-			FROM worker_jobs
-			WHERE status='running'
-			  AND started_at < now() - interval '30 minutes'
-			FOR UPDATE SKIP LOCKED
-		),
-		updated_jobs AS (
-			UPDATE worker_jobs wj
-			SET status='failed',
-				result=$1::jsonb,
-				error='worker timed out while running',
-				finished_at=now(),
-				updated_at=now()
-			FROM stale
-			WHERE wj.id=stale.id
-			RETURNING stale.operation_run_id
-		)
-		SELECT operation_run_id FROM updated_jobs`, recoveryResult)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows {
-		opID := row["operation_run_id"]
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE operation_runs
-			SET status='failed',
-				result=$2::jsonb,
-				error='worker timed out while running',
-				finished_at=now(),
-				updated_at=now()
-			WHERE id=$1`, opID, recoveryResult); err != nil {
+	cutoff := time.Now().Add(-30 * time.Minute)
+	return w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var jobs []GormWorkerJob
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where(&GormWorkerJob{Status: "running"}).
+			Where("started_at < ?", cutoff).
+			Find(&jobs).Error; err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE repo_sync_runs
-			SET status='failed',
-				error_message='worker timed out while running',
-				finished_at=now()
-			WHERE operation_run_id=$1 AND status IN ('queued', 'running', 'provisioning')`, opID); err != nil {
+		for i := range jobs {
+			jobs[i].Status = "failed"
+			jobs[i].Result = JSONValue{Data: workerTimeoutResult()}
+			jobs[i].Error = "worker timed out while running"
+			jobs[i].FinishedAt = validNullTime(time.Now())
+			if err := tx.Save(&jobs[i]).Error; err != nil {
+				return err
+			}
+			if opID := cleanOptionalID(jobs[i].OperationRunID.String); opID != "" {
+				if err := failTimedOutOperationGorm(ctx, tx, opID); err != nil {
+					return err
+				}
+			}
+		}
+
+		var ops []GormOperationRun
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where(&GormOperationRun{Status: "running"}).
+			Where("started_at < ?", cutoff).
+			Find(&ops).Error; err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE repo_sync_assets
-			SET last_sync_status='failed',
-				updated_at=now()
-			WHERE id=(SELECT repo_sync_asset_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID); err != nil {
-			return err
+		for _, op := range ops {
+			var activeJobs int64
+			if err := tx.Model(&GormWorkerJob{}).
+				Where(&GormWorkerJob{OperationRunID: validNullString(op.ID)}).
+				Where("status IN ?", []string{"queued", "running"}).
+				Count(&activeJobs).Error; err != nil {
+				return err
+			}
+			if activeJobs > 0 {
+				continue
+			}
+			if err := failTimedOutOperationGorm(ctx, tx, op.ID); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET last_sync_status='failed',
-				updated_at=now()
-			WHERE id=(SELECT target_remote_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID); err != nil {
-			return err
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for stale worker recovery: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE repo_tag_runs
-			SET status='failed',
-				error_message='worker timed out while running',
-				finished_at=now()
-			WHERE operation_run_id=$1 AND status IN ('queued', 'running')`, opID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE repo_tag_runs
-			SET status='failed',
-				error_message='worker timed out while running',
-				finished_at=now()
-			WHERE id=(
-				SELECT NULLIF(input->>'repo_tag_run_id', '')::uuid
-				FROM operation_runs
-				WHERE id=$1 AND operation_type='repo.tag.lookup'
-				LIMIT 1
-			)
-			AND status IN ('queued', 'running')`, opID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE ssh_command_runs
-			SET status='failed',
-				error_message='worker timed out while running',
-				finished_at=now()
-			WHERE operation_run_id=$1 AND status IN ('queued', 'running')`, opID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE argo_connections
-			SET last_sync_status='failed',
-				last_sync_error='worker timed out while running',
-				updated_at=now()
-			WHERE id=(SELECT (input->>'argo_connection_id')::uuid FROM operation_runs WHERE id=$1 AND operation_type='argo.apps.sync' LIMIT 1)`, opID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE project_template_runs
-			SET status='failed',
-				error_message='worker timed out while running',
-				finished_at=now(),
-				updated_at=now()
-			WHERE operation_run_id=$1 AND status IN ('queued', 'running', 'provisioning')`, opID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE project_template_runs ptr
-			SET status='failed',
-				error_message='worker timed out while running',
-				finished_at=now(),
-				updated_at=now()
-			FROM operation_runs op
-			WHERE op.id=$1
-				AND op.operation_type='project.template_provision_retry'
-				AND ptr.id=NULLIF(op.input->>'project_template_run_id', '')::uuid
-				AND ptr.status IN ('queued', 'running', 'provisioning')`, opID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE agent_tool_calls
-			SET status='failed',
-				error_message='worker timed out while running',
-				finished_at=now(),
-				updated_at=now()
-			WHERE operation_run_id=$1
-				AND status IN ('queued', 'planned', 'running')`, opID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE agent_tasks
-			SET status='failed',
-				updated_at=now()
-			WHERE id=(SELECT NULLIF(input->>'agent_task_id', '')::uuid FROM operation_runs WHERE id=$1 AND operation_type='agent.execute')
-				AND status IN ('queued', 'running')`, opID); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `
-		WITH stale_ops AS (
-			SELECT opr.id
-			FROM operation_runs opr
-			WHERE opr.status='running'
-				AND opr.started_at < now() - interval '30 minutes'
-				AND NOT EXISTS (
-					SELECT 1
-					FROM worker_jobs wj
-					WHERE wj.operation_run_id=opr.id
-						AND wj.status IN ('queued', 'running')
-				)
-			FOR UPDATE SKIP LOCKED
-		),
-		updated_ops AS (
-			UPDATE operation_runs opr
-			SET status='failed',
-				result=$1::jsonb,
-				error='worker timed out while running',
-				finished_at=now(),
-				updated_at=now()
-			FROM stale_ops
-			WHERE opr.id=stale_ops.id
-			RETURNING opr.id, opr.operation_type, opr.input
-		),
-		repo_sync_run_failures AS (
-			UPDATE repo_sync_runs rsr
-			SET status='failed',
-				error_message='worker timed out while running',
-				finished_at=now()
-			FROM updated_ops
-			WHERE rsr.operation_run_id=updated_ops.id
-				AND updated_ops.operation_type IN ('repo.sync', 'repo.sync_remote')
-				AND rsr.status IN ('queued', 'running', 'provisioning')
-			RETURNING rsr.repo_sync_asset_id, rsr.target_remote_id
-		),
-		repo_sync_asset_failures AS (
-			UPDATE repo_sync_assets rsa
-			SET last_sync_status='failed',
-				updated_at=now()
-			FROM repo_sync_run_failures failed
-			WHERE rsa.id=failed.repo_sync_asset_id
-			RETURNING rsa.id
-		),
-		repo_sync_remote_failures AS (
-			UPDATE git_remotes gr
-			SET last_sync_status='failed',
-				updated_at=now()
-			FROM repo_sync_run_failures failed
-			WHERE gr.id=failed.target_remote_id
-			RETURNING gr.id
-		),
-		template_create AS (
-			UPDATE project_template_runs ptr
-			SET status='failed',
-				error_message='worker timed out while running',
-				finished_at=now(),
-				updated_at=now()
-			FROM updated_ops
-			WHERE ptr.operation_run_id=updated_ops.id
-				AND ptr.status IN ('queued', 'running', 'provisioning')
-			RETURNING ptr.id
-		),
-		template_retry AS (
-			UPDATE project_template_runs ptr
-			SET status='failed',
-				error_message='worker timed out while running',
-				finished_at=now(),
-				updated_at=now()
-			FROM updated_ops
-			WHERE updated_ops.operation_type='project.template_provision_retry'
-				AND ptr.id=NULLIF(updated_ops.input->>'project_template_run_id', '')::uuid
-				AND ptr.status IN ('queued', 'running', 'provisioning')
-			RETURNING ptr.id
-		),
-		agent_call_failures AS (
-			UPDATE agent_tool_calls atc
-			SET status='failed',
-				error_message='worker timed out while running',
-				finished_at=now(),
-				updated_at=now()
-			FROM updated_ops
-			WHERE updated_ops.operation_type='agent.execute'
-				AND atc.operation_run_id=updated_ops.id
-				AND atc.status IN ('queued', 'planned', 'running')
-			RETURNING atc.agent_task_id
-		),
-		agent_task_failures AS (
-			UPDATE agent_tasks at
-			SET status='failed',
-				updated_at=now()
-			FROM updated_ops
-			WHERE updated_ops.operation_type='agent.execute'
-				AND at.id=NULLIF(updated_ops.input->>'agent_task_id', '')::uuid
-				AND at.status IN ('queued', 'running')
-			RETURNING at.id
-		)
-		SELECT
-			(SELECT count(*) FROM repo_sync_run_failures) AS repo_sync_run_count,
-			(SELECT count(*) FROM repo_sync_asset_failures) AS repo_sync_asset_count,
-			(SELECT count(*) FROM repo_sync_remote_failures) AS repo_sync_remote_count,
-			(SELECT count(*) FROM template_create) AS template_create_count,
-			(SELECT count(*) FROM template_retry) AS template_retry_count,
-			(SELECT count(*) FROM agent_call_failures) AS agent_call_count,
-			(SELECT count(*) FROM agent_task_failures) AS agent_task_count`, recoveryResult); err != nil {
-		return err
-	}
-	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
-		return fmt.Errorf("syncing canonical assets for stale worker recovery: %w", err)
-	}
-	return tx.Commit()
+		return nil
+	})
 }
 
-func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtContext, job map[string]any) error {
+func workerTimeoutResult() map[string]any {
+	return map[string]any{"adapter": true, "recovered": true, "reason": "worker timeout"}
+}
+
+func failTimedOutOperationGorm(ctx context.Context, tx *gorm.DB, opID string) error {
+	now := time.Now()
+	var op GormOperationRun
+	if err := tx.WithContext(ctx).First(&op, &GormOperationRun{GormBase: GormBase{ID: opID}}).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	op.Status = "failed"
+	op.Result = JSONValue{Data: workerTimeoutResult()}
+	op.Error = "worker timed out while running"
+	op.FinishedAt = validNullTime(now)
+	if err := tx.WithContext(ctx).Save(&op).Error; err != nil {
+		return err
+	}
+	if err := failTimedOutRepoSyncGorm(ctx, tx, opID); err != nil {
+		return err
+	}
+	if err := failTimedOutRepoTagGorm(ctx, tx, op); err != nil {
+		return err
+	}
+	if err := tx.WithContext(ctx).Model(&GormSSHCommandRun{}).Where(&GormSSHCommandRun{OperationRunID: validNullString(opID)}).Where(gormField("status", []string{"queued", "running"})).Updates(map[string]any{"status": "failed", "error_message": "worker timed out while running", "finished_at": validNullTime(now)}).Error; err != nil {
+		return err
+	}
+	if op.OperationType == "argo.apps.sync" {
+		connectionID := cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "argo_connection_id"))
+		if connectionID != "" {
+			if err := tx.WithContext(ctx).Model(&GormArgoConnection{}).Where(&GormArgoConnection{GormBase: GormBase{ID: connectionID}}).Updates(map[string]any{"last_sync_status": "failed", "last_sync_error": "worker timed out while running"}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	if err := failTimedOutTemplateRunGorm(ctx, tx, op); err != nil {
+		return err
+	}
+	if err := tx.WithContext(ctx).Model(&GormAgentToolCall{}).Where(&GormAgentToolCall{OperationRunID: validNullString(opID)}).Where(gormField("status", []string{"queued", "planned", "running"})).Updates(map[string]any{"status": "failed", "error_message": "worker timed out while running", "finished_at": validNullTime(now)}).Error; err != nil {
+		return err
+	}
+	if op.OperationType == "agent.execute" {
+		taskID := cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "agent_task_id"))
+		if taskID != "" {
+			if err := tx.WithContext(ctx).Model(&GormAgentTask{}).Where(&GormAgentTask{GormBase: GormBase{ID: taskID}}).Where(gormField("status", []string{"queued", "running"})).Updates(map[string]any{"status": "failed"}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func failTimedOutRepoSyncGorm(ctx context.Context, tx *gorm.DB, opID string) error {
+	var runs []GormRepoSyncRun
+	if err := tx.WithContext(ctx).Where(&GormRepoSyncRun{OperationRunID: opID}).Where(gormField("status", []string{"queued", "running", "provisioning"})).Find(&runs).Error; err != nil {
+		return err
+	}
+	now := time.Now()
+	for i := range runs {
+		runs[i].Status = "failed"
+		runs[i].ErrorMessage = "worker timed out while running"
+		runs[i].FinishedAt = validNullTime(now)
+		if err := tx.WithContext(ctx).Save(&runs[i]).Error; err != nil {
+			return err
+		}
+		if runs[i].RepoSyncAssetID.Valid {
+			if err := tx.WithContext(ctx).Model(&GormRepoSyncAsset{}).Where(&GormRepoSyncAsset{GormBase: GormBase{ID: runs[i].RepoSyncAssetID.String}}).Updates(map[string]any{"last_sync_status": "failed"}).Error; err != nil {
+				return err
+			}
+		}
+		if runs[i].TargetRemoteID.Valid {
+			if err := tx.WithContext(ctx).Model(&GormGitRemote{}).Where(&GormGitRemote{GormBase: GormBase{ID: runs[i].TargetRemoteID.String}}).Updates(map[string]any{"last_sync_status": "failed"}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func failTimedOutRepoTagGorm(ctx context.Context, tx *gorm.DB, op GormOperationRun) error {
+	now := time.Now()
+	if err := tx.WithContext(ctx).Model(&GormRepoTagRun{}).Where(&GormRepoTagRun{OperationRunID: op.ID}).Where(gormField("status", []string{"queued", "running"})).Updates(map[string]any{"status": "failed", "error_message": "worker timed out while running", "finished_at": validNullTime(now)}).Error; err != nil {
+		return err
+	}
+	if op.OperationType == "repo.tag.lookup" {
+		runID := cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "repo_tag_run_id"))
+		if runID != "" {
+			return tx.WithContext(ctx).Model(&GormRepoTagRun{}).Where(&GormRepoTagRun{ID: runID}).Where(gormField("status", []string{"queued", "running"})).Updates(map[string]any{"status": "failed", "error_message": "worker timed out while running", "finished_at": validNullTime(now)}).Error
+		}
+	}
+	return nil
+}
+
+func failTimedOutTemplateRunGorm(ctx context.Context, tx *gorm.DB, op GormOperationRun) error {
+	now := time.Now()
+	if err := tx.WithContext(ctx).Model(&GormProjectTemplateRun{}).Where(&GormProjectTemplateRun{OperationRunID: validNullString(op.ID)}).Where(gormField("status", []string{"queued", "running", "provisioning"})).Updates(map[string]any{"status": "failed", "error_message": "worker timed out while running", "finished_at": validNullTime(now)}).Error; err != nil {
+		return err
+	}
+	if op.OperationType == "project.template_provision_retry" {
+		runID := cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "project_template_run_id"))
+		if runID != "" {
+			return tx.WithContext(ctx).Model(&GormProjectTemplateRun{}).Where(&GormProjectTemplateRun{GormBase: GormBase{ID: runID}}).Where(gormField("status", []string{"queued", "running", "provisioning"})).Updates(map[string]any{"status": "failed", "error_message": "worker timed out while running", "finished_at": validNullTime(now)}).Error
+		}
+	}
+	return nil
+}
+
+func (w *ControlWorker) markAdapterRunning(ctx context.Context, db *gorm.DB, job map[string]any) error {
 	opID := fmt.Sprint(job["operation_run_id"])
 	tool := fmt.Sprint(job["tool_name"])
+	now := time.Now()
 	switch tool {
 	case "repo.sync", "repo.sync_remote":
-		if _, err := db.ExecContext(ctx, "UPDATE repo_sync_runs SET status='running', started_at=COALESCE(started_at, now()) WHERE operation_run_id=$1", opID); err != nil {
+		var run GormRepoSyncRun
+		if err := db.WithContext(ctx).Where(&GormRepoSyncRun{OperationRunID: opID}).First(&run).Error; err != nil {
 			return err
 		}
-		_, err := db.ExecContext(ctx, `
-			UPDATE repo_sync_assets
-			SET last_sync_status='running',
-				updated_at=now()
-			WHERE id=(SELECT repo_sync_asset_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID)
-		if err != nil {
+		run.Status = "running"
+		if !run.StartedAt.Valid {
+			run.StartedAt = validNullTime(now)
+		}
+		if err := db.WithContext(ctx).Save(&run).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+		if run.RepoSyncAssetID.Valid {
+			if err := db.WithContext(ctx).Model(&GormRepoSyncAsset{}).
+				Where(&GormRepoSyncAsset{GormBase: GormBase{ID: run.RepoSyncAssetID.String}}).
+				Updates(map[string]any{"last_sync_status": "running"}).Error; err != nil {
+				return err
+			}
+		}
+		if _, err := syncCanonicalAssetsGorm(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for running repo sync: %w", err)
 		}
 		return nil
 	case "git.refs.refresh":
-		_, err := db.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET last_sync_status='running',
-				updated_at=now()
-			WHERE id=(SELECT git_remote_id FROM operation_runs WHERE id=$1 LIMIT 1)`, opID)
+		op, err := operationRunByID(ctx, db, opID)
 		if err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+		if op.GitRemoteID.Valid {
+			if err := db.WithContext(ctx).Model(&GormGitRemote{}).
+				Where(&GormGitRemote{GormBase: GormBase{ID: op.GitRemoteID.String}}).
+				Updates(map[string]any{"last_sync_status": "running"}).Error; err != nil {
+				return err
+			}
+		}
+		if _, err := syncCanonicalAssetsGorm(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for running Git ref refresh: %w", err)
 		}
 		return nil
 	case "repo.tag", "repo.create_tag":
-		_, err := db.ExecContext(ctx, "UPDATE repo_tag_runs SET status='running', started_at=COALESCE(started_at, now()) WHERE operation_run_id=$1", opID)
-		return err
+		return markRepoTagRunRunning(ctx, db, opID, "")
 	case "repo.tag.lookup":
-		if _, err := db.ExecContext(ctx, `
-			UPDATE repo_tag_runs
-			SET status='running', started_at=COALESCE(started_at, now()), error_message=''
-			WHERE id=(
-				SELECT NULLIF(input->>'repo_tag_run_id', '')::uuid
-				FROM operation_runs
-				WHERE id=$1 AND operation_type='repo.tag.lookup'
-				LIMIT 1
-			)`, opID); err != nil {
+		op, err := operationRunByID(ctx, db, opID)
+		if err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+		if err := markRepoTagRunRunning(ctx, db, "", cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "repo_tag_run_id"))); err != nil {
+			return err
+		}
+		if _, err := syncCanonicalAssetsGorm(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for running repo tag lookup: %w", err)
 		}
 		return nil
 	case "ssh.exec", "ssh.verify":
 		// Verify is audited through the same SSH run table, but the executor
 		// defensively forces the command to a no-op connectivity check.
-		if _, err := db.ExecContext(ctx, "UPDATE ssh_command_runs SET status='running', started_at=COALESCE(started_at, now()) WHERE operation_run_id=$1", opID); err != nil {
+		if err := db.WithContext(ctx).Model(&GormSSHCommandRun{}).
+			Where(&GormSSHCommandRun{OperationRunID: validNullString(opID)}).
+			Updates(map[string]any{"status": "running", "started_at": validNullTime(now)}).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for running SSH command: %w", err)
 		}
 		return nil
 	case "argo.apps.sync":
-		_, err := db.ExecContext(ctx, `
-			UPDATE argo_connections
-			SET last_sync_status='running',
-				last_sync_error='',
-				updated_at=now()
-			WHERE id=(SELECT (input->>'argo_connection_id')::uuid FROM operation_runs WHERE id=$1 LIMIT 1)`, opID)
+		op, err := operationRunByID(ctx, db, opID)
 		if err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+		if connectionID := cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "argo_connection_id")); connectionID != "" {
+			if err := db.WithContext(ctx).Model(&GormArgoConnection{}).
+				Where(&GormArgoConnection{GormBase: GormBase{ID: connectionID}}).
+				Updates(map[string]any{"last_sync_status": "running", "last_sync_error": ""}).Error; err != nil {
+				return err
+			}
+		}
+		if _, err := syncCanonicalAssetsGorm(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for running Argo app sync: %w", err)
 		}
 		return nil
@@ -621,16 +545,11 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 		if w.cfg.KubernetesPodLogsEnabled {
 			backend = "kubectl_logs"
 		}
-		if _, err := db.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'info', 'pod log audit worker started', jsonb_build_object(
-				'live_log_backend', $3,
-				'kubeconfig_bound', false,
-				'log_body_included', false
-			))`, opID, job["id"], backend); err != nil {
+		fields := map[string]any{"live_log_backend": backend, "kubeconfig_bound": false, "log_body_included": false}
+		if err := db.WithContext(ctx).Create(&GormOperationLog{OperationRunID: validNullString(opID), WorkerJobID: validNullString(fmt.Sprint(job["id"])), Level: "info", Message: "pod log audit worker started", Fields: JSONValue{Data: fields}}).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for running Argo pod log audit: %w", err)
 		}
 		return nil
@@ -639,18 +558,11 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 		if w.cfg.KubernetesRestartsEnabled {
 			backend = "kubectl_rollout_restart"
 		}
-		if _, err := db.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'info', 'pod restart worker started', jsonb_build_object(
-				'restart_backend', $3,
-				'kubeconfig_bound', false,
-				'raw_response_included', false,
-				'stdout_included', false,
-				'stderr_included', false
-			))`, opID, job["id"], backend); err != nil {
+		fields := map[string]any{"restart_backend": backend, "kubeconfig_bound": false, "raw_response_included": false, "stdout_included": false, "stderr_included": false}
+		if err := db.WithContext(ctx).Create(&GormOperationLog{OperationRunID: validNullString(opID), WorkerJobID: validNullString(fmt.Sprint(job["id"])), Level: "info", Message: "pod restart worker started", Fields: JSONValue{Data: fields}}).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for running Argo pod restart: %w", err)
 		}
 		return nil
@@ -659,80 +571,328 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db sqlx.ExtConte
 		if w.cfg.ConfigGitLocalBareWritesEnabled {
 			backend = "local_bare_git_write_when_eligible"
 		}
-		if _, err := db.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'info', 'config git workflow worker started', jsonb_build_object(
-				'backend', $3,
-				'git_write_performed', false,
-				'external_call_made', false,
-				'file_content_included', false,
-				'secret_included', false
-			))`, opID, job["id"], backend); err != nil {
+		fields := map[string]any{"backend": backend, "git_write_performed": false, "external_call_made": false, "file_content_included": false, "secret_included": false}
+		if err := db.WithContext(ctx).Create(&GormOperationLog{OperationRunID: validNullString(opID), WorkerJobID: validNullString(fmt.Sprint(job["id"])), Level: "info", Message: "config git workflow worker started", Fields: JSONValue{Data: fields}}).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for running config Git workflow audit: %w", err)
 		}
 		return nil
 	case "project_version.validation_rerun":
-		if _, err := db.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'info', 'project version validation rerun worker started', jsonb_build_object(
-				'validation_source', 'local_synced_database_state',
-				'external_call_made', false,
-				'provider_api_called', false,
-				'raw_provider_response_recorded', false
-			))`, opID, job["id"]); err != nil {
+		fields := map[string]any{"validation_source": "local_synced_database_state", "external_call_made": false, "provider_api_called": false, "raw_provider_response_recorded": false}
+		if err := db.WithContext(ctx).Create(&GormOperationLog{OperationRunID: validNullString(opID), WorkerJobID: validNullString(fmt.Sprint(job["id"])), Level: "info", Message: "project version validation rerun worker started", Fields: JSONValue{Data: fields}}).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for running project version validation rerun: %w", err)
 		}
 		return nil
 	case "project.create_from_template":
-		_, err := db.ExecContext(ctx, "UPDATE project_template_runs SET status='running', started_at=COALESCE(started_at, now()), updated_at=now() WHERE operation_run_id=$1", opID)
-		return err
+		return db.WithContext(ctx).Model(&GormProjectTemplateRun{}).
+			Where(&GormProjectTemplateRun{OperationRunID: validNullString(opID)}).
+			Updates(map[string]any{"status": "running", "started_at": validNullTime(now)}).Error
 	case "project.template_provision_retry":
-		_, err := db.ExecContext(ctx, `
-			UPDATE project_template_runs ptr
-			SET status='provisioning',
-				started_at=COALESCE(started_at, now()),
-				finished_at=NULL,
-				error_message='',
-				result=result || jsonb_build_object(
-					'provision_retry',
-					jsonb_build_object('operation_run_id', $1, 'started_at', now())
-				),
-				updated_at=now()
-			FROM operation_runs op
-			WHERE op.id=$1
-				AND ptr.id=NULLIF(op.input->>'project_template_run_id', '')::uuid`, opID)
-		return err
+		op, err := operationRunByID(ctx, db, opID)
+		if err != nil {
+			return err
+		}
+		runID := cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "project_template_run_id"))
+		var run GormProjectTemplateRun
+		if err := db.WithContext(ctx).First(&run, &GormProjectTemplateRun{GormBase: GormBase{ID: runID}}).Error; err != nil {
+			return err
+		}
+		result := mapFromAny(run.Result.Data)
+		result["provision_retry"] = map[string]any{"operation_run_id": opID, "started_at": now.Format(time.RFC3339)}
+		run.Status = "provisioning"
+		if !run.StartedAt.Valid {
+			run.StartedAt = validNullTime(now)
+		}
+		run.FinishedAt = sql.NullTime{}
+		run.ErrorMessage = ""
+		run.Result = JSONValue{Data: result}
+		return db.WithContext(ctx).Save(&run).Error
 	case "agent.execute":
-		if _, err := db.ExecContext(ctx, `
-			UPDATE agent_tool_calls
-			SET status='running',
-				started_at=COALESCE(started_at, now()),
-				updated_at=now()
-			WHERE operation_run_id=$1
-				AND status IN ('queued', 'planned')`, opID); err != nil {
+		if err := db.WithContext(ctx).Model(&GormAgentToolCall{}).
+			Where(&GormAgentToolCall{OperationRunID: validNullString(opID)}).
+			Where("status IN ?", []string{"queued", "planned"}).
+			Updates(map[string]any{"status": "running", "started_at": validNullTime(now)}).Error; err != nil {
 			return err
 		}
-		if _, err := db.ExecContext(ctx, `
-			UPDATE agent_tasks
-			SET status='running',
-				updated_at=now()
-			WHERE id=(SELECT NULLIF(input->>'agent_task_id', '')::uuid FROM operation_runs WHERE id=$1)
-				AND status IN ('queued', 'planned')`, opID); err != nil {
+		op, err := operationRunByID(ctx, db, opID)
+		if err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, db); err != nil {
+		if taskID := cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "agent_task_id")); taskID != "" {
+			if err := db.WithContext(ctx).Model(&GormAgentTask{}).
+				Where(&GormAgentTask{GormBase: GormBase{ID: taskID}}).
+				Where("status IN ?", []string{"queued", "planned"}).
+				Updates(map[string]any{"status": "running"}).Error; err != nil {
+				return err
+			}
+		}
+		if _, err := syncCanonicalAssetsGorm(ctx, db); err != nil {
 			return fmt.Errorf("syncing canonical assets for running agent execution: %w", err)
 		}
 		return nil
 	default:
 		return nil
 	}
+}
+
+func markRepoTagRunRunning(ctx context.Context, db *gorm.DB, opID, runID string) error {
+	var run GormRepoTagRun
+	query := db.WithContext(ctx)
+	if runID != "" {
+		query = query.Where(&GormRepoTagRun{ID: runID})
+	} else {
+		query = query.Where(&GormRepoTagRun{OperationRunID: opID})
+	}
+	if err := query.First(&run).Error; err != nil {
+		return err
+	}
+	run.Status = "running"
+	if !run.StartedAt.Valid {
+		run.StartedAt = validNullTime(time.Now())
+	}
+	run.ErrorMessage = ""
+	return db.WithContext(ctx).Save(&run).Error
+}
+
+func (w *ControlWorker) recordRepoSyncRunFailedGorm(ctx context.Context, opID, stdout, stderr, errorMessage string) error {
+	return w.updateRepoSyncRunGorm(ctx, opID, "failed", stdout, stderr, "", errorMessage)
+}
+
+func (w *ControlWorker) recordRepoSyncRunCompletedGorm(ctx context.Context, opID, stdout, stderr, afterSHA string) error {
+	return w.updateRepoSyncRunGorm(ctx, opID, "completed", stdout, stderr, afterSHA, "")
+}
+
+func (w *ControlWorker) updateRepoSyncRunGorm(ctx context.Context, opID, status, stdout, stderr, afterSHA, errorMessage string) error {
+	return w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run GormRepoSyncRun
+		if err := tx.Where(&GormRepoSyncRun{OperationRunID: opID}).First(&run).Error; err != nil {
+			return err
+		}
+		run.Status = status
+		run.Stdout = stdout
+		run.Stderr = stderr
+		if afterSHA != "" {
+			run.AfterSHA = afterSHA
+		}
+		run.ErrorMessage = errorMessage
+		run.FinishedAt = validNullTime(time.Now())
+		if err := tx.Save(&run).Error; err != nil {
+			return err
+		}
+		if run.TargetRemoteID.Valid {
+			updates := map[string]any{"last_sync_status": status}
+			if status == "completed" && afterSHA != "" {
+				updates["latest_sha"] = afterSHA
+			}
+			if err := tx.Model(&GormGitRemote{}).Where(&GormGitRemote{GormBase: GormBase{ID: run.TargetRemoteID.String}}).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		if run.RepoSyncAssetID.Valid {
+			updates := map[string]any{"last_sync_status": status}
+			if status == "completed" {
+				updates["last_synced_at"] = validNullTime(time.Now())
+			}
+			if err := tx.Model(&GormRepoSyncAsset{}).Where(&GormRepoSyncAsset{GormBase: GormBase{ID: run.RepoSyncAssetID.String}}).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (w *ControlWorker) updateOperationRemoteSyncStatusGorm(ctx context.Context, opID, status, afterSHA string) error {
+	op, err := operationRunByID(ctx, w.store.Gorm, opID)
+	if err != nil {
+		return err
+	}
+	if !op.GitRemoteID.Valid {
+		return nil
+	}
+	updates := map[string]any{"last_sync_status": status}
+	if afterSHA != "" {
+		updates["latest_sha"] = afterSHA
+	}
+	return w.store.Gorm.WithContext(ctx).Model(&GormGitRemote{}).Where(&GormGitRemote{GormBase: GormBase{ID: op.GitRemoteID.String}}).Updates(updates).Error
+}
+
+func (w *ControlWorker) recordRepoTagRunFailedGorm(ctx context.Context, opID, runID, stdout, stderr, errorMessage string) error {
+	var run GormRepoTagRun
+	query := w.store.Gorm.WithContext(ctx)
+	if runID != "" {
+		query = query.Where(&GormRepoTagRun{ID: runID})
+	} else {
+		query = query.Where(&GormRepoTagRun{OperationRunID: opID})
+	}
+	if err := query.First(&run).Error; err != nil {
+		return err
+	}
+	run.Status = "failed"
+	run.Stdout = stdout
+	run.Stderr = stderr
+	run.ErrorMessage = errorMessage
+	run.FinishedAt = validNullTime(time.Now())
+	return w.store.Gorm.WithContext(ctx).Save(&run).Error
+}
+
+func (w *ControlWorker) recordRepoTagLookupCompletedGorm(ctx context.Context, runID string, found bool, afterSHA string) error {
+	if runID == "" {
+		return nil
+	}
+	var run GormRepoTagRun
+	if err := w.store.Gorm.WithContext(ctx).Where(&GormRepoTagRun{ID: runID}).First(&run).Error; err != nil {
+		return err
+	}
+	if found {
+		run.Status = "completed"
+		run.ErrorMessage = ""
+		if afterSHA != "" {
+			run.TargetSHA = afterSHA
+		}
+	} else {
+		run.Status = "failed"
+		run.ErrorMessage = "remote tag not found"
+	}
+	run.FinishedAt = validNullTime(time.Now())
+	return w.store.Gorm.WithContext(ctx).Save(&run).Error
+}
+
+func (w *ControlWorker) recordRepoTagRunCompletedGorm(ctx context.Context, opID, stdout, stderr, afterSHA string) error {
+	return w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run GormRepoTagRun
+		if err := tx.Where(&GormRepoTagRun{OperationRunID: opID}).First(&run).Error; err != nil {
+			return err
+		}
+		run.Status = "completed"
+		run.Stdout = stdout
+		run.Stderr = stderr
+		if run.TargetSHA == "" && afterSHA != "" {
+			run.TargetSHA = afterSHA
+		}
+		run.FinishedAt = validNullTime(time.Now())
+		if err := tx.Save(&run).Error; err != nil {
+			return err
+		}
+		remoteID := cleanOptionalID(run.TargetRemoteID.String)
+		if remoteID == "" {
+			remoteID = cleanOptionalID(run.GitRemoteID)
+		}
+		if remoteID != "" {
+			if err := tx.Model(&GormGitRemote{}).Where(&GormGitRemote{GormBase: GormBase{ID: remoteID}}).Update("updated_at", time.Now()).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (w *ControlWorker) enqueueRepoTagPostSuccessOperationsGorm(ctx context.Context, opID string) error {
+	return w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var run GormRepoTagRun
+		if err := tx.Where(&GormRepoTagRun{OperationRunID: opID}).First(&run).Error; err != nil {
+			return err
+		}
+		runID := cleanOptionalID(run.ID)
+		projectID := cleanOptionalID(run.ProjectID.String)
+		if projectID == "" && run.ProjectGitRepositoryID.Valid {
+			var repo GormProjectGitRepository
+			if err := tx.First(&repo, &GormProjectGitRepository{GormBase: GormBase{ID: run.ProjectGitRepositoryID.String}}).Error; err == nil {
+				projectID = repo.ProjectID
+			} else if !errorsIsRecordNotFound(err) {
+				return err
+			}
+		}
+		targetRemoteID := cleanOptionalID(run.TargetRemoteID.String)
+		if targetRemoteID == "" {
+			targetRemoteID = cleanOptionalID(run.GitRemoteID)
+		}
+		tagName := strings.TrimSpace(run.TagName)
+		if runID == "" || projectID == "" || targetRemoteID == "" || tagName == "" || !isSafeGitRefPart(tagName) {
+			return nil
+		}
+		if err := enqueueRepoTagLookupAfterSuccessGorm(ctx, tx, projectID, targetRemoteID, runID, tagName); err != nil {
+			return err
+		}
+		var remote GormGitRemote
+		if err := tx.First(&remote, &GormGitRemote{GormBase: GormBase{ID: targetRemoteID}}).Error; err != nil {
+			return err
+		}
+		if _, _, err := gitHubRepositoryFromRemote(gitRemoteMap(remote, nil, "")); err != nil {
+			return nil
+		}
+		targetSHA := strings.TrimSpace(run.TargetSHA)
+		if !isFullHexSHA(targetSHA) {
+			targetSHA = ""
+		}
+		return enqueueRepoTagGitHubActionsRefreshAfterSuccessGorm(ctx, tx, projectID, targetRemoteID, runID, tagName, targetSHA)
+	})
+}
+
+func enqueueRepoTagLookupAfterSuccessGorm(ctx context.Context, tx *gorm.DB, projectID, targetRemoteID, runID, tagName string) error {
+	existing, err := repoTagLookupExistingOperationForAutoGorm(ctx, tx, runID)
+	if err != nil || existing != nil {
+		return err
+	}
+	input := map[string]any{"repo_tag_run_id": runID, "target_remote_id": targetRemoteID, "tag_name": tagName, "trigger": "repo_tag_success"}
+	_, err = enqueueOperationGorm(ctx, tx, projectID, targetRemoteID, "repo.tag.lookup", "lookup repository tag after successful tag push", input, []string{"git"}, "")
+	return err
+}
+
+func enqueueRepoTagGitHubActionsRefreshAfterSuccessGorm(ctx context.Context, tx *gorm.DB, projectID, targetRemoteID, runID, tagName, targetSHA string) error {
+	existing, err := repoTagActionsRefreshExistingOperationForAutoGorm(ctx, tx, runID)
+	if err != nil || existing != nil {
+		return err
+	}
+	input := map[string]any{"repo_tag_run_id": runID, "target_remote_id": targetRemoteID, "refresh_kind": "repo_tag_actions_refresh", "commit_sha": targetSHA, "tag_name": tagName, "limit": 50, "trigger": "repo_tag_success"}
+	_, err = enqueueOperationGorm(ctx, tx, projectID, targetRemoteID, "github.actions.sync", "refresh GitHub Actions after successful repository tag", input, []string{"github", "git"}, "")
+	return err
+}
+
+func repoTagLookupExistingOperationForAutoGorm(ctx context.Context, db *gorm.DB, runID string) (map[string]any, error) {
+	return repoTagFollowUpOperationForAutoGorm(ctx, db, runID, "repo.tag.lookup", "")
+}
+
+func repoTagActionsRefreshExistingOperationForAutoGorm(ctx context.Context, db *gorm.DB, runID string) (map[string]any, error) {
+	return repoTagFollowUpOperationForAutoGorm(ctx, db, runID, "github.actions.sync", "repo_tag_actions_refresh")
+}
+
+func repoTagFollowUpOperationForAutoGorm(ctx context.Context, db *gorm.DB, runID, operationType, refreshKind string) (map[string]any, error) {
+	var ops []GormOperationRun
+	if err := db.WithContext(ctx).Where(&GormOperationRun{OperationType: operationType}).Where(gormField("status", []string{"queued", "running", "completed", "succeeded", "success", "failed", "canceled"})).Order(gormOrderDesc("created_at")).Find(&ops).Error; err != nil {
+		return nil, err
+	}
+	for _, op := range ops {
+		input := mapFromAny(op.Input.Data)
+		if cleanOptionalID(fmt.Sprint(input["repo_tag_run_id"])) != runID {
+			continue
+		}
+		if refreshKind != "" && strings.TrimSpace(fmt.Sprint(input["refresh_kind"])) != refreshKind {
+			continue
+		}
+		return map[string]any{"id": op.ID, "operation_type": op.OperationType, "status": op.Status, "error": op.Error, "started_at": nullableTimeAny(op.StartedAt), "finished_at": nullableTimeAny(op.FinishedAt), "created_at": op.CreatedAt, "updated_at": op.UpdatedAt}, nil
+	}
+	return nil, nil
+}
+
+func enqueueOperationGorm(ctx context.Context, tx *gorm.DB, projectID, remoteID, tool, title string, input map[string]any, capabilities []string, preferredKind string) (map[string]any, error) {
+	op := GormOperationRun{ProjectID: validNullString(projectID), GitRemoteID: validNullString(remoteID), OperationType: tool, Title: title, Input: JSONValue{Data: input}, Result: JSONValue{Data: map[string]any{}}}
+	if err := tx.WithContext(ctx).Create(&op).Error; err != nil {
+		return nil, err
+	}
+	job := GormWorkerJob{OperationRunID: validNullString(op.ID), ToolName: tool, Payload: JSONValue{Data: input}, Result: JSONValue{Data: map[string]any{}}, RequiredCapabilities: pq.StringArray(capabilities), PreferredNodeKind: preferredKind}
+	if err := tx.WithContext(ctx).Create(&job).Error; err != nil {
+		return nil, err
+	}
+	return operationRunGormMap(op), nil
+}
+
+func operationRunGormMap(op GormOperationRun) map[string]any {
+	return map[string]any{"id": op.ID, "project_id": nullableStringValue(op.ProjectID), "git_remote_id": nullableStringValue(op.GitRemoteID), "operation_type": op.OperationType, "status": op.Status, "title": op.Title, "input": mapFromAny(op.Input.Data), "result": mapFromAny(op.Result.Data), "error": op.Error, "started_at": nullableTimeAny(op.StartedAt), "finished_at": nullableTimeAny(op.FinishedAt), "created_at": op.CreatedAt, "updated_at": op.UpdatedAt}
 }
 
 func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]any) (map[string]any, error) {
@@ -745,31 +905,31 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 	}
 	switch tool {
 	case "repo.sync", "repo.sync_remote":
-		execution, err := w.newGitExecutor("").Sync(ctx, w.store.DB, opID)
+		execution, err := w.newGitExecutor("").Sync(ctx, w.store.Gorm, opID)
 		mergeGitExecutionResult(result, execution)
 		return result, err
 	case "git.refs.refresh":
-		execution, err := w.newGitExecutor("").RefreshRemoteRefs(ctx, w.store.DB, opID)
+		execution, err := w.newGitExecutor("").RefreshRemoteRefs(ctx, w.store.Gorm, opID)
 		mergeGitExecutionResult(result, execution)
 		return result, err
 	case "repo.tag", "repo.create_tag":
-		execution, err := w.newGitExecutor("").Tag(ctx, w.store.DB, opID)
+		execution, err := w.newGitExecutor("").Tag(ctx, w.store.Gorm, opID)
 		mergeGitExecutionResult(result, execution)
 		return result, err
 	case "repo.tag.lookup":
-		execution, err := w.newGitExecutor("").LookupTag(ctx, w.store.DB, opID)
+		execution, err := w.newGitExecutor("").LookupTag(ctx, w.store.Gorm, opID)
 		mergeRepoTagLookupExecutionResult(result, execution)
 		return result, err
 	case "github.actions.sync":
-		syncResult, err := NewGitHubActionsSyncer().Sync(ctx, w.store.DB, opID)
+		syncResult, err := NewGitHubActionsSyncer().Sync(ctx, w.store.Gorm, opID)
 		mergeGitHubActionsResult(result, syncResult)
 		return result, err
 	case "github.labels.sync":
-		syncResult, err := NewGitHubActionsSyncer().SyncLabels(ctx, w.store.DB, opID)
+		syncResult, err := NewGitHubActionsSyncer().SyncLabels(ctx, w.store.Gorm, opID)
 		mergeGitHubRepositoryLabelsResult(result, syncResult)
 		return result, err
 	case "argo.apps.sync":
-		syncResult, err := NewArgoSyncer().SyncApps(ctx, w.store.DB, opID)
+		syncResult, err := NewArgoSyncer().SyncApps(ctx, w.store.Gorm, opID)
 		mergeArgoSyncResult(result, syncResult)
 		return result, err
 	case "argo.pod_logs":
@@ -781,7 +941,7 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 	case "project_version.validation_rerun":
 		return w.executeProjectVersionValidationRerun(ctx, opID, result)
 	case "ssh.exec", "ssh.verify":
-		execution, err := NewSSHExecutor().Execute(ctx, w.store.DB, opID)
+		execution, err := NewSSHExecutor().Execute(ctx, w.store.Gorm, opID)
 		mergeSSHExecutionResult(result, execution)
 		return result, err
 	case "project.create_from_template":
@@ -803,132 +963,93 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 	}
 }
 
-func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, job map[string]any, result map[string]any, adapterErr error) error {
+func (w *ControlWorker) recordAdapterFailure(ctx context.Context, rawTx any, job map[string]any, result map[string]any, adapterErr error) error {
+	tx, err := workerGormTx(rawTx)
+	if err != nil {
+		return err
+	}
 	opID, _ := job["operation_run_id"].(string)
 	tool, _ := job["tool_name"].(string)
 	stdout, stderr := gitExecutionOutputFromMap(result)
 	switch tool {
 	case "repo.sync", "repo.sync_remote":
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE repo_sync_runs
-			SET status='failed', stdout=$2, stderr=$3, error_message=$4, finished_at=now()
-			WHERE operation_run_id=$1`, opID, stdout, stderr, adapterErr.Error()); err != nil {
+		if err := w.recordRepoSyncRunFailedGorm(ctx, opID, stdout, stderr, adapterErr.Error()); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET last_sync_status='failed',
-				updated_at=now()
-			WHERE id=(SELECT target_remote_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID)
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `
-			UPDATE repo_sync_assets
-			SET last_sync_status='failed',
-				updated_at=now()
-			WHERE id=(SELECT repo_sync_asset_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID)
-		if err != nil {
-			return err
-		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed repo sync: %w", err)
 		}
 		return nil
 	case "git.refs.refresh":
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET last_sync_status='failed',
-				updated_at=now()
-			WHERE id=(SELECT git_remote_id FROM operation_runs WHERE id=$1 LIMIT 1)`, opID); err != nil {
+		if err := w.updateOperationRemoteSyncStatusGorm(ctx, opID, "failed", ""); err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed Git ref refresh: %w", err)
 		}
 		return nil
 	case "repo.tag", "repo.create_tag":
-		_, err := tx.ExecContext(ctx, `
-			UPDATE repo_tag_runs
-			SET status='failed', stdout=$2, stderr=$3, error_message=$4, finished_at=now()
-			WHERE operation_run_id=$1`, opID, stdout, stderr, adapterErr.Error())
-		return err
+		return w.recordRepoTagRunFailedGorm(ctx, opID, "", stdout, stderr, adapterErr.Error())
 	case "repo.tag.lookup":
 		safeError := sanitizeLookupError(adapterErr)
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE repo_tag_runs
-			SET status='failed', error_message=$2, finished_at=now()
-			WHERE id=(
-				SELECT NULLIF(input->>'repo_tag_run_id', '')::uuid
-				FROM operation_runs
-				WHERE id=$1 AND operation_type='repo.tag.lookup'
-				LIMIT 1
-			)`, opID, safeError); err != nil {
+		op, err := operationRunByID(ctx, w.store.Gorm, opID)
+		if err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if err := w.recordRepoTagRunFailedGorm(ctx, "", cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "repo_tag_run_id")), "", "", safeError); err != nil {
+			return err
+		}
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed repo tag lookup: %w", err)
 		}
 		return nil
 	case "github.actions.sync":
 		remoteID, _ := result["remote_id"].(string)
 		if remoteID == "" {
-			op, err := queryOne(ctx, tx, "SELECT git_remote_id FROM operation_runs WHERE id=$1", opID)
+			op, err := operationRunByID(ctx, w.store.Gorm, opID)
 			if err != nil {
 				return err
 			}
-			remoteID, _ = op["git_remote_id"].(string)
-			remoteID = strings.TrimSpace(remoteID)
+			remoteID = cleanOptionalID(op.GitRemoteID.String)
 			if remoteID == "" {
-				if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+				if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 					return fmt.Errorf("syncing canonical assets for failed GitHub Actions sync without remote: %w", err)
 				}
 				return nil
 			}
 		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM github_action_runs WHERE git_remote_id=$1", remoteID); err != nil {
+		if err := w.store.Gorm.WithContext(ctx).Where(&GormGitHubActionRun{GitRemoteID: remoteID}).Delete(&GormGitHubActionRun{}).Error; err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET last_sync_status='failed',
-				updated_at=now()
-			WHERE id=$1`, remoteID)
-		if err != nil {
+		if err := w.store.Gorm.WithContext(ctx).Model(&GormGitRemote{}).Where(&GormGitRemote{GormBase: GormBase{ID: remoteID}}).Updates(map[string]any{"last_sync_status": "failed"}).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed GitHub Actions sync: %w", err)
 		}
 		return nil
 	case "github.labels.sync":
 		remoteID, _ := result["remote_id"].(string)
 		if remoteID == "" {
-			op, err := queryOne(ctx, tx, "SELECT git_remote_id FROM operation_runs WHERE id=$1", opID)
+			op, err := operationRunByID(ctx, w.store.Gorm, opID)
 			if err != nil {
 				return err
 			}
-			remoteID, _ = op["git_remote_id"].(string)
-			remoteID = strings.TrimSpace(remoteID)
+			remoteID = cleanOptionalID(op.GitRemoteID.String)
 			if remoteID == "" {
-				if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+				if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 					return fmt.Errorf("syncing canonical assets for failed GitHub labels sync without remote: %w", err)
 				}
 				return nil
 			}
 		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM github_repository_labels WHERE git_remote_id=$1", remoteID); err != nil {
+		if err := w.store.Gorm.WithContext(ctx).Where(&GormGitHubRepositoryLabel{GitRemoteID: remoteID}).Delete(&GormGitHubRepositoryLabel{}).Error; err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET last_sync_status='failed',
-				updated_at=now()
-			WHERE id=$1`, remoteID)
-		if err != nil {
+		if err := w.store.Gorm.WithContext(ctx).Model(&GormGitRemote{}).Where(&GormGitRemote{GormBase: GormBase{ID: remoteID}}).Updates(map[string]any{"last_sync_status": "failed"}).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed GitHub labels sync: %w", err)
 		}
 		return nil
@@ -936,30 +1057,24 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		connectionID := argoConnectionIDFromResult(result)
 		delete(result, "_argo_sync_result")
 		if connectionID == "" {
-			_, err := tx.ExecContext(ctx, `
-				UPDATE argo_connections
-				SET last_sync_status='failed',
-					last_sync_error=$2,
-					updated_at=now()
-				WHERE id=(SELECT (input->>'argo_connection_id')::uuid FROM operation_runs WHERE id=$1 LIMIT 1)`, opID, adapterErr.Error())
+			op, err := operationRunByID(ctx, w.store.Gorm, opID)
 			if err != nil {
 				return err
 			}
-			if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+			connectionID = cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "argo_connection_id"))
+		}
+		if connectionID != "" {
+			if err := w.store.Gorm.WithContext(ctx).Model(&GormArgoConnection{}).Where(&GormArgoConnection{GormBase: GormBase{ID: connectionID}}).Updates(map[string]any{"last_sync_status": "failed", "last_sync_error": adapterErr.Error()}).Error; err != nil {
+				return err
+			}
+		}
+		if connectionID == "" {
+			if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 				return fmt.Errorf("syncing canonical assets for failed Argo app sync: %w", err)
 			}
 			return nil
 		}
-		_, err := tx.ExecContext(ctx, `
-			UPDATE argo_connections
-			SET last_sync_status='failed',
-				last_sync_error=$2,
-				updated_at=now()
-			WHERE id=$1`, connectionID, adapterErr.Error())
-		if err != nil {
-			return err
-		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed Argo app sync: %w", err)
 		}
 		return nil
@@ -969,19 +1084,17 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		if backend == "" {
 			backend = "disabled"
 		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'error', 'pod log audit worker failed', jsonb_build_object(
-				'error', $3,
-				'live_log_backend', $4,
-				'backend_state', $5,
-				'kubectl_command_invoked', COALESCE($6, false),
-				'kubernetes_api_call', COALESCE($7, false),
-				'log_body_included', false
-			))`, opID, job["id"], safeError, backend, cleanPreviewString(result["backend_state"]), boolOnlyFromAny(result["kubectl_command_invoked"]), boolOnlyFromAny(result["kubernetes_api_call"])); err != nil {
+		if err := w.recordOperationLogGorm(ctx, opID, job, "error", "pod log audit worker failed", map[string]any{
+			"error":                   safeError,
+			"live_log_backend":        backend,
+			"backend_state":           cleanPreviewString(result["backend_state"]),
+			"kubectl_command_invoked": boolOnlyFromAny(result["kubectl_command_invoked"]),
+			"kubernetes_api_call":     boolOnlyFromAny(result["kubernetes_api_call"]),
+			"log_body_included":       false,
+		}); err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed Argo pod log audit: %w", err)
 		}
 		return nil
@@ -991,77 +1104,65 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		if backend == "" {
 			backend = "disabled"
 		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'error', 'pod restart worker failed', jsonb_build_object(
-				'error', $3,
-				'restart_backend', $4,
-				'backend_state', $5,
-				'kubectl_command_invoked', COALESCE($6, false),
-				'kubernetes_api_call', COALESCE($7, false),
-				'rollout_restart_invoked', COALESCE($8, false),
-				'raw_response_included', false,
-				'stdout_included', false,
-				'stderr_included', false
-			))`, opID, job["id"], safeError, backend, cleanPreviewString(result["backend_state"]), boolOnlyFromAny(result["kubectl_command_invoked"]), boolOnlyFromAny(result["kubernetes_api_call"]), boolOnlyFromAny(result["rollout_restart_invoked"])); err != nil {
+		if err := w.recordOperationLogGorm(ctx, opID, job, "error", "pod restart worker failed", map[string]any{
+			"error":                   safeError,
+			"restart_backend":         backend,
+			"backend_state":           cleanPreviewString(result["backend_state"]),
+			"kubectl_command_invoked": boolOnlyFromAny(result["kubectl_command_invoked"]),
+			"kubernetes_api_call":     boolOnlyFromAny(result["kubernetes_api_call"]),
+			"rollout_restart_invoked": boolOnlyFromAny(result["rollout_restart_invoked"]),
+			"raw_response_included":   false,
+			"stdout_included":         false,
+			"stderr_included":         false,
+		}); err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed Argo pod restart: %w", err)
 		}
 		return nil
 	case "config.git_commit":
 		safeError := "config git workflow worker failed; details are withheld from operation logs"
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'error', 'config git workflow worker failed', jsonb_build_object(
-				'error', $3,
-				'git_write_performed', false,
-				'external_call_made', false,
-				'file_content_included', false,
-				'secret_included', false
-			))`, opID, job["id"], safeError); err != nil {
+		if err := w.recordOperationLogGorm(ctx, opID, job, "error", "config git workflow worker failed", map[string]any{
+			"error":                 safeError,
+			"git_write_performed":   false,
+			"external_call_made":    false,
+			"file_content_included": false,
+			"secret_included":       false,
+		}); err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed config Git workflow audit: %w", err)
 		}
 		return nil
 	case "project_version.validation_rerun":
 		safeError := "project version validation rerun worker failed; details are withheld from operation logs"
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'error', 'project version validation rerun worker failed', jsonb_build_object(
-				'error', $3,
-				'validation_source', 'local_synced_database_state',
-				'external_call_made', false,
-				'provider_api_called', false,
-				'git_fetch_performed', false,
-				'argocd_api_called', false,
-				'raw_provider_response_recorded', false,
-				'secret_included', false
-			))`, opID, job["id"], safeError); err != nil {
+		if err := w.recordOperationLogGorm(ctx, opID, job, "error", "project version validation rerun worker failed", map[string]any{
+			"error":                          safeError,
+			"validation_source":              "local_synced_database_state",
+			"external_call_made":             false,
+			"provider_api_called":            false,
+			"git_fetch_performed":            false,
+			"argocd_api_called":              false,
+			"raw_provider_response_recorded": false,
+			"secret_included":                false,
+		}); err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed project version validation rerun: %w", err)
 		}
 		return nil
 	case "ssh.exec", "ssh.verify":
 		stdout, stderr := gitExecutionOutputFromMap(result)
 		exitCode := nullableIntFromMap(result, "exit_code")
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE ssh_command_runs
-			SET status='failed',
-				exit_code=$2,
-				stdout=$3,
-				stderr=$4,
-				error_message=$5,
-				finished_at=now()
-			WHERE operation_run_id=$1`, opID, exitCode, stdout, stderr, adapterErr.Error()); err != nil {
+		if err := w.store.Gorm.WithContext(ctx).Model(&GormSSHCommandRun{}).
+			Where(&GormSSHCommandRun{OperationRunID: validNullString(opID)}).
+			Updates(map[string]any{"status": "failed", "exit_code": exitCode, "stdout": stdout, "stderr": stderr, "error_message": adapterErr.Error(), "finished_at": validNullTime(time.Now())}).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed SSH command: %w", err)
 		}
 		return nil
@@ -1073,28 +1174,19 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 		}
 		stepsValue := mapFromAny(result)["steps"]
 		if !hasTemplateSteps(stepsValue) {
-			run, runErr := queryOne(ctx, tx, "SELECT steps FROM project_template_runs WHERE operation_run_id=$1", opID)
+			var run GormProjectTemplateRun
+			runErr := w.store.Gorm.WithContext(ctx).Where(&GormProjectTemplateRun{OperationRunID: validNullString(opID)}).First(&run).Error
 			if runErr != nil {
 				return runErr
 			}
-			stepsValue = run["steps"]
+			stepsValue = mapSliceFromAny(run.Steps.Data)
 		}
-		steps, err := jsonParam(templateStepsWithStatus(stepsValue, "failed"))
-		if err != nil {
+		if err := w.store.Gorm.WithContext(ctx).Model(&GormProjectTemplateRun{}).
+			Where(&GormProjectTemplateRun{OperationRunID: validNullString(opID)}).
+			Updates(map[string]any{"status": "failed", "steps": JSONValue{Data: templateStepsWithStatus(stepsValue, "failed")}, "error_message": adapterErr.Error(), "finished_at": validNullTime(time.Now())}).Error; err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `
-			UPDATE project_template_runs
-			SET status='failed',
-				steps=$2::jsonb,
-				error_message=$3,
-				finished_at=now(),
-				updated_at=now()
-			WHERE operation_run_id=$1`, opID, steps, adapterErr.Error())
-		if err != nil {
-			return err
-		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed project template creation: %w", err)
 		}
 		return nil
@@ -1103,43 +1195,42 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 			delete(result, "_template_retry_recorded")
 			return nil
 		}
-		_, err := tx.ExecContext(ctx, `
-			UPDATE project_template_runs ptr
-			SET status='failed',
-				error_message=$2,
-				finished_at=now(),
-				updated_at=now()
-			FROM operation_runs op
-			WHERE op.id=$1
-				AND ptr.id=NULLIF(op.input->>'project_template_run_id', '')::uuid`, opID, adapterErr.Error())
+		op, err := operationRunByID(ctx, w.store.Gorm, opID)
 		if err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		runID := cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "project_template_run_id"))
+		if runID != "" {
+			if err := w.store.Gorm.WithContext(ctx).Model(&GormProjectTemplateRun{}).
+				Where(&GormProjectTemplateRun{GormBase: GormBase{ID: runID}}).
+				Updates(map[string]any{"status": "failed", "error_message": adapterErr.Error(), "finished_at": validNullTime(time.Now())}).Error; err != nil {
+				return err
+			}
+		}
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed project template provision retry: %w", err)
 		}
 		return nil
 	case "agent.execute":
-		_, err := tx.ExecContext(ctx, `
-			UPDATE agent_tool_calls
-			SET status='failed',
-				error_message=$2,
-				finished_at=now(),
-				updated_at=now()
-			WHERE operation_run_id=$1
-				AND status IN ('queued', 'planned', 'running')`, opID, adapterErr.Error())
+		if err := w.store.Gorm.WithContext(ctx).Model(&GormAgentToolCall{}).
+			Where(&GormAgentToolCall{OperationRunID: validNullString(opID)}).
+			Where("status IN ?", []string{"queued", "planned", "running"}).
+			Updates(map[string]any{"status": "failed", "error_message": adapterErr.Error(), "finished_at": validNullTime(time.Now())}).Error; err != nil {
+			return err
+		}
+		op, err := operationRunByID(ctx, w.store.Gorm, opID)
 		if err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `
-			UPDATE agent_tasks
-			SET status='failed',
-				updated_at=now()
-			WHERE id=(SELECT NULLIF(input->>'agent_task_id', '')::uuid FROM operation_runs WHERE id=$1)
-				AND status IN ('queued', 'running')`, opID); err != nil {
-			return err
+		if taskID := cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "agent_task_id")); taskID != "" {
+			if err := w.store.Gorm.WithContext(ctx).Model(&GormAgentTask{}).
+				Where(&GormAgentTask{GormBase: GormBase{ID: taskID}}).
+				Where("status IN ?", []string{"queued", "running"}).
+				Updates(map[string]any{"status": "failed"}).Error; err != nil {
+				return err
+			}
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for failed agent execution: %w", err)
 		}
 		return nil
@@ -1147,103 +1238,62 @@ func (w *ControlWorker) recordAdapterFailure(ctx context.Context, tx *sqlx.Tx, j
 	return nil
 }
 
-func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, job map[string]any, result map[string]any) error {
+func workerGormTx(rawTx any) (*gorm.DB, error) {
+	if tx, ok := rawTx.(*gorm.DB); ok && tx != nil {
+		return tx, nil
+	}
+	return nil, fmt.Errorf("gorm transaction is required")
+}
+
+func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, rawTx any, job map[string]any, result map[string]any) error {
+	tx, err := workerGormTx(rawTx)
+	if err != nil {
+		return err
+	}
 	opID, _ := job["operation_run_id"].(string)
 	tool, _ := job["tool_name"].(string)
 	stdout, stderr := gitExecutionOutputFromMap(result)
 	afterSHA, _ := result["after_sha"].(string)
 	switch tool {
 	case "repo.sync", "repo.sync_remote":
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE repo_sync_runs
-			SET status='completed',
-				stdout=$2,
-				stderr=$3,
-				after_sha=$4,
-				finished_at=now()
-			WHERE operation_run_id=$1`, opID, stdout, stderr, afterSHA); err != nil {
+		if err := w.recordRepoSyncRunCompletedGorm(ctx, opID, stdout, stderr, afterSHA); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET latest_sha=COALESCE(NULLIF($2, ''), latest_sha),
-				last_sync_status='completed',
-				updated_at=now()
-			WHERE id=(SELECT target_remote_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID, afterSHA)
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `
-			UPDATE repo_sync_assets
-			SET last_sync_status='completed',
-				last_synced_at=now(),
-				updated_at=now()
-			WHERE id=(SELECT repo_sync_asset_id FROM repo_sync_runs WHERE operation_run_id=$1 LIMIT 1)`, opID)
-		if err != nil {
-			return err
-		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed repo sync: %w", err)
 		}
 		return nil
 	case "git.refs.refresh":
-		_, err := tx.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET latest_sha=COALESCE(NULLIF($2, ''), latest_sha),
-				last_sync_status='completed',
-				updated_at=now()
-			WHERE id=(SELECT git_remote_id FROM operation_runs WHERE id=$1 LIMIT 1)`, opID, afterSHA)
-		if err != nil {
+		if err := w.updateOperationRemoteSyncStatusGorm(ctx, opID, "completed", afterSHA); err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed Git ref refresh: %w", err)
 		}
 		return nil
 	case "repo.tag", "repo.create_tag":
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE repo_tag_runs
-			SET status='completed',
-				stdout=$2,
-				stderr=$3,
-				target_sha=COALESCE(NULLIF(target_sha, ''), $4),
-				finished_at=now()
-			WHERE operation_run_id=$1`, opID, stdout, stderr, afterSHA); err != nil {
+		if err := w.recordRepoTagRunCompletedGorm(ctx, opID, stdout, stderr, afterSHA); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET updated_at=now()
-			WHERE id=(SELECT target_remote_id FROM repo_tag_runs WHERE operation_run_id=$1 LIMIT 1)`, opID)
-		if err != nil {
+		if err := w.enqueueRepoTagPostSuccessOperationsGorm(ctx, opID); err != nil {
 			return err
 		}
-		if err := w.enqueueRepoTagPostSuccessOperations(ctx, tx, opID); err != nil {
-			return err
-		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed repo tag: %w", err)
 		}
 		return nil
 	case "repo.tag.lookup":
 		afterSHA, _ := result["matched_sha"].(string)
 		found := boolOnlyFromAny(result["remote_tag_found"])
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE repo_tag_runs
-			SET status=CASE WHEN $2 THEN 'completed' ELSE 'failed' END,
-				target_sha=CASE WHEN $2 AND NULLIF($3, '') IS NOT NULL THEN $3 ELSE target_sha END,
-				error_message=CASE WHEN $2 THEN '' ELSE 'remote tag not found' END,
-				finished_at=now()
-			WHERE id=(
-				SELECT NULLIF(input->>'repo_tag_run_id', '')::uuid
-				FROM operation_runs
-				WHERE id=$1 AND operation_type='repo.tag.lookup'
-				LIMIT 1
-			)`, opID, found, afterSHA); err != nil {
+		op, err := operationRunByID(ctx, w.store.Gorm, opID)
+		if err != nil {
+			return err
+		}
+		if err := w.recordRepoTagLookupCompletedGorm(ctx, cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "repo_tag_run_id")), found, afterSHA); err != nil {
 			return err
 		}
 		result["repo_tag_run_update_performed"] = true
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed repo tag lookup: %w", err)
 		}
 		return nil
@@ -1255,15 +1305,12 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 		if remoteID == "" {
 			return nil
 		}
-		_, err := tx.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET last_sync_status='completed',
-				updated_at=now()
-			WHERE id=$1`, remoteID)
-		if err != nil {
+		if err := tx.WithContext(ctx).Model(&GormGitRemote{}).
+			Where(&GormGitRemote{GormBase: GormBase{ID: remoteID}}).
+			Updates(map[string]any{"last_sync_status": "completed"}).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for GitHub Actions sync: %w", err)
 		}
 		return nil
@@ -1275,22 +1322,19 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 		if remoteID == "" {
 			return nil
 		}
-		_, err := tx.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET last_sync_status='completed',
-				updated_at=now()
-			WHERE id=$1`, remoteID)
-		if err != nil {
+		if err := tx.WithContext(ctx).Model(&GormGitRemote{}).
+			Where(&GormGitRemote{GormBase: GormBase{ID: remoteID}}).
+			Updates(map[string]any{"last_sync_status": "completed"}).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for GitHub labels sync: %w", err)
 		}
 		return nil
 	case "argo.apps.sync":
 		return w.recordArgoSyncAdapterRun(ctx, tx, result)
 	case "argo.pod_logs":
-		data, err := jsonParam(map[string]any{
+		fields := map[string]any{
 			"deployment_target_id":          result["deployment_target_id"],
 			"pod_name":                      result["pod_name"],
 			"container_name":                result["container_name"],
@@ -1308,21 +1352,16 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 			"log_stream_opened":             result["log_stream_opened"],
 			"log_body_included":             false,
 			"raw_response_included":         false,
-		})
-		if err != nil {
+		}
+		if err := w.recordOperationLogGorm(ctx, opID, job, "info", "pod log audit completed with sanitized metadata", fields); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'info', 'pod log audit completed with sanitized metadata', $3::jsonb)`, opID, job["id"], data); err != nil {
-			return err
-		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed Argo pod log audit: %w", err)
 		}
 		return nil
 	case "argo.pod_restart":
-		data, err := jsonParam(map[string]any{
+		fields := map[string]any{
 			"deployment_target_id":    result["deployment_target_id"],
 			"deployment_name":         result["deployment_name"],
 			"namespace":               result["namespace"],
@@ -1340,33 +1379,25 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 			"raw_response_included":   false,
 			"stdout_included":         false,
 			"stderr_included":         false,
-		})
-		if err != nil {
+		}
+		if err := w.recordOperationLogGorm(ctx, opID, job, "info", "pod restart completed with sanitized metadata", fields); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'info', 'pod restart completed with sanitized metadata', $3::jsonb)`, opID, job["id"], data); err != nil {
-			return err
-		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed Argo pod restart: %w", err)
 		}
 		return nil
 	case "config.git_commit":
 		if sha := strings.TrimSpace(fmt.Sprint(result["config_commit_sha_internal"])); sha != "" && sha != "<nil>" {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE git_remotes
-				SET latest_sha=$1,
-					last_sync_status='synced',
-					updated_at=now()
-				WHERE id=$2 AND project_git_repository_id=$3`, sha, result["config_remote_id"], result["project_git_repository_id"]); err != nil {
+			if err := tx.WithContext(ctx).Model(&GormGitRemote{}).
+				Where(&GormGitRemote{GormBase: GormBase{ID: cleanOptionalID(fmt.Sprint(result["config_remote_id"]))}, ProjectGitRepositoryID: cleanOptionalID(fmt.Sprint(result["project_git_repository_id"]))}).
+				Updates(map[string]any{"latest_sha": sha, "last_sync_status": "synced"}).Error; err != nil {
 				delete(result, "config_commit_sha_internal")
 				return fmt.Errorf("updating config remote synced state: %w", err)
 			}
 		}
 		delete(result, "config_commit_sha_internal")
-		data, err := jsonParam(map[string]any{
+		fields := map[string]any{
 			"result_scope":                   result["result_scope"],
 			"project_git_repository_id":      result["project_git_repository_id"],
 			"config_remote_id":               result["config_remote_id"],
@@ -1389,25 +1420,20 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 			"live_commit_validation":         result["live_commit_validation"],
 			"raw_git_output_recorded":        false,
 			"raw_provider_response_recorded": false,
-		})
-		if err != nil {
-			return err
 		}
 		message := "config git workflow completed with sanitized metadata"
 		if !boolOnlyFromAny(result["git_write_performed"]) {
 			message = "config git workflow audit completed without Git mutation"
 		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'info', $3, $4::jsonb)`, opID, job["id"], message, data); err != nil {
+		if err := w.recordOperationLogGorm(ctx, opID, job, "info", message, fields); err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed config Git workflow audit: %w", err)
 		}
 		return nil
 	case "project_version.validation_rerun":
-		data, err := jsonParam(map[string]any{
+		fields := map[string]any{
 			"project_version_id":             result["project_version_id"],
 			"recording_state":                result["recording_state"],
 			"validation_snapshot_written":    result["validation_snapshot_written"],
@@ -1419,33 +1445,23 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 			"argocd_api_called":              false,
 			"raw_provider_response_recorded": false,
 			"secret_included":                false,
-		})
-		if err != nil {
+		}
+		if err := w.recordOperationLogGorm(ctx, opID, job, "info", "project version validation rerun completed from local synced state", fields); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, worker_job_id, level, message, fields)
-			VALUES ($1, $2, 'info', 'project version validation rerun completed from local synced state', $3::jsonb)`, opID, job["id"], data); err != nil {
-			return err
-		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed project version validation rerun: %w", err)
 		}
 		return nil
 	case "ssh.exec", "ssh.verify":
 		stdout, stderr := gitExecutionOutputFromMap(result)
 		exitCode := nullableIntFromMap(result, "exit_code")
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE ssh_command_runs
-			SET status='completed',
-				exit_code=$2,
-				stdout=$3,
-				stderr=$4,
-				finished_at=now()
-			WHERE operation_run_id=$1`, opID, exitCode, stdout, stderr); err != nil {
+		if err := w.store.Gorm.WithContext(ctx).Model(&GormSSHCommandRun{}).
+			Where(&GormSSHCommandRun{OperationRunID: validNullString(opID)}).
+			Updates(map[string]any{"status": "completed", "exit_code": exitCode, "stdout": stdout, "stderr": stderr, "finished_at": validNullTime(time.Now())}).Error; err != nil {
 			return err
 		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed SSH command: %w", err)
 		}
 		return nil
@@ -1454,79 +1470,51 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 			delete(result, "_template_run_recorded")
 			return nil
 		}
-		project, repo, remotes, syncAsset, files, steps, err := createProjectFromTemplateTx(ctx, tx, opID)
-		if err != nil {
-			return err
-		}
-		result["project_id"] = project["id"]
-		result["project_slug"] = project["slug"]
-		result["project_name"] = project["name"]
-		if repo != nil {
-			result["repository_id"] = repo["id"]
-			result["repository_key"] = repo["repo_key"]
-		}
-		if len(remotes) > 0 {
-			result["remote_ids"] = mapRemoteIDs(remotes)
-			result["remotes"] = remotes
-		}
-		if syncAsset != nil {
-			result["repo_sync_asset_id"] = syncAsset["id"]
-		}
-		if len(files) > 0 {
-			result["template_file_ids"] = mapTemplateFileIDs(files)
-			result["template_files"] = templateFileSummaries(files)
-		}
-		result["steps"] = steps
-		resultJSON, err := jsonParam(result)
-		if err != nil {
-			return err
-		}
-		stepsJSON, err := jsonParam(result["steps"])
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `
-			UPDATE project_template_runs
-			SET status='completed',
-				project_id=NULLIF($2,'')::uuid,
-				steps=$3::jsonb,
-				result=$4::jsonb,
-				finished_at=now(),
-				updated_at=now()
-			WHERE operation_run_id=$1`, opID, stringFromMap(result, "project_id"), stepsJSON, resultJSON)
-		return err
+		return fmt.Errorf("project template operation was not recorded by GORM execution path")
 	case "project.template_provision_retry":
 		if result["_template_retry_recorded"] == true {
 			delete(result, "_template_retry_recorded")
 		}
 		return nil
 	case "agent.execute":
-		output, err := jsonParam(map[string]any{
+		output := map[string]any{
 			"message": "agent execution audit completed; first-version mutation is disabled",
 			"result":  result,
-		})
+		}
+		if err := w.store.Gorm.WithContext(ctx).Transaction(func(gormTx *gorm.DB) error {
+			var calls []GormAgentToolCall
+			if err := gormTx.Where(&GormAgentToolCall{OperationRunID: validNullString(opID)}).Where(gormField("status", []string{"queued", "planned", "running"})).Find(&calls).Error; err != nil {
+				return err
+			}
+			for i := range calls {
+				calls[i].Status = "completed"
+				merged := mapFromAny(calls[i].Output.Data)
+				for key, value := range output {
+					merged[key] = value
+				}
+				calls[i].Output = JSONValue{Data: merged}
+				calls[i].FinishedAt = validNullTime(time.Now())
+				if err := gormTx.Save(&calls[i]).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		op, err := operationRunByID(ctx, w.store.Gorm, opID)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE agent_tool_calls
-			SET status='completed',
-				output=COALESCE(NULLIF(output, '{}'::jsonb), '{}'::jsonb) || $2::jsonb,
-				finished_at=now(),
-				updated_at=now()
-			WHERE operation_run_id=$1
-				AND status IN ('queued', 'planned', 'running')`, opID, output); err != nil {
-			return err
+		if taskID := cleanOptionalID(stringFromMap(mapFromAny(op.Input.Data), "agent_task_id")); taskID != "" {
+			if err := w.store.Gorm.WithContext(ctx).Model(&GormAgentTask{}).
+				Where(&GormAgentTask{GormBase: GormBase{ID: taskID}}).
+				Where("status IN ?", []string{"queued", "running"}).
+				Updates(map[string]any{"status": "executed"}).Error; err != nil {
+				return err
+			}
 		}
-		if _, err = tx.ExecContext(ctx, `
-			UPDATE agent_tasks
-			SET status='executed',
-				updated_at=now()
-			WHERE id=(SELECT NULLIF(input->>'agent_task_id', '')::uuid FROM operation_runs WHERE id=$1)
-				AND status IN ('queued', 'running')`, opID); err != nil {
-			return err
-		}
-		if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 			return fmt.Errorf("syncing canonical assets for completed agent execution: %w", err)
 		}
 		return nil
@@ -1536,7 +1524,7 @@ func (w *ControlWorker) recordAdapterSuccess(ctx context.Context, tx *sqlx.Tx, j
 }
 
 func (w *ControlWorker) executeArgoPodLogAudit(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
-	op, err := queryOne(ctx, w.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	op, err := operationRunMapByID(ctx, w.store.Gorm, opID)
 	if err != nil {
 		return result, fmt.Errorf("loading pod log operation: %w", err)
 	}
@@ -1558,7 +1546,7 @@ func (w *ControlWorker) executeArgoPodLogAudit(ctx context.Context, opID string,
 	result["container_name"] = cleanOptionalText(fmt.Sprint(input["container_name"]))
 	result["tail_lines"] = intFromAny(input["tail_lines"], 200)
 	result["since_seconds"] = intFromAny(input["since_seconds"], 0)
-	kubernetesEnv, err := loadKubernetesEnvironmentForPodLogs(ctx, w.store.DB, result)
+	kubernetesEnv, err := loadKubernetesEnvironmentForPodLogs(ctx, w.store.Gorm, result)
 	if err != nil {
 		if w.cfg.KubernetesPodLogsEnabled {
 			return result, err
@@ -1643,7 +1631,7 @@ func copySafeArgoPodLogLiveResult(result, liveResult map[string]any) {
 }
 
 func (w *ControlWorker) executeArgoPodRestart(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
-	op, err := queryOne(ctx, w.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	op, err := operationRunMapByID(ctx, w.store.Gorm, opID)
 	if err != nil {
 		return result, fmt.Errorf("loading pod restart operation: %w", err)
 	}
@@ -1683,10 +1671,10 @@ func (w *ControlWorker) executeArgoPodRestart(ctx context.Context, opID string, 
 		result["secret_included"] = false
 		return result, err
 	}
-	if err := ensureNoActiveKubernetesPodRestart(ctx, w.store.DB, opID, result); err != nil {
+	if err := ensureNoActiveKubernetesPodRestart(ctx, w.store.Gorm, opID, result); err != nil {
 		return result, err
 	}
-	kubernetesEnv, err := loadKubernetesEnvironmentForPodRestart(ctx, w.store.DB, result)
+	kubernetesEnv, err := loadKubernetesEnvironmentForPodRestart(ctx, w.store.Gorm, result)
 	if err != nil {
 		return result, err
 	}
@@ -1715,7 +1703,53 @@ func (w *ControlWorker) executeArgoPodRestart(ctx context.Context, opID string, 
 	return result, err
 }
 
-func ensureNoActiveKubernetesPodRestart(ctx context.Context, db sqlx.ExtContext, opID string, opResult map[string]any) error {
+func operationRunMapByID(ctx context.Context, db *gorm.DB, opID string) (map[string]any, error) {
+	if db == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
+	var op GormOperationRun
+	if err := db.WithContext(ctx).First(&op, &GormOperationRun{GormBase: GormBase{ID: opID}}).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return map[string]any{
+		"id":             op.ID,
+		"project_id":     nullableStringValue(op.ProjectID),
+		"git_remote_id":  nullableStringValue(op.GitRemoteID),
+		"operation_type": op.OperationType,
+		"status":         op.Status,
+		"title":          op.Title,
+		"input":          op.Input,
+		"result":         op.Result,
+		"error":          op.Error,
+		"started_at":     nullableTimeAny(op.StartedAt),
+		"finished_at":    nullableTimeAny(op.FinishedAt),
+		"created_at":     op.CreatedAt,
+		"updated_at":     op.UpdatedAt,
+	}, nil
+}
+
+func agentToolCallStatusMapsByOperation(ctx context.Context, db *gorm.DB, opID string) ([]map[string]any, error) {
+	if db == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
+	var calls []GormAgentToolCall
+	if err := db.WithContext(ctx).
+		Where(&GormAgentToolCall{OperationRunID: validNullString(opID)}).
+		Order("created_at ASC").
+		Find(&calls).Error; err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(calls))
+	for _, call := range calls {
+		items = append(items, map[string]any{"tool_name": call.ToolName, "status": call.Status})
+	}
+	return items, nil
+}
+
+func ensureNoActiveKubernetesPodRestart(ctx context.Context, db *gorm.DB, opID string, opResult map[string]any) error {
 	projectID := cleanOptionalID(fmt.Sprint(opResult["project_id"]))
 	environment := cleanOptionalText(fmt.Sprint(opResult["environment"]))
 	clusterName := cleanOptionalText(fmt.Sprint(opResult["cluster_name"]))
@@ -1724,31 +1758,26 @@ func ensureNoActiveKubernetesPodRestart(ctx context.Context, db sqlx.ExtContext,
 	if projectID == "" || environment == "" || clusterName == "" || namespace == "" || deploymentName == "" {
 		return fmt.Errorf("pod restart operation is missing concurrency guard metadata")
 	}
-	row, err := queryOne(ctx, db, `
-		SELECT id
-		FROM operation_runs
-		WHERE id<>$1
-			AND project_id=$2
-			AND operation_type='argo.pod_restart'
-			AND status IN ('queued', 'running')
-			AND input->>'environment'=$3
-			AND input->>'cluster_name'=$4
-			AND input->>'namespace'=$5
-			AND input->>'deployment_name'=$6
-		LIMIT 1`, opID, projectID, environment, clusterName, namespace, deploymentName)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
+	var runs []GormOperationRun
+	if err := db.WithContext(ctx).Where(&GormOperationRun{ProjectID: validNullString(projectID), OperationType: "argo.pod_restart"}).Find(&runs).Error; err != nil {
 		return fmt.Errorf("checking active pod restart operation: %w", err)
 	}
-	if cleanOptionalID(fmt.Sprint(row["id"])) != "" {
-		return fmt.Errorf("another pod restart operation is already active for this deployment")
+	for _, run := range runs {
+		if run.ID == opID || (run.Status != "queued" && run.Status != "running") {
+			continue
+		}
+		input := mapFromAny(run.Input.Data)
+		if cleanOptionalText(fmt.Sprint(input["environment"])) == environment &&
+			cleanOptionalText(fmt.Sprint(input["cluster_name"])) == clusterName &&
+			cleanOptionalText(fmt.Sprint(input["namespace"])) == namespace &&
+			cleanOptionalText(fmt.Sprint(input["deployment_name"])) == deploymentName {
+			return fmt.Errorf("another pod restart operation is already active for this deployment")
+		}
 	}
 	return nil
 }
 
-func loadKubernetesEnvironmentForPodLogs(ctx context.Context, db sqlx.ExtContext, opResult map[string]any) (map[string]any, error) {
+func loadKubernetesEnvironmentForPodLogs(ctx context.Context, db *gorm.DB, opResult map[string]any) (map[string]any, error) {
 	projectID := cleanOptionalID(fmt.Sprint(opResult["project_id"]))
 	environment := cleanOptionalText(fmt.Sprint(opResult["environment"]))
 	clusterName := cleanOptionalText(fmt.Sprint(opResult["cluster_name"]))
@@ -1756,33 +1785,18 @@ func loadKubernetesEnvironmentForPodLogs(ctx context.Context, db sqlx.ExtContext
 	if projectID == "" || environment == "" || clusterName == "" || namespace == "" {
 		return nil, fmt.Errorf("pod log operation is missing Kubernetes environment binding metadata")
 	}
-	rows, err := db.QueryxContext(ctx, `
-		SELECT id, name, kubeconfig_secret_ref, service_account, token_subject_review_status, rbac_read_logs_status, status
-		FROM kubernetes_environments
-		WHERE project_id=$1 AND environment=$2 AND cluster_name=$3 AND namespace=$4
-		LIMIT 1`, projectID, environment, clusterName, namespace)
-	if err != nil {
-		return nil, fmt.Errorf("loading Kubernetes environment for pod logs: %w", err)
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("loading Kubernetes environment for pod logs: %w", err)
-		}
-		return nil, fmt.Errorf("loading Kubernetes environment for pod logs: %w", ErrNotFound)
-	}
-	var id, name, kubeconfigRef, serviceAccount, tokenSubjectReviewStatus, rbacReadLogsStatus, status string
-	if err := rows.Scan(&id, &name, &kubeconfigRef, &serviceAccount, &tokenSubjectReviewStatus, &rbacReadLogsStatus, &status); err != nil {
+	var kube GormKubernetesEnvironment
+	if err := db.WithContext(ctx).Where(&GormKubernetesEnvironment{ProjectID: projectID, Environment: environment, ClusterName: clusterName, Namespace: namespace}).First(&kube).Error; err != nil {
 		return nil, fmt.Errorf("loading Kubernetes environment for pod logs: %w", err)
 	}
 	env := map[string]any{
-		"id":                          id,
-		"name":                        name,
-		"kubeconfig_secret_ref":       kubeconfigRef,
-		"service_account":             serviceAccount,
-		"token_subject_review_status": tokenSubjectReviewStatus,
-		"rbac_read_logs_status":       rbacReadLogsStatus,
-		"status":                      status,
+		"id":                          kube.ID,
+		"name":                        kube.Name,
+		"kubeconfig_secret_ref":       kube.KubeconfigSecretRef,
+		"service_account":             kube.ServiceAccount,
+		"token_subject_review_status": kube.TokenSubjectReviewStatus,
+		"rbac_read_logs_status":       kube.RBACReadLogsStatus,
+		"status":                      kube.Status,
 	}
 	if cleanPreviewString(env["status"]) != "ready" {
 		return nil, fmt.Errorf("Kubernetes environment is not ready")
@@ -1796,7 +1810,7 @@ func loadKubernetesEnvironmentForPodLogs(ctx context.Context, db sqlx.ExtContext
 	return env, nil
 }
 
-func loadKubernetesEnvironmentForPodRestart(ctx context.Context, db sqlx.ExtContext, opResult map[string]any) (map[string]any, error) {
+func loadKubernetesEnvironmentForPodRestart(ctx context.Context, db *gorm.DB, opResult map[string]any) (map[string]any, error) {
 	projectID := cleanOptionalID(fmt.Sprint(opResult["project_id"]))
 	environment := cleanOptionalText(fmt.Sprint(opResult["environment"]))
 	clusterName := cleanOptionalText(fmt.Sprint(opResult["cluster_name"]))
@@ -1804,33 +1818,18 @@ func loadKubernetesEnvironmentForPodRestart(ctx context.Context, db sqlx.ExtCont
 	if projectID == "" || environment == "" || clusterName == "" || namespace == "" {
 		return nil, fmt.Errorf("pod restart operation is missing Kubernetes environment binding metadata")
 	}
-	rows, err := db.QueryxContext(ctx, `
-		SELECT id, name, kubeconfig_secret_ref, service_account, token_subject_review_status, rbac_restart_pods_status, status
-		FROM kubernetes_environments
-		WHERE project_id=$1 AND environment=$2 AND cluster_name=$3 AND namespace=$4
-		LIMIT 1`, projectID, environment, clusterName, namespace)
-	if err != nil {
-		return nil, fmt.Errorf("loading Kubernetes environment for pod restart: %w", err)
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("loading Kubernetes environment for pod restart: %w", err)
-		}
-		return nil, fmt.Errorf("loading Kubernetes environment for pod restart: %w", ErrNotFound)
-	}
-	var id, name, kubeconfigRef, serviceAccount, tokenSubjectReviewStatus, rbacRestartPodsStatus, status string
-	if err := rows.Scan(&id, &name, &kubeconfigRef, &serviceAccount, &tokenSubjectReviewStatus, &rbacRestartPodsStatus, &status); err != nil {
+	var kube GormKubernetesEnvironment
+	if err := db.WithContext(ctx).Where(&GormKubernetesEnvironment{ProjectID: projectID, Environment: environment, ClusterName: clusterName, Namespace: namespace}).First(&kube).Error; err != nil {
 		return nil, fmt.Errorf("loading Kubernetes environment for pod restart: %w", err)
 	}
 	env := map[string]any{
-		"id":                          id,
-		"name":                        name,
-		"kubeconfig_secret_ref":       kubeconfigRef,
-		"service_account":             serviceAccount,
-		"token_subject_review_status": tokenSubjectReviewStatus,
-		"rbac_restart_pods_status":    rbacRestartPodsStatus,
-		"status":                      status,
+		"id":                          kube.ID,
+		"name":                        kube.Name,
+		"kubeconfig_secret_ref":       kube.KubeconfigSecretRef,
+		"service_account":             kube.ServiceAccount,
+		"token_subject_review_status": kube.TokenSubjectReviewStatus,
+		"rbac_restart_pods_status":    kube.PodRestartStatus,
+		"status":                      kube.Status,
 	}
 	if cleanPreviewString(env["status"]) != "ready" {
 		return nil, fmt.Errorf("Kubernetes environment is not ready")
@@ -1845,9 +1844,8 @@ func loadKubernetesEnvironmentForPodRestart(ctx context.Context, db sqlx.ExtCont
 }
 
 func (w *ControlWorker) executeConfigGitWorkflowAudit(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
-	// Kept as the audit-only compatibility wrapper; executeConfigGitWorkflow is
-	// the adapter entrypoint and falls back to the same sanitized result shape.
-	op, err := queryOne(ctx, w.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	// Audit-only entrypoint for the sanitized config Git workflow result shape.
+	op, err := operationRunMapByID(ctx, w.store.Gorm, opID)
 	if err != nil {
 		return result, fmt.Errorf("loading config git workflow operation: %w", err)
 	}
@@ -1887,7 +1885,7 @@ func (w *ControlWorker) executeConfigGitWorkflowAudit(ctx context.Context, opID 
 }
 
 func (w *ControlWorker) executeConfigGitWorkflow(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
-	op, err := queryOne(ctx, w.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	op, err := operationRunMapByID(ctx, w.store.Gorm, opID)
 	if err != nil {
 		return result, fmt.Errorf("loading config git workflow operation: %w", err)
 	}
@@ -1904,7 +1902,7 @@ func (w *ControlWorker) executeConfigGitWorkflow(ctx context.Context, opID strin
 	}
 	executor := NewGitExecutor("")
 	executor.LocalBareBaseDirs = w.cfg.LocalBareBaseDirs
-	execution, err := executor.CommitConfigScaffold(ctx, w.store.DB, repoID, remoteID)
+	execution, err := executor.CommitConfigScaffold(ctx, w.store.Gorm, repoID, remoteID)
 	if err != nil {
 		return result, err
 	}
@@ -1984,12 +1982,12 @@ func (w *ControlWorker) executeConfigGitWorkflowAuditFromInput(input map[string]
 }
 
 func (w *ControlWorker) executeProjectVersionValidationRerun(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
-	op, err := queryOne(ctx, w.store.DB, `
-		SELECT input
-		FROM operation_runs
-		WHERE id=$1 AND operation_type='project_version.validation_rerun'`, opID)
+	op, err := operationRunMapByID(ctx, w.store.Gorm, opID)
 	if err != nil {
 		return result, fmt.Errorf("loading project version validation rerun operation: %w", err)
+	}
+	if cleanOptionalText(fmt.Sprint(op["operation_type"])) != "project_version.validation_rerun" {
+		return result, ErrNotFound
 	}
 	input := mapFromAny(op["input"])
 	versionID := cleanOptionalID(stringFromMap(input, "project_version_id"))
@@ -2023,7 +2021,7 @@ func (w *ControlWorker) executeProjectVersionValidationRerun(ctx context.Context
 }
 
 func (w *ControlWorker) executeAgentTaskAudit(ctx context.Context, opID string, result map[string]any) (map[string]any, error) {
-	op, err := queryOne(ctx, w.store.DB, "SELECT * FROM operation_runs WHERE id=$1", opID)
+	op, err := operationRunMapByID(ctx, w.store.Gorm, opID)
 	if err != nil {
 		return result, fmt.Errorf("loading agent operation: %w", err)
 	}
@@ -2032,11 +2030,7 @@ func (w *ControlWorker) executeAgentTaskAudit(ctx context.Context, opID string, 
 	if taskID == "" || taskID == "<nil>" {
 		return result, fmt.Errorf("agent operation has no task id")
 	}
-	calls, err := queryMaps(ctx, w.store.DB, `
-		SELECT tool_name, status
-		FROM agent_tool_calls
-		WHERE operation_run_id=$1
-		ORDER BY created_at`, opID)
+	calls, err := agentToolCallStatusMapsByOperation(ctx, w.store.Gorm, opID)
 	if err != nil {
 		return result, fmt.Errorf("loading agent tool call audit: %w", err)
 	}
@@ -2049,69 +2043,75 @@ func (w *ControlWorker) executeAgentTaskAudit(ctx context.Context, opID string, 
 }
 
 func (w *ControlWorker) prepareProjectTemplateRun(ctx context.Context, opID string) (map[string]any, error) {
-	run, err := queryOne(ctx, w.store.DB, `
-		SELECT ptr.*, pt.slug AS template_slug, pt.name AS template_name
-		FROM project_template_runs ptr
-		LEFT JOIN project_templates pt ON pt.id=ptr.project_template_id
-		WHERE ptr.operation_run_id=$1`, opID)
-	if err != nil {
+	var run GormProjectTemplateRun
+	if err := w.store.Gorm.WithContext(ctx).Where(&GormProjectTemplateRun{OperationRunID: validNullString(opID)}).First(&run).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
-	projectSlug := strings.TrimSpace(fmt.Sprint(run["project_slug"]))
-	projectName := strings.TrimSpace(fmt.Sprint(run["project_name"]))
+	templateSlug := ""
+	templateName := ""
+	if run.ProjectTemplateID.Valid {
+		var template GormProjectTemplate
+		if err := w.store.Gorm.WithContext(ctx).First(&template, &GormProjectTemplate{GormBase: GormBase{ID: run.ProjectTemplateID.String}}).Error; err == nil {
+			templateSlug = template.Slug
+			templateName = template.Name
+		} else if !errorsIsRecordNotFound(err) {
+			return nil, err
+		}
+	}
+	projectSlug := strings.TrimSpace(run.ProjectSlug)
+	projectName := strings.TrimSpace(run.ProjectName)
 	if projectName == "" || projectSlug == "" {
 		return nil, fmt.Errorf("template run is missing project name or slug")
 	}
 	return map[string]any{
 		"project_slug":  projectSlug,
 		"project_name":  projectName,
-		"template_id":   run["project_template_id"],
-		"template_slug": run["template_slug"],
-		"steps":         run["steps"],
+		"template_id":   nullableStringValue(run.ProjectTemplateID),
+		"template_slug": templateSlug,
+		"template_name": templateName,
+		"steps":         run.Steps,
 	}, nil
 }
 
 func (w *ControlWorker) executeProjectTemplateRun(ctx context.Context, opID string) (map[string]any, error) {
-	tx, err := w.store.DB.BeginTxx(ctx, nil)
+	var project map[string]any
+	var repo map[string]any
+	var remotes []map[string]any
+	var syncAsset map[string]any
+	var files []map[string]any
+	var steps []map[string]any
+	err := w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		project, repo, remotes, syncAsset, files, steps, err = createProjectFromTemplateGorm(ctx, w.store, tx, opID)
+		if err != nil {
+			return err
+		}
+		result := templateRunResult(project, repo, remotes, syncAsset, files, steps)
+		result["repository_provisioned"] = false
+		updated := tx.Model(&GormProjectTemplateRun{}).
+			Where(&GormProjectTemplateRun{OperationRunID: validNullString(opID)}).
+			Updates(map[string]any{
+				"status":     "provisioning",
+				"project_id": validNullString(cleanOptionalID(fmt.Sprint(project["id"]))),
+				"steps":      JSONValue{Data: steps},
+				"result":     JSONValue{Data: result},
+			})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	project, repo, remotes, syncAsset, files, steps, err := createProjectFromTemplateTx(ctx, tx, opID)
-	if err != nil {
-		_ = tx.Rollback()
 		return nil, err
 	}
 	result := templateRunResult(project, repo, remotes, syncAsset, files, steps)
 	result["repository_provisioned"] = false
-	resultJSON, err := jsonParam(result)
-	if err != nil {
-		_ = tx.Rollback()
-		return nil, err
-	}
-	stepsJSON, err := jsonParam(steps)
-	if err != nil {
-		_ = tx.Rollback()
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE project_template_runs
-		SET status='provisioning',
-			project_id=NULLIF($2,'')::uuid,
-			steps=$3::jsonb,
-			result=$4::jsonb,
-			updated_at=now()
-		WHERE operation_run_id=$1`,
-		opID,
-		cleanOptionalID(fmt.Sprint(project["id"])),
-		stepsJSON,
-		resultJSON,
-	); err != nil {
-		_ = tx.Rollback()
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
 
 	executor := NewGitExecutor("")
 	executor.LocalBareBaseDirs = w.cfg.LocalBareBaseDirs
@@ -2169,11 +2169,11 @@ func (w *ControlWorker) markProjectTemplateRunCompletedWithRetry(ctx context.Con
 }
 
 func (w *ControlWorker) executeProjectTemplateProvisionRetry(ctx context.Context, opID string) (map[string]any, error) {
-	runID, err := projectTemplateRunIDForRetryOperation(ctx, w.store.DB, opID)
+	runID, err := projectTemplateRunIDForRetryOperation(ctx, w.store.Gorm, opID)
 	if err != nil {
 		return nil, err
 	}
-	run, project, repo, remotes, syncAsset, files, steps, err := loadProjectTemplateProvisionResources(ctx, w.store.DB, runID)
+	run, project, repo, remotes, syncAsset, files, steps, err := loadProjectTemplateProvisionResources(ctx, w.store.Gorm, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -2224,8 +2224,8 @@ func (w *ControlWorker) executeProjectTemplateProvisionRetry(ctx context.Context
 	return result, nil
 }
 
-func projectTemplateRunIDForRetryOperation(ctx context.Context, db sqlx.ExtContext, opID string) (string, error) {
-	op, err := queryOne(ctx, db, "SELECT input FROM operation_runs WHERE id=$1", opID)
+func projectTemplateRunIDForRetryOperation(ctx context.Context, db *gorm.DB, opID string) (string, error) {
+	op, err := operationRunMapByID(ctx, db, opID)
 	if err != nil {
 		return "", err
 	}
@@ -2237,123 +2237,184 @@ func projectTemplateRunIDForRetryOperation(ctx context.Context, db sqlx.ExtConte
 	return runID, nil
 }
 
-func loadProjectTemplateProvisionResources(ctx context.Context, db sqlx.ExtContext, runID string) (map[string]any, map[string]any, map[string]any, []map[string]any, map[string]any, []map[string]any, []map[string]any, error) {
-	run, err := queryOne(ctx, db, "SELECT * FROM project_template_runs WHERE id=$1", runID)
-	if err != nil {
+func loadProjectTemplateProvisionResources(ctx context.Context, db *gorm.DB, runID string) (map[string]any, map[string]any, map[string]any, []map[string]any, map[string]any, []map[string]any, []map[string]any, error) {
+	var runModel GormProjectTemplateRun
+	if err := db.WithContext(ctx).First(&runModel, &GormProjectTemplateRun{GormBase: GormBase{ID: runID}}).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, nil, nil, nil, nil, nil, nil, ErrNotFound
+		}
 		return nil, nil, nil, nil, nil, nil, nil, err
 	}
+	run := projectTemplateRunMap(runModel)
 	projectID := cleanOptionalID(fmt.Sprint(run["project_id"]))
 	if projectID == "" {
 		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("template run has no project to reconcile")
 	}
-	project, err := queryOne(ctx, db, "SELECT * FROM projects WHERE id=$1", projectID)
-	if err != nil {
+	var projectModel GormProject
+	if err := db.WithContext(ctx).First(&projectModel, &GormProject{GormBase: GormBase{ID: projectID}}).Error; err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, err
 	}
+	project := projectMap(projectModel)
 	result := mapFromAny(run["result"])
 	repoID := cleanOptionalID(fmt.Sprint(result["repository_id"]))
-	var repo map[string]any
+	var repoModel GormProjectGitRepository
 	if repoID != "" {
-		repo, err = queryOne(ctx, db, "SELECT * FROM project_git_repositories WHERE id=$1", repoID)
+		err := db.WithContext(ctx).First(&repoModel, &GormProjectGitRepository{GormBase: GormBase{ID: repoID}}).Error
+		if err != nil {
+			return nil, nil, nil, nil, nil, nil, nil, err
+		}
 	} else {
-		repo, err = queryOne(ctx, db, "SELECT * FROM project_git_repositories WHERE project_id=$1 ORDER BY created_at DESC LIMIT 1", projectID)
+		var repos []GormProjectGitRepository
+		if err := db.WithContext(ctx).Where(&GormProjectGitRepository{ProjectID: projectID}).Order(gormOrderDesc("created_at")).Limit(1).Find(&repos).Error; err != nil {
+			return nil, nil, nil, nil, nil, nil, nil, err
+		}
+		if len(repos) == 0 {
+			return nil, nil, nil, nil, nil, nil, nil, ErrNotFound
+		}
+		repoModel = repos[0]
 	}
-	if err != nil {
+	repo := gitRepositoryMap(repoModel)
+	var remoteModels []GormGitRemote
+	if err := db.WithContext(ctx).Where(&GormGitRemote{ProjectGitRepositoryID: repoModel.ID}).Order(gormOrderAsc("created_at")).Order(gormOrderAsc("name")).Find(&remoteModels).Error; err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, err
 	}
-	remotes, err := queryMaps(ctx, db, "SELECT * FROM git_remotes WHERE project_git_repository_id=$1 ORDER BY created_at, name", repo["id"])
-	if err != nil {
+	remotes := make([]map[string]any, 0, len(remoteModels))
+	for _, remote := range remoteModels {
+		remotes = append(remotes, gitRemoteMap(remote, nil, ""))
+	}
+	var fileModels []GormProjectTemplateFile
+	if err := db.WithContext(ctx).Where(&GormProjectTemplateFile{ProjectTemplateRunID: validNullString(runID)}).Order(gormOrderAsc("created_at")).Order(gormOrderAsc("path")).Find(&fileModels).Error; err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, err
 	}
-	files, err := queryMaps(ctx, db, "SELECT * FROM project_template_files WHERE project_template_run_id=$1 ORDER BY created_at, path", runID)
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
+	files := make([]map[string]any, 0, len(fileModels))
+	for _, file := range fileModels {
+		files = append(files, projectTemplateFileMap(file))
 	}
 	var syncAsset map[string]any
 	syncAssetID := cleanOptionalID(fmt.Sprint(result["repo_sync_asset_id"]))
 	if syncAssetID != "" {
-		syncAsset, err = queryOne(ctx, db, "SELECT * FROM repo_sync_assets WHERE id=$1", syncAssetID)
-		if errors.Is(err, ErrNotFound) {
-			syncAsset = nil
-		} else if err != nil {
-			return nil, nil, nil, nil, nil, nil, nil, err
+		var asset GormRepoSyncAsset
+		if err := db.WithContext(ctx).First(&asset, &GormRepoSyncAsset{GormBase: GormBase{ID: syncAssetID}}).Error; err != nil {
+			if errorsIsRecordNotFound(err) {
+				syncAsset = nil
+			} else {
+				return nil, nil, nil, nil, nil, nil, nil, err
+			}
+		} else {
+			syncAsset = repoSyncAssetMap(asset)
 		}
 	}
 	steps := templateStepsWithProvisionRetry(run["steps"])
 	return run, project, repo, remotes, syncAsset, files, steps, nil
 }
 
-func (w *ControlWorker) markProjectTemplateProvisionRetryCompleted(ctx context.Context, runID string, repo map[string]any, remotes []map[string]any, files []map[string]any, steps []map[string]any, result map[string]any, provision *gitExecutionResult) error {
-	tx, err := w.store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
+func projectTemplateRunMap(run GormProjectTemplateRun) map[string]any {
+	return map[string]any{
+		"id":                  run.ID,
+		"operation_run_id":    nullableStringValue(run.OperationRunID),
+		"project_template_id": nullableStringValue(run.ProjectTemplateID),
+		"project_id":          nullableStringValue(run.ProjectID),
+		"requested_by":        nullableStringValue(run.RequestedBy),
+		"status":              run.Status,
+		"project_name":        run.ProjectName,
+		"project_slug":        run.ProjectSlug,
+		"input":               mapFromAny(run.Input.Data),
+		"steps":               mapSliceFromAny(run.Steps.Data),
+		"result":              mapFromAny(run.Result.Data),
+		"error_message":       run.ErrorMessage,
+		"started_at":          nullableTimeAny(run.StartedAt),
+		"finished_at":         nullableTimeAny(run.FinishedAt),
+		"created_at":          run.CreatedAt,
+		"updated_at":          run.UpdatedAt,
 	}
-	defer tx.Rollback()
-	if provision != nil {
-		if provisioned, _ := provision.Details["provisioned"].(bool); provisioned {
-			if err := markTemplateRepositoryProvisionedTx(ctx, tx, repo, remotes, files, provision); err != nil {
-				return err
+}
+
+func projectTemplateFileMap(file GormProjectTemplateFile) map[string]any {
+	return map[string]any{
+		"id":                        file.ID,
+		"project_template_run_id":   nullableStringValue(file.ProjectTemplateRunID),
+		"project_template_id":       nullableStringValue(file.ProjectTemplateID),
+		"project_id":                nullableStringValue(file.ProjectID),
+		"project_git_repository_id": nullableStringValue(file.ProjectGitRepositoryID),
+		"path":                      file.Path,
+		"kind":                      file.Kind,
+		"content":                   file.Content,
+		"status":                    file.Status,
+		"metadata":                  mapFromAny(file.Metadata.Data),
+		"created_at":                file.CreatedAt,
+		"updated_at":                file.UpdatedAt,
+	}
+}
+
+func repoSyncAssetMap(asset GormRepoSyncAsset) map[string]any {
+	return map[string]any{
+		"id":                        asset.ID,
+		"project_id":                asset.ProjectID,
+		"project_git_repository_id": asset.ProjectGitRepositoryID,
+		"name":                      asset.Name,
+		"source_remote_id":          asset.SourceRemoteID,
+		"target_remote_id":          asset.TargetRemoteID,
+		"trigger_mode":              asset.TriggerMode,
+		"sync_mode":                 asset.SyncMode,
+		"transport":                 asset.Transport,
+		"driver":                    asset.Driver,
+		"refs":                      mapFromAny(asset.Refs.Data),
+		"enabled":                   asset.Enabled,
+		"last_sync_status":          asset.LastSyncStatus,
+		"last_sync_run_id":          nullableStringValue(asset.LastSyncRunID),
+		"last_synced_at":            nullableTimeAny(asset.LastSyncedAt),
+		"metadata":                  mapFromAny(asset.Metadata.Data),
+		"archived_at":               nullableTimeAny(asset.ArchivedAt),
+		"created_at":                asset.CreatedAt,
+		"updated_at":                asset.UpdatedAt,
+	}
+}
+
+func (w *ControlWorker) markProjectTemplateProvisionRetryCompleted(ctx context.Context, runID string, repo map[string]any, remotes []map[string]any, files []map[string]any, steps []map[string]any, result map[string]any, provision *gitExecutionResult) error {
+	return w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if provision != nil {
+			if provisioned, _ := provision.Details["provisioned"].(bool); provisioned {
+				if err := markTemplateRepositoryProvisionedGorm(ctx, tx, repo, files, provision); err != nil {
+					return err
+				}
 			}
 		}
-	}
-	resultJSON, err := jsonParam(result)
-	if err != nil {
-		return err
-	}
-	stepsJSON, err := jsonParam(steps)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE project_template_runs
-		SET status='completed',
-			steps=$2::jsonb,
-			result=$3::jsonb,
-			error_message='',
-			finished_at=now(),
-			updated_at=now()
-		WHERE id=$1`, runID, stepsJSON, resultJSON); err != nil {
-		return err
-	}
-	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
-		return fmt.Errorf("syncing canonical assets for completed project template provision retry: %w", err)
-	}
-	return tx.Commit()
+		updated := tx.Model(&GormProjectTemplateRun{}).
+			Where(&GormProjectTemplateRun{GormBase: GormBase{ID: runID}}).
+			Updates(map[string]any{"status": "completed", "steps": JSONValue{Data: steps}, "result": JSONValue{Data: result}, "error_message": "", "finished_at": time.Now()})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed project template provision retry: %w", err)
+		}
+		return nil
+	})
 }
 
 func (w *ControlWorker) markProjectTemplateProvisionRetryFailed(ctx context.Context, runID string, result map[string]any, cause error) error {
-	tx, err := w.store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	failedSteps := templateStepsWithProvisionFailure(result["steps"])
 	result["steps"] = failedSteps
 	errorMessage := truncateProviderError(cause.Error(), providerRunErrorLimit)
 	result["error"] = errorMessage
-	resultJSON, err := jsonParam(result)
-	if err != nil {
-		return err
-	}
-	stepsJSON, err := jsonParam(failedSteps)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE project_template_runs
-		SET status='failed',
-			steps=$2::jsonb,
-			result=$3::jsonb,
-			error_message=$4,
-			finished_at=now(),
-			updated_at=now()
-		WHERE id=$1`, runID, stepsJSON, resultJSON, errorMessage); err != nil {
-		return err
-	}
-	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
-		return fmt.Errorf("syncing canonical assets for failed project template provision retry: %w", err)
-	}
-	return tx.Commit()
+	return w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		updated := tx.Model(&GormProjectTemplateRun{}).
+			Where(&GormProjectTemplateRun{GormBase: GormBase{ID: runID}}).
+			Updates(map[string]any{"status": "failed", "steps": JSONValue{Data: failedSteps}, "result": JSONValue{Data: result}, "error_message": errorMessage, "finished_at": time.Now()})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for failed project template provision retry: %w", err)
+		}
+		return nil
+	})
 }
 
 func templateRunResult(project, repo map[string]any, remotes []map[string]any, syncAsset map[string]any, files []map[string]any, steps []map[string]any) map[string]any {
@@ -2381,99 +2442,266 @@ func templateRunResult(project, repo map[string]any, remotes []map[string]any, s
 	return result
 }
 
-func createProjectFromTemplateTx(ctx context.Context, tx *sqlx.Tx, opID string) (map[string]any, map[string]any, []map[string]any, map[string]any, []map[string]any, []map[string]any, error) {
-	run, err := queryOne(ctx, tx, `
-		SELECT ptr.*, pt.defaults AS template_defaults, pt.slug AS template_slug
-		FROM project_template_runs ptr
-		LEFT JOIN project_templates pt ON pt.id=ptr.project_template_id
-		WHERE ptr.operation_run_id=$1
-		FOR UPDATE`, opID)
-	if err != nil {
+func createProjectFromTemplateGorm(ctx context.Context, store *Store, tx *gorm.DB, opID string) (map[string]any, map[string]any, []map[string]any, map[string]any, []map[string]any, []map[string]any, error) {
+	var runModel GormProjectTemplateRun
+	if err := tx.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where(&GormProjectTemplateRun{OperationRunID: validNullString(opID)}).
+		First(&runModel).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, nil, nil, nil, nil, nil, ErrNotFound
+		}
 		return nil, nil, nil, nil, nil, nil, err
 	}
-	projectSlug := strings.TrimSpace(fmt.Sprint(run["project_slug"]))
-	projectName := strings.TrimSpace(fmt.Sprint(run["project_name"]))
-	if projectName == "" || projectSlug == "" {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("template run is missing project name or slug")
-	}
-	input := mapFromAny(run["input"])
-	parameters := mapFromAny(input["parameters"])
-	defaults := mapFromAny(run["template_defaults"])
-	description := stringFromMap(input, "description")
-	project, err := queryOne(ctx, tx, `
-		INSERT INTO projects(name, slug, description)
-		VALUES ($1, $2, $3)
-		RETURNING *`, projectName, projectSlug, description)
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
-	}
-	requestedBy := cleanOptionalID(fmt.Sprint(run["requested_by"]))
-	if requestedBy != "" {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO project_members(project_id, user_id, role)
-			VALUES ($1, $2, 'owner')
-			ON CONFLICT DO NOTHING`, project["id"], requestedBy); err != nil {
+	run := projectTemplateRunMap(runModel)
+	var template GormProjectTemplate
+	if runModel.ProjectTemplateID.Valid {
+		if err := tx.WithContext(ctx).First(&template, &GormProjectTemplate{GormBase: GormBase{ID: runModel.ProjectTemplateID.String}}).Error; err != nil && !errorsIsRecordNotFound(err) {
 			return nil, nil, nil, nil, nil, nil, err
 		}
 	}
-	repo, err := createTemplateRepositoryTx(ctx, tx, project, defaults, parameters)
+	run["template_defaults"] = mapFromAny(template.Defaults.Data)
+	run["template_slug"] = template.Slug
+	projectSlug := strings.TrimSpace(runModel.ProjectSlug)
+	projectName := strings.TrimSpace(runModel.ProjectName)
+	if projectName == "" || projectSlug == "" {
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("template run is missing project name or slug")
+	}
+	input := mapFromAny(runModel.Input.Data)
+	parameters := mapFromAny(input["parameters"])
+	defaults := mapFromAny(template.Defaults.Data)
+	projectModel := GormProject{Name: projectName, Slug: projectSlug, Description: stringFromMap(input, "description")}
+	if err := tx.WithContext(ctx).Create(&projectModel).Error; err != nil {
+		return nil, nil, nil, nil, nil, nil, err
+	}
+	project := projectMap(projectModel)
+	if requestedBy := cleanOptionalID(runModel.RequestedBy.String); requestedBy != "" {
+		member := GormProjectMember{ProjectID: projectModel.ID, UserID: requestedBy, Role: "owner"}
+		if err := tx.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&member).Error; err != nil {
+			return nil, nil, nil, nil, nil, nil, err
+		}
+	}
+	repo, err := createTemplateRepositoryGorm(ctx, tx, project, defaults, parameters)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, err
 	}
-	remotes, err := createTemplateRemotesTx(ctx, tx, repo, defaults, parameters)
+	remotes, err := createTemplateRemotesGorm(ctx, store, tx, repo, defaults, parameters)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, err
 	}
-	syncAsset, err := createTemplateRepoSyncAssetTx(ctx, tx, opID, project, repo, remotes, defaults, parameters)
+	syncAsset, err := createTemplateRepoSyncAssetGorm(ctx, tx, opID, project, repo, remotes, defaults, parameters)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, err
 	}
-	files, err := createTemplateFilesTx(ctx, tx, run, project, repo, defaults, parameters)
+	files, err := createTemplateFilesGorm(ctx, tx, run, project, repo, defaults, parameters)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, err
 	}
 	steps := completeTemplateSteps(run["steps"], project, repo, remotes, syncAsset, files)
-	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+	if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("syncing canonical assets for project template creation: %w", err)
 	}
 	return project, repo, remotes, syncAsset, files, steps, nil
 }
 
-func createTemplateRepositoryTx(ctx context.Context, tx *sqlx.Tx, project map[string]any, defaults, parameters map[string]any) (map[string]any, error) {
+func createTemplateRepositoryGorm(ctx context.Context, tx *gorm.DB, project map[string]any, defaults, parameters map[string]any) (map[string]any, error) {
 	repoDefaults := mapFromAny(defaults["repository"])
 	repoParams := mapFromAny(parameters["repository"])
 	projectSlug := strings.TrimSpace(fmt.Sprint(project["slug"]))
 	projectName := strings.TrimSpace(fmt.Sprint(project["name"]))
-	name := firstNonEmptyString(stringFromMap(repoParams, "name"), templateNameWithSuffix(projectSlug, stringFromMap(repoDefaults, "name_suffix"), "service"))
-	repoKey := firstNonEmptyString(stringFromMap(repoParams, "repo_key"), templateNameWithSuffix(projectSlug, stringFromMap(repoDefaults, "repo_key_suffix"), "service"))
-	displayName := firstNonEmptyString(stringFromMap(repoParams, "display_name"), templateDisplayName(projectName, stringFromMap(repoDefaults, "display_name_suffix"), "Service"))
-	repoRole := firstNonEmptyString(stringFromMap(repoParams, "repo_role"), stringFromMap(defaults, "repo_role"), "code")
-	defaultBranch := firstNonEmptyString(stringFromMap(repoParams, "default_branch"), stringFromMap(defaults, "default_branch"), "main")
-	return queryOne(ctx, tx, `
-		INSERT INTO project_git_repositories(project_id, name, repo_key, display_name, repo_role, status, description, default_branch)
-		VALUES ($1, $2, $3, $4, $5, 'planned', $6, $7)
-		RETURNING *`,
-		project["id"],
-		name,
-		repoKey,
-		displayName,
-		repoRole,
-		"Created from project template; repository provider binding is pending.",
-		defaultBranch,
-	)
+	repo := GormProjectGitRepository{
+		ProjectID:     cleanOptionalID(fmt.Sprint(project["id"])),
+		Name:          firstNonEmptyString(stringFromMap(repoParams, "name"), templateNameWithSuffix(projectSlug, stringFromMap(repoDefaults, "name_suffix"), "service")),
+		RepoKey:       firstNonEmptyString(stringFromMap(repoParams, "repo_key"), templateNameWithSuffix(projectSlug, stringFromMap(repoDefaults, "repo_key_suffix"), "service")),
+		DisplayName:   firstNonEmptyString(stringFromMap(repoParams, "display_name"), templateDisplayName(projectName, stringFromMap(repoDefaults, "display_name_suffix"), "Service")),
+		RepoRole:      firstNonEmptyString(stringFromMap(repoParams, "repo_role"), stringFromMap(defaults, "repo_role"), "code"),
+		Status:        "planned",
+		Description:   "Created from project template; repository provider binding is pending.",
+		DefaultBranch: firstNonEmptyString(stringFromMap(repoParams, "default_branch"), stringFromMap(defaults, "default_branch"), "main"),
+	}
+	if err := tx.WithContext(ctx).Create(&repo).Error; err != nil {
+		return nil, err
+	}
+	return gitRepositoryMap(repo), nil
 }
 
-func createTemplateRemotesTx(ctx context.Context, tx *sqlx.Tx, repo, defaults, parameters map[string]any) ([]map[string]any, error) {
+func createTemplateRemotesGorm(ctx context.Context, store *Store, tx *gorm.DB, repo, defaults, parameters map[string]any) ([]map[string]any, error) {
 	remoteItems := templateRemoteItems(defaults, parameters)
 	remotes := make([]map[string]any, 0, len(remoteItems))
 	for _, item := range remoteItems {
-		remote, err := createTemplateRemoteTx(ctx, tx, repo, item)
+		remote, err := createTemplateRemoteGorm(ctx, store, tx, repo, item)
 		if err != nil {
 			return nil, err
 		}
 		remotes = append(remotes, remote)
 	}
 	return remotes, nil
+}
+
+func createTemplateRemoteGorm(ctx context.Context, store *Store, tx *gorm.DB, repo, item map[string]any) (map[string]any, error) {
+	remoteKey := firstNonEmptyString(stringFromMap(item, "remote_key"), stringFromMap(item, "name"))
+	name := firstNonEmptyString(stringFromMap(item, "name"), remoteKey)
+	kind := firstNonEmptyString(stringFromMap(item, "kind"), stringFromMap(item, "provider_type"), "git")
+	providerType := firstNonEmptyString(stringFromMap(item, "provider_type"), kind)
+	remoteRole := firstNonEmptyString(stringFromMap(item, "remote_role"), stringFromMap(item, "role"), "mirror")
+	defaultBranch := firstNonEmptyString(stringFromMap(item, "default_branch"), fmt.Sprint(repo["default_branch"]), "main")
+	remoteURL := stringFromMap(item, "remote_url")
+	urls := stringSliceFromAny(item["urls"])
+	if remoteURL == "" && len(urls) > 0 {
+		remoteURL = urls[0]
+	}
+	account, hasAccount, err := resolveTemplateProviderAccount(ctx, store, item, providerType)
+	if err != nil {
+		return nil, err
+	}
+	metadata := mapFromAny(item["metadata"])
+	metadata["source"] = "project_template"
+	metadata["template_placeholder"] = true
+	sourceAccountID := sql.NullString{}
+	if hasAccount {
+		sourceAccountID = validNullString(account.ID)
+		metadata["provider_account_id"] = account.ID
+		metadata["provider_account_name"] = account.Name
+		metadata["api_base_url"] = account.APIBaseURL
+		metadata["token_env"] = account.TokenEnv
+		if stringFromMap(metadata, "owner", "org") == "" && account.DefaultOwner != "" {
+			metadata["owner"] = account.DefaultOwner
+		}
+		if stringFromMap(metadata, "visibility") == "" && account.Visibility != "" {
+			metadata["visibility"] = account.Visibility
+		}
+	}
+	remote := GormGitRemote{
+		ProjectGitRepositoryID: cleanOptionalID(fmt.Sprint(repo["id"])),
+		Name:                   name,
+		Kind:                   kind,
+		RemoteKey:              remoteKey,
+		ProviderType:           providerType,
+		RemoteURL:              remoteURL,
+		WebURL:                 stringFromMap(item, "web_url"),
+		RemoteRole:             remoteRole,
+		IsPrimary:              boolFromMap(item, "is_primary"),
+		SyncEnabled:            boolDefaultFromMap(item, "sync_enabled", true),
+		Protected:              boolFromMap(item, "protected"),
+		LatestSHA:              stringFromMap(item, "latest_sha"),
+		LastSyncStatus:         "never",
+		SourceAccountID:        sourceAccountID,
+		URLs:                   JSONValue{Data: urls},
+		DefaultBranch:          defaultBranch,
+		Metadata:               JSONValue{Data: metadata},
+	}
+	if err := tx.WithContext(ctx).Create(&remote).Error; err != nil {
+		return nil, err
+	}
+	return gitRemoteMap(remote, nil, ""), nil
+}
+
+func createTemplateRepoSyncAssetGorm(ctx context.Context, tx *gorm.DB, opID string, project, repo map[string]any, remotes []map[string]any, defaults, parameters map[string]any) (map[string]any, error) {
+	syncParams := mapFromAny(parameters["repo_sync"])
+	syncDefaults := mapFromAny(defaults["repo_sync"])
+	sourceRemoteID := firstNonEmptyString(stringFromMap(syncParams, "source_remote_id"), remoteIDByKey(remotes, firstNonEmptyString(stringFromMap(syncParams, "source_remote_key"), stringFromMap(syncDefaults, "source_remote_key"))))
+	targetRemoteID := firstNonEmptyString(stringFromMap(syncParams, "target_remote_id"), remoteIDByKey(remotes, firstNonEmptyString(stringFromMap(syncParams, "target_remote_key"), stringFromMap(syncDefaults, "target_remote_key"))))
+	if sourceRemoteID == "" || targetRemoteID == "" {
+		if err := logTemplateRepoSyncSkippedGorm(ctx, tx, opID, map[string]any{"reason": "source and target remotes are required", "source_remote_id": sourceRemoteID, "target_remote_id": targetRemoteID}); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if sourceRemoteID == targetRemoteID {
+		if err := logTemplateRepoSyncSkippedGorm(ctx, tx, opID, map[string]any{"reason": "source and target remotes must differ", "remote_id": sourceRemoteID}); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	repoID := cleanOptionalID(fmt.Sprint(repo["id"]))
+	if ok, err := verifyTemplateRemoteForRepositoryGorm(ctx, tx, opID, repoID, sourceRemoteID, "source_remote_id"); err != nil || !ok {
+		return nil, err
+	}
+	if ok, err := verifyTemplateRemoteForRepositoryGorm(ctx, tx, opID, repoID, targetRemoteID, "target_remote_id"); err != nil || !ok {
+		return nil, err
+	}
+	enabled := false
+	if value, ok := syncParams["enabled"].(bool); ok {
+		enabled = value
+	} else if value, ok := syncDefaults["enabled"].(bool); ok {
+		enabled = value
+	}
+	asset := GormRepoSyncAsset{
+		ProjectID:              cleanOptionalID(fmt.Sprint(project["id"])),
+		ProjectGitRepositoryID: repoID,
+		Name:                   firstNonEmptyString(stringFromMap(syncParams, "name"), stringFromMap(syncDefaults, "name"), "default mirror"),
+		SourceRemoteID:         sourceRemoteID,
+		TargetRemoteID:         targetRemoteID,
+		TriggerMode:            firstNonEmptyString(stringFromMap(syncParams, "trigger_mode"), stringFromMap(syncDefaults, "trigger_mode"), "manual"),
+		SyncMode:               firstNonEmptyString(stringFromMap(syncParams, "sync_mode"), stringFromMap(syncDefaults, "sync_mode"), "selected_refs"),
+		Transport:              firstNonEmptyString(stringFromMap(syncParams, "transport"), stringFromMap(syncDefaults, "transport"), "ssh"),
+		Driver:                 firstNonEmptyString(stringFromMap(syncParams, "driver"), stringFromMap(syncDefaults, "driver"), "projectops_worker_git_ssh"),
+		Refs:                   JSONValue{Data: mapFromAny(syncParams["refs"])},
+		Enabled:                enabled,
+		Metadata:               JSONValue{Data: map[string]any{"source": "project_template", "template_placeholder": true}},
+	}
+	if err := tx.WithContext(ctx).Create(&asset).Error; err != nil {
+		return nil, err
+	}
+	return repoSyncAssetMap(asset), nil
+}
+
+func logTemplateRepoSyncSkippedGorm(ctx context.Context, tx *gorm.DB, opID string, fields map[string]any) error {
+	return tx.WithContext(ctx).Create(&GormOperationLog{OperationRunID: validNullString(opID), Level: "warn", Message: "template repo sync asset was not created", Fields: JSONValue{Data: fields}}).Error
+}
+
+func createTemplateFilesGorm(ctx context.Context, tx *gorm.DB, run, project, repo, defaults, parameters map[string]any) ([]map[string]any, error) {
+	items := templateFileItems(defaults, parameters)
+	files := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		file, err := createTemplateFileGorm(ctx, tx, run, project, repo, item)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, file)
+	}
+	return files, nil
+}
+
+func createTemplateFileGorm(ctx context.Context, tx *gorm.DB, run, project, repo, item map[string]any) (map[string]any, error) {
+	path := safeTemplateFilePath(stringFromMap(item, "path"))
+	if path == "" {
+		return nil, fmt.Errorf("template file path is required")
+	}
+	metadata := mapFromAny(item["metadata"])
+	metadata["source"] = "project_template"
+	metadata["template_placeholder"] = true
+	file := GormProjectTemplateFile{
+		ProjectTemplateRunID:   validNullString(cleanOptionalID(fmt.Sprint(run["id"]))),
+		ProjectTemplateID:      validNullString(cleanOptionalID(fmt.Sprint(run["project_template_id"]))),
+		ProjectID:              validNullString(cleanOptionalID(fmt.Sprint(project["id"]))),
+		ProjectGitRepositoryID: validNullString(cleanOptionalID(fmt.Sprint(repo["id"]))),
+		Path:                   path,
+		Kind:                   firstNonEmptyString(stringFromMap(item, "kind"), "text"),
+		Content:                renderTemplateFileContent(stringFromMap(item, "content"), run, project, repo),
+		Status:                 "planned",
+		Metadata:               JSONValue{Data: metadata},
+	}
+	if err := tx.WithContext(ctx).Create(&file).Error; err != nil {
+		return nil, err
+	}
+	return projectTemplateFileMap(file), nil
+}
+
+func verifyTemplateRemoteForRepositoryGorm(ctx context.Context, tx *gorm.DB, opID, repoID, remoteID, field string) (bool, error) {
+	var remote GormGitRemote
+	err := tx.WithContext(ctx).Where(&GormGitRemote{ProjectGitRepositoryID: repoID}).Where(map[string]any{"id": remoteID}).First(&remote).Error
+	if err == nil {
+		return true, nil
+	}
+	if !errorsIsRecordNotFound(err) {
+		return false, err
+	}
+	fields := map[string]any{"field": field, "remote_id": remoteID, "repo_id": repoID}
+	if logErr := tx.WithContext(ctx).Create(&GormOperationLog{OperationRunID: validNullString(opID), Level: "warn", Message: "template repo sync remote does not belong to the created repository", Fields: JSONValue{Data: fields}}).Error; logErr != nil {
+		return false, logErr
+	}
+	return false, nil
 }
 
 func templateRemoteItems(defaults, parameters map[string]any) []map[string]any {
@@ -2491,97 +2719,24 @@ func templateRemoteItems(defaults, parameters map[string]any) []map[string]any {
 	return out
 }
 
-func createTemplateRemoteTx(ctx context.Context, tx *sqlx.Tx, repo, item map[string]any) (map[string]any, error) {
-	remoteKey := firstNonEmptyString(stringFromMap(item, "remote_key"), stringFromMap(item, "name"))
-	name := firstNonEmptyString(stringFromMap(item, "name"), remoteKey)
-	kind := firstNonEmptyString(stringFromMap(item, "kind"), stringFromMap(item, "provider_type"), "git")
-	providerType := firstNonEmptyString(stringFromMap(item, "provider_type"), kind)
-	remoteRole := firstNonEmptyString(stringFromMap(item, "remote_role"), stringFromMap(item, "role"), "mirror")
-	defaultBranch := firstNonEmptyString(stringFromMap(item, "default_branch"), fmt.Sprint(repo["default_branch"]), "main")
-	remoteURL := stringFromMap(item, "remote_url")
-	urlsValue := item["urls"]
-	urls := stringSliceFromAny(urlsValue)
-	if remoteURL == "" && len(urls) > 0 {
-		remoteURL = urls[0]
-	}
-	account, hasAccount, err := resolveTemplateProviderAccountTx(ctx, tx, item, providerType)
-	if err != nil {
-		return nil, err
-	}
-	urlsJSON, err := jsonParam(urls)
-	if err != nil {
-		return nil, err
-	}
-	metadata := mapFromAny(item["metadata"])
-	metadata["source"] = "project_template"
-	metadata["template_placeholder"] = true
-	sourceAccountID := any(nil)
-	if hasAccount {
-		sourceAccountID = account.ID
-		metadata["provider_account_id"] = account.ID
-		metadata["provider_account_name"] = account.Name
-		metadata["api_base_url"] = account.APIBaseURL
-		metadata["token_env"] = account.TokenEnv
-		if stringFromMap(metadata, "owner", "org") == "" && account.DefaultOwner != "" {
-			metadata["owner"] = account.DefaultOwner
-		}
-		if stringFromMap(metadata, "visibility") == "" && account.Visibility != "" {
-			metadata["visibility"] = account.Visibility
-		}
-	}
-	metadataJSON, err := jsonParam(metadata)
-	if err != nil {
-		return nil, err
-	}
-	remote, err := queryOne(ctx, tx, `
-		INSERT INTO git_remotes(
-			project_git_repository_id, name, kind, remote_key, provider_type, remote_url, web_url,
-			remote_role, is_primary, sync_enabled, protected, latest_sha, last_sync_status, source_account_id,
-			urls, default_branch, metadata
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'never', $13, $14::jsonb, $15, $16::jsonb)
-		RETURNING *`,
-		repo["id"],
-		name,
-		kind,
-		remoteKey,
-		providerType,
-		remoteURL,
-		stringFromMap(item, "web_url"),
-		remoteRole,
-		boolFromMap(item, "is_primary"),
-		boolDefaultFromMap(item, "sync_enabled", true),
-		boolFromMap(item, "protected"),
-		stringFromMap(item, "latest_sha"),
-		sourceAccountID,
-		urlsJSON,
-		defaultBranch,
-		metadataJSON,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if hasAccount {
-		remote["metadata"] = metadata
-	}
-	return remote, nil
-}
-
-func resolveTemplateProviderAccountTx(ctx context.Context, tx *sqlx.Tx, item map[string]any, providerType string) (providerAccountConfig, bool, error) {
+func resolveTemplateProviderAccount(ctx context.Context, store *Store, item map[string]any, providerType string) (providerAccountConfig, bool, error) {
 	accountID := strings.TrimSpace(stringFromMap(item, "provider_account_id"))
 	accountName := strings.TrimSpace(stringFromMap(item, "provider_account_name"))
 	if accountID == "" && accountName == "" {
 		return providerAccountConfig{}, false, nil
 	}
-	var (
-		account providerAccountConfig
-		err     error
-	)
-	if accountID != "" {
-		account, err = loadProviderAccountConfigByID(ctx, tx, accountID)
-	} else {
-		account, err = loadProviderAccountConfigByName(ctx, tx, accountName)
+	if store == nil || store.Gorm == nil {
+		return providerAccountConfig{}, false, fmt.Errorf("gorm store is not initialized")
 	}
+	var accountModel GormProviderAccount
+	query := store.Gorm.WithContext(ctx)
+	var err error
+	if accountID != "" {
+		err = query.Where(map[string]any{"id": accountID}).First(&accountModel).Error
+	} else {
+		err = query.Where(map[string]any{"name": accountName}).First(&accountModel).Error
+	}
+	account := providerAccountConfigFromGorm(accountModel)
 	if err != nil {
 		return account, false, fmt.Errorf("loading provider account for template remote: %w", err)
 	}
@@ -2598,90 +2753,6 @@ func resolveTemplateProviderAccountTx(ctx context.Context, tx *sqlx.Tx, item map
 	return account, true, nil
 }
 
-func createTemplateRepoSyncAssetTx(ctx context.Context, tx *sqlx.Tx, opID string, project, repo map[string]any, remotes []map[string]any, defaults, parameters map[string]any) (map[string]any, error) {
-	syncParams := mapFromAny(parameters["repo_sync"])
-	syncDefaults := mapFromAny(defaults["repo_sync"])
-	sourceRemoteID := firstNonEmptyString(
-		stringFromMap(syncParams, "source_remote_id"),
-		remoteIDByKey(remotes, firstNonEmptyString(stringFromMap(syncParams, "source_remote_key"), stringFromMap(syncDefaults, "source_remote_key"))),
-	)
-	targetRemoteID := firstNonEmptyString(
-		stringFromMap(syncParams, "target_remote_id"),
-		remoteIDByKey(remotes, firstNonEmptyString(stringFromMap(syncParams, "target_remote_key"), stringFromMap(syncDefaults, "target_remote_key"))),
-	)
-	if sourceRemoteID == "" || targetRemoteID == "" {
-		if err := logTemplateRepoSyncSkipped(ctx, tx, opID, map[string]any{
-			"reason":           "source and target remotes are required",
-			"source_remote_id": sourceRemoteID,
-			"target_remote_id": targetRemoteID,
-		}); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}
-	if sourceRemoteID == targetRemoteID {
-		if err := logTemplateRepoSyncSkipped(ctx, tx, opID, map[string]any{
-			"reason":    "source and target remotes must differ",
-			"remote_id": sourceRemoteID,
-		}); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}
-	repoID := strings.TrimSpace(fmt.Sprint(repo["id"]))
-	if ok, err := verifyTemplateRemoteForRepository(ctx, tx, opID, repoID, sourceRemoteID, "source_remote_id"); err != nil || !ok {
-		return nil, err
-	}
-	if ok, err := verifyTemplateRemoteForRepository(ctx, tx, opID, repoID, targetRemoteID, "target_remote_id"); err != nil || !ok {
-		return nil, err
-	}
-	enabled := false
-	if value, ok := syncParams["enabled"].(bool); ok {
-		enabled = value
-	} else if value, ok := syncDefaults["enabled"].(bool); ok {
-		enabled = value
-	}
-	refs, err := jsonParam(mapFromAny(syncParams["refs"]))
-	if err != nil {
-		return nil, err
-	}
-	metadata, err := jsonParam(map[string]any{"source": "project_template", "template_placeholder": true})
-	if err != nil {
-		return nil, err
-	}
-	return queryOne(ctx, tx, `
-		INSERT INTO repo_sync_assets(
-			project_id, project_git_repository_id, name, source_remote_id, target_remote_id,
-			trigger_mode, sync_mode, transport, driver, refs, enabled, metadata
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb)
-		RETURNING *`,
-		project["id"],
-		repo["id"],
-		firstNonEmptyString(stringFromMap(syncParams, "name"), stringFromMap(syncDefaults, "name"), "default mirror"),
-		sourceRemoteID,
-		targetRemoteID,
-		firstNonEmptyString(stringFromMap(syncParams, "trigger_mode"), stringFromMap(syncDefaults, "trigger_mode"), "manual"),
-		firstNonEmptyString(stringFromMap(syncParams, "sync_mode"), stringFromMap(syncDefaults, "sync_mode"), "selected_refs"),
-		firstNonEmptyString(stringFromMap(syncParams, "transport"), stringFromMap(syncDefaults, "transport"), "ssh"),
-		firstNonEmptyString(stringFromMap(syncParams, "driver"), stringFromMap(syncDefaults, "driver"), "projectops_worker_git_ssh"),
-		refs,
-		enabled,
-		metadata,
-	)
-}
-
-func logTemplateRepoSyncSkipped(ctx context.Context, tx *sqlx.Tx, opID string, fields map[string]any) error {
-	payload, err := jsonParam(fields)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO operation_logs(operation_run_id, level, message, fields)
-		VALUES ($1, 'warn', 'template repo sync asset was not created', $2::jsonb)`, opID, payload)
-	return err
-}
-
 func remoteIDByKey(remotes []map[string]any, key string) string {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -2693,19 +2764,6 @@ func remoteIDByKey(remotes []map[string]any, key string) string {
 		}
 	}
 	return ""
-}
-
-func createTemplateFilesTx(ctx context.Context, tx *sqlx.Tx, run, project, repo, defaults, parameters map[string]any) ([]map[string]any, error) {
-	items := templateFileItems(defaults, parameters)
-	files := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		file, err := createTemplateFileTx(ctx, tx, run, project, repo, item)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, file)
-	}
-	return files, nil
 }
 
 func templateFileItems(defaults, parameters map[string]any) []map[string]any {
@@ -2721,36 +2779,6 @@ func templateFileItems(defaults, parameters map[string]any) []map[string]any {
 		out = append(out, item)
 	}
 	return out
-}
-
-func createTemplateFileTx(ctx context.Context, tx *sqlx.Tx, run, project, repo, item map[string]any) (map[string]any, error) {
-	path := safeTemplateFilePath(stringFromMap(item, "path"))
-	if path == "" {
-		return nil, fmt.Errorf("template file path is required")
-	}
-	metadata := mapFromAny(item["metadata"])
-	metadata["source"] = "project_template"
-	metadata["template_placeholder"] = true
-	metadataJSON, err := jsonParam(metadata)
-	if err != nil {
-		return nil, err
-	}
-	return queryOne(ctx, tx, `
-		INSERT INTO project_template_files(
-			project_template_run_id, project_template_id, project_id, project_git_repository_id,
-			path, kind, content, status, metadata
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'planned', $8::jsonb)
-		RETURNING *`,
-		run["id"],
-		run["project_template_id"],
-		project["id"],
-		repo["id"],
-		path,
-		firstNonEmptyString(stringFromMap(item, "kind"), "text"),
-		renderTemplateFileContent(stringFromMap(item, "content"), run, project, repo),
-		metadataJSON,
-	)
 }
 
 func renderTemplateFileContent(content string, run, project, repo map[string]any) string {
@@ -2779,29 +2807,6 @@ func safeTemplateFilePath(path string) string {
 		}
 	}
 	return path
-}
-
-func verifyTemplateRemoteForRepository(ctx context.Context, tx *sqlx.Tx, opID, repoID, remoteID, field string) (bool, error) {
-	if _, err := remoteForRepository(ctx, tx, repoID, remoteID); err != nil {
-		if !errors.Is(err, ErrNotFound) {
-			return false, err
-		}
-		fields, jsonErr := jsonParam(map[string]any{
-			"field":     field,
-			"remote_id": remoteID,
-			"repo_id":   repoID,
-		})
-		if jsonErr != nil {
-			return false, jsonErr
-		}
-		if _, logErr := tx.ExecContext(ctx, `
-			INSERT INTO operation_logs(operation_run_id, level, message, fields)
-			VALUES ($1, 'warn', 'template repo sync remote does not belong to the created repository', $2::jsonb)`, opID, fields); logErr != nil {
-			return false, logErr
-		}
-		return false, nil
-	}
-	return true, nil
 }
 
 func firstNonEmptyString(values ...string) string {
@@ -2991,114 +2996,6 @@ func completeTemplateStepsWithRepositoryProvision(steps []map[string]any, provis
 	return steps
 }
 
-func (w *ControlWorker) enqueueRepoTagPostSuccessOperations(ctx context.Context, tx *sqlx.Tx, opID string) error {
-	run, err := queryOne(ctx, tx, `
-		SELECT
-			rtr.id,
-			COALESCE(rtr.project_id, pgr.project_id)::text AS project_id,
-			COALESCE(rtr.target_remote_id, rtr.git_remote_id)::text AS target_remote_id,
-			rtr.tag_name,
-			rtr.target_sha
-		FROM repo_tag_runs rtr
-		LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
-		WHERE rtr.operation_run_id=$1
-		LIMIT 1`, opID)
-	if err != nil {
-		return err
-	}
-	runID := strings.TrimSpace(stringFromMap(run, "id"))
-	projectID := strings.TrimSpace(stringFromMap(run, "project_id"))
-	targetRemoteID := strings.TrimSpace(stringFromMap(run, "target_remote_id"))
-	tagName := strings.TrimSpace(stringFromMap(run, "tag_name"))
-	if runID == "" || projectID == "" || targetRemoteID == "" || tagName == "" || !isSafeGitRefPart(tagName) {
-		return nil
-	}
-	// Keep the post-tag lookup and GitHub Actions refresh in the same
-	// transaction as the tag-run completion, so canonical assets see either
-	// the completed tag plus both queued follow-ups, or none of the follow-ups.
-	if err := enqueueRepoTagLookupAfterSuccess(ctx, tx, projectID, targetRemoteID, runID, tagName); err != nil {
-		return err
-	}
-	remote, err := queryOne(ctx, tx, "SELECT id, web_url, remote_url, urls FROM git_remotes WHERE id=$1", targetRemoteID)
-	if err != nil {
-		return err
-	}
-	if _, _, err := gitHubRepositoryFromRemote(remote); err != nil {
-		return nil
-	}
-	targetSHA := strings.TrimSpace(stringFromMap(run, "target_sha"))
-	if !isFullHexSHA(targetSHA) {
-		targetSHA = ""
-	}
-	return enqueueRepoTagGitHubActionsRefreshAfterSuccess(ctx, tx, projectID, targetRemoteID, runID, tagName, targetSHA)
-}
-
-func enqueueRepoTagLookupAfterSuccess(ctx context.Context, tx *sqlx.Tx, projectID, targetRemoteID, runID, tagName string) error {
-	existing, err := repoTagLookupExistingOperationForAuto(ctx, tx, runID)
-	if err != nil {
-		return err
-	}
-	if existing != nil {
-		return nil
-	}
-	input := map[string]any{
-		"repo_tag_run_id":  runID,
-		"target_remote_id": targetRemoteID,
-		"tag_name":         tagName,
-		"trigger":          "repo_tag_success",
-	}
-	_, err = enqueueOperationTx(ctx, tx, projectID, targetRemoteID, "repo.tag.lookup", "lookup repository tag after successful tag push", input, []string{"git"}, "")
-	return err
-}
-
-func enqueueRepoTagGitHubActionsRefreshAfterSuccess(ctx context.Context, tx *sqlx.Tx, projectID, targetRemoteID, runID, tagName, targetSHA string) error {
-	existing, err := repoTagActionsRefreshExistingOperationForAuto(ctx, tx, runID)
-	if err != nil {
-		return err
-	}
-	if existing != nil {
-		return nil
-	}
-	input := map[string]any{
-		"repo_tag_run_id":  runID,
-		"target_remote_id": targetRemoteID,
-		"refresh_kind":     "repo_tag_actions_refresh",
-		"commit_sha":       targetSHA,
-		"tag_name":         tagName,
-		"limit":            50,
-		"trigger":          "repo_tag_success",
-	}
-	_, err = enqueueOperationTx(ctx, tx, projectID, targetRemoteID, "github.actions.sync", "refresh GitHub Actions after successful repository tag", input, []string{"github", "git"}, "")
-	return err
-}
-
-func repoTagLookupExistingOperationForAuto(ctx context.Context, db sqlx.ExtContext, runID string) (map[string]any, error) {
-	return repoTagFollowUpOperationForAuto(ctx, db, runID, "repo.tag.lookup", "")
-}
-
-func repoTagActionsRefreshExistingOperationForAuto(ctx context.Context, db sqlx.ExtContext, runID string) (map[string]any, error) {
-	return repoTagFollowUpOperationForAuto(ctx, db, runID, "github.actions.sync", "repo_tag_actions_refresh")
-}
-
-func repoTagFollowUpOperationForAuto(ctx context.Context, db sqlx.ExtContext, runID, operationType, refreshKind string) (map[string]any, error) {
-	item, err := queryOne(ctx, db, `
-		SELECT id, operation_type, status, error, started_at, finished_at, created_at, updated_at
-		FROM operation_runs
-		WHERE operation_type=$1
-			AND input->>'repo_tag_run_id'=$2
-			AND ($3 = '' OR input->>'refresh_kind'=$3)
-			AND status IN ('queued', 'running', 'completed', 'succeeded', 'success', 'failed', 'canceled')
-		ORDER BY created_at DESC
-		LIMIT 1`, operationType, runID, refreshKind)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return item, nil
-}
-
 func templateStepsWithProvisionRetry(value any) []map[string]any {
 	input := mapSliceFromAny(value)
 	steps := make([]map[string]any, 0, len(input))
@@ -3194,6 +3091,13 @@ func nullableIntFromMap(result map[string]any, key string) any {
 	}
 }
 
+func validNullTimePtr(value *time.Time) sql.NullTime {
+	if value == nil || value.IsZero() {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: *value, Valid: true}
+}
+
 func mergeGitHubActionsResult(result map[string]any, syncResult *GitHubActionsSyncResult) {
 	if syncResult == nil {
 		return
@@ -3237,7 +3141,7 @@ func mergeArgoSyncResult(result map[string]any, syncResult *ArgoSyncResult) {
 	result["count"] = len(syncResult.Apps)
 }
 
-func (w *ControlWorker) recordGitHubActionsAdapterRun(ctx context.Context, tx *sqlx.Tx, opID string, result map[string]any) error {
+func (w *ControlWorker) recordGitHubActionsAdapterRun(ctx context.Context, tx *gorm.DB, opID string, result map[string]any) error {
 	syncResult, ok := result["_github_actions_result"].(*GitHubActionsSyncResult)
 	delete(result, "_github_actions_result")
 	if !ok || syncResult == nil || syncResult.RemoteID == "" {
@@ -3247,69 +3151,44 @@ func (w *ControlWorker) recordGitHubActionsAdapterRun(ctx context.Context, tx *s
 	result["repository"] = syncResult.Owner + "/" + syncResult.Repo
 	result["count"] = len(syncResult.Runs)
 	artifactCount := 0
-	if _, err := tx.ExecContext(ctx, "DELETE FROM github_action_runs WHERE git_remote_id=$1", syncResult.RemoteID); err != nil {
+	if err := tx.WithContext(ctx).Where(&GormGitHubActionRun{GitRemoteID: syncResult.RemoteID}).Delete(&GormGitHubActionRun{}).Error; err != nil {
 		return err
 	}
 	for _, run := range syncResult.Runs {
-		metadata, err := jsonParam(run.Metadata)
-		if err != nil {
+		actionRun := GormGitHubActionRun{
+			OperationRunID: validNullString(opID),
+			GitRemoteID:    syncResult.RemoteID,
+			ExternalRunID:  run.ExternalRunID,
+			WorkflowName:   run.WorkflowName,
+			RunID:          run.RunID,
+			Branch:         run.Branch,
+			CommitSHA:      run.CommitSHA,
+			Status:         run.Status,
+			Conclusion:     run.Conclusion,
+			HTMLURL:        run.HTMLURL,
+			Metadata:       JSONValue{Data: run.Metadata},
+			StartedAt:      validNullTimePtr(run.StartedAt),
+			UpdatedAt:      validNullTimePtr(run.UpdatedAt),
+			SyncedAt:       validNullTime(time.Now()),
+		}
+		if err := tx.WithContext(ctx).Create(&actionRun).Error; err != nil {
 			return err
 		}
-		row, err := queryOne(ctx, tx, `
-		INSERT INTO github_action_runs(
-			operation_run_id, git_remote_id, external_run_id, workflow_name, run_id,
-			branch, commit_sha, status, conclusion, html_url, metadata, started_at, updated_at, synced_at
-		)
-		VALUES (
-			$1, $2, $3, $4, $5,
-			$6, $7, $8, $9, $10, $11::jsonb, $12, $13, now()
-		)
-		RETURNING id`,
-			opID,
-			syncResult.RemoteID,
-			run.ExternalRunID,
-			run.WorkflowName,
-			run.RunID,
-			run.Branch,
-			run.CommitSHA,
-			run.Status,
-			run.Conclusion,
-			run.HTMLURL,
-			metadata,
-			run.StartedAt,
-			run.UpdatedAt,
-		)
-		if err != nil {
-			return err
-		}
-		actionRunID := strings.TrimSpace(fmt.Sprint(row["id"]))
 		for _, artifact := range run.Artifacts {
-			artifactMetadata, err := jsonParam(artifact.Metadata)
-			if err != nil {
-				return err
+			artifactModel := GormGitHubActionArtifact{
+				GitRemoteID:        syncResult.RemoteID,
+				GitHubActionRunID:  actionRun.ID,
+				ExternalArtifactID: artifact.ExternalArtifactID,
+				Name:               artifact.Name,
+				SizeInBytes:        artifact.SizeInBytes,
+				Expired:            artifact.Expired,
+				Metadata:           JSONValue{Data: artifact.Metadata},
+				CreatedAt:          validNullTimePtr(artifact.CreatedAt),
+				UpdatedAt:          validNullTimePtr(artifact.UpdatedAt),
+				ExpiresAt:          validNullTimePtr(artifact.ExpiresAt),
+				SyncedAt:           time.Now(),
 			}
-			if _, err := tx.ExecContext(ctx, `
-			INSERT INTO github_action_artifacts(
-				git_remote_id, github_action_run_id, external_artifact_id, name,
-				size_in_bytes, expired, metadata,
-				created_at, updated_at, expires_at, synced_at
-			)
-			VALUES (
-				$1, $2, $3, $4,
-				$5, $6, $7::jsonb,
-				$8, $9, $10, now()
-			)`,
-				syncResult.RemoteID,
-				actionRunID,
-				artifact.ExternalArtifactID,
-				artifact.Name,
-				artifact.SizeInBytes,
-				artifact.Expired,
-				artifactMetadata,
-				artifact.CreatedAt,
-				artifact.UpdatedAt,
-				artifact.ExpiresAt,
-			); err != nil {
+			if err := tx.WithContext(ctx).Create(&artifactModel).Error; err != nil {
 				return err
 			}
 			artifactCount++
@@ -3319,7 +3198,7 @@ func (w *ControlWorker) recordGitHubActionsAdapterRun(ctx context.Context, tx *s
 	return nil
 }
 
-func (w *ControlWorker) recordGitHubRepositoryLabelsAdapterRun(ctx context.Context, tx *sqlx.Tx, opID string, result map[string]any) error {
+func (w *ControlWorker) recordGitHubRepositoryLabelsAdapterRun(ctx context.Context, tx *gorm.DB, opID string, result map[string]any) error {
 	syncResult, ok := result["_github_repository_labels_result"].(*GitHubRepositoryLabelsSyncResult)
 	delete(result, "_github_repository_labels_result")
 	if !ok || syncResult == nil || syncResult.RemoteID == "" {
@@ -3330,72 +3209,59 @@ func (w *ControlWorker) recordGitHubRepositoryLabelsAdapterRun(ctx context.Conte
 	result["count"] = len(syncResult.Labels)
 	result["provider_response_included"] = false
 	result["credential_included"] = false
-	if _, err := tx.ExecContext(ctx, "DELETE FROM github_repository_labels WHERE git_remote_id=$1", syncResult.RemoteID); err != nil {
+	if err := tx.WithContext(ctx).Where(&GormGitHubRepositoryLabel{GitRemoteID: syncResult.RemoteID}).Delete(&GormGitHubRepositoryLabel{}).Error; err != nil {
 		return err
 	}
 	for _, label := range syncResult.Labels {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO github_repository_labels(
-				operation_run_id, git_remote_id, external_label_id, node_id,
-				name, color, description, is_default, synced_at
-			)
-			VALUES (
-				$1, $2, $3, $4,
-				$5, $6, $7, $8, now()
-			)`,
-			opID,
-			syncResult.RemoteID,
-			label.ExternalLabelID,
-			label.NodeID,
-			label.Name,
-			label.Color,
-			label.Description,
-			label.IsDefault,
-		); err != nil {
+		model := GormGitHubRepositoryLabel{
+			OperationRunID:  validNullString(opID),
+			GitRemoteID:     syncResult.RemoteID,
+			ExternalLabelID: label.ExternalLabelID,
+			NodeID:          label.NodeID,
+			Name:            label.Name,
+			Color:           label.Color,
+			Description:     label.Description,
+			IsDefault:       label.IsDefault,
+			SyncedAt:        time.Now(),
+		}
+		if err := tx.WithContext(ctx).Create(&model).Error; err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func markTemplateRepositoryProvisionedTx(ctx context.Context, tx *sqlx.Tx, repo map[string]any, remotes []map[string]any, files []map[string]any, provision *gitExecutionResult) error {
+func markTemplateRepositoryProvisionedGorm(ctx context.Context, tx *gorm.DB, repo map[string]any, files []map[string]any, provision *gitExecutionResult) error {
 	if provision == nil || provision.Details == nil {
 		return nil
 	}
 	sha := provision.AfterSHA
 	remoteID := strings.TrimSpace(fmt.Sprint(provision.Details["remote_id"]))
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE project_git_repositories
-		SET status='active',
-			description='Created from project template and initialized in provider repository.',
-			updated_at=now()
-		WHERE id=$1`, repo["id"]); err != nil {
+	if err := tx.WithContext(ctx).Model(&GormProjectGitRepository{}).
+		Where(&GormProjectGitRepository{GormBase: GormBase{ID: cleanOptionalID(fmt.Sprint(repo["id"]))}}).
+		Updates(map[string]any{"status": "active", "description": "Created from project template and initialized in provider repository."}).Error; err != nil {
 		return err
 	}
 	if remoteID != "" && remoteID != "<nil>" {
-		remoteURL := strings.TrimSpace(fmt.Sprint(provision.Details["remote_url"]))
-		webURL := strings.TrimSpace(fmt.Sprint(provision.Details["web_url"]))
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE git_remotes
-			SET latest_sha=$2,
-				last_sync_status='completed',
-				remote_url=COALESCE(NULLIF($3, ''), remote_url),
-				web_url=COALESCE(NULLIF($4, ''), web_url),
-				metadata=metadata || jsonb_build_object(
-					'template_placeholder', false,
-					'repository_provisioned', true,
-					'provider_type', NULLIF($5, ''),
-					'repository_name', NULLIF($6, '')
-				),
-				updated_at=now()
-			WHERE id=$1`,
-			remoteID,
-			sha,
-			cleanOptionalText(remoteURL),
-			cleanOptionalText(webURL),
-			cleanOptionalText(fmt.Sprint(provision.Details["provider_type"])),
-			cleanOptionalText(fmt.Sprint(provision.Details["repository_name"])),
-		); err != nil {
+		var remote GormGitRemote
+		if err := tx.WithContext(ctx).First(&remote, &GormGitRemote{GormBase: GormBase{ID: remoteID}}).Error; err != nil {
+			return err
+		}
+		remote.LatestSHA = sha
+		remote.LastSyncStatus = "completed"
+		if remoteURL := cleanOptionalText(fmt.Sprint(provision.Details["remote_url"])); remoteURL != "" {
+			remote.RemoteURL = remoteURL
+		}
+		if webURL := cleanOptionalText(fmt.Sprint(provision.Details["web_url"])); webURL != "" {
+			remote.WebURL = webURL
+		}
+		metadata := mapFromAny(remote.Metadata.Data)
+		metadata["template_placeholder"] = false
+		metadata["repository_provisioned"] = true
+		metadata["provider_type"] = cleanOptionalText(fmt.Sprint(provision.Details["provider_type"]))
+		metadata["repository_name"] = cleanOptionalText(fmt.Sprint(provision.Details["repository_name"]))
+		remote.Metadata = JSONValue{Data: metadata}
+		if err := tx.WithContext(ctx).Save(&remote).Error; err != nil {
 			return err
 		}
 	}
@@ -3406,95 +3272,75 @@ func markTemplateRepositoryProvisionedTx(ctx context.Context, tx *sqlx.Tx, repo 
 	if len(ids) == 0 {
 		return nil
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE project_template_files
-		SET status='pushed',
-			metadata=metadata || jsonb_build_object('repository_provisioned', true, 'commit_sha', $2),
-			updated_at=now()
-		WHERE id = ANY($1::uuid[])`, pq.Array(ids), sha); err != nil {
+	var models []GormProjectTemplateFile
+	if err := tx.WithContext(ctx).Find(&models, ids).Error; err != nil {
 		return err
+	}
+	for i := range models {
+		models[i].Status = "pushed"
+		metadata := mapFromAny(models[i].Metadata.Data)
+		metadata["repository_provisioned"] = true
+		metadata["commit_sha"] = sha
+		models[i].Metadata = JSONValue{Data: metadata}
+		if err := tx.WithContext(ctx).Save(&models[i]).Error; err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func (w *ControlWorker) markProjectTemplateRunCompleted(ctx context.Context, opID string, repo map[string]any, remotes []map[string]any, files []map[string]any, steps []map[string]any, result map[string]any, provision *gitExecutionResult) error {
-	tx, err := w.store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if provision != nil {
-		if provisioned, _ := provision.Details["provisioned"].(bool); provisioned {
-			if err := markTemplateRepositoryProvisionedTx(ctx, tx, repo, remotes, files, provision); err != nil {
-				return err
+	return w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if provision != nil {
+			if provisioned, _ := provision.Details["provisioned"].(bool); provisioned {
+				if err := markTemplateRepositoryProvisionedGorm(ctx, tx, repo, files, provision); err != nil {
+					return err
+				}
 			}
 		}
-	}
-	resultJSON, err := jsonParam(result)
-	if err != nil {
-		return err
-	}
-	stepsJSON, err := jsonParam(steps)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE project_template_runs
-		SET status='completed',
-			steps=$2::jsonb,
-			result=$3::jsonb,
-			finished_at=now(),
-			updated_at=now()
-		WHERE operation_run_id=$1`, opID, stepsJSON, resultJSON); err != nil {
-		return err
-	}
-	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
-		return fmt.Errorf("syncing canonical assets for completed project template creation: %w", err)
-	}
-	return tx.Commit()
+		updated := tx.Model(&GormProjectTemplateRun{}).
+			Where(&GormProjectTemplateRun{OperationRunID: validNullString(opID)}).
+			Updates(map[string]any{"status": "completed", "steps": JSONValue{Data: steps}, "result": JSONValue{Data: result}, "finished_at": time.Now()})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
+			return fmt.Errorf("syncing canonical assets for completed project template creation: %w", err)
+		}
+		return nil
+	})
 }
 
 func (w *ControlWorker) markProjectTemplateRunFailed(ctx context.Context, opID string, result map[string]any, cause error) error {
-	tx, err := w.store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	stepsValue := result["steps"]
 	if !hasTemplateSteps(stepsValue) {
-		run, runErr := queryOne(ctx, tx, "SELECT steps FROM project_template_runs WHERE operation_run_id=$1", opID)
+		var run GormProjectTemplateRun
+		runErr := w.store.Gorm.WithContext(ctx).Where(&GormProjectTemplateRun{OperationRunID: validNullString(opID)}).First(&run).Error
 		if runErr != nil {
 			return runErr
 		}
-		stepsValue = run["steps"]
+		stepsValue = mapSliceFromAny(run.Steps.Data)
 	}
 	failedSteps := templateStepsWithStatus(stepsValue, "failed")
-	stepsJSON, err := jsonParam(failedSteps)
-	if err != nil {
-		return err
-	}
 	result["steps"] = failedSteps
 	errorMessage := truncateProviderError(cause.Error(), providerRunErrorLimit)
 	result["error"] = errorMessage
-	resultJSON, err := jsonParam(result)
-	if err != nil {
-		return err
+	updated := w.store.Gorm.WithContext(ctx).Model(&GormProjectTemplateRun{}).
+		Where(&GormProjectTemplateRun{OperationRunID: validNullString(opID)}).
+		Updates(map[string]any{"status": "failed", "steps": JSONValue{Data: failedSteps}, "result": JSONValue{Data: result}, "error_message": errorMessage, "finished_at": time.Now()})
+	if updated.Error != nil {
+		return updated.Error
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE project_template_runs
-		SET status='failed',
-			steps=$2::jsonb,
-			result=$3::jsonb,
-			error_message=$4,
-			finished_at=now(),
-			updated_at=now()
-		WHERE operation_run_id=$1`, opID, stepsJSON, resultJSON, errorMessage); err != nil {
-		return err
+	if updated.RowsAffected == 0 {
+		return ErrNotFound
 	}
-	return tx.Commit()
+	return nil
 }
 
-func (w *ControlWorker) recordArgoSyncAdapterRun(ctx context.Context, tx *sqlx.Tx, result map[string]any) error {
+func (w *ControlWorker) recordArgoSyncAdapterRun(ctx context.Context, tx *gorm.DB, result map[string]any) error {
 	syncResult, ok := result["_argo_sync_result"].(*ArgoSyncResult)
 	delete(result, "_argo_sync_result")
 	if !ok || syncResult == nil || syncResult.ProjectID == "" || syncResult.ConnectionID == "" {
@@ -3504,31 +3350,25 @@ func (w *ControlWorker) recordArgoSyncAdapterRun(ctx context.Context, tx *sqlx.T
 	result["connection_id"] = syncResult.ConnectionID
 	result["server_url"] = syncResult.ServerURL
 	result["count"] = len(syncResult.Apps)
-	if _, err := tx.ExecContext(ctx, "DELETE FROM argo_apps WHERE argo_connection_id=$1", syncResult.ConnectionID); err != nil {
+	if err := tx.WithContext(ctx).Where(&GormArgoApp{ArgoConnectionID: validNullString(syncResult.ConnectionID)}).Delete(&GormArgoApp{}).Error; err != nil {
 		return err
 	}
 	for _, app := range syncResult.Apps {
-		metadata, err := jsonParam(app.Metadata)
-		if err != nil {
-			return err
-		}
 		target, err := upsertDeploymentTargetForArgoApp(ctx, tx, syncResult, app)
 		if err != nil {
 			return err
 		}
-		argoApp, err := queryOne(ctx, tx, `
-			INSERT INTO argo_apps(project_id, argo_connection_id, deployment_target_id, name, namespace, status, metadata, synced_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, now(), now())
-			RETURNING *`,
-			syncResult.ProjectID,
-			syncResult.ConnectionID,
-			target["id"],
-			app.Name,
-			app.Namespace,
-			app.Status,
-			metadata,
-		)
-		if err != nil {
+		argoApp := GormArgoApp{
+			ProjectID:          syncResult.ProjectID,
+			ArgoConnectionID:   validNullString(syncResult.ConnectionID),
+			DeploymentTargetID: validNullString(target.ID),
+			Name:               app.Name,
+			Namespace:          app.Namespace,
+			Status:             app.Status,
+			Metadata:           JSONValue{Data: app.Metadata},
+			SyncedAt:           validNullTime(time.Now()),
+		}
+		if err := tx.WithContext(ctx).Create(&argoApp).Error; err != nil {
 			return err
 		}
 		if err := upsertDeploymentRecordForArgoApp(ctx, tx, syncResult, app, target, argoApp); err != nil {
@@ -3541,115 +3381,81 @@ func (w *ControlWorker) recordArgoSyncAdapterRun(ctx context.Context, tx *sqlx.T
 	if err := cleanupOrphanArgoDeploymentTargets(ctx, tx, syncResult.ConnectionID); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `
-		UPDATE argo_connections
-		SET last_sync_status='completed',
-			last_sync_error='',
-			updated_at=now()
-		WHERE id=$1`, syncResult.ConnectionID)
-	if err != nil {
+	if err := tx.WithContext(ctx).Model(&GormArgoConnection{}).
+		Where(&GormArgoConnection{GormBase: GormBase{ID: syncResult.ConnectionID}}).
+		Updates(map[string]any{"last_sync_status": "completed", "last_sync_error": ""}).Error; err != nil {
 		return err
 	}
-	if _, err := SyncCanonicalAssetsWith(ctx, tx); err != nil {
+	if _, err := syncCanonicalAssetsGorm(ctx, tx); err != nil {
 		return fmt.Errorf("syncing canonical assets for Argo app sync: %w", err)
 	}
 	return nil
 }
 
-func upsertDeploymentRecordForArgoApp(ctx context.Context, tx *sqlx.Tx, syncResult *ArgoSyncResult, app ArgoAppInput, target, argoApp map[string]any) error {
+func upsertDeploymentRecordForArgoApp(ctx context.Context, tx *gorm.DB, syncResult *ArgoSyncResult, app ArgoAppInput, target GormDeploymentTarget, argoApp GormArgoApp) error {
 	metadata := mapFromAny(app.Metadata)
 	revision := firstNonEmptyString(stringFromMap(metadata, "revision"), stringFromMap(metadata, "target_revision"))
 	images := stringSliceFromAny(metadata["images"])
-	imagesJSON, err := jsonParam(images)
-	if err != nil {
-		return err
-	}
-	recordMetadata, err := jsonParam(map[string]any{
+	recordMetadata := map[string]any{
 		"source":             "argocd",
 		"argo_connection_id": syncResult.ConnectionID,
 		"server_url":         syncResult.ServerURL,
 		"health_status":      stringFromMap(metadata, "health_status"),
 		"sync_status":        stringFromMap(metadata, "sync_status"),
-	})
-	if err != nil {
+	}
+	environment := firstNonEmptyString(app.Environment, target.Environment)
+	namespace := firstNonEmptyString(app.Namespace, target.Namespace)
+	clusterName := firstNonEmptyString(app.ClusterName, target.ClusterName)
+	var record GormDeploymentRecord
+	where := GormDeploymentRecord{ProjectID: syncResult.ProjectID, Source: "argocd", Name: app.Name, Environment: environment, Namespace: namespace, ClusterName: clusterName}
+	if err := tx.WithContext(ctx).Where(&where).First(&record).Error; err != nil && !errorsIsRecordNotFound(err) {
 		return err
 	}
-	environment := firstNonEmptyString(app.Environment, stringFromMap(target, "environment"))
-	namespace := firstNonEmptyString(app.Namespace, stringFromMap(target, "namespace"))
-	clusterName := firstNonEmptyString(app.ClusterName, stringFromMap(target, "cluster_name"))
-	record, err := queryOne(ctx, tx, `
-		INSERT INTO deployment_records(
-			project_id, deployment_target_id, argo_connection_id, argo_app_id, name,
-			environment, namespace, cluster_name, source, status, revision, image_refs, metadata,
-			observed_at, updated_at
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'argocd', $9, $10, $11::jsonb, $12::jsonb, now(), now())
-		ON CONFLICT(project_id, source, name, environment, namespace, cluster_name)
-		DO UPDATE SET
-			deployment_target_id=EXCLUDED.deployment_target_id,
-			argo_connection_id=EXCLUDED.argo_connection_id,
-			argo_app_id=EXCLUDED.argo_app_id,
-			status=EXCLUDED.status,
-			revision=EXCLUDED.revision,
-			image_refs=EXCLUDED.image_refs,
-			metadata=EXCLUDED.metadata,
-			observed_at=now(),
-			updated_at=now()
-		RETURNING *`,
-		syncResult.ProjectID,
-		target["id"],
-		syncResult.ConnectionID,
-		argoApp["id"],
-		app.Name,
-		environment,
-		namespace,
-		clusterName,
-		app.Status,
-		revision,
-		imagesJSON,
-		recordMetadata,
-	)
-	if err != nil {
+	record.ProjectID = syncResult.ProjectID
+	record.DeploymentTargetID = validNullString(target.ID)
+	record.ArgoConnectionID = validNullString(syncResult.ConnectionID)
+	record.ArgoAppID = validNullString(argoApp.ID)
+	record.Name = app.Name
+	record.Environment = environment
+	record.Namespace = namespace
+	record.ClusterName = clusterName
+	record.Source = "argocd"
+	record.Status = app.Status
+	record.Revision = revision
+	record.ImageRefs = JSONValue{Data: images}
+	record.Metadata = JSONValue{Data: recordMetadata}
+	record.ObservedAt = time.Now()
+	if err := tx.WithContext(ctx).Save(&record).Error; err != nil {
 		return err
 	}
 	if revision == "" && len(images) == 0 {
 		return nil
 	}
-	rollbackMetadata, err := jsonParam(map[string]any{
+	rollbackMetadata := map[string]any{
 		"source":               "argocd",
-		"deployment_record_id": record["id"],
-		"argo_app_id":          argoApp["id"],
-	})
-	if err != nil {
+		"deployment_record_id": record.ID,
+		"argo_app_id":          argoApp.ID,
+	}
+	var point GormRollbackPoint
+	pointWhere := GormRollbackPoint{ProjectID: syncResult.ProjectID, Source: "argocd", Name: app.Name, Environment: environment, Revision: revision}
+	if err := tx.WithContext(ctx).Where(&pointWhere).First(&point).Error; err != nil && !errorsIsRecordNotFound(err) {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO rollback_points(
-			project_id, deployment_record_id, deployment_target_id, name, environment,
-			revision, image_refs, source, status, metadata, captured_at
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 'argocd', 'available', $8::jsonb, now())
-		ON CONFLICT(project_id, source, name, environment, revision)
-		DO UPDATE SET
-			deployment_record_id=EXCLUDED.deployment_record_id,
-			deployment_target_id=EXCLUDED.deployment_target_id,
-			image_refs=EXCLUDED.image_refs,
-			status='available',
-			metadata=EXCLUDED.metadata,
-			captured_at=now()`,
-		syncResult.ProjectID,
-		record["id"],
-		target["id"],
-		app.Name,
-		environment,
-		revision,
-		imagesJSON,
-		rollbackMetadata,
-	)
-	return err
+	point.ProjectID = syncResult.ProjectID
+	point.DeploymentRecordID = validNullString(record.ID)
+	point.DeploymentTargetID = validNullString(target.ID)
+	point.Name = app.Name
+	point.Environment = environment
+	point.Revision = revision
+	point.ImageRefs = JSONValue{Data: images}
+	point.Source = "argocd"
+	point.Status = "available"
+	point.Metadata = JSONValue{Data: rollbackMetadata}
+	point.CapturedAt = time.Now()
+	return tx.WithContext(ctx).Save(&point).Error
 }
 
-func upsertDeploymentTargetForArgoApp(ctx context.Context, tx *sqlx.Tx, syncResult *ArgoSyncResult, app ArgoAppInput) (map[string]any, error) {
+func upsertDeploymentTargetForArgoApp(ctx context.Context, tx *gorm.DB, syncResult *ArgoSyncResult, app ArgoAppInput) (GormDeploymentTarget, error) {
 	environment := strings.TrimSpace(app.Environment)
 	if environment == "" {
 		environment = strings.TrimSpace(app.Namespace)
@@ -3663,68 +3469,90 @@ func upsertDeploymentTargetForArgoApp(ctx context.Context, tx *sqlx.Tx, syncResu
 	if namespace != "" && namespace != environment {
 		name = environment + "/" + namespace
 	}
-	metadata, err := jsonParam(map[string]any{
+	metadata := map[string]any{
 		"source":             "argocd",
 		"argo_connection_id": syncResult.ConnectionID,
 		"server_url":         syncResult.ServerURL,
-	})
-	if err != nil {
-		return nil, err
 	}
-	return queryOne(ctx, tx, `
-		INSERT INTO deployment_targets(project_id, name, environment, cluster_name, namespace, source, argo_connection_id, status, metadata, updated_at)
-		VALUES ($1, $2, $3, $4, $5, 'argocd', $6, 'unknown', $7::jsonb, now())
-		ON CONFLICT(project_id, environment, cluster_name, namespace)
-		DO UPDATE SET
-			name=EXCLUDED.name,
-			source=EXCLUDED.source,
-			argo_connection_id=EXCLUDED.argo_connection_id,
-			metadata=EXCLUDED.metadata,
-			updated_at=now()
-		RETURNING *`,
-		syncResult.ProjectID,
-		name,
-		environment,
-		clusterName,
-		namespace,
-		syncResult.ConnectionID,
-		metadata,
-	)
+	var target GormDeploymentTarget
+	where := GormDeploymentTarget{ProjectID: syncResult.ProjectID, Environment: environment, ClusterName: clusterName, Namespace: namespace}
+	if err := tx.WithContext(ctx).Where(&where).First(&target).Error; err != nil && !errorsIsRecordNotFound(err) {
+		return target, err
+	}
+	target.ProjectID = syncResult.ProjectID
+	target.Name = name
+	target.Environment = environment
+	target.ClusterName = clusterName
+	target.Namespace = namespace
+	target.Source = "argocd"
+	target.ArgoConnectionID = validNullString(syncResult.ConnectionID)
+	if target.Status == "" {
+		target.Status = "unknown"
+	}
+	target.Metadata = JSONValue{Data: metadata}
+	return target, tx.WithContext(ctx).Save(&target).Error
 }
 
-func refreshArgoDeploymentTargetStatus(ctx context.Context, tx *sqlx.Tx, projectID, connectionID string) error {
-	_, err := tx.ExecContext(ctx, `
-		UPDATE deployment_targets dt
-		SET status=COALESCE((
-			SELECT CASE
-				WHEN bool_or(lower(aa.status) IN ('outofsync', 'failed', 'error', 'degraded')) THEN 'OutOfSync'
-				WHEN bool_and(lower(aa.status) = 'synced') THEN 'Synced'
-				ELSE 'Unknown'
-			END
-			FROM argo_apps aa
-			WHERE aa.deployment_target_id=dt.id
-		), 'unknown'),
-		updated_at=now()
-		WHERE dt.project_id=$1
-			AND dt.source='argocd'
-			AND EXISTS (
-				SELECT 1 FROM argo_apps aa
-				WHERE aa.deployment_target_id=dt.id
-					AND aa.argo_connection_id=$2
-			)`, projectID, connectionID)
-	return err
+func refreshArgoDeploymentTargetStatus(ctx context.Context, tx *gorm.DB, projectID, connectionID string) error {
+	var apps []GormArgoApp
+	if err := tx.WithContext(ctx).Where(&GormArgoApp{ProjectID: projectID, ArgoConnectionID: validNullString(connectionID)}).Find(&apps).Error; err != nil {
+		return err
+	}
+	statusesByTarget := map[string][]string{}
+	for _, app := range apps {
+		targetID := cleanOptionalID(app.DeploymentTargetID.String)
+		if targetID == "" {
+			continue
+		}
+		statusesByTarget[targetID] = append(statusesByTarget[targetID], app.Status)
+	}
+	for targetID, statuses := range statusesByTarget {
+		if err := tx.WithContext(ctx).Model(&GormDeploymentTarget{}).
+			Where(&GormDeploymentTarget{GormBase: GormBase{ID: targetID}, ProjectID: projectID, Source: "argocd"}).
+			Updates(map[string]any{"status": argoDeploymentTargetStatusFromApps(statuses)}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func cleanupOrphanArgoDeploymentTargets(ctx context.Context, tx *sqlx.Tx, connectionID string) error {
-	_, err := tx.ExecContext(ctx, `
-		DELETE FROM deployment_targets dt
-		WHERE dt.source='argocd'
-			AND dt.argo_connection_id=$1
-			AND NOT EXISTS (
-				SELECT 1 FROM argo_apps aa
-				WHERE aa.deployment_target_id=dt.id
-			)`, connectionID)
-	return err
+func argoDeploymentTargetStatusFromApps(statuses []string) string {
+	if len(statuses) == 0 {
+		return "unknown"
+	}
+	allSynced := true
+	for _, status := range statuses {
+		switch strings.ToLower(strings.TrimSpace(status)) {
+		case "outofsync", "failed", "error", "degraded":
+			return "OutOfSync"
+		case "synced":
+		default:
+			allSynced = false
+		}
+	}
+	if allSynced {
+		return "Synced"
+	}
+	return "Unknown"
+}
+
+func cleanupOrphanArgoDeploymentTargets(ctx context.Context, tx *gorm.DB, connectionID string) error {
+	var targets []GormDeploymentTarget
+	if err := tx.WithContext(ctx).Where(&GormDeploymentTarget{Source: "argocd", ArgoConnectionID: validNullString(connectionID)}).Find(&targets).Error; err != nil {
+		return err
+	}
+	for _, target := range targets {
+		var count int64
+		if err := tx.WithContext(ctx).Model(&GormArgoApp{}).Where(&GormArgoApp{DeploymentTargetID: validNullString(target.ID)}).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			if err := tx.WithContext(ctx).Delete(&target).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func argoConnectionIDFromResult(result map[string]any) string {

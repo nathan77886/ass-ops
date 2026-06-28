@@ -2,12 +2,10 @@ package app
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
 )
 
 type ProviderReviewAttemptSnapshotOptions struct {
@@ -17,7 +15,7 @@ type ProviderReviewAttemptSnapshotOptions struct {
 }
 
 func RecordProviderReviewAttemptSnapshot(ctx context.Context, store *Store, opts ProviderReviewAttemptSnapshotOptions) (map[string]any, error) {
-	if store == nil || store.DB == nil {
+	if store == nil || store.Gorm == nil {
 		return nil, fmt.Errorf("store is required")
 	}
 	attemptID := cleanOptionalID(opts.AttemptID)
@@ -27,12 +25,12 @@ func RecordProviderReviewAttemptSnapshot(ctx context.Context, store *Store, opts
 	attempt := opts.Attempt
 	var err error
 	if len(attempt) == 0 {
-		attempt, err = providerReviewAttemptForSnapshot(ctx, store.DB, attemptID)
+		attempt, err = providerReviewAttemptForSnapshot(ctx, store.Gorm, attemptID)
 		if err != nil {
 			return nil, err
 		}
 	}
-	assetID, assetErr := providerReviewAttemptAssetID(ctx, store.DB, attemptID)
+	assetID, assetErr := providerReviewAttemptAssetID(ctx, store.Gorm, attemptID)
 	snapshot := providerReviewAttemptSnapshotPayload(attempt, assetErr == nil)
 	ready, state, missing := providerReviewAttemptSnapshotReadiness(snapshot)
 	result := map[string]any{
@@ -86,118 +84,83 @@ func RecordProviderReviewAttemptSnapshot(ctx context.Context, store *Store, opts
 		return result, nil
 	}
 	status, health := providerReviewAttemptSnapshotStatusHealth(state)
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "provider review attempt snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting provider review attempt snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording provider review attempt snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, status); err != nil {
-		return nil, fmt.Errorf("locking provider review attempt snapshot asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'provider review attempt snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting provider review attempt snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing provider review attempt snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = state
 	result["snapshot_status"] = status
 	result["snapshot_health"] = health
 	result["snapshots_written"] = written
 	result["snapshot_commit_attempted"] = true
 	result["canonical_asset_status_snapshot_try"] = true
-	if written >= 0 {
-		result["snapshots_skipped_as_duplicate"] = 1 - written
-		result["provider_review_attempt_snapshot_written"] = written > 0
-		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["provider_review_attempt_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
+	result["snapshots_skipped_as_duplicate"] = 1 - written
+	result["provider_review_attempt_snapshot_written"] = written > 0
+	result["asset_status_snapshot_written"] = written > 0
 	result["message"] = "Sanitized provider review attempt snapshot recorded from local no-call ledger evidence."
 	return result, nil
 }
 
-func providerReviewAttemptForSnapshot(ctx context.Context, db sqlx.ExtContext, attemptID string) (map[string]any, error) {
-	return queryOne(ctx, db, `
-		SELECT
-			pra.id,
-			pra.operation_approval_id,
-			pra.project_template_run_id,
-			pra.provider_type,
-			pra.review_kind,
-			pra.operation_name,
-			pra.endpoint_key,
-			pra.status,
-			pra.replay_check,
-			pra.conflict_policy,
-			pra.retry_policy,
-			pra.operation_order,
-			pra.depends_on_operation,
-			pra.dependency_status,
-			pra.provider_api_call_made,
-			pra.provider_api_mutation,
-			pra.external_call_made,
-			pra.claimed_at,
-			oa.id AS approval_id,
-			oa.project_id AS approval_project_id,
-			oa.action AS approval_action,
-			oa.status AS approval_status
-		FROM provider_review_attempts pra
-		JOIN operation_approvals oa ON oa.id=pra.operation_approval_id
-		WHERE pra.id=$1`, attemptID)
+func providerReviewAttemptForSnapshot(ctx context.Context, db *gorm.DB, attemptID string) (map[string]any, error) {
+	if db == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
+	var attempt GormProviderReviewAttempt
+	if err := db.WithContext(ctx).First(&attempt, &GormProviderReviewAttempt{GormBase: GormBase{ID: attemptID}}).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	var approval GormOperationApproval
+	if err := db.WithContext(ctx).First(&approval, &GormOperationApproval{GormBase: GormBase{ID: attempt.OperationApprovalID}}).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return map[string]any{
+		"id":                      attempt.ID,
+		"operation_approval_id":   attempt.OperationApprovalID,
+		"project_template_run_id": nullableStringValue(attempt.ProjectTemplateRunID),
+		"provider_type":           attempt.ProviderType,
+		"review_kind":             attempt.ReviewKind,
+		"operation_name":          attempt.OperationName,
+		"endpoint_key":            attempt.EndpointKey,
+		"status":                  attempt.Status,
+		"replay_check":            attempt.ReplayCheck,
+		"conflict_policy":         attempt.ConflictPolicy,
+		"retry_policy":            attempt.RetryPolicy,
+		"operation_order":         attempt.OperationOrder,
+		"depends_on_operation":    attempt.DependsOnOperation,
+		"dependency_status":       attempt.DependencyStatus,
+		"request_summary":         attempt.RequestSummary,
+		"response_diagnostics":    attempt.ResponseDiagnostics,
+		"provider_api_call_made":  attempt.ProviderAPICallMade,
+		"provider_api_mutation":   attempt.ProviderAPIMutation,
+		"external_call_made":      attempt.ExternalCallMade,
+		"claimed_at":              nullableTimeAny(attempt.ClaimedAt),
+		"approval_id":             approval.ID,
+		"approval_project_id":     nullableStringValue(approval.ProjectID),
+		"approval_action":         approval.Action,
+		"approval_status":         approval.Status,
+	}, nil
 }
 
-func providerReviewAttemptAssetID(ctx context.Context, db sqlx.ExtContext, attemptID string) (string, error) {
-	row, err := queryOne(ctx, db, `
-		SELECT id::text AS id
-		FROM assets
-		WHERE asset_type='provider_review_attempt'
-			AND source_table='provider_review_attempts'
-			AND source_id=$1::uuid
-		LIMIT 1`, attemptID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+func providerReviewAttemptAssetID(ctx context.Context, db *gorm.DB, attemptID string) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("gorm database is not configured")
+	}
+	var asset GormAsset
+	if err := db.WithContext(ctx).
+		Where(&GormAsset{AssetType: "provider_review_attempt", SourceTable: "provider_review_attempts", SourceID: validNullString(attemptID)}).
+		First(&asset).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
 			return "", fmt.Errorf("provider_review_attempt asset for %s not found; run db sync-assets first", attemptID)
 		}
 		return "", err
 	}
-	assetID := strings.TrimSpace(fmt.Sprint(row["id"]))
+	assetID := strings.TrimSpace(asset.ID)
 	if assetID == "" || assetID == "<nil>" {
 		return "", fmt.Errorf("provider_review_attempt asset for %s has empty id", attemptID)
 	}

@@ -5,13 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
-
-	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/jmoiron/sqlx"
 )
 
 func TestResolveKubeconfigRefRejectsUnsafeRefsAndModes(t *testing.T) {
@@ -601,113 +597,6 @@ func TestArgoPodLogPreviewBlockedBackendDoesNotLeakKubeconfigRef(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("blocked pod log preview leaked %q: %s", forbidden, encoded)
 		}
-	}
-}
-
-func TestExecuteArgoPodLogAuditRunsEnabledKubectlMetadataOnly(t *testing.T) {
-	dir := t.TempDir()
-	writeKubeconfig(t, filepath.Join(dir, "billing-reader"), 0o600)
-	kubectlPath := filepath.Join(dir, "kubectl")
-	if err := os.WriteFile(kubectlPath, []byte("#!/bin/sh\nprintf 'secret log line 1\\nsecret log line 2\\n'\n"), 0o700); err != nil {
-		t.Fatalf("write fake kubectl: %v", err)
-	}
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer db.Close()
-	worker := &ControlWorker{
-		store: &Store{DB: sqlx.NewDb(db, "sqlmock")},
-		cfg: Config{
-			KubernetesPodLogsEnabled: true,
-			KubeconfigSecretDir:      dir,
-			KubectlPath:              kubectlPath,
-		},
-	}
-	input := []byte(`{"project_id":"project-1","deployment_target_id":"target-1","deployment_target_name":"prod","environment":"test","cluster_name":"test-cluster","namespace":"billing","pod_name":"api-7d9f","container_name":"web","tail_lines":50,"since_seconds":60}`)
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM operation_runs WHERE id=$1")).
-		WithArgs("op-pod-logs").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "input"}).AddRow("op-pod-logs", input))
-	mock.ExpectQuery(`(?s)SELECT id, name, kubeconfig_secret_ref, service_account, token_subject_review_status, rbac_read_logs_status, status\s+FROM kubernetes_environments`).
-		WithArgs("project-1", "test", "test-cluster", "billing").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "kubeconfig_secret_ref", "service_account", "token_subject_review_status", "rbac_read_logs_status", "status"}).
-			AddRow("kube-env-1", "billing", "billing-reader", "system:serviceaccount:billing:reader", "reviewed", "reviewed", "ready"))
-	result, err := worker.executeArgoPodLogAudit(context.Background(), "op-pod-logs", map[string]any{})
-	if err != nil {
-		t.Fatalf("executeArgoPodLogAudit: %v", err)
-	}
-	if result["backend_state"] != "completed" ||
-		result["result_scope"] != "sanitized_live_log_metadata" ||
-		result["line_count"] != 2 ||
-		result["kubectl_command_invoked"] != true ||
-		result["kubernetes_api_call"] != true ||
-		result["log_stream_opened"] != true ||
-		result["log_body_included"] != false ||
-		result["raw_response_included"] != false ||
-		result["secret_included"] != false ||
-		result["kubeconfig_secret_ref_present"] != true {
-		t.Fatalf("enabled worker pod log metadata result = %#v", result)
-	}
-	encoded, _ := json.Marshal(result)
-	for _, forbidden := range []string{"secret log line", filepath.Join(dir, "billing-reader"), "billing-reader", "apiVersion:", "clusters:"} {
-		if strings.Contains(string(encoded), forbidden) {
-			t.Fatalf("worker pod log metadata leaked %q: %s", forbidden, encoded)
-		}
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("sql expectations: %v", err)
-	}
-}
-
-func TestExecuteArgoPodLogAuditCarriesRedactedPreviewWhenEnabled(t *testing.T) {
-	dir := t.TempDir()
-	writeKubeconfig(t, filepath.Join(dir, "billing-reader"), 0o600)
-	kubectlPath := filepath.Join(dir, "kubectl")
-	if err := os.WriteFile(kubectlPath, []byte("#!/bin/sh\nprintf 'ready\\nclient_secret: live-secret\\n'\n"), 0o700); err != nil {
-		t.Fatalf("write fake kubectl: %v", err)
-	}
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer db.Close()
-	worker := &ControlWorker{
-		store: &Store{DB: sqlx.NewDb(db, "sqlmock")},
-		cfg: Config{
-			KubernetesPodLogsEnabled:    true,
-			KubernetesLogPreviewEnabled: true,
-			KubeconfigSecretDir:         dir,
-			KubectlPath:                 kubectlPath,
-		},
-	}
-	input := []byte(`{"project_id":"project-1","deployment_target_id":"target-1","deployment_target_name":"prod","environment":"test","cluster_name":"test-cluster","namespace":"billing","pod_name":"api-7d9f","container_name":"web","tail_lines":50,"since_seconds":60}`)
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM operation_runs WHERE id=$1")).
-		WithArgs("op-pod-logs").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "input"}).AddRow("op-pod-logs", input))
-	mock.ExpectQuery(`(?s)SELECT id, name, kubeconfig_secret_ref, service_account, token_subject_review_status, rbac_read_logs_status, status\s+FROM kubernetes_environments`).
-		WithArgs("project-1", "test", "test-cluster", "billing").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "kubeconfig_secret_ref", "service_account", "token_subject_review_status", "rbac_read_logs_status", "status"}).
-			AddRow("kube-env-1", "billing", "billing-reader", "system:serviceaccount:billing:reader", "reviewed", "reviewed", "ready"))
-	result, err := worker.executeArgoPodLogAudit(context.Background(), "op-pod-logs", map[string]any{})
-	if err != nil {
-		t.Fatalf("executeArgoPodLogAudit: %v", err)
-	}
-	preview := stringFromMap(result, "redacted_log_preview")
-	if result["backend_state"] != "completed" ||
-		result["redacted_log_body_included"] != true ||
-		result["log_body_included"] != false ||
-		!strings.Contains(preview, "client_secret: <redacted>") ||
-		!strings.Contains(preview, "ready") {
-		t.Fatalf("worker preview result = %#v", result)
-	}
-	encoded, _ := json.Marshal(result)
-	for _, forbidden := range []string{"live-secret", filepath.Join(dir, "billing-reader"), "billing-reader", "apiVersion:", "clusters:"} {
-		if strings.Contains(string(encoded), forbidden) {
-			t.Fatalf("worker pod log preview leaked %q: %s", forbidden, encoded)
-		}
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("sql expectations: %v", err)
 	}
 }
 

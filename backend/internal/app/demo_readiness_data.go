@@ -2,10 +2,10 @@ package app
 
 import (
 	"context"
-	"database/sql"
+	"errors"
 	"fmt"
 
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
 )
 
 type DemoReadinessDataOptions struct {
@@ -18,7 +18,7 @@ type DemoReadinessDataOptions struct {
 	RecordSnapshot bool
 }
 
-type demoReadinessDataSyncFunc func(context.Context, sqlx.QueryerContext) (AssetSyncResult, error)
+type demoReadinessDataSyncFunc func(context.Context, *gorm.DB) (AssetSyncResult, error)
 
 type demoReadinessRemoteSpec struct {
 	Name         string
@@ -29,75 +29,68 @@ type demoReadinessRemoteSpec struct {
 	IsPrimary    bool
 }
 
-const demoReadinessDataAdvisoryLockID int64 = 451127631724521
-
 func EnsureDemoReadinessData(ctx context.Context, store *Store, opts DemoReadinessDataOptions) (map[string]any, error) {
-	return ensureDemoReadinessDataWithSync(ctx, store, opts, SyncCanonicalAssetsWith)
+	return ensureDemoReadinessDataWithSync(ctx, store, opts, syncCanonicalAssetsGorm)
 }
 
 func ensureDemoReadinessDataWithSync(ctx context.Context, store *Store, opts DemoReadinessDataOptions, syncFn demoReadinessDataSyncFunc) (map[string]any, error) {
 	opts = normalizeDemoReadinessDataOptions(opts)
-	if store == nil || store.DB == nil {
-		return nil, fmt.Errorf("store database is required")
-	}
 	result := newDemoReadinessDataResult(opts)
-	existing, err := observeDemoReadinessData(ctx, store.DB, opts)
+	if opts.DryRun {
+		result["recording_enabled"] = false
+		result["recording_state"] = "dry_run"
+		return result, nil
+	}
+	if store == nil || store.Gorm == nil {
+		return nil, fmt.Errorf("gorm store is required")
+	}
+	existing, err := observeDemoReadinessData(ctx, store.Gorm, opts)
 	if err != nil {
 		return nil, err
 	}
 	for key, value := range existing {
 		result[key] = value
 	}
-	if opts.DryRun {
-		result["recording_enabled"] = false
-		result["recording_state"] = "dry_run"
-		return result, nil
-	}
-
-	tx, err := store.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("starting demo readiness data transaction: %w", err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", demoReadinessDataAdvisoryLockID); err != nil {
-		return nil, fmt.Errorf("locking demo readiness data transaction: %w", err)
-	}
-
-	projectID, projectCreated, err := ensureDemoReadinessProject(ctx, tx, opts)
-	if err != nil {
-		return nil, err
-	}
-	if opts.ActorUserID != "" {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO project_members(project_id, user_id, role)
-			VALUES ($1, $2, 'owner')
-			ON CONFLICT(project_id, user_id) DO NOTHING`,
-			projectID, opts.ActorUserID); err != nil {
-			return nil, fmt.Errorf("upserting demo readiness project membership: %w", err)
-		}
-	}
-	repositoryID, repositoryCreated, err := ensureDemoReadinessRepository(ctx, tx, projectID, opts)
-	if err != nil {
-		return nil, err
-	}
-	remoteIDs := make([]string, 0, 2)
+	var projectID string
+	var repositoryID string
+	var remoteIDs []string
+	var projectCreated bool
+	var repositoryCreated bool
 	remoteCreatedCount := 0
-	for _, spec := range demoReadinessRemoteSpecs() {
-		remoteID, created, err := ensureDemoReadinessRemote(ctx, tx, repositoryID, spec)
+	var syncResult AssetSyncResult
+	if err := store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		projectID, projectCreated, err = ensureDemoReadinessProject(ctx, tx, opts)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		remoteIDs = append(remoteIDs, remoteID)
-		if created {
-			remoteCreatedCount++
+		if opts.ActorUserID != "" {
+			if err := ensureDemoReadinessProjectMember(ctx, tx, projectID, opts.ActorUserID); err != nil {
+				return err
+			}
 		}
-	}
-	syncResult, err := syncFn(ctx, tx)
-	if err != nil {
-		return nil, fmt.Errorf("syncing canonical assets for demo readiness data: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing demo readiness data: %w", err)
+		repositoryID, repositoryCreated, err = ensureDemoReadinessRepository(ctx, tx, projectID, opts)
+		if err != nil {
+			return err
+		}
+		remoteIDs = make([]string, 0, 2)
+		for _, spec := range demoReadinessRemoteSpecs() {
+			remoteID, created, err := ensureDemoReadinessRemote(ctx, tx, repositoryID, spec)
+			if err != nil {
+				return err
+			}
+			remoteIDs = append(remoteIDs, remoteID)
+			if created {
+				remoteCreatedCount++
+			}
+		}
+		syncResult, err = syncFn(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("syncing canonical assets for demo readiness data: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("recording demo readiness data: %w", err)
 	}
 
 	result["project_id"] = projectID
@@ -181,111 +174,98 @@ func newDemoReadinessDataResult(opts DemoReadinessDataOptions) map[string]any {
 	}
 }
 
-func observeDemoReadinessData(ctx context.Context, db sqlx.QueryerContext, opts DemoReadinessDataOptions) (map[string]any, error) {
+func observeDemoReadinessData(ctx context.Context, db *gorm.DB, opts DemoReadinessDataOptions) (map[string]any, error) {
 	result := map[string]any{
 		"project_observed":    false,
 		"repository_observed": false,
 		"git_remote_count":    0,
 	}
-	var projectID string
-	if err := sqlx.GetContext(ctx, db, &projectID, `SELECT id FROM projects WHERE slug=$1`, opts.ProjectSlug); err != nil {
-		if err == sql.ErrNoRows {
+	var project GormProject
+	if err := db.WithContext(ctx).Where(&GormProject{Slug: opts.ProjectSlug}).First(&project).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return result, nil
 		}
 		return nil, fmt.Errorf("observing demo readiness project: %w", err)
 	}
 	result["project_observed"] = true
-	result["project_id"] = projectID
+	result["project_id"] = project.ID
 
-	var repositoryID string
-	if err := sqlx.GetContext(ctx, db, &repositoryID, `
-		SELECT id FROM project_git_repositories
-		WHERE project_id=$1 AND repo_key=$2`, projectID, opts.RepositoryKey); err != nil {
-		if err == sql.ErrNoRows {
+	var repository GormProjectGitRepository
+	if err := db.WithContext(ctx).Where(&GormProjectGitRepository{ProjectID: project.ID, RepoKey: opts.RepositoryKey}).First(&repository).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return result, nil
 		}
 		return nil, fmt.Errorf("observing demo readiness repository: %w", err)
 	}
 	result["repository_observed"] = true
-	result["repository_id"] = repositoryID
+	result["repository_id"] = repository.ID
 
-	var count int
-	if err := sqlx.GetContext(ctx, db, &count, `
-		SELECT COUNT(*) FROM git_remotes
-		WHERE project_git_repository_id=$1 AND remote_key IN ('gitea', 'github')`, repositoryID); err != nil {
+	var remotes []GormGitRemote
+	if err := db.WithContext(ctx).Where(&GormGitRemote{ProjectGitRepositoryID: repository.ID}).Find(&remotes).Error; err != nil {
 		return nil, fmt.Errorf("observing demo readiness remotes: %w", err)
+	}
+	count := 0
+	for _, remote := range remotes {
+		if remote.RemoteKey == "gitea" || remote.RemoteKey == "github" {
+			count++
+		}
 	}
 	result["git_remote_count"] = count
 	return result, nil
 }
 
-func ensureDemoReadinessProject(ctx context.Context, tx *sqlx.Tx, opts DemoReadinessDataOptions) (string, bool, error) {
-	var id string
-	if err := tx.GetContext(ctx, &id, `SELECT id FROM projects WHERE slug=$1`, opts.ProjectSlug); err != nil {
-		if err != sql.ErrNoRows {
+func ensureDemoReadinessProject(ctx context.Context, tx *gorm.DB, opts DemoReadinessDataOptions) (string, bool, error) {
+	var project GormProject
+	if err := tx.WithContext(ctx).Where(&GormProject{Slug: opts.ProjectSlug}).First(&project).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", false, fmt.Errorf("loading demo readiness project: %w", err)
 		}
-		if err := tx.GetContext(ctx, &id, `
-			INSERT INTO projects(name, slug, description)
-			VALUES ($1, $2, $3)
-			RETURNING id`,
-			opts.ProjectName,
-			opts.ProjectSlug,
-			"First-version demo project created by the readiness data execution path."); err != nil {
+		project = GormProject{Name: opts.ProjectName, Slug: opts.ProjectSlug, Description: "First-version demo project created by the readiness data execution path."}
+		if err := tx.WithContext(ctx).Create(&project).Error; err != nil {
 			return "", false, fmt.Errorf("creating demo readiness project: %w", err)
 		}
-		return id, true, nil
+		return project.ID, true, nil
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE projects
-		SET name=$2,
-			description=CASE WHEN COALESCE(description, '') = '' THEN $3 ELSE description END,
-			updated_at=now()
-		WHERE id=$1`,
-		id,
-		opts.ProjectName,
-		"First-version demo project created by the readiness data execution path."); err != nil {
+	project.Name = opts.ProjectName
+	if project.Description == "" {
+		project.Description = "First-version demo project created by the readiness data execution path."
+	}
+	if err := tx.WithContext(ctx).Save(&project).Error; err != nil {
 		return "", false, fmt.Errorf("updating demo readiness project: %w", err)
 	}
-	return id, false, nil
+	return project.ID, false, nil
 }
 
-func ensureDemoReadinessRepository(ctx context.Context, tx *sqlx.Tx, projectID string, opts DemoReadinessDataOptions) (string, bool, error) {
-	var id string
-	if err := tx.GetContext(ctx, &id, `
-		SELECT id FROM project_git_repositories
-		WHERE project_id=$1 AND repo_key=$2`, projectID, opts.RepositoryKey); err != nil {
-		if err != sql.ErrNoRows {
+func ensureDemoReadinessProjectMember(ctx context.Context, tx *gorm.DB, projectID, actorUserID string) error {
+	member := GormProjectMember{ProjectID: projectID, UserID: actorUserID}
+	updates := GormProjectMember{Role: "owner"}
+	if err := tx.WithContext(ctx).Where(&member).Assign(updates).FirstOrCreate(&member).Error; err != nil {
+		return fmt.Errorf("upserting demo readiness project membership: %w", err)
+	}
+	return nil
+}
+
+func ensureDemoReadinessRepository(ctx context.Context, tx *gorm.DB, projectID string, opts DemoReadinessDataOptions) (string, bool, error) {
+	var repository GormProjectGitRepository
+	if err := tx.WithContext(ctx).Where(&GormProjectGitRepository{ProjectID: projectID, RepoKey: opts.RepositoryKey}).First(&repository).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", false, fmt.Errorf("loading demo readiness repository: %w", err)
 		}
-		if err := tx.GetContext(ctx, &id, `
-			INSERT INTO project_git_repositories(
-				project_id, name, repo_key, display_name, repo_role, status, description, default_branch
-			)
-			VALUES ($1, $2, $3, $2, 'service', 'active', $4, 'main')
-			RETURNING id`,
-			projectID,
-			opts.RepositoryName,
-			opts.RepositoryKey,
-			"Local first-version demo repository shell for readiness evidence."); err != nil {
+		repository = GormProjectGitRepository{ProjectID: projectID, Name: opts.RepositoryName, RepoKey: opts.RepositoryKey, DisplayName: opts.RepositoryName, RepoRole: "service", Status: "active", Description: "Local first-version demo repository shell for readiness evidence.", DefaultBranch: "main"}
+		if err := tx.WithContext(ctx).Create(&repository).Error; err != nil {
 			return "", false, fmt.Errorf("creating demo readiness repository: %w", err)
 		}
-		return id, true, nil
+		return repository.ID, true, nil
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE project_git_repositories
-		SET name=$2,
-			display_name=$2,
-			repo_role='service',
-			status='active',
-			default_branch='main',
-			updated_at=now()
-		WHERE id=$1`,
-		id,
-		opts.RepositoryName); err != nil {
+	repository.Name = opts.RepositoryName
+	repository.DisplayName = opts.RepositoryName
+	repository.RepoRole = "service"
+	repository.Status = "active"
+	repository.DefaultBranch = "main"
+	if err := tx.WithContext(ctx).Save(&repository).Error; err != nil {
 		return "", false, fmt.Errorf("updating demo readiness repository: %w", err)
 	}
-	return id, false, nil
+	return repository.ID, false, nil
 }
 
 func demoReadinessRemoteSpecs() []demoReadinessRemoteSpec {
@@ -309,66 +289,42 @@ func demoReadinessRemoteSpecs() []demoReadinessRemoteSpec {
 	}
 }
 
-func ensureDemoReadinessRemote(ctx context.Context, tx *sqlx.Tx, repositoryID string, spec demoReadinessRemoteSpec) (string, bool, error) {
-	var id string
-	if err := tx.GetContext(ctx, &id, `
-		SELECT id FROM git_remotes
-		WHERE project_git_repository_id=$1 AND remote_key=$2
-		ORDER BY created_at ASC
-		LIMIT 1`, repositoryID, spec.RemoteKey); err != nil {
-		if err != sql.ErrNoRows {
+func ensureDemoReadinessRemote(ctx context.Context, tx *gorm.DB, repositoryID string, spec demoReadinessRemoteSpec) (string, bool, error) {
+	var remote GormGitRemote
+	if err := tx.WithContext(ctx).Where(&GormGitRemote{ProjectGitRepositoryID: repositoryID, RemoteKey: spec.RemoteKey}).First(&remote).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", false, fmt.Errorf("loading demo readiness remote %q: %w", spec.RemoteKey, err)
 		}
-		if err := tx.GetContext(ctx, &id, `
-			INSERT INTO git_remotes(
-				project_git_repository_id, name, kind, remote_key, provider_type, remote_url, web_url,
-				remote_role, is_primary, sync_enabled, protected, latest_sha, last_sync_status,
-				urls, default_branch, metadata
-			)
-			VALUES ($1, $2, $3, $4, $5, '', '', $6, $7, true, false, '', 'never', $8, 'main', $9)
-			RETURNING id`,
-			repositoryID,
-			spec.Name,
-			spec.Kind,
-			spec.RemoteKey,
-			spec.ProviderType,
-			spec.RemoteRole,
-			spec.IsPrimary,
-			JSONValue{Data: []string{}},
-			JSONValue{Data: map[string]any{"source": "demo_readiness_data", "url_intentionally_omitted": true}},
-		); err != nil {
+		remote = demoReadinessRemoteModel(repositoryID, spec)
+		if err := tx.WithContext(ctx).Create(&remote).Error; err != nil {
 			return "", false, fmt.Errorf("creating demo readiness remote %q: %w", spec.RemoteKey, err)
 		}
-		return id, true, nil
+		return remote.ID, true, nil
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE git_remotes
-		SET name=$2,
-			kind=$3,
-			provider_type=$4,
-			remote_url='',
-			web_url='',
-			remote_role=$5,
-			is_primary=$6,
-			sync_enabled=true,
-			protected=false,
-			latest_sha='',
-			last_sync_status='never',
-			urls=$7,
-			default_branch='main',
-			metadata=$8,
-			updated_at=now()
-		WHERE id=$1`,
-		id,
-		spec.Name,
-		spec.Kind,
-		spec.ProviderType,
-		spec.RemoteRole,
-		spec.IsPrimary,
-		JSONValue{Data: []string{}},
-		JSONValue{Data: map[string]any{"source": "demo_readiness_data", "url_intentionally_omitted": true}},
-	); err != nil {
+	updated := demoReadinessRemoteModel(repositoryID, spec)
+	updated.ID = remote.ID
+	updated.CreatedAt = remote.CreatedAt
+	if err := tx.WithContext(ctx).Save(&updated).Error; err != nil {
 		return "", false, fmt.Errorf("updating demo readiness remote %q: %w", spec.RemoteKey, err)
 	}
-	return id, false, nil
+	return remote.ID, false, nil
+}
+
+func demoReadinessRemoteModel(repositoryID string, spec demoReadinessRemoteSpec) GormGitRemote {
+	return GormGitRemote{
+		ProjectGitRepositoryID: repositoryID,
+		Name:                   spec.Name,
+		Kind:                   spec.Kind,
+		RemoteKey:              spec.RemoteKey,
+		ProviderType:           spec.ProviderType,
+		RemoteRole:             spec.RemoteRole,
+		IsPrimary:              spec.IsPrimary,
+		SyncEnabled:            true,
+		Protected:              false,
+		LatestSHA:              "",
+		LastSyncStatus:         "never",
+		URLs:                   JSONValue{Data: []string{}},
+		DefaultBranch:          "main",
+		Metadata:               JSONValue{Data: map[string]any{"source": "demo_readiness_data", "url_intentionally_omitted": true}},
+	}
 }

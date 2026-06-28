@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
 )
 
 type GitHubActionsSyncer struct {
@@ -73,24 +73,17 @@ func NewGitHubActionsSyncer() *GitHubActionsSyncer {
 	return &GitHubActionsSyncer{HTTPClient: &http.Client{Timeout: 15 * time.Second}, APIBase: "https://api.github.com"}
 }
 
-func (s *GitHubActionsSyncer) Sync(ctx context.Context, db sqlx.ExtContext, opID string) (*GitHubActionsSyncResult, error) {
-	op, err := queryOne(ctx, db, "SELECT * FROM operation_runs WHERE id=$1", opID)
+func (s *GitHubActionsSyncer) Sync(ctx context.Context, db *gorm.DB, opID string) (*GitHubActionsSyncResult, error) {
+	op, remote, err := loadGitHubOperationRemote(ctx, db, opID)
 	if err != nil {
 		return nil, err
 	}
-	remoteID := strings.TrimSpace(fmt.Sprint(op["git_remote_id"]))
-	if remoteID == "" || remoteID == "<nil>" {
-		return nil, fmt.Errorf("operation is missing git_remote_id")
-	}
-	remote, err := queryOne(ctx, db, "SELECT * FROM git_remotes WHERE id=$1", remoteID)
-	if err != nil {
-		return nil, fmt.Errorf("loading GitHub remote: %w", err)
-	}
-	owner, repo, err := gitHubRepositoryFromRemote(remote)
+	remoteMap := gitRemoteMap(remote, nil, "")
+	owner, repo, err := gitHubRepositoryFromRemote(remoteMap)
 	if err != nil {
 		return nil, err
 	}
-	input := mapFromAny(op["input"])
+	input := mapFromAny(op.Input.Data)
 	branch := strings.TrimSpace(fmt.Sprint(input["branch"]))
 	if branch == "<nil>" {
 		branch = ""
@@ -99,8 +92,8 @@ func (s *GitHubActionsSyncer) Sync(ctx context.Context, db sqlx.ExtContext, opID
 	if limit < 1 || limit > 100 {
 		limit = 20
 	}
-	result := &GitHubActionsSyncResult{RemoteID: remoteID, Owner: owner, Repo: repo}
-	runs, err := s.fetchWorkflowRuns(ctx, owner, repo, branch, limit, tokenFromRemote(remote))
+	result := &GitHubActionsSyncResult{RemoteID: remote.ID, Owner: owner, Repo: repo}
+	runs, err := s.fetchWorkflowRuns(ctx, owner, repo, branch, limit, tokenFromRemote(remoteMap))
 	if err != nil {
 		return result, err
 	}
@@ -108,30 +101,42 @@ func (s *GitHubActionsSyncer) Sync(ctx context.Context, db sqlx.ExtContext, opID
 	return result, nil
 }
 
-func (s *GitHubActionsSyncer) SyncLabels(ctx context.Context, db sqlx.ExtContext, opID string) (*GitHubRepositoryLabelsSyncResult, error) {
-	op, err := queryOne(ctx, db, "SELECT * FROM operation_runs WHERE id=$1", opID)
+func (s *GitHubActionsSyncer) SyncLabels(ctx context.Context, db *gorm.DB, opID string) (*GitHubRepositoryLabelsSyncResult, error) {
+	_, remote, err := loadGitHubOperationRemote(ctx, db, opID)
 	if err != nil {
 		return nil, err
 	}
-	remoteID := strings.TrimSpace(fmt.Sprint(op["git_remote_id"]))
-	if remoteID == "" || remoteID == "<nil>" {
-		return nil, fmt.Errorf("operation is missing git_remote_id")
-	}
-	remote, err := queryOne(ctx, db, "SELECT * FROM git_remotes WHERE id=$1", remoteID)
-	if err != nil {
-		return nil, fmt.Errorf("loading GitHub remote: %w", err)
-	}
-	owner, repo, err := gitHubRepositoryFromRemote(remote)
+	remoteMap := gitRemoteMap(remote, nil, "")
+	owner, repo, err := gitHubRepositoryFromRemote(remoteMap)
 	if err != nil {
 		return nil, err
 	}
-	result := &GitHubRepositoryLabelsSyncResult{RemoteID: remoteID, Owner: owner, Repo: repo}
-	labels, err := s.fetchRepositoryLabels(ctx, owner, repo, tokenFromRemote(remote))
+	result := &GitHubRepositoryLabelsSyncResult{RemoteID: remote.ID, Owner: owner, Repo: repo}
+	labels, err := s.fetchRepositoryLabels(ctx, owner, repo, tokenFromRemote(remoteMap))
 	if err != nil {
 		return result, err
 	}
 	result.Labels = labels
 	return result, nil
+}
+
+func loadGitHubOperationRemote(ctx context.Context, db *gorm.DB, opID string) (GormOperationRun, GormGitRemote, error) {
+	if db == nil {
+		return GormOperationRun{}, GormGitRemote{}, fmt.Errorf("database is not configured")
+	}
+	var op GormOperationRun
+	if err := db.WithContext(ctx).First(&op, "id = ?", opID).Error; err != nil {
+		return GormOperationRun{}, GormGitRemote{}, err
+	}
+	remoteID := strings.TrimSpace(op.GitRemoteID.String)
+	if !op.GitRemoteID.Valid || remoteID == "" {
+		return GormOperationRun{}, GormGitRemote{}, fmt.Errorf("operation is missing git_remote_id")
+	}
+	var remote GormGitRemote
+	if err := db.WithContext(ctx).First(&remote, "id = ?", remoteID).Error; err != nil {
+		return GormOperationRun{}, GormGitRemote{}, fmt.Errorf("loading GitHub remote: %w", err)
+	}
+	return op, remote, nil
 }
 
 func (s *GitHubActionsSyncer) fetchWorkflowRuns(ctx context.Context, owner, repo, branch string, limit int, token string) ([]GitHubActionRunInput, error) {

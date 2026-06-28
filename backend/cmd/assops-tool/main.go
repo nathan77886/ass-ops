@@ -232,7 +232,7 @@ func run() error {
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db migrate|db migrations|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release helm-test-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release ssh-rehearsal-plan PROJECT_SLUG ENVIRONMENT [OUTPUT_FILE]|release tag-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release config-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release agent-code-rehearsal-plan PROJECT_SLUG RUNTIME_KEY [OUTPUT_FILE]|release agent-tool-rehearsal-plan PROJECT_SLUG RUNTIME_KEY [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
+	fmt.Fprintln(os.Stderr, "usage: assops-tool [--api URL] [--token TOKEN] <db automigrate|db seed-demo|db sync-assets|db record-demo-readiness-snapshot|db record-version-validation-snapshot|db pin-config-commit|db backup FILE|db backup-retain DIR KEEP|db inspect-backup FILE|db restore FILE|db rehearse-restore FILE TARGET_DATABASE_URL [REPORT_FILE]|project brief|project readiness|repo remotes|remote actions|operations recent|plan validate|release validate-bundle ARTIFACT_DIR REHEARSAL_REPORT|release helm-values GHCR_OWNER VERSION [OUTPUT_FILE]|release helm-readiness-plan VALUES_FILE [OUTPUT_FILE]|release helm-test-readiness-plan VALUES_FILE [OUTPUT_FILE]|release promotion-plan OWNER/REPO GHCR_OWNER VERSION ARTIFACT_DIR REHEARSAL_REPORT HELM_VALUES [OUTPUT_FILE]|release backup-schedule-plan OWNER/REPO ENV RUNNER CRON BACKUP_SOURCE RETENTION_DAYS [OUTPUT_FILE]|release callback-rehearsal-plan PUBLIC_ORIGIN [OUTPUT_FILE]|release demo-import-plan PROJECT_SLUG PUBLIC_ORIGIN [OUTPUT_FILE]|release pod-log-rehearsal-plan PROJECT_SLUG PUBLIC_ORIGIN ENVIRONMENT NAMESPACE [OUTPUT_FILE]|release ssh-rehearsal-plan PROJECT_SLUG ENVIRONMENT [OUTPUT_FILE]|release tag-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release config-rehearsal-plan PROJECT_SLUG REMOTE_KEY [OUTPUT_FILE]|release agent-code-rehearsal-plan PROJECT_SLUG RUNTIME_KEY [OUTPUT_FILE]|release agent-tool-rehearsal-plan PROJECT_SLUG RUNTIME_KEY [OUTPUT_FILE]|release branch-protection-plan OWNER/REPO RULESET_JSON CODEOWNERS [OUTPUT_FILE]>")
 	return fmt.Errorf("unknown command")
 }
 
@@ -244,35 +244,24 @@ func runDBCommand(cfg app.Config, args []string) error {
 	defer cancel()
 
 	switch args[0] {
-	case "migrate":
+	case "automigrate":
 		store, err := app.OpenStore(ctx, cfg)
 		if err != nil {
 			return err
 		}
 		defer store.Close()
-		if err := store.ApplyMigrations(ctx, "backend/migrations"); err != nil {
+		if err := store.AutoMigrate(ctx); err != nil {
 			return err
 		}
-		fmt.Println("migrations applied")
+		fmt.Println("schema automigrated")
 		return nil
-	case "migrations":
-		store, err := app.OpenStore(ctx, cfg)
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-		records, err := store.ListMigrations(ctx)
-		if err != nil {
-			return err
-		}
-		return printJSON(records)
 	case "seed-demo":
 		store, err := app.OpenStore(ctx, cfg)
 		if err != nil {
 			return err
 		}
 		defer store.Close()
-		if err := store.ApplyMigrations(ctx, "backend/migrations"); err != nil {
+		if err := store.AutoMigrate(ctx); err != nil {
 			return err
 		}
 		result, err := store.SeedDemoData(ctx, cfg)
@@ -286,7 +275,7 @@ func runDBCommand(cfg app.Config, args []string) error {
 			return err
 		}
 		defer store.Close()
-		if err := store.ApplyMigrations(ctx, "backend/migrations"); err != nil {
+		if err := store.AutoMigrate(ctx); err != nil {
 			return err
 		}
 		result, err := store.SyncCanonicalAssetsReport(ctx)
@@ -310,7 +299,7 @@ func runDBCommand(cfg app.Config, args []string) error {
 			return err
 		}
 		defer store.Close()
-		if err := store.ApplyMigrations(ctx, "backend/migrations"); err != nil {
+		if err := store.AutoMigrate(ctx); err != nil {
 			return err
 		}
 		result, err := app.RecordDemoReadinessSnapshot(ctx, store, app.DemoReadinessSnapshotOptions{
@@ -337,7 +326,7 @@ func runDBCommand(cfg app.Config, args []string) error {
 			return err
 		}
 		defer store.Close()
-		if err := store.ApplyMigrations(ctx, "backend/migrations"); err != nil {
+		if err := store.AutoMigrate(ctx); err != nil {
 			return err
 		}
 		result, err := app.RecordProjectVersionValidationSnapshot(ctx, store, app.ProjectVersionValidationSnapshotOptions{
@@ -365,7 +354,7 @@ func runDBCommand(cfg app.Config, args []string) error {
 			return err
 		}
 		defer store.Close()
-		if err := store.ApplyMigrations(ctx, "backend/migrations"); err != nil {
+		if err := store.AutoMigrate(ctx); err != nil {
 			return err
 		}
 		result, err := app.PinConfigCommit(ctx, store, app.ConfigCommitPinOptions{
@@ -474,11 +463,7 @@ func rehearseRestore(ctx context.Context, cfg app.Config, backupPath, targetData
 		return err
 	}
 	defer store.Close()
-	if err := store.ApplyMigrations(ctx, "backend/migrations"); err != nil {
-		return err
-	}
-	records, err := store.ListMigrations(ctx)
-	if err != nil {
+	if err := store.AutoMigrate(ctx); err != nil {
 		return err
 	}
 	report := map[string]any{
@@ -487,7 +472,7 @@ func rehearseRestore(ctx context.Context, cfg app.Config, backupPath, targetData
 		"inspect_line_count":   countNonEmptyLines(inspectOutput),
 		"backup_object_counts": pgRestoreListObjectCounts(inspectOutput),
 		"restore_output_lines": countNonEmptyLines(restoreOutput),
-		"migrations":           records,
+		"schema_update":        "gorm_auto_migrate",
 		"rehearsed_at":         time.Now().UTC().Format(time.RFC3339),
 	}
 	if reportPath != "" {

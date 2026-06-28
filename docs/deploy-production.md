@@ -163,21 +163,18 @@ Put reviewed kubeconfig files under the `assops_kubeconfigs` volume path expecte
 
 The value stored in the ASSOPS Kubernetes environment form is a relative path below that directory, such as `test/assops-reader.yaml`. Do not paste kubeconfig contents into the UI.
 
-## Database Migrations
+## Database Schema
 
-The gateway applies migrations from `backend/migrations` on startup. Migrations are recorded in `schema_migrations`, guarded by a PostgreSQL advisory lock, and skipped when the same filename/checksum has already been applied. Treat applied migration files as immutable: add a new numbered migration for follow-up schema changes instead of editing a migration that may already be recorded in `schema_migrations`.
+The gateway applies the database schema from GORM models on startup with `AutoMigrate`. The old numbered SQL migration chain is not used by the Docker runtime.
 
 For a production rollout, run the standalone migration tool before starting or updating long-running services:
 
 ```bash
-docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml run --rm db-tool assops-tool db migrate
-docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml run --rm db-tool assops-tool db migrations
+docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml run --rm db-tool assops-tool db automigrate
 docker compose --env-file deploy/.env.prod -f deploy/compose.prod.yml run --rm db-tool assops-tool db sync-assets
 ```
 
-Gateway startup also runs the same migration path and skips already-applied files when the recorded checksum matches. A checksum mismatch means the file changed after it was applied; stop and create a follow-up migration rather than overwriting the recorded checksum. The standalone command is the preferred preflight step because it separates migration failure from service rollout. `db sync-assets` is idempotent and backfills canonical asset ledger rows/relations after migrations or imports.
-
-The PostgreSQL container also loads migrations for a fresh volume through `/docker-entrypoint-initdb.d`. On existing volumes, use the `db-tool` command above. Check the target volume before first launch:
+Gateway startup runs the same schema sync path. The standalone command is the preferred preflight step because it separates schema failure from service rollout. `db sync-assets` is idempotent and backfills canonical asset ledger rows/relations after schema sync or imports. Check the target volume before first launch:
 
 ```bash
 docker volume inspect deploy_assops_pg >/dev/null 2>&1 && echo "existing PostgreSQL volume found"

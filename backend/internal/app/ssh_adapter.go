@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
 )
 
 type SSHExecutor struct {
@@ -49,40 +49,37 @@ func (execSSHRunner) Run(ctx context.Context, name string, args ...string) (stri
 	return stdout, stderr, exitCode, err
 }
 
-func (e *SSHExecutor) Execute(ctx context.Context, db sqlx.ExtContext, opID string) (*SSHExecutionResult, error) {
-	run, err := queryOne(ctx, db, `
-		SELECT scr.*, opr.input
-		FROM ssh_command_runs scr
-		JOIN operation_runs opr ON opr.id=scr.operation_run_id
-		WHERE scr.operation_run_id=$1
-		LIMIT 1`, opID)
+func (e *SSHExecutor) Execute(ctx context.Context, db *gorm.DB, opID string) (*SSHExecutionResult, error) {
+	if db == nil {
+		return nil, fmt.Errorf("gorm store is not initialized")
+	}
+	var op GormOperationRun
+	if err := db.WithContext(ctx).Where(&GormOperationRun{GormBase: GormBase{ID: opID}}).First(&op).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("loading SSH operation: %w", err)
+	}
+	var run GormSSHCommandRun
+	if err := db.WithContext(ctx).Where(&GormSSHCommandRun{OperationRunID: validNullString(opID)}).First(&run).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("loading SSH command run: %w", err)
+	}
+	var machine GormSSHMachine
+	if err := db.WithContext(ctx).Where(&GormSSHMachine{GormBase: GormBase{ID: nullStringValue(run.SSHMachineID)}}).First(&machine).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("loading SSH machine: %w", err)
+	}
+	input := mapFromAny(op.Input.Data)
+	command, timeout, verify, err := sshExecutionCommand(input, run.Command)
 	if err != nil {
 		return nil, err
 	}
-	machine, err := queryOne(ctx, db, "SELECT * FROM ssh_machines WHERE id=$1", run["ssh_machine_id"])
-	if err != nil {
-		return nil, fmt.Errorf("loading SSH machine: %w", err)
-	}
-	input := mapFromAny(run["input"])
-	command := strings.TrimSpace(fmt.Sprint(input["command"]))
-	if command == "" || command == "<nil>" {
-		command = strings.TrimSpace(fmt.Sprint(run["command"]))
-	}
-	if command == "" || command == "<nil>" {
-		return nil, fmt.Errorf("command is required")
-	}
-	timeout := intFromAny(input["timeout_seconds"], 60)
-	verify := boolOnlyFromAny(input["verify"])
-	if verify {
-		command = "true"
-		if timeout <= 0 || timeout > 15 {
-			timeout = 15
-		}
-	}
-	if timeout <= 0 || timeout > 300 {
-		timeout = 60
-	}
-	args, err := sshCommandArgs(machine, command)
+	args, err := sshCommandArgs(sshMachineMap(machine, nil), command)
 	if err != nil {
 		return nil, err
 	}
@@ -98,9 +95,9 @@ func (e *SSHExecutor) Execute(ctx context.Context, db sqlx.ExtContext, opID stri
 		Stderr:   truncateOutput(sanitizeSSHOutput(stderr), 64*1024),
 		ExitCode: exitCode,
 		Details: map[string]any{
-			"ssh_machine_id":  run["ssh_machine_id"],
-			"host":            machine["host"],
-			"port":            machine["port"],
+			"ssh_machine_id":  nullStringValue(run.SSHMachineID),
+			"host":            machine.Host,
+			"port":            machine.Port,
 			"timeout_seconds": timeout,
 			"verify":          verify,
 		},
@@ -109,6 +106,28 @@ func (e *SSHExecutor) Execute(ctx context.Context, db sqlx.ExtContext, opID stri
 		return result, fmt.Errorf("ssh command failed with exit code %d: %w", exitCode, err)
 	}
 	return result, nil
+}
+
+func sshExecutionCommand(input map[string]any, storedCommand string) (string, int, bool, error) {
+	command := strings.TrimSpace(fmt.Sprint(input["command"]))
+	if command == "" || command == "<nil>" {
+		command = strings.TrimSpace(storedCommand)
+	}
+	if command == "" || command == "<nil>" {
+		return "", 0, false, fmt.Errorf("command is required")
+	}
+	timeout := intFromAny(input["timeout_seconds"], 60)
+	verify := boolOnlyFromAny(input["verify"])
+	if verify {
+		command = "true"
+		if timeout <= 0 || timeout > 15 {
+			timeout = 15
+		}
+	}
+	if timeout <= 0 || timeout > 300 {
+		timeout = 60
+	}
+	return command, timeout, verify, nil
 }
 
 func sshCommandArgs(machine map[string]any, command string) ([]string, error) {

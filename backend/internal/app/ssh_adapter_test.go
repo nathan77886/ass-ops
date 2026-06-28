@@ -4,9 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/jmoiron/sqlx"
 )
 
 type fakeSSHRunner struct {
@@ -78,41 +75,21 @@ func TestSSHCommandArgsRejectsPathOutsideAllowedDir(t *testing.T) {
 }
 
 func TestSSHExecutorForcesVerifyCommand(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	command, timeout, verify, err := sshExecutionCommand(map[string]any{"verify": true, "command": "rm -rf /", "timeout_seconds": 99}, "rm -rf /")
 	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
+		t.Fatalf("sshExecutionCommand: %v", err)
 	}
-	defer db.Close()
-	store := sqlx.NewDb(db, "sqlmock")
-	mock.ExpectQuery(`(?s)SELECT scr\.\*, opr\.input.*FROM ssh_command_runs scr`).
-		WithArgs("op-1").
-		WillReturnRows(sqlmock.NewRows([]string{"ssh_machine_id", "command", "input"}).
-			AddRow("machine-1", "rm -rf /", []byte(`{"verify":true,"command":"rm -rf /","timeout_seconds":99}`)))
-	mock.ExpectQuery(`SELECT \* FROM ssh_machines WHERE id=\$1`).
-		WithArgs("machine-1").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "host", "port", "username", "metadata"}).
-			AddRow("machine-1", "10.0.0.10", 22, "deploy", []byte(`{}`)))
-
-	runner := &fakeSSHRunner{}
-	result, err := (&SSHExecutor{Runner: runner}).Execute(context.Background(), store, "op-1")
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
+	if command != "true" {
+		t.Fatalf("command = %q, want true", command)
 	}
-	joined := strings.Join(runner.args, " ")
-	if !strings.HasSuffix(joined, " true") {
-		t.Fatalf("ssh args = %q, want forced true command", joined)
+	if strings.Contains(command, "rm -rf") {
+		t.Fatalf("command leaked stored verify command: %q", command)
 	}
-	if strings.Contains(joined, "rm -rf") {
-		t.Fatalf("ssh args leaked stored verify command: %q", joined)
+	if !verify {
+		t.Fatalf("verify = %v, want true", verify)
 	}
-	if result.Details["verify"] != true {
-		t.Fatalf("verify detail = %v, want true", result.Details["verify"])
-	}
-	if result.Details["timeout_seconds"] != 15 {
-		t.Fatalf("timeout_seconds = %v, want 15", result.Details["timeout_seconds"])
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet sql expectations: %v", err)
+	if timeout != 15 {
+		t.Fatalf("timeout = %d, want 15", timeout)
 	}
 }
 

@@ -25,8 +25,8 @@ func main() {
 		os.Exit(1)
 	}
 	defer store.Close()
-	if err := store.ApplyMigrations(ctx, "backend/migrations"); err != nil {
-		log.Error("apply migrations failed", "error", err)
+	if err := store.AutoMigrate(ctx); err != nil {
+		log.Error("apply schema failed", "error", err)
 		os.Exit(1)
 	}
 	if err := store.SeedAdmin(ctx, cfg); err != nil {

@@ -2,12 +2,10 @@ package app
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/lib/pq"
+	"gorm.io/gorm/clause"
 )
 
 type ProviderReviewMutationArmingSnapshotOptions struct {
@@ -19,7 +17,7 @@ type ProviderReviewMutationArmingSnapshotOptions struct {
 }
 
 func RecordProviderReviewMutationArmingSnapshot(ctx context.Context, store *Store, opts ProviderReviewMutationArmingSnapshotOptions) (map[string]any, error) {
-	if store == nil || store.DB == nil {
+	if store == nil || store.Gorm == nil {
 		return nil, fmt.Errorf("store is required")
 	}
 	approvalID := cleanOptionalID(opts.OperationApprovalID)
@@ -98,105 +96,77 @@ func RecordProviderReviewMutationArmingSnapshot(ctx context.Context, store *Stor
 		return result, nil
 	}
 	status, health := providerReviewMutationArmingSnapshotStatusHealth(state)
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "provider review mutation arming snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting provider review mutation arming snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording provider review mutation arming snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, status); err != nil {
-		return nil, fmt.Errorf("locking provider review mutation arming snapshot asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'provider review mutation arming snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting provider review mutation arming snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing provider review mutation arming snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = state
 	result["snapshot_status"] = status
 	result["snapshot_health"] = health
 	result["snapshots_written"] = written
 	result["snapshot_commit_attempted"] = true
 	result["canonical_asset_status_snapshot_try"] = true
-	if written >= 0 {
-		result["snapshots_skipped_as_duplicate"] = 1 - written
-		result["provider_review_mutation_arming_snapshot_written"] = written > 0
-		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["provider_review_mutation_arming_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
+	result["snapshots_skipped_as_duplicate"] = 1 - written
+	result["provider_review_mutation_arming_snapshot_written"] = written > 0
+	result["asset_status_snapshot_written"] = written > 0
 	result["message"] = "Sanitized provider review mutation arming snapshot recorded from local approval and attempt-ledger evidence."
 	return result, nil
 }
 
 func providerReviewApprovalForArmingSnapshot(ctx context.Context, store *Store, approvalID string) (map[string]any, error) {
-	return queryOne(ctx, store.DB, `
-		SELECT id, project_id, operation_run_id, resource_type, resource_id, action, title, status, request_payload, created_at, updated_at
-		FROM operation_approvals
-		WHERE id=$1`, approvalID)
+	var approval GormOperationApproval
+	if err := store.Gorm.WithContext(ctx).First(&approval, &GormOperationApproval{GormBase: GormBase{ID: approvalID}}).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return map[string]any{
+		"id":               approval.ID,
+		"project_id":       nullableStringValue(approval.ProjectID),
+		"operation_run_id": nullableStringValue(approval.OperationRunID),
+		"resource_type":    approval.ResourceType,
+		"resource_id":      approval.ResourceID,
+		"action":           approval.Action,
+		"title":            approval.Title,
+		"status":           approval.Status,
+		"request_payload":  approval.RequestPayload,
+		"created_at":       approval.CreatedAt,
+		"updated_at":       approval.UpdatedAt,
+	}, nil
 }
 
 func providerReviewAttemptLedgerForApprovalSnapshot(ctx context.Context, store *Store, approvalID string) (map[string]any, error) {
-	attempts, err := queryMaps(ctx, store.DB, `
-		SELECT
-			id,
-			operation_name,
-			endpoint_key,
-			status,
-			replay_check,
-			conflict_policy,
-			retry_policy,
-			operation_order,
-			depends_on_operation,
-			dependency_status,
-			request_summary,
-			response_diagnostics,
-			provider_api_call_made,
-			provider_api_mutation,
-			external_call_made,
-			claimed_at,
-			claimed_by_user_id
-		FROM provider_review_attempts
-		WHERE operation_approval_id=$1
-		ORDER BY operation_order ASC, created_at ASC, operation_name ASC`, approvalID)
-	if err != nil {
+	var rows []GormProviderReviewAttempt
+	if err := store.Gorm.WithContext(ctx).
+		Where(&GormProviderReviewAttempt{OperationApprovalID: approvalID}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "operation_order"}}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "operation_name"}}).
+		Find(&rows).Error; err != nil {
 		return nil, err
+	}
+	attempts := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		attempts = append(attempts, map[string]any{
+			"id":                     row.ID,
+			"operation_name":         row.OperationName,
+			"endpoint_key":           row.EndpointKey,
+			"status":                 row.Status,
+			"replay_check":           row.ReplayCheck,
+			"conflict_policy":        row.ConflictPolicy,
+			"retry_policy":           row.RetryPolicy,
+			"operation_order":        row.OperationOrder,
+			"depends_on_operation":   row.DependsOnOperation,
+			"dependency_status":      row.DependencyStatus,
+			"request_summary":        row.RequestSummary,
+			"response_diagnostics":   row.ResponseDiagnostics,
+			"provider_api_call_made": row.ProviderAPICallMade,
+			"provider_api_mutation":  row.ProviderAPIMutation,
+			"external_call_made":     row.ExternalCallMade,
+			"claimed_at":             nullableTimeAny(row.ClaimedAt),
+			"claimed_by_user_id":     nullableStringValue(row.ClaimedByUserID),
+		})
 	}
 	return providerReviewAttemptLedgerSummary(attempts), nil
 }
@@ -206,21 +176,33 @@ func providerReviewAttemptLiveExecutionReadinessForArmingSnapshot(ctx context.Co
 	if len(attemptIDs) == 0 {
 		return map[string]bool{}, nil
 	}
-	rows, err := queryMaps(ctx, store.DB, `
-		SELECT DISTINCT a.source_id::text AS attempt_id
-		FROM assets a
-		JOIN asset_status_snapshots snapshot ON snapshot.asset_id=a.id
-		WHERE a.asset_type='provider_review_attempt'
-			AND a.source_table='provider_review_attempts'
-			AND a.source_id::text = ANY($1)
-			AND snapshot.status='provider_review_attempt_live_execution_review_ready'`, pq.Array(attemptIDs))
-	if err != nil {
+	var assets []GormAsset
+	if err := store.Gorm.WithContext(ctx).
+		Where(&GormAsset{AssetType: "provider_review_attempt", SourceTable: "provider_review_attempts"}).
+		Find(&assets).Error; err != nil {
 		return nil, err
 	}
+	attemptSet := map[string]bool{}
+	for _, id := range attemptIDs {
+		attemptSet[id] = true
+	}
 	observed := map[string]bool{}
-	for _, row := range rows {
-		id := cleanOptionalID(fmt.Sprint(row["attempt_id"]))
-		if id != "" {
+	for _, asset := range assets {
+		id := ""
+		if asset.SourceID.Valid {
+			id = cleanOptionalID(asset.SourceID.String)
+		}
+		if id == "" || !attemptSet[id] {
+			continue
+		}
+		var count int64
+		if err := store.Gorm.WithContext(ctx).
+			Model(&GormAssetStatusSnapshot{}).
+			Where(&GormAssetStatusSnapshot{AssetID: asset.ID, Status: "provider_review_attempt_live_execution_review_ready"}).
+			Count(&count).Error; err != nil {
+			return nil, err
+		}
+		if count > 0 {
 			observed[id] = true
 		}
 	}
@@ -228,20 +210,16 @@ func providerReviewAttemptLiveExecutionReadinessForArmingSnapshot(ctx context.Co
 }
 
 func operationApprovalAssetID(ctx context.Context, store *Store, approvalID string) (string, error) {
-	row, err := queryOne(ctx, store.DB, `
-		SELECT id::text AS id
-		FROM assets
-		WHERE asset_type='operation_approval'
-			AND source_table='operation_approvals'
-			AND source_id=$1::uuid
-		LIMIT 1`, approvalID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+	var asset GormAsset
+	if err := store.Gorm.WithContext(ctx).
+		Where(&GormAsset{AssetType: "operation_approval", SourceTable: "operation_approvals", SourceID: validNullString(approvalID)}).
+		First(&asset).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
 			return "", fmt.Errorf("operation_approval asset for %s not found; run db sync-assets first", approvalID)
 		}
 		return "", err
 	}
-	assetID := strings.TrimSpace(fmt.Sprint(row["id"]))
+	assetID := strings.TrimSpace(asset.ID)
 	if assetID == "" || assetID == "<nil>" {
 		return "", fmt.Errorf("operation_approval asset for %s has empty id", approvalID)
 	}

@@ -2,12 +2,11 @@ package app
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type SSHMachineRehearsalSnapshotOptions struct {
@@ -27,16 +26,16 @@ func RecordSSHMachineRehearsalSnapshot(ctx context.Context, store *Store, opts S
 	if machineID == "" {
 		return nil, fmt.Errorf("ssh machine id is required")
 	}
-	machine, err := sshMachineForRehearsalSnapshot(ctx, store.DB, machineID)
+	machine, err := sshMachineForRehearsalSnapshot(ctx, store.Gorm, machineID)
 	if err != nil {
 		return nil, err
 	}
-	runs, err := sshMachineRehearsalRuns(ctx, store.DB, machineID)
+	runs, err := sshMachineRehearsalRuns(ctx, store.Gorm, machineID)
 	if err != nil {
 		return nil, fmt.Errorf("loading ssh rehearsal evidence: %w", err)
 	}
 	preview := buildSSHMachineRehearsalPreview(machine, runs)
-	assetID, assetErr := sshMachineAssetID(ctx, store.DB, machineID)
+	assetID, assetErr := sshMachineAssetID(ctx, store.Gorm, machineID)
 	snapshot := sshMachineRehearsalSnapshotPayload(preview, assetErr == nil)
 	ready, state, missing := sshMachineRehearsalSnapshotReadiness(preview, snapshot)
 	projectID := strings.TrimSpace(fmt.Sprint(machine["project_id"]))
@@ -96,67 +95,16 @@ func RecordSSHMachineRehearsalSnapshot(ctx context.Context, store *Store, opts S
 		result["message"] = "Dry run only; sanitized SSH rehearsal snapshot was not written."
 		return result, nil
 	}
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, "ssh_rehearsal_attested", "warning", "ssh rehearsal attestation snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting ssh rehearsal snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording ssh rehearsal snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, "ssh_rehearsal_attested"); err != nil {
-		return nil, fmt.Errorf("locking ssh rehearsal snapshot asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'ssh rehearsal attestation snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, "ssh_rehearsal_attested", "warning", JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting ssh rehearsal snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing ssh rehearsal snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = "recorded"
 	result["snapshots_written"] = written
 	result["snapshot_commit_attempted"] = true
-	if written >= 0 {
-		result["snapshots_skipped_as_duplicate"] = 1 - written
-		result["ssh_rehearsal_snapshot_written"] = written > 0
-		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshot_commit_attempted"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["ssh_rehearsal_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
+	result["snapshots_skipped_as_duplicate"] = 1 - written
+	result["ssh_rehearsal_snapshot_written"] = written > 0
+	result["asset_status_snapshot_written"] = written > 0
 	result["canonical_asset_status_snapshot_attempted"] = true
 	result["message"] = "Sanitized SSH rehearsal attestation snapshot recorded from local operation evidence."
 	return result, nil
@@ -167,16 +115,16 @@ func RecordSSHMachineTargetEnvironmentProof(ctx context.Context, store *Store, o
 	if machineID == "" {
 		return nil, fmt.Errorf("ssh machine id is required")
 	}
-	machine, err := sshMachineForRehearsalSnapshot(ctx, store.DB, machineID)
+	machine, err := sshMachineForRehearsalSnapshot(ctx, store.Gorm, machineID)
 	if err != nil {
 		return nil, err
 	}
-	runs, err := sshMachineRehearsalRuns(ctx, store.DB, machineID)
+	runs, err := sshMachineRehearsalRuns(ctx, store.Gorm, machineID)
 	if err != nil {
 		return nil, fmt.Errorf("loading ssh rehearsal evidence: %w", err)
 	}
 	preview := buildSSHMachineRehearsalPreview(machine, runs)
-	assetID, assetErr := sshMachineAssetID(ctx, store.DB, machineID)
+	assetID, assetErr := sshMachineAssetID(ctx, store.Gorm, machineID)
 	snapshot := sshMachineRehearsalSnapshotPayload(preview, assetErr == nil)
 	ready, state, missing := sshMachineRehearsalSnapshotReadiness(preview, snapshot)
 	proof := sshMachineTargetEnvironmentProofPayload(snapshot)
@@ -237,109 +185,112 @@ func RecordSSHMachineTargetEnvironmentProof(ctx context.Context, store *Store, o
 		result["message"] = "Dry run only; sanitized SSH target environment proof was not written."
 		return result, nil
 	}
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, sshTargetEnvironmentProofStatus, "ok", "ssh target environment proof approved", proof)
 	if err != nil {
-		return nil, fmt.Errorf("starting ssh target environment proof transaction: %w", err)
+		return nil, fmt.Errorf("recording ssh target environment proof: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, sshTargetEnvironmentProofStatus); err != nil {
-		return nil, fmt.Errorf("locking ssh target environment proof asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'ssh target environment proof approved', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, sshTargetEnvironmentProofStatus, "ok", JSONValue{Data: proof})
-	if err != nil {
-		return nil, fmt.Errorf("inserting ssh target environment proof: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing ssh target environment proof: %w", err)
-	}
-	committed = true
 	result["recording_state"] = "recorded"
 	result["snapshot_commit_attempted"] = true
 	result["snapshots_written"] = written
-	if written >= 0 {
-		result["snapshots_skipped_as_duplicate"] = 1 - written
-		result["proof_registered"] = true
-		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["proof_registered"] = false
-		result["asset_status_snapshot_written"] = false
-	}
+	result["snapshots_skipped_as_duplicate"] = 1 - written
+	result["proof_registered"] = true
+	result["asset_status_snapshot_written"] = written > 0
 	result["message"] = "Sanitized SSH target environment proof recorded from local operation evidence."
 	return result, nil
 }
 
-func sshMachineForRehearsalSnapshot(ctx context.Context, db sqlx.ExtContext, machineID string) (map[string]any, error) {
-	return queryOne(ctx, db, `
-		SELECT id, project_id, name, host, port, username, auth_type, metadata, created_at, updated_at
-		FROM ssh_machines
-		WHERE id=$1`, machineID)
+func sshMachineForRehearsalSnapshot(ctx context.Context, db *gorm.DB, machineID string) (map[string]any, error) {
+	if db == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
+	var machine GormSSHMachine
+	if err := db.WithContext(ctx).First(&machine, &GormSSHMachine{GormBase: GormBase{ID: machineID}}).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return map[string]any{
+		"id":         machine.ID,
+		"project_id": machine.ProjectID,
+		"name":       machine.Name,
+		"host":       machine.Host,
+		"port":       machine.Port,
+		"username":   machine.Username,
+		"auth_type":  machine.AuthType,
+		"metadata":   machine.Metadata,
+		"created_at": machine.CreatedAt,
+		"updated_at": machine.UpdatedAt,
+	}, nil
 }
 
-func sshMachineRehearsalRuns(ctx context.Context, db sqlx.ExtContext, machineID string) ([]map[string]any, error) {
-	return queryMaps(ctx, db, `
-		SELECT scr.id, scr.status, scr.exit_code, scr.created_at, scr.finished_at, op.operation_type
-		FROM ssh_command_runs scr
-		LEFT JOIN operation_runs op ON op.id=scr.operation_run_id
-		WHERE scr.ssh_machine_id=$1
-		ORDER BY scr.created_at DESC
-		LIMIT 50`, machineID)
+func sshMachineRehearsalRuns(ctx context.Context, db *gorm.DB, machineID string) ([]map[string]any, error) {
+	if db == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
+	var runs []GormSSHCommandRun
+	if err := db.WithContext(ctx).
+		Where(&GormSSHCommandRun{SSHMachineID: validNullString(machineID)}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true}).
+		Limit(50).
+		Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	opIDs := make([]string, 0, len(runs))
+	for _, run := range runs {
+		if run.OperationRunID.Valid && strings.TrimSpace(run.OperationRunID.String) != "" {
+			opIDs = append(opIDs, run.OperationRunID.String)
+		}
+	}
+	operations := map[string]GormOperationRun{}
+	if len(opIDs) > 0 {
+		var opRuns []GormOperationRun
+		if err := db.WithContext(ctx).Find(&opRuns, opIDs).Error; err != nil {
+			return nil, err
+		}
+		for _, opRun := range opRuns {
+			operations[opRun.ID] = opRun
+		}
+	}
+	items := make([]map[string]any, 0, len(runs))
+	for _, run := range runs {
+		operationType := ""
+		if run.OperationRunID.Valid {
+			operationType = operations[run.OperationRunID.String].OperationType
+		}
+		items = append(items, map[string]any{
+			"id":             run.ID,
+			"status":         run.Status,
+			"exit_code":      run.ExitCode,
+			"created_at":     run.CreatedAt,
+			"finished_at":    run.FinishedAt,
+			"operation_type": operationType,
+		})
+	}
+	return items, nil
 }
 
-func sshMachineAssetID(ctx context.Context, db sqlx.ExtContext, machineID string) (string, error) {
-	row, err := queryOne(ctx, db, `
-		SELECT id::text AS id
-		FROM assets
-		WHERE asset_type='host'
-			AND source_table='ssh_machines'
-			AND source_id=$1::uuid
-		LIMIT 1`, machineID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+func sshMachineAssetID(ctx context.Context, db *gorm.DB, machineID string) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("gorm database is not configured")
+	}
+	var asset GormAsset
+	if err := db.WithContext(ctx).
+		Where(&GormAsset{AssetType: "host", SourceTable: "ssh_machines", SourceID: validNullString(machineID)}).
+		First(&asset).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
 			return "", fmt.Errorf("ssh_machine host asset for %s not found; run db sync-assets first", machineID)
 		}
 		return "", err
 	}
-	assetID := strings.TrimSpace(fmt.Sprint(row["id"]))
+	assetID := strings.TrimSpace(asset.ID)
 	if assetID == "" || assetID == "<nil>" {
 		return "", fmt.Errorf("ssh_machine host asset for %s has empty id", machineID)
 	}
 	return assetID, nil
 }
 
-func sshMachineTargetEnvironmentProofEvidence(ctx context.Context, db sqlx.ExtContext, machineID string) (map[string]any, error) {
+func sshMachineTargetEnvironmentProofEvidence(ctx context.Context, db *gorm.DB, machineID string) (map[string]any, error) {
 	result := map[string]any{
 		"mode":                    "ssh_target_environment_proof_registration",
 		"proof_state":             "not_recorded",
@@ -357,15 +308,12 @@ func sshMachineTargetEnvironmentProofEvidence(ctx context.Context, db sqlx.ExtCo
 		result["proof_state"] = "asset_missing"
 		return result, nil
 	}
-	row, err := queryOne(ctx, db, `
-		SELECT status, health, collected_at
-		FROM asset_status_snapshots
-		WHERE asset_id=$1
-			AND status=$2
-		ORDER BY collected_at DESC
-		LIMIT 1`, assetID, sshTargetEnvironmentProofStatus)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+	var snapshot GormAssetStatusSnapshot
+	if err := db.WithContext(ctx).
+		Where(&GormAssetStatusSnapshot{AssetID: assetID, Status: sshTargetEnvironmentProofStatus}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "collected_at"}, Desc: true}).
+		First(&snapshot).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
 			return result, nil
 		}
 		result["proof_state"] = "lookup_failed"
@@ -374,9 +322,9 @@ func sshMachineTargetEnvironmentProofEvidence(ctx context.Context, db sqlx.ExtCo
 	result["proof_state"] = "recorded"
 	result["proof_registered"] = true
 	result["asset_status_observed"] = true
-	result["status"] = row["status"]
-	result["health"] = row["health"]
-	result["proof_registered_at"] = row["collected_at"]
+	result["status"] = snapshot.Status
+	result["health"] = snapshot.Health
+	result["proof_registered_at"] = snapshot.CollectedAt
 	return result, nil
 }
 

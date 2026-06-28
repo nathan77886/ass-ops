@@ -20,21 +20,4 @@ ASSOPS_ADMIN_EMAIL=admin@assops.local \
 ASSOPS_ADMIN_PASSWORD=compose-check-admin \
   docker compose -f deploy/compose.prod.yml config --quiet
 
-for migration in backend/migrations/*.sql; do
-  name="$(basename "$migration")"
-  perm="$(stat -c '%a' "$migration")"
-  if (( (8#$perm & 4) == 0 )); then
-    echo "${migration} must be world-readable so postgres fresh-volume init can read the bind mount" >&2
-    exit 1
-  fi
-  if ! rg -q "backend/migrations/${name}:/docker-entrypoint-initdb.d/${name}:ro" deploy/docker-compose.yml; then
-    echo "deploy/docker-compose.yml is missing migration ${name}" >&2
-    exit 1
-  fi
-  if ! rg -q "backend/migrations/${name}:/docker-entrypoint-initdb.d/${name}:ro" deploy/compose.prod.yml; then
-    echo "deploy/compose.prod.yml is missing migration ${name}" >&2
-    exit 1
-  fi
-done
-
 echo "compose-config-check passed"

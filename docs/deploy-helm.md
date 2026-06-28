@@ -381,7 +381,7 @@ Application Pods do not need Kubernetes API credentials. The production example 
 
 ## Safety Notes
 
-- The migration job is a Helm post-install/post-upgrade hook that runs `assops-tool db migrate`; gateway startup also runs the same locked migration path.
+- The schema job is a Helm post-install/post-upgrade hook that runs `assops-tool db automigrate`; gateway startup also runs the same GORM schema sync path.
 - The chart does not run `db restore`, `kubectl apply`, `helm upgrade`, or any rollback action by itself.
 - The default PostgreSQL is suitable for demos only. Use managed PostgreSQL for shared environments.
 - Default PVCs use `ReadWriteOnce`; use a single-node cluster, a compatible scheduler placement, or `ReadWriteMany` storage before scaling beyond one node.

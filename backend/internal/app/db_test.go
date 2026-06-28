@@ -2,15 +2,8 @@ package app
 
 import (
 	"encoding/json"
-	"errors"
-	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/jmoiron/sqlx"
 )
 
 func TestJSONValueScanAndMarshal(t *testing.T) {
@@ -115,275 +108,23 @@ func TestNormalizeRowKeepsReviewStatusAndPresenceBooleans(t *testing.T) {
 	}
 }
 
-func TestCanonicalAssetSyncSQLIncludesUpsertAndRelationDedupe(t *testing.T) {
-	sql := canonicalAssetSyncSQL()
-	for _, token := range []string{
-		"WITH asset_inventory AS",
-		"asset_relation_inventory AS",
-		"INSERT INTO assets",
-		"ON CONFLICT (asset_type, source_table, source_id) DO UPDATE",
-		"INSERT INTO asset_status_snapshots",
-		"status_snapshot_inserts",
-		"inserted_status_snapshots",
-		"latest.status=candidate.status",
-		"INSERT INTO asset_relations",
-		"WHERE NOT EXISTS",
-		"existing.project_id IS NOT DISTINCT FROM rc.project_id",
-		"ON CONFLICT (from_asset_id, to_asset_id, relation_type) DO NOTHING",
-		"relation_prunes AS",
-		"DELETE FROM asset_relations existing",
-		"COALESCE(existing.metadata->>'source', '') <> 'manual'",
-		"rc.relation_type=existing.relation_type",
-		"synced_assets",
-		"inserted_relations",
-		"pruned_relations",
-	} {
-		if !strings.Contains(sql, token) {
-			t.Fatalf("canonicalAssetSyncSQL missing %s", token)
-		}
+func TestCanonicalAssetSpecKeysAreStable(t *testing.T) {
+	if got := assetKey("project", "projects", "project-1"); got != "project|projects|project-1" {
+		t.Fatalf("assetKey = %q", got)
+	}
+	if got := relationKey("from", "to", "owns"); got != "from|to|owns" {
+		t.Fatalf("relationKey = %q", got)
 	}
 }
 
-func TestAssetGraphRepairReportSQLCountsDanglingManualAndDerivedRelations(t *testing.T) {
-	sql := assetGraphRepairReportSQL()
-	for _, token := range []string{
-		"FROM asset_relations ar",
-		"LEFT JOIN assets from_asset ON from_asset.id=ar.from_asset_id",
-		"LEFT JOIN assets to_asset ON to_asset.id=ar.to_asset_id",
-		"total_relations",
-		"derived_relations",
-		"manual_relations",
-		"dangling_relations",
-		"dangling_derived_relations",
-		"dangling_manual_relations",
-		"COALESCE(ar.metadata->>'source', '') <> 'manual'",
-		"COALESCE(ar.metadata->>'source', '') = 'manual'",
-	} {
-		if !strings.Contains(sql, token) {
-			t.Fatalf("assetGraphRepairReportSQL missing %s", token)
-		}
+func TestWorkerNodeAssetSpecIsNarrow(t *testing.T) {
+	node := GormWorkerNode{GormBase: GormBase{ID: "node-1"}, Name: "node-a", Kind: "local", Status: "online"}
+	spec := workerNodeAssetSpec(node)
+	if spec.AssetType != "node_agent" || spec.SourceTable != "worker_nodes" || spec.SourceID != "node-1" {
+		t.Fatalf("worker node asset spec = %#v", spec)
 	}
-}
-
-func TestWorkerNodeCanonicalAssetSyncSQLIsNarrow(t *testing.T) {
-	sql := workerNodeCanonicalAssetSyncSQL()
-	for _, token := range []string{
-		"WITH worker_node_inventory AS",
-		"FROM worker_nodes wn",
-		"WHERE wn.id=$1",
-		"'' AS project_id",
-		"wn.id::text AS source_id",
-		"'node_agent' AS asset_type",
-		"INSERT INTO assets",
-		"project_id, asset_type, source_table, source_id",
-		"NULLIF(project_id, '')::uuid",
-		"NULLIF(source_id, '')::uuid",
-		"ON CONFLICT (asset_type, source_table, source_id) DO UPDATE",
-		"project_id=EXCLUDED.project_id",
-		"INSERT INTO asset_status_snapshots",
-		"'source_id', source_id::text",
-		"0 AS inserted_relations",
-		"0 AS pruned_relations",
-	} {
-		if !strings.Contains(sql, token) {
-			t.Fatalf("workerNodeCanonicalAssetSyncSQL missing %s", token)
-		}
-	}
-	if strings.Contains(sql, "asset_inventory AS") {
-		t.Fatal("workerNodeCanonicalAssetSyncSQL should not run full asset inventory")
-	}
-}
-
-func TestAssetGraphRepairReportWithScansCounts(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-	sqlDB := sqlx.NewDb(db, "sqlmock")
-	rows := sqlmock.NewRows([]string{
-		"total_relations",
-		"derived_relations",
-		"manual_relations",
-		"dangling_relations",
-		"dangling_derived_relations",
-		"dangling_manual_relations",
-	}).AddRow(8, 6, 2, 3, 1, 2)
-	mock.ExpectQuery(regexp.QuoteMeta(assetGraphRepairReportSQL())).WillReturnRows(rows)
-	report, err := AssetGraphRepairReportWith(t.Context(), sqlDB)
-	if err != nil {
-		t.Fatalf("AssetGraphRepairReportWith: %v", err)
-	}
-	if report.TotalRelations != 8 || report.DerivedRelations != 6 || report.ManualRelations != 2 ||
-		report.DanglingRelations != 3 || report.DanglingDerivedRelations != 1 || report.DanglingManualRelations != 2 {
-		t.Fatalf("report = %+v", report)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet expectations: %v", err)
-	}
-}
-
-func TestSyncCanonicalAssetsWithScansPrunedRelations(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-	sqlDB := sqlx.NewDb(db, "sqlmock")
-	rows := sqlmock.NewRows([]string{
-		"synced_assets",
-		"inserted_relations",
-		"pruned_relations",
-		"inserted_status_snapshots",
-	}).AddRow(3, 2, 1, 4)
-	mock.ExpectQuery(regexp.QuoteMeta(canonicalAssetSyncSQL())).WillReturnRows(rows)
-	result, err := SyncCanonicalAssetsWith(t.Context(), sqlDB)
-	if err != nil {
-		t.Fatalf("SyncCanonicalAssetsWith: %v", err)
-	}
-	if result.SyncedAssets != 3 || result.InsertedRelations != 2 || result.PrunedRelations != 1 || result.InsertedStatusSnapshots != 4 {
-		t.Fatalf("result = %+v", result)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet expectations: %v", err)
-	}
-}
-
-func TestStoreSyncCanonicalAssetsReportIncludesRepairReport(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
-	syncRows := sqlmock.NewRows([]string{
-		"synced_assets",
-		"inserted_relations",
-		"pruned_relations",
-		"inserted_status_snapshots",
-	}).AddRow(3, 2, 1, 4)
-	reportRows := sqlmock.NewRows([]string{
-		"total_relations",
-		"derived_relations",
-		"manual_relations",
-		"dangling_relations",
-		"dangling_derived_relations",
-		"dangling_manual_relations",
-	}).AddRow(9, 7, 2, 1, 0, 1)
-	mock.ExpectQuery(regexp.QuoteMeta(canonicalAssetSyncSQL())).WillReturnRows(syncRows)
-	mock.ExpectQuery(regexp.QuoteMeta(assetGraphRepairReportSQL())).WillReturnRows(reportRows)
-
-	report, err := store.SyncCanonicalAssetsReport(t.Context())
-	if err != nil {
-		t.Fatalf("SyncCanonicalAssetsReport: %v", err)
-	}
-	if report.SyncedAssets != 3 || report.InsertedRelations != 2 || report.PrunedRelations != 1 ||
-		report.InsertedStatusSnapshots != 4 || report.GraphRepair.TotalRelations != 9 ||
-		report.GraphRepair.DanglingManualRelations != 1 {
-		t.Fatalf("report = %+v", report)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet expectations: %v", err)
-	}
-}
-
-func TestStoreSyncCanonicalAssetsReportKeepsSyncResultWhenRepairReportFails(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
-	syncRows := sqlmock.NewRows([]string{
-		"synced_assets",
-		"inserted_relations",
-		"pruned_relations",
-		"inserted_status_snapshots",
-	}).AddRow(3, 2, 1, 4)
-	mock.ExpectQuery(regexp.QuoteMeta(canonicalAssetSyncSQL())).WillReturnRows(syncRows)
-	mock.ExpectQuery(regexp.QuoteMeta(assetGraphRepairReportSQL())).WillReturnError(errors.New("report query failed"))
-
-	report, err := store.SyncCanonicalAssetsReport(t.Context())
-	if err != nil {
-		t.Fatalf("SyncCanonicalAssetsReport returned error after sync succeeded: %v", err)
-	}
-	if report.SyncedAssets != 3 || report.InsertedRelations != 2 || report.PrunedRelations != 1 ||
-		report.InsertedStatusSnapshots != 4 {
-		t.Fatalf("sync result = %+v", report.AssetSyncResult)
-	}
-	if !strings.Contains(report.GraphRepair.ReportError, "report query failed") {
-		t.Fatalf("report error = %q", report.GraphRepair.ReportError)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet expectations: %v", err)
-	}
-}
-
-func TestStoreSyncCanonicalAssetsReportStopsWhenSyncFails(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer db.Close()
-	store := &Store{DB: sqlx.NewDb(db, "sqlmock")}
-	mock.ExpectQuery(regexp.QuoteMeta(canonicalAssetSyncSQL())).WillReturnError(errors.New("sync failed"))
-
-	_, err = store.SyncCanonicalAssetsReport(t.Context())
-	if err == nil {
-		t.Fatal("SyncCanonicalAssetsReport should return sync error")
-	}
-	if !strings.Contains(err.Error(), "sync failed") {
-		t.Fatalf("error = %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet expectations: %v", err)
-	}
-}
-
-func TestCTEWithoutLeadingWith(t *testing.T) {
-	got := cteWithoutLeadingWith(" \n WITH sample AS (SELECT 1)")
-	if !strings.HasPrefix(got, "sample AS") {
-		t.Fatalf("cteWithoutLeadingWith = %q", got)
-	}
-	defer func() {
-		if recover() == nil {
-			t.Fatal("cteWithoutLeadingWith should panic when WITH is missing")
-		}
-	}()
-	_ = cteWithoutLeadingWith("SELECT 1")
-}
-
-func TestMigrationFilesSortedSQLOnly(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"002_second.sql", "notes.md", "001_first.sql"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("-- test"), 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
-
-	files, err := migrationFiles(dir)
-	if err != nil {
-		t.Fatalf("migrationFiles: %v", err)
-	}
-	got := []string{filepath.Base(files[0]), filepath.Base(files[1])}
-	want := []string{"001_first.sql", "002_second.sql"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("files = %v, want %v", got, want)
-	}
-}
-
-func TestMigrationVersionAndChecksum(t *testing.T) {
-	if got := migrationVersion("/tmp/migrations/001_init.sql"); got != "001_init.sql" {
-		t.Fatalf("migrationVersion = %q", got)
-	}
-	first := migrationChecksum([]byte("select 1;"))
-	second := migrationChecksum([]byte("select 1;"))
-	third := migrationChecksum([]byte("select 2;"))
-	if first == "" || first != second {
-		t.Fatalf("checksum should be stable: %q %q", first, second)
-	}
-	if first == third {
-		t.Fatalf("checksum should change with content")
+	if spec.ProjectID != "" {
+		t.Fatalf("worker node asset should be global: %#v", spec)
 	}
 }
 
@@ -400,9 +141,6 @@ func TestDemoSeedDefaultsAreSafeForLocalDemos(t *testing.T) {
 	}
 	if !strings.HasPrefix(defaults.SSHHost, "192.0.2.") {
 		t.Fatalf("SSHHost = %q, want TEST-NET-1 demo address", defaults.SSHHost)
-	}
-	if demoSeedAdvisoryLockID == migrationAdvisoryLockID {
-		t.Fatalf("demo seed advisory lock should not reuse migration lock id")
 	}
 }
 

@@ -2,12 +2,11 @@ package app
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ArgoPodLogAuditSnapshotOptions struct {
@@ -35,16 +34,16 @@ func RecordArgoPodLogAuditSnapshot(ctx context.Context, store *Store, opts ArgoP
 	if err != nil {
 		return nil, err
 	}
-	target, err := loadArgoPodLogTarget(ctx, store.DB, projectID, cleaned.DeploymentTargetID)
+	target, err := loadArgoPodLogTargetForSnapshot(ctx, store.Gorm, projectID, cleaned.DeploymentTargetID)
 	if err != nil {
 		return nil, err
 	}
-	auditRows, err := queryArgoPodLogAuditOperations(ctx, store.DB, projectID, cleaned.DeploymentTargetID, cleaned.PodName, cleaned.ContainerName)
+	auditRows, err := queryArgoPodLogAuditOperationsForSnapshot(ctx, store.Gorm, projectID, cleaned.DeploymentTargetID, cleaned.PodName, cleaned.ContainerName)
 	if err != nil {
 		return nil, fmt.Errorf("loading pod log audit evidence: %w", err)
 	}
 	preview := argoPodLogQueryPreview(cleaned.PodName, cleaned.ContainerName, cleaned.TailLines, cleaned.SinceSeconds, target, auditRows)
-	assetID, assetErr := deploymentTargetAssetID(ctx, store.DB, cleaned.DeploymentTargetID)
+	assetID, assetErr := deploymentTargetAssetID(ctx, store.Gorm, cleaned.DeploymentTargetID)
 	snapshot := argoPodLogAuditSnapshotPayload(preview, assetErr == nil)
 	ready, state, missing := argoPodLogAuditSnapshotReadiness(preview, snapshot)
 	result := map[string]any{
@@ -90,86 +89,95 @@ func RecordArgoPodLogAuditSnapshot(ctx context.Context, store *Store, opts ArgoP
 		result["message"] = "Dry run only; sanitized pod log audit snapshot was not written."
 		return result, nil
 	}
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, "pod_log_audit_recorded", "warning", "pod log audit snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting pod log audit snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording pod log audit snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'pod log audit snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, "pod_log_audit_recorded", "warning", JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting pod log audit snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing pod log audit snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = "recorded"
 	result["snapshots_written"] = written
-	if written >= 0 {
-		result["snapshots_skipped_as_duplicate"] = 1 - written
-		result["pod_log_audit_snapshot_written"] = written > 0
-		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshot_commit_attempted"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["pod_log_audit_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
+	result["snapshots_skipped_as_duplicate"] = 1 - written
+	result["pod_log_audit_snapshot_written"] = written > 0
+	result["asset_status_snapshot_written"] = written > 0
 	result["message"] = "Sanitized pod log audit snapshot recorded from local audit evidence."
 	return result, nil
 }
 
-func deploymentTargetAssetID(ctx context.Context, db sqlx.ExtContext, targetID string) (string, error) {
-	row, err := queryOne(ctx, db, `
-		SELECT id::text AS id
-		FROM assets
-		WHERE asset_type='deployment_target'
-			AND source_table='deployment_targets'
-			AND source_id=$1::uuid
-		LIMIT 1`, targetID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+func deploymentTargetAssetID(ctx context.Context, db *gorm.DB, targetID string) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("gorm database is not configured")
+	}
+	var asset GormAsset
+	if err := db.WithContext(ctx).
+		Where(&GormAsset{AssetType: "deployment_target", SourceTable: "deployment_targets", SourceID: validNullString(targetID)}).
+		First(&asset).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
 			return "", fmt.Errorf("deployment_target asset for %s not found; run db sync-assets first", targetID)
 		}
 		return "", err
 	}
-	assetID := strings.TrimSpace(fmt.Sprint(row["id"]))
+	assetID := strings.TrimSpace(asset.ID)
 	if assetID == "" || assetID == "<nil>" {
 		return "", fmt.Errorf("deployment_target asset for %s has empty id", targetID)
 	}
 	return assetID, nil
+}
+
+func loadArgoPodLogTargetForSnapshot(ctx context.Context, db *gorm.DB, projectID, deploymentTargetID string) (map[string]any, error) {
+	if db == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
+	var target GormDeploymentTarget
+	if err := db.WithContext(ctx).Where(&GormDeploymentTarget{GormBase: GormBase{ID: deploymentTargetID}, ProjectID: projectID}).First(&target).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	result := map[string]any{"id": target.ID, "project_id": target.ProjectID, "name": target.Name, "environment": target.Environment, "cluster_name": target.ClusterName, "namespace": target.Namespace, "status": target.Status}
+	var kube GormKubernetesEnvironment
+	if err := db.WithContext(ctx).Where(&GormKubernetesEnvironment{ProjectID: target.ProjectID, Environment: target.Environment, ClusterName: target.ClusterName, Namespace: target.Namespace}).First(&kube).Error; err == nil {
+		result["kubernetes_environment_id"] = kube.ID
+		result["kubernetes_environment_name"] = kube.Name
+		result["kubeconfig_secret_ref_present"] = strings.TrimSpace(kube.KubeconfigSecretRef) != ""
+		result["kubeconfig_secret_ref"] = kube.KubeconfigSecretRef
+		result["service_account_present"] = strings.TrimSpace(kube.ServiceAccount) != ""
+		result["token_subject_review_status"] = kube.TokenSubjectReviewStatus
+		result["rbac_read_logs_status"] = kube.RBACReadLogsStatus
+		result["rbac_restart_pods_status"] = kube.PodRestartStatus
+		result["kubernetes_environment_status"] = kube.Status
+	} else if !errorsIsRecordNotFound(err) {
+		return nil, err
+	}
+	return result, nil
+}
+
+func queryArgoPodLogAuditOperationsForSnapshot(ctx context.Context, db *gorm.DB, projectID, deploymentTargetID, podName, containerName string) ([]map[string]any, error) {
+	if db == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
+	var runs []GormOperationRun
+	if err := db.WithContext(ctx).
+		Where(&GormOperationRun{ProjectID: validNullString(projectID), OperationType: "argo.pod_logs"}).
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "created_at"}, Desc: true}).
+		Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	items := []map[string]any{}
+	for _, run := range runs {
+		input := mapFromAny(run.Input.Data)
+		if cleanOptionalID(fmt.Sprint(input["deployment_target_id"])) != deploymentTargetID || strings.TrimSpace(fmt.Sprint(input["pod_name"])) != podName || strings.TrimSpace(fmt.Sprint(input["container_name"])) != containerName {
+			continue
+		}
+		var logCount int64
+		if err := db.WithContext(ctx).Model(&GormOperationLog{}).Where(&GormOperationLog{OperationRunID: validNullString(run.ID)}).Count(&logCount).Error; err != nil {
+			return nil, err
+		}
+		items = append(items, map[string]any{"id": run.ID, "status": run.Status, "result": run.Result, "created_at": run.CreatedAt, "updated_at": run.UpdatedAt, "finished_at": nullableTimeAny(run.FinishedAt), "operation_log_count": int(logCount)})
+		if len(items) >= 20 {
+			break
+		}
+	}
+	return items, nil
 }
 
 func argoPodLogAuditSnapshotPayload(preview map[string]any, assetObserved bool) map[string]any {

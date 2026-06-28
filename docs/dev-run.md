@@ -11,7 +11,7 @@ cd web && pnpm install && pnpm dev
 ```
 
 Gateway listens on `:8080`. Vite listens on `:5173` and proxies `/api` to the gateway.
-Docker Compose initializes every numbered file in `backend/migrations` for a fresh PostgreSQL volume, currently `001_init.sql` through `024_provider_review_live_execution.sql`.
+Gateway startup initializes and updates the PostgreSQL schema from GORM models with `AutoMigrate`.
 
 If local port `5432` is already in use:
 
@@ -105,7 +105,7 @@ docker compose -f deploy/docker-compose.yml down -v
 docker compose -f deploy/docker-compose.yml up -d postgres
 ```
 
-If a local WIP database was created before migration files were split, gateway startup may stop with a `checksum mismatch for 002_git_first_version.sql` error. That means the database recorded an older local copy of an applied migration. For local development, prefer exporting anything you need, then recreate the Compose volume with the reset commands above so the current migration chain is applied cleanly. Do not patch production `schema_migrations` checksums to bypass this error; create a follow-up migration instead.
+If a local WIP database has old incompatible schema state, prefer exporting anything you need, then recreate the Compose volume with the reset commands above so GORM can build the current schema cleanly.
 
 ## Integration setup notes
 

@@ -13,7 +13,7 @@ type ProviderReviewCurrentAttemptLiveReadinessSnapshotOptions struct {
 }
 
 func RecordProviderReviewCurrentAttemptLiveReadinessSnapshot(ctx context.Context, store *Store, opts ProviderReviewCurrentAttemptLiveReadinessSnapshotOptions) (map[string]any, error) {
-	if store == nil || store.DB == nil {
+	if store == nil || store.Gorm == nil {
 		return nil, fmt.Errorf("store is required")
 	}
 	approvalID := cleanOptionalID(opts.OperationApprovalID)

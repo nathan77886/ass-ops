@@ -12,7 +12,7 @@ type ProviderReviewAttemptLiveExecutionPreflightOptions struct {
 }
 
 func ProviderReviewAttemptLiveExecutionPreflight(ctx context.Context, store *Store, opts ProviderReviewAttemptLiveExecutionPreflightOptions) (map[string]any, error) {
-	if store == nil || store.DB == nil {
+	if store == nil || store.Gorm == nil {
 		return nil, fmt.Errorf("store is required")
 	}
 	attemptID := cleanOptionalID(opts.AttemptID)
@@ -27,7 +27,7 @@ func ProviderReviewAttemptLiveExecutionPreflight(ctx context.Context, store *Sto
 			return nil, err
 		}
 	}
-	assetID, assetErr := providerReviewAttemptAssetID(ctx, store.DB, attemptID)
+	assetID, assetErr := providerReviewAttemptAssetID(ctx, store.Gorm, attemptID)
 	assetObserved := assetErr == nil && assetID != ""
 	liveGuardObserved := opts.LiveGuardObserved
 	if assetObserved && !liveGuardObserved {

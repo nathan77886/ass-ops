@@ -3,8 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-
-	"github.com/lib/pq"
 )
 
 type ProviderReviewAttemptLiveExecutionGuardSnapshotOptions struct {
@@ -16,7 +14,7 @@ type ProviderReviewAttemptLiveExecutionGuardSnapshotOptions struct {
 }
 
 func RecordProviderReviewAttemptLiveExecutionGuardSnapshot(ctx context.Context, store *Store, opts ProviderReviewAttemptLiveExecutionGuardSnapshotOptions) (map[string]any, error) {
-	if store == nil || store.DB == nil {
+	if store == nil || store.Gorm == nil {
 		return nil, fmt.Errorf("store is required")
 	}
 	attemptID := cleanOptionalID(opts.AttemptID)
@@ -32,7 +30,7 @@ func RecordProviderReviewAttemptLiveExecutionGuardSnapshot(ctx context.Context, 
 		}
 	}
 	approvalID := cleanOptionalID(fmt.Sprint(attempt["operation_approval_id"]))
-	assetID, assetErr := providerReviewAttemptAssetID(ctx, store.DB, attemptID)
+	assetID, assetErr := providerReviewAttemptAssetID(ctx, store.Gorm, attemptID)
 	assetObserved := assetErr == nil && assetID != ""
 	attemptReadinessObserved := opts.AttemptReadinessObserved
 	armingObserved := opts.ArmingObserved
@@ -103,108 +101,37 @@ func RecordProviderReviewAttemptLiveExecutionGuardSnapshot(ctx context.Context, 
 		return result, nil
 	}
 	status, health := providerReviewAttemptLiveExecutionGuardSnapshotStatusHealth(state)
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "provider review attempt live execution guard snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting provider review attempt live execution guard snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording provider review attempt live execution guard snapshot recorded: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, status); err != nil {
-		return nil, fmt.Errorf("locking provider review attempt live execution guard snapshot asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'provider review attempt live execution guard snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting provider review attempt live execution guard snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing provider review attempt live execution guard snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = state
 	result["snapshot_status"] = status
 	result["snapshot_health"] = health
 	result["snapshots_written"] = written
 	result["snapshot_commit_attempted"] = true
 	result["canonical_asset_status_snapshot_try"] = true
-	if written >= 0 {
-		result["snapshots_skipped_as_duplicate"] = 1 - written
-		result["provider_review_attempt_live_execution_guard_written"] = written > 0
-		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["provider_review_attempt_live_execution_guard_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
+	result["snapshots_skipped_as_duplicate"] = 1 - written
+	result["provider_review_attempt_live_execution_guard_written"] = written > 0
+	result["asset_status_snapshot_written"] = written > 0
 	result["message"] = "Sanitized provider review attempt live execution guard snapshot recorded from local claim, readiness, and arming evidence."
 	return result, nil
 }
 
 func providerReviewAttemptStatusObserved(ctx context.Context, store *Store, assetID, status string) (bool, error) {
-	rows, err := queryMaps(ctx, store.DB, `
-		SELECT DISTINCT status
-		FROM asset_status_snapshots
-		WHERE asset_id=$1
-			AND status = ANY($2)`, assetID, pq.Array([]string{status}))
-	if err != nil {
+	var count int64
+	if err := store.Gorm.WithContext(ctx).Model(&GormAssetStatusSnapshot{}).Where(&GormAssetStatusSnapshot{AssetID: assetID, Status: status}).Count(&count).Error; err != nil {
 		return false, err
 	}
-	for _, row := range rows {
-		if cleanOptionalText(stringFromMap(row, "status")) == status {
-			return true, nil
-		}
-	}
-	return false, nil
+	return count > 0, nil
 }
 
 func providerReviewApprovalStatusObserved(ctx context.Context, store *Store, approvalID, status string) (bool, error) {
-	rows, err := queryMaps(ctx, store.DB, `
-		SELECT DISTINCT snapshot.status
-		FROM assets a
-		JOIN asset_status_snapshots snapshot ON snapshot.asset_id=a.id
-		WHERE a.asset_type='operation_approval'
-			AND a.source_table='operation_approvals'
-			AND a.source_id=$1::uuid
-			AND snapshot.status = ANY($2)`, approvalID, pq.Array([]string{status}))
+	assetID, err := operationApprovalAssetID(ctx, store, approvalID)
 	if err != nil {
 		return false, err
 	}
-	for _, row := range rows {
-		if cleanOptionalText(stringFromMap(row, "status")) == status {
-			return true, nil
-		}
-	}
-	return false, nil
+	return providerReviewAttemptStatusObserved(ctx, store, assetID, status)
 }
 
 func providerReviewAttemptLiveExecutionGuardSnapshotPayload(attempt map[string]any, assetObserved, attemptReadinessObserved, armingObserved bool) map[string]any {

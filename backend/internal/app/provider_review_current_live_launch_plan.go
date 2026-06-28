@@ -12,7 +12,7 @@ type ProviderReviewCurrentAttemptLiveExecutionLaunchPlanOptions struct {
 }
 
 func ProviderReviewCurrentAttemptLiveExecutionLaunchPlan(ctx context.Context, store *Store, opts ProviderReviewCurrentAttemptLiveExecutionLaunchPlanOptions) (map[string]any, error) {
-	if store == nil || store.DB == nil {
+	if store == nil || store.Gorm == nil {
 		return nil, fmt.Errorf("store is required")
 	}
 	approvalID := cleanOptionalID(opts.OperationApprovalID)

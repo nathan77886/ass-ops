@@ -2,13 +2,12 @@ package app
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/jmoiron/sqlx"
+	"gorm.io/gorm"
 )
 
 type RepoTagRunResultSnapshotOptions struct {
@@ -29,11 +28,11 @@ func RecordRepoTagRunResultSnapshot(ctx context.Context, store *Store, opts Repo
 	if _, err := uuid.Parse(runID); err != nil {
 		return nil, fmt.Errorf("repo tag run id must be a uuid")
 	}
-	run, err := repoTagRunForSnapshot(ctx, store.DB, runID)
+	run, err := repoTagRunForSnapshot(ctx, store.Gorm, runID)
 	if err != nil {
 		return nil, err
 	}
-	assetID, assetErr := repoTagRunAssetID(ctx, store.DB, runID)
+	assetID, assetErr := repoTagRunAssetID(ctx, store.Gorm, runID)
 	if assetErr != nil && !opts.DryRun {
 		return nil, assetErr
 	}
@@ -79,61 +78,16 @@ func RecordRepoTagRunResultSnapshot(ctx context.Context, store *Store, opts Repo
 	case "failed":
 		health = "high"
 	}
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "repo tag result snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting repo tag result snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording repo tag result snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'repo tag result snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting repo tag result snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing repo tag result snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = "recorded"
 	result["snapshots_written"] = written
 	if written >= 0 {
 		result["snapshots_skipped_as_duplicate"] = 1 - written
 		result["tag_result_snapshot_written"] = written > 0
 		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["tag_result_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
 	}
 	result["message"] = "Sanitized repo tag result snapshot recorded from local repo_tag_run state."
 	return result, nil
@@ -147,15 +101,15 @@ func RecordRepoTagRunActionsRefreshSnapshot(ctx context.Context, store *Store, o
 	if _, err := uuid.Parse(runID); err != nil {
 		return nil, fmt.Errorf("repo tag run id must be a uuid")
 	}
-	run, err := repoTagRunForSnapshot(ctx, store.DB, runID)
+	run, err := repoTagRunForSnapshot(ctx, store.Gorm, runID)
 	if err != nil {
 		return nil, err
 	}
-	assetID, assetErr := repoTagRunAssetID(ctx, store.DB, runID)
+	assetID, assetErr := repoTagRunAssetID(ctx, store.Gorm, runID)
 	if assetErr != nil && !strings.Contains(assetErr.Error(), "not found") {
 		return nil, assetErr
 	}
-	evidence, err := repoTagRunActionsRefreshEvidence(ctx, store.DB, run)
+	evidence, err := repoTagRunActionsRefreshEvidence(ctx, store.Gorm, run)
 	if err != nil {
 		return nil, err
 	}
@@ -202,48 +156,10 @@ func RecordRepoTagRunActionsRefreshSnapshot(ctx context.Context, store *Store, o
 		result["message"] = "Dry run only; sanitized repo tag Actions refresh snapshot was not written."
 		return result, nil
 	}
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, "github_actions_refresh_recorded", "low", "repo tag GitHub Actions refresh snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting repo tag Actions refresh snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording repo tag Actions refresh snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'repo tag GitHub Actions refresh snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, "github_actions_refresh_recorded", "low", JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting repo tag Actions refresh snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing repo tag Actions refresh snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = "recorded"
 	result["snapshots_written"] = written
 	if written >= 0 {
@@ -251,43 +167,46 @@ func RecordRepoTagRunActionsRefreshSnapshot(ctx context.Context, store *Store, o
 		result["actions_refresh_snapshot_written"] = written > 0
 		result["asset_status_snapshot_written"] = written > 0
 	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["actions_refresh_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
 	result["message"] = "Sanitized repo tag GitHub Actions refresh snapshot recorded from local github_action_runs state."
 	return result, nil
 }
 
-func repoTagRunForSnapshot(ctx context.Context, db sqlx.ExtContext, runID string) (map[string]any, error) {
-	return queryOne(ctx, db, `
-		SELECT rtr.id,
-			rtr.operation_run_id,
-			COALESCE(rtr.project_id, pgr.project_id) AS project_id,
-			rtr.project_git_repository_id,
-			rtr.target_remote_id,
-			rtr.git_remote_id,
-			rtr.tag_name,
-			rtr.target_sha,
-			rtr.status,
-			rtr.error_message,
-			rtr.started_at,
-			rtr.finished_at,
-			rtr.created_at,
-			gr.provider_type,
-			gr.remote_role,
-			pgr.repo_key,
-			pgr.repo_role
-		FROM repo_tag_runs rtr
-		LEFT JOIN project_git_repositories pgr ON pgr.id=rtr.project_git_repository_id
-		LEFT JOIN git_remotes gr ON gr.id=COALESCE(rtr.target_remote_id, rtr.git_remote_id)
-		WHERE rtr.id=$1`, runID)
+func repoTagRunForSnapshot(ctx context.Context, db *gorm.DB, runID string) (map[string]any, error) {
+	if db == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
+	var run GormRepoTagRun
+	if err := db.WithContext(ctx).First(&run, "id = ?", runID).Error; err != nil {
+		if errorsIsRecordNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	item := repoTagRunMap(run)
+	if run.ProjectGitRepositoryID.Valid && strings.TrimSpace(run.ProjectGitRepositoryID.String) != "" {
+		var repo GormProjectGitRepository
+		if err := db.WithContext(ctx).First(&repo, "id = ?", run.ProjectGitRepositoryID.String).Error; err == nil {
+			item["project_id"] = firstNonEmptyString(fmt.Sprint(item["project_id"]), repo.ProjectID)
+			item["repo_key"] = repo.RepoKey
+			item["repo_role"] = repo.RepoRole
+		} else if !errorsIsRecordNotFound(err) {
+			return nil, err
+		}
+	}
+	remoteID := cleanOptionalID(firstNonEmptyString(run.TargetRemoteID.String, run.GitRemoteID))
+	if remoteID != "" {
+		var remote GormGitRemote
+		if err := db.WithContext(ctx).First(&remote, "id = ?", remoteID).Error; err == nil {
+			item["provider_type"] = remote.ProviderType
+			item["remote_role"] = remote.RemoteRole
+		} else if !errorsIsRecordNotFound(err) {
+			return nil, err
+		}
+	}
+	return item, nil
 }
 
-func repoTagRunProjectID(ctx context.Context, db sqlx.ExtContext, runID string) (string, error) {
+func repoTagRunProjectID(ctx context.Context, db *gorm.DB, runID string) (string, error) {
 	run, err := repoTagRunForSnapshot(ctx, db, runID)
 	if err != nil {
 		return "", err
@@ -299,28 +218,23 @@ func repoTagRunProjectID(ctx context.Context, db sqlx.ExtContext, runID string) 
 	return projectID, nil
 }
 
-func repoTagRunAssetID(ctx context.Context, db sqlx.ExtContext, runID string) (string, error) {
-	row, err := queryOne(ctx, db, `
-		SELECT id::text AS id
-		FROM assets
-		WHERE asset_type='repo_tag_run'
-			AND source_table='repo_tag_runs'
-			AND source_id=$1::uuid
-		LIMIT 1`, runID)
+func repoTagRunAssetID(ctx context.Context, db *gorm.DB, runID string) (string, error) {
+	var asset GormAsset
+	err := db.WithContext(ctx).Where(&GormAsset{AssetType: "repo_tag_run", SourceTable: "repo_tag_runs", SourceID: validNullString(runID)}).First(&asset).Error
 	if err != nil {
-		if errors.Is(err, ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		if errorsIsRecordNotFound(err) {
 			return "", fmt.Errorf("repo_tag_run asset for %s not found; run db sync-assets first", runID)
 		}
 		return "", err
 	}
-	assetID := strings.TrimSpace(fmt.Sprint(row["id"]))
-	if assetID == "" || assetID == "<nil>" {
+	assetID := strings.TrimSpace(asset.ID)
+	if assetID == "" {
 		return "", fmt.Errorf("repo_tag_run asset for %s has empty id", runID)
 	}
 	return assetID, nil
 }
 
-func repoTagRunActionsRefreshEvidence(ctx context.Context, db sqlx.ExtContext, run map[string]any) (map[string]any, error) {
+func repoTagRunActionsRefreshEvidence(ctx context.Context, db *gorm.DB, run map[string]any) (map[string]any, error) {
 	remoteID := cleanOptionalID(firstNonEmptyString(fmt.Sprint(run["target_remote_id"]), fmt.Sprint(run["git_remote_id"])))
 	targetSHA := cleanPreviewString(run["target_sha"])
 	evidence := map[string]any{
@@ -352,21 +266,42 @@ func repoTagRunActionsRefreshEvidence(ctx context.Context, db sqlx.ExtContext, r
 	if targetSHA == "" {
 		evidence["evidence_scope"] = "remote_all_commits"
 	}
-	row, err := queryOne(ctx, db, `
-		SELECT COUNT(*)::int AS total,
-			COUNT(*) FILTER (WHERE lower(conclusion)='success')::int AS success_count,
-			COUNT(*) FILTER (WHERE COALESCE(NULLIF(conclusion, ''), status) IN ('failure', 'failed', 'error', 'timed_out', 'cancelled', 'canceled'))::int AS failure_count,
-			COUNT(*) FILTER (WHERE status IN ('queued', 'running', 'pending', 'in_progress'))::int AS active_count,
-			COUNT(*) FILTER (WHERE synced_at IS NOT NULL)::int AS synced_count,
-			MAX(synced_at) AS latest_synced_at,
-			MAX(updated_at) AS latest_updated_at
-		FROM github_action_runs
-		WHERE git_remote_id=$1
-			AND ($2 = '' OR commit_sha=$2)`, remoteID, targetSHA)
-	if err != nil {
+	var runs []GormGitHubActionRun
+	query := db.WithContext(ctx).Where(&GormGitHubActionRun{GitRemoteID: remoteID})
+	if targetSHA != "" {
+		query = query.Where(&GormGitHubActionRun{CommitSHA: targetSHA})
+	}
+	if err := query.Find(&runs).Error; err != nil {
 		return nil, err
 	}
-	total := intFromAny(row["total"], 0)
+	total := len(runs)
+	successCount := 0
+	failureCount := 0
+	activeCount := 0
+	syncedCount := 0
+	var latestSyncedAt any
+	var latestUpdatedAt any
+	for _, actionRun := range runs {
+		if strings.EqualFold(actionRun.Conclusion, "success") {
+			successCount++
+		}
+		state := strings.ToLower(firstNonEmptyString(actionRun.Conclusion, actionRun.Status))
+		switch state {
+		case "failure", "failed", "error", "timed_out", "cancelled", "canceled":
+			failureCount++
+		}
+		switch strings.ToLower(actionRun.Status) {
+		case "queued", "running", "pending", "in_progress":
+			activeCount++
+		}
+		if actionRun.SyncedAt.Valid {
+			syncedCount++
+			latestSyncedAt = maxNullTimeAny(latestSyncedAt, actionRun.SyncedAt.Time)
+		}
+		if actionRun.UpdatedAt.Valid {
+			latestUpdatedAt = maxNullTimeAny(latestUpdatedAt, actionRun.UpdatedAt.Time)
+		}
+	}
 	status := strings.ToLower(cleanPreviewString(run["status"]))
 	tagObserved := status == "completed" || status == "succeeded" || status == "success"
 	linkCount := 0
@@ -374,15 +309,50 @@ func repoTagRunActionsRefreshEvidence(ctx context.Context, db sqlx.ExtContext, r
 		linkCount = total
 	}
 	evidence["github_actions_total"] = total
-	evidence["github_actions_success"] = intFromAny(row["success_count"], 0)
-	evidence["github_actions_failure"] = intFromAny(row["failure_count"], 0)
-	evidence["github_actions_active"] = intFromAny(row["active_count"], 0)
-	evidence["github_actions_synced"] = intFromAny(row["synced_count"], 0)
+	evidence["github_actions_success"] = successCount
+	evidence["github_actions_failure"] = failureCount
+	evidence["github_actions_active"] = activeCount
+	evidence["github_actions_synced"] = syncedCount
 	evidence["github_action_run_link_count"] = linkCount
-	evidence["latest_synced_at"] = row["latest_synced_at"]
-	evidence["latest_updated_at"] = row["latest_updated_at"]
-	evidence["github_actions_refresh_evidence_found"] = total > 0 && intFromAny(row["synced_count"], 0) > 0
+	evidence["latest_synced_at"] = latestSyncedAt
+	evidence["latest_updated_at"] = latestUpdatedAt
+	evidence["github_actions_refresh_evidence_found"] = total > 0 && syncedCount > 0
 	return evidence, nil
+}
+
+func recordAssetStatusSnapshotIfChanged(ctx context.Context, db *gorm.DB, assetID, status, health, summary string, raw map[string]any) (int, error) {
+	if db == nil {
+		return 0, fmt.Errorf("gorm database is not configured")
+	}
+	var snapshots []GormAssetStatusSnapshot
+	if err := db.WithContext(ctx).Where(&GormAssetStatusSnapshot{AssetID: assetID}).Find(&snapshots).Error; err != nil {
+		return 0, err
+	}
+	var latest *GormAssetStatusSnapshot
+	for i := range snapshots {
+		if latest == nil || snapshots[i].CollectedAt.After(latest.CollectedAt) {
+			latest = &snapshots[i]
+		}
+	}
+	if latest != nil && latest.Status == status && latest.Health == health && jsonValuesEqual(latest.Raw.Data, raw) {
+		return 0, nil
+	}
+	snapshot := GormAssetStatusSnapshot{AssetID: assetID, Status: status, Health: health, Summary: summary, Raw: JSONValue{Data: raw}, CollectedAt: time.Now().UTC()}
+	if err := db.WithContext(ctx).Create(&snapshot).Error; err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
+func maxNullTimeAny(current any, candidate time.Time) any {
+	if existing, ok := current.(time.Time); ok && existing.After(candidate) {
+		return existing
+	}
+	return candidate
+}
+
+func errorsIsRecordNotFound(err error) bool {
+	return err == gorm.ErrRecordNotFound
 }
 
 func repoTagRunResultSnapshotPayload(run, plan map[string]any, assetObserved bool) map[string]any {

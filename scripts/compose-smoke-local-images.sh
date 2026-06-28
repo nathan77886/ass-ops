@@ -32,14 +32,13 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-mkdir -p "$tmpdir/bin" "$tmpdir/backend" "$tmpdir/web" "$tmpdir/deploy"
+mkdir -p "$tmpdir/bin" "$tmpdir/web" "$tmpdir/deploy"
 
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/gateway" ./backend/cmd/gateway
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/worker" ./backend/cmd/worker
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/node-worker" ./backend/cmd/node-worker
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/assops-tool" ./backend/cmd/assops-tool
 
-cp -R backend/migrations "$tmpdir/backend/migrations"
 cp -R "$web_dist" "$tmpdir/web/dist"
 cp deploy/nginx.conf "$tmpdir/deploy/nginx.conf"
 
@@ -52,14 +51,12 @@ docker_build() {
 
 docker_build "${project}-gateway" "FROM ${base_image}
 WORKDIR /app
-COPY backend/migrations ./backend/migrations
 COPY bin/assops-tool /usr/local/bin/assops-tool
 COPY bin/gateway /usr/local/bin/gateway
 ENTRYPOINT [\"gateway\"]"
 
 docker_build "${project}-worker" "FROM ${base_image}
 WORKDIR /app
-COPY backend/migrations ./backend/migrations
 COPY bin/assops-tool /usr/local/bin/assops-tool
 COPY bin/worker /usr/local/bin/worker
 ENTRYPOINT [\"worker\"]"

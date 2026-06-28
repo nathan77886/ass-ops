@@ -303,12 +303,12 @@ func TestReviewBranchExecutorCleanupDeletesReviewBranch(t *testing.T) {
 	}))
 	defer server.Close()
 	result, err := (reviewBranchExecutor{HTTPClient: server.Client()}).Cleanup(context.Background(), reviewBranchExecutionInput{
-		ProviderType:  "github",
-		APIBase:       server.URL,
-		Owner:         "acme",
-		Repository:    "billing",
-		ReviewBranch:  "assops/review/attempt-1",
-		TokenEnv:      "ASSOPS_GITHUB_TEMPLATE_TOKEN",
+		ProviderType: "github",
+		APIBase:      server.URL,
+		Owner:        "acme",
+		Repository:   "billing",
+		ReviewBranch: "assops/review/attempt-1",
+		TokenEnv:     "ASSOPS_GITHUB_TEMPLATE_TOKEN",
 	})
 	if err != nil {
 		t.Fatalf("Cleanup: %v", err)
@@ -344,12 +344,12 @@ func TestReviewBranchExecutorCleanupFailureKeepsManualCleanupHint(t *testing.T) 
 	}))
 	defer server.Close()
 	result, err := (reviewBranchExecutor{HTTPClient: server.Client()}).Cleanup(context.Background(), reviewBranchExecutionInput{
-		ProviderType:  "github",
-		APIBase:       server.URL,
-		Owner:         "acme",
-		Repository:    "billing",
-		ReviewBranch:  "assops/review/attempt-1",
-		TokenEnv:      "ASSOPS_GITHUB_TEMPLATE_TOKEN",
+		ProviderType: "github",
+		APIBase:      server.URL,
+		Owner:        "acme",
+		Repository:   "billing",
+		ReviewBranch: "assops/review/attempt-1",
+		TokenEnv:     "ASSOPS_GITHUB_TEMPLATE_TOKEN",
 	})
 	if err == nil {
 		t.Fatalf("expected cleanup error")

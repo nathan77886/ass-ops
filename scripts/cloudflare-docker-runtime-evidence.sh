@@ -35,13 +35,10 @@ for container in "${containers[@]}"; do
   fi
 done
 
-latest_migration="$(find backend/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort | tail -n 1)"
-db_status="$(docker exec "$pg_container" psql -U "$pg_user" -d "$pg_database" -v ON_ERROR_STOP=1 -tAc \
-  "SELECT count(*) || ' ' || max(version) FROM schema_migrations;")"
-db_count="${db_status%% *}"
-db_latest="${db_status#* }"
-if [[ "$db_latest" != "$latest_migration" ]]; then
-  echo "PG18 migration mismatch: got $db_latest, want $latest_migration" >&2
+schema_table_count="$(docker exec "$pg_container" psql -U "$pg_user" -d "$pg_database" -v ON_ERROR_STOP=1 -tAc \
+  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('users','projects','connection_credentials','provider_accounts','git_remotes','ai_runtimes','argo_connections','ssh_machines','operation_runs','worker_jobs','assets','provider_review_attempts');")"
+if [[ "$schema_table_count" != "12" ]]; then
+  echo "PG18 GORM schema incomplete: got $schema_table_count/12 required tables" >&2
   exit 1
 fi
 
@@ -85,7 +82,7 @@ if [[ "$worker_index_code" != "200" || "$worker_index_type" != text/html* ]]; th
 fi
 
 mkdir -p "$(dirname "$output")"
-python3 - "$output" "$base_url" "$cloudflare_url" "$worker_url" "$db_count" "$db_latest" "${containers[@]}" <<'PY'
+python3 - "$output" "$base_url" "$cloudflare_url" "$worker_url" "$schema_table_count" "${containers[@]}" <<'PY'
 import json
 import subprocess
 import sys
@@ -96,9 +93,8 @@ output = Path(sys.argv[1])
 base_url = sys.argv[2]
 cloudflare_url = sys.argv[3]
 worker_url = sys.argv[4]
-db_count = int(sys.argv[5])
-db_latest = sys.argv[6]
-containers = sys.argv[7:]
+schema_table_count = int(sys.argv[5])
+containers = sys.argv[6:]
 
 container_status = {}
 for name in containers:
@@ -136,8 +132,9 @@ data = {
     "postgres": {
         "container": "pg1",
         "database": "assops",
-        "migration_count": db_count,
-        "latest_migration": db_latest,
+        "schema_manager": "gorm_auto_migrate",
+        "required_schema_tables": 12,
+        "schema_table_count": schema_table_count,
     },
     "docker_runtime": {
         "orchestrator": "docker",

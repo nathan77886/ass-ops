@@ -20,23 +20,23 @@ func RecordAgentToolArmingSnapshot(ctx context.Context, store *Store, opts Agent
 	task := opts.Task
 	if len(task) == 0 {
 		var err error
-		task, err = agentTaskForToolAuditSnapshot(ctx, store.DB, taskID)
+		task, err = agentTaskForToolAuditSnapshot(ctx, store.Gorm, taskID)
 		if err != nil {
 			return nil, err
 		}
 	}
 	projectID := strings.TrimSpace(fmt.Sprint(task["project_id"]))
-	toolCalls, err := agentTaskToolCallsForSnapshot(ctx, store.DB, taskID)
+	toolCalls, err := agentTaskToolCallsForSnapshot(ctx, store.Gorm, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("loading agent tool arming audit evidence: %w", err)
 	}
-	runtime, err := latestProjectAIRuntime(ctx, store.DB, projectID)
+	runtime, err := latestProjectAIRuntimeForSnapshot(ctx, store, projectID)
 	if err != nil {
 		return nil, err
 	}
 	evidence := agentToolCallAuditEvidence(toolCalls)
 	dispatchPlan := agentWorkerDispatchPlan(runtime, evidence)
-	assetID, assetErr := agentTaskAssetID(ctx, store.DB, taskID)
+	assetID, assetErr := agentTaskAssetID(ctx, store.Gorm, taskID)
 	snapshot := agentToolArmingSnapshotPayload(task, dispatchPlan, assetErr == nil)
 	ready, state, missing := agentToolArmingSnapshotReadiness(snapshot)
 	result := map[string]any{
@@ -91,71 +91,70 @@ func RecordAgentToolArmingSnapshot(ctx context.Context, store *Store, opts Agent
 		return result, nil
 	}
 	status, health := agentToolArmingSnapshotStatusHealth(state)
-	tx, err := store.DB.BeginTxx(ctx, nil)
+	written, err := recordAssetStatusSnapshotIfChanged(ctx, store.Gorm, assetID, status, health, "agent tool arming snapshot recorded", snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("starting agent tool arming snapshot transaction: %w", err)
+		return nil, fmt.Errorf("recording agent tool arming snapshot: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1::text), hashtext($2::text))`, assetID, status); err != nil {
-		return nil, fmt.Errorf("locking agent tool arming snapshot asset: %w", err)
-	}
-	execResult, err := tx.ExecContext(ctx, `
-		INSERT INTO asset_status_snapshots(asset_id, status, health, summary, raw)
-		SELECT $1, $2, $3, 'agent tool arming snapshot recorded', $4
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM asset_status_snapshots latest
-			WHERE latest.asset_id=$1
-				AND latest.status=$2
-				AND latest.health=$3
-				AND latest.raw=$4
-				AND latest.collected_at=(
-					SELECT max(collected_at)
-					FROM asset_status_snapshots newest
-					WHERE newest.asset_id=$1
-				)
-		)`,
-		assetID, status, health, JSONValue{Data: snapshot})
-	if err != nil {
-		return nil, fmt.Errorf("inserting agent tool arming snapshot: %w", err)
-	}
-	written := 0
-	rowsAffectedWarning := ""
-	if rows, err := execResult.RowsAffected(); err == nil {
-		written = int(rows)
-	} else {
-		written = -1
-		rowsAffectedWarning = "rows affected unavailable"
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing agent tool arming snapshot: %w", err)
-	}
-	committed = true
 	result["recording_state"] = state
 	result["snapshot_status"] = status
 	result["snapshot_health"] = health
 	result["snapshots_written"] = written
 	result["snapshot_commit_attempted"] = true
 	result["canonical_asset_status_snapshot_try"] = true
-	if written >= 0 {
-		result["snapshots_skipped_as_duplicate"] = 1 - written
-		result["agent_tool_arming_snapshot_written"] = written > 0
-		result["asset_status_snapshot_written"] = written > 0
-	}
-	if rowsAffectedWarning != "" {
-		result["rows_affected_warning"] = rowsAffectedWarning
-		result["rows_affected_unknown"] = true
-		result["snapshots_skipped_as_duplicate"] = -1
-		result["agent_tool_arming_snapshot_written"] = false
-		result["asset_status_snapshot_written"] = false
-	}
+	result["snapshots_skipped_as_duplicate"] = 1 - written
+	result["agent_tool_arming_snapshot_written"] = written > 0
+	result["asset_status_snapshot_written"] = written > 0
 	result["message"] = "Sanitized agent tool arming snapshot recorded from local audit evidence."
 	return result, nil
+}
+
+func latestProjectAIRuntimeForSnapshot(ctx context.Context, store *Store, projectID string) (map[string]any, error) {
+	if store == nil || store.Gorm == nil {
+		return nil, fmt.Errorf("gorm database is not configured")
+	}
+	var runtimes []GormAIRuntime
+	if err := store.Gorm.WithContext(ctx).Find(&runtimes).Error; err != nil {
+		return nil, fmt.Errorf("loading AI runtime for agent execution audit: %w", err)
+	}
+	var selected *GormAIRuntime
+	for i := range runtimes {
+		runtime := &runtimes[i]
+		matchesProject := runtime.ProjectID.Valid && runtime.ProjectID.String == projectID
+		global := !runtime.ProjectID.Valid || strings.TrimSpace(runtime.ProjectID.String) == ""
+		if !matchesProject && !global {
+			continue
+		}
+		if selected == nil || aiRuntimeSnapshotLess(selected, runtime, projectID) {
+			selected = runtime
+		}
+	}
+	if selected == nil {
+		return nil, nil
+	}
+	return map[string]any{
+		"id":           selected.ID,
+		"project_id":   nullableStringValue(selected.ProjectID),
+		"name":         selected.Name,
+		"runtime_type": selected.RuntimeType,
+		"codex_binary": selected.CodexBinary,
+		"model":        selected.Model,
+		"status":       selected.Status,
+		"updated_at":   selected.UpdatedAt,
+	}, nil
+}
+
+func aiRuntimeSnapshotLess(current, candidate *GormAIRuntime, projectID string) bool {
+	currentProject := current.ProjectID.Valid && current.ProjectID.String == projectID
+	candidateProject := candidate.ProjectID.Valid && candidate.ProjectID.String == projectID
+	if currentProject != candidateProject {
+		return candidateProject
+	}
+	currentVerified := current.Status == "verified"
+	candidateVerified := candidate.Status == "verified"
+	if currentVerified != candidateVerified {
+		return candidateVerified
+	}
+	return candidate.UpdatedAt.After(current.UpdatedAt)
 }
 
 func agentToolArmingSnapshotPayload(task, dispatchPlan map[string]any, assetObserved bool) map[string]any {

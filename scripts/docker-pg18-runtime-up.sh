@@ -50,21 +50,19 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-mkdir -p "$tmpdir/bin" "$tmpdir/backend" "$tmpdir/web" "$tmpdir/deploy"
+mkdir -p "$tmpdir/bin" "$tmpdir/web" "$tmpdir/deploy"
 
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/gateway" ./backend/cmd/gateway
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/worker" ./backend/cmd/worker
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/node-worker" ./backend/cmd/node-worker
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o "$tmpdir/bin/assops-tool" ./backend/cmd/assops-tool
 
-cp -R backend/migrations "$tmpdir/backend/migrations"
 cp -R "$web_dist" "$tmpdir/web/dist"
 cp deploy/nginx.conf "$tmpdir/deploy/nginx.conf"
 
 docker build --pull=false -q -t "${project}-runtime:local" -f- "$tmpdir" <<DOCKERFILE >/dev/null
 FROM ${runtime_base}
 WORKDIR /app
-COPY backend/migrations ./backend/migrations
 COPY bin/assops-tool /usr/local/bin/assops-tool
 COPY bin/gateway /usr/local/bin/gateway
 COPY bin/worker /usr/local/bin/worker
@@ -99,7 +97,7 @@ database_url="postgres://${db_user}@${pg_host}:5432/${pg_database}?password=${db
 
 docker run --rm --network "$network" \
   -e "DATABASE_URL=${database_url}" \
-  --entrypoint assops-tool "${project}-runtime:local" db migrate >/tmp/assops-docker-pg18-runtime-migrate.log
+  --entrypoint assops-tool "${project}-runtime:local" db automigrate >/tmp/assops-docker-pg18-runtime-automigrate.log
 
 docker exec -i "$pg_container" psql -U "$pg_admin_user" -d "$pg_database" -v ON_ERROR_STOP=1 >/dev/null <<SQL
 DO \$\$
