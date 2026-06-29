@@ -246,7 +246,7 @@ func TestProductionRetainedBackupWorkflowGuardrails(t *testing.T) {
 		"-iname '*.key'",
 		"-iname '*.pem'",
 		"No database URL, password, kubeconfig, or raw log files are written to the artifact staging directory.",
-		"actions/upload-artifact@v4",
+		"actions/upload-artifact@v7",
 		"retention-days: ${{ env.INPUT_RETENTION_DAYS }}",
 	} {
 		if !strings.Contains(source, want) {

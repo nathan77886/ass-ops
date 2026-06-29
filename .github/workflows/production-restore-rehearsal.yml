@@ -65,10 +65,10 @@ jobs:
       REPORT_PATH: dist/rehearsal/${{ github.event_name == 'workflow_dispatch' && inputs.report_name || vars.ASSOPS_PRODUCTION_RESTORE_REHEARSAL_REPORT_NAME || 'production-restore-rehearsal-scheduled' }}.json
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -212,7 +212,7 @@ jobs:
           python3 /tmp/validate-production-rehearsal-report.py
 
       - name: Upload private rehearsal report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.INPUT_REPORT_NAME }}
           retention-days: ${{ env.INPUT_ARTIFACT_RETENTION_DAYS }}
