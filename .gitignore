@@ -1,5 +1,6 @@
 .assops/
 .env
+docker-compose.local.yml
 deploy/.env.prod
 *.log
 tmp/
