@@ -52,7 +52,6 @@ spec:
               readOnly: true
             - name: kubeconfigs
               mountPath: /etc/assops/kubeconfigs
-              readOnly: true
           readinessProbe:
             httpGet:
               path: /healthz

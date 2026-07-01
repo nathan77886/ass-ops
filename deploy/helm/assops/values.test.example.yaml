@@ -25,6 +25,7 @@ env:
   kubernetesLogsEnabled: "true"
   kubernetesLogPreviewEnabled: "false"
   kubernetesRestartsEnabled: "true"
+  kubernetesSSHKubectlEnabled: "false"
   kubeconfigSecretDir: /etc/assops/kubeconfigs
   kubectlPath: kubectl
 

@@ -6,10 +6,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"gorm.io/gorm/clause"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+var (
+	importedKubeconfigConnectionTest = runImportedKubeconfigConnectionTest
+	importedKubeconfigSSHRun         = func(ctx context.Context, request sshRunRequest) (string, string, int, error) {
+		return nativeSSHRunner{}.Run(ctx, request)
+	}
+)
+
+const importedKubeconfigMaxBytes = 1024 * 1024
 
 func (s *Server) upsertImportedKubernetesEnvironment(ctx context.Context, machine GormSSHMachine, discovery sshKubernetesDiscovery, req struct {
 	Name                string `json:"name"`
@@ -20,7 +31,17 @@ func (s *Server) upsertImportedKubernetesEnvironment(ctx context.Context, machin
 }) (GormKubernetesEnvironment, error) {
 	name := cleanOptionalText(firstNonEmptyString(req.Name, machine.Name+" "+discovery.Namespace))
 	environment := cleanOptionalText(firstNonEmptyString(req.Environment, discovery.Kind))
-	kubeconfigRef := cleanOptionalText(firstNonEmptyString(req.KubeconfigSecretRef, sshMachineKubeconfigSecretRef(machine)))
+	kubeconfigRef := cleanOptionalText(req.KubeconfigSecretRef)
+	accessMode := "local_kubeconfig"
+	if s.cfg.KubernetesSSHKubectlEnabled {
+		accessMode = "ssh_kubectl"
+	} else {
+		ref, err := s.materializeImportedKubeconfig(ctx, machine, discovery)
+		if err != nil {
+			return GormKubernetesEnvironment{}, err
+		}
+		kubeconfigRef = ref
+	}
 	serviceAccount := cleanOptionalText(firstNonEmptyString(req.ServiceAccount, discovery.ServiceAccount))
 	status := cleanKubernetesEnvironmentStatus(req.Status)
 	if name == "" || environment == "" || discovery.ClusterName == "" || discovery.Namespace == "" {
@@ -49,6 +70,7 @@ func (s *Server) upsertImportedKubernetesEnvironment(ctx context.Context, machin
 			"source_ssh_machine_id":   machine.ID,
 			"source_ssh_machine_name": machine.Name,
 			"kubernetes_kind":         discovery.Kind,
+			"kubernetes_access_mode":  accessMode,
 			"context":                 discovery.Context,
 			"server_host":             discovery.ServerHost,
 		}},
@@ -62,6 +84,142 @@ func (s *Server) upsertImportedKubernetesEnvironment(ctx context.Context, machin
 	}
 	err = s.store.Gorm.WithContext(ctx).Where(&GormKubernetesEnvironment{ProjectID: machine.ProjectID, Environment: environment, ClusterName: discovery.ClusterName, Namespace: discovery.Namespace}).First(&model).Error
 	return model, err
+}
+
+func (s *Server) materializeImportedKubeconfig(ctx context.Context, machine GormSSHMachine, discovery sshKubernetesDiscovery) (string, error) {
+	if discovery.RemoteKubeconfig == "" && discovery.Kind != "k3s" {
+		return "", fmt.Errorf("kubeconfig_not_found")
+	}
+	request, err := sshCommandInvocation(ctx, s.store.Gorm, machine, sshMachineMap(machine, nil), remoteKubeconfigReadCommand(discovery))
+	if err != nil {
+		return "", err
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	stdout, _, _, err := importedKubeconfigSSHRun(runCtx, request)
+	if err != nil {
+		return "", fmt.Errorf("kubeconfig_read_failed")
+	}
+	if len(stdout) > importedKubeconfigMaxBytes {
+		return "", fmt.Errorf("kubeconfig_too_large")
+	}
+	content := []byte(rewriteKubeconfigServerHost(stdout, machine.Host))
+	if !looksLikeKubeconfig(content, 0) {
+		return "", fmt.Errorf("kubeconfig_invalid")
+	}
+	if err := validateImportedKubeconfigContent(content); err != nil {
+		return "", err
+	}
+	ref := importedKubeconfigRef(machine, discovery)
+	path, finalPath, err := writeImportedKubeconfigTemp(s.cfg, ref, content)
+	if err != nil {
+		return "", err
+	}
+	if err := importedKubeconfigConnectionTest(ctx, s.cfg, path); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("kubeconfig_connection_test_failed")
+	}
+	if err := os.Rename(path, finalPath); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("publishing kubeconfig secret failed")
+	}
+	return ref, nil
+}
+
+func remoteKubeconfigReadCommand(discovery sshKubernetesDiscovery) string {
+	kubectl := "kubectl"
+	if discovery.Kind == "k3s" {
+		kubectl = "k3s kubectl"
+	}
+	return "set -eu\nOUT=$(" + kubectl + " config view --raw --minify 2>/dev/null)\nBYTES=$(printf '%s' \"$OUT\" | wc -c)\n[ \"$BYTES\" -le 1048576 ] || exit 23\nprintf '%s\\n' \"$OUT\""
+}
+
+func writeImportedKubeconfigTemp(cfg Config, ref string, content []byte) (string, string, error) {
+	ref, err := cleanImportedKubeconfigRef(ref)
+	if err != nil {
+		return "", "", err
+	}
+	baseDir := strings.TrimSpace(cfg.KubeconfigSecretDir)
+	if baseDir == "" {
+		baseDir = "/etc/assops/kubeconfigs"
+	}
+	path := filepath.Join(baseDir, filepath.Clean(ref))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", "", fmt.Errorf("creating kubeconfig secret dir failed")
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), "import-*.kubeconfig")
+	if err != nil {
+		return "", "", fmt.Errorf("creating kubeconfig secret temp failed")
+	}
+	tempPath := temp.Name()
+	if _, err := temp.Write(content); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+		return "", "", fmt.Errorf("writing kubeconfig secret failed")
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return "", "", fmt.Errorf("writing kubeconfig secret failed")
+	}
+	if err := os.Chmod(tempPath, 0o600); err != nil {
+		_ = os.Remove(tempPath)
+		return "", "", fmt.Errorf("chmod kubeconfig secret failed")
+	}
+	tempDir := filepath.Dir(ref)
+	tempRef := filepath.Base(tempPath)
+	if tempDir != "." {
+		tempRef = filepath.ToSlash(filepath.Join(tempDir, tempRef))
+	}
+	resolved, err := resolveKubeconfigRef(cfg, tempRef)
+	if err != nil {
+		_ = os.Remove(tempPath)
+		return "", "", err
+	}
+	return resolved, path, nil
+}
+
+func cleanImportedKubeconfigRef(ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", fmt.Errorf("kubeconfig secret ref is required")
+	}
+	if containsSecretLikeMaterial(ref) || strings.Contains(ref, "\x00") || strings.HasPrefix(ref, "/") || strings.Contains(ref, `\`) || strings.Contains(ref, "..") || !kubeconfigRefPattern.MatchString(ref) {
+		return "", fmt.Errorf("invalid kubeconfig secret ref")
+	}
+	cleaned := filepath.Clean(ref)
+	if cleaned == "." || strings.HasPrefix(cleaned, "..") || filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("invalid kubeconfig secret ref")
+	}
+	return cleaned, nil
+}
+
+func runImportedKubeconfigConnectionTest(ctx context.Context, cfg Config, kubeconfigPath string) error {
+	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, kubectlBinary(cfg), "--kubeconfig", kubeconfigPath, "cluster-info")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("kubectl cluster-info failed")
+	}
+	return nil
+}
+
+func validateImportedKubeconfigContent(content []byte) error {
+	if len(content) == 0 || len(content) > importedKubeconfigMaxBytes {
+		return fmt.Errorf("kubeconfig has invalid size")
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		key, _, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "exec", "auth-provider", "tokenFile", "client-certificate", "client-key", "certificate-authority":
+			return fmt.Errorf("kubeconfig contains unsupported credential source")
+		}
+	}
+	return nil
 }
 
 func (s *Server) discoverArgoFromKubernetesEnvironment(ctx context.Context, env GormKubernetesEnvironment) map[string]any {
@@ -80,6 +238,10 @@ func (s *Server) discoverArgoFromKubernetesEnvironment(ctx context.Context, env 
 		"candidates":                    []argoServiceCandidate{},
 		"blocked_reasons":               []string{},
 		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "raw_kubernetes_response"},
+	}
+	if metadataString(mapFromAny(env.Metadata.Data)["kubernetes_access_mode"]) == "ssh_kubectl" {
+		result["blocked_reasons"] = []string{"ssh_kubectl_argo_discovery_not_implemented"}
+		return result
 	}
 	if env.KubeconfigSecretRef == "" {
 		result["blocked_reasons"] = []string{"kubeconfig_secret_ref_missing"}

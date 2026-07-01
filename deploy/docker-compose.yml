@@ -21,6 +21,7 @@ x-assops-env: &assops-env
   ASSOPS_ARGO_READ_TOKEN: ${ASSOPS_ARGO_READ_TOKEN:-}
   ASSOPS_KUBERNETES_LOGS_ENABLED: ${ASSOPS_KUBERNETES_LOGS_ENABLED:-false}
   ASSOPS_KUBERNETES_RESTARTS_ENABLED: ${ASSOPS_KUBERNETES_RESTARTS_ENABLED:-false}
+  ASSOPS_KUBERNETES_SSH_KUBECTL_ENABLED: ${ASSOPS_KUBERNETES_SSH_KUBECTL_ENABLED:-false}
   ASSOPS_KUBECONFIG_SECRET_DIR: /etc/assops/kubeconfigs
   ASSOPS_KUBECTL_PATH: ${ASSOPS_KUBECTL_PATH:-kubectl}
   ASSOPS_SSH_KEY_DIR: /etc/assops/ssh/keys
@@ -60,7 +61,7 @@ services:
       - assops_context:/var/lib/assops/context
       - assops_bare_repos:/var/lib/assops/bare-repos
       - assops_ssh:/etc/assops/ssh:ro
-      - assops_kubeconfigs:/etc/assops/kubeconfigs:ro
+      - assops_kubeconfigs:/etc/assops/kubeconfigs
     depends_on:
       postgres:
         condition: service_healthy

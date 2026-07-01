@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 )
+
+var unsafeKubeconfigRefCharPattern = regexp.MustCompile(`[^A-Za-z0-9._/-]+`)
 
 func parseAssopsKeyValueLines(output string) map[string]string {
 	result := map[string]string{}
@@ -40,15 +43,16 @@ func publicURLHostOnly(value string) string {
 
 func safeSSHDiscoveryMap(discovery sshKubernetesDiscovery) map[string]any {
 	return map[string]any{
-		"status":            discovery.Status,
-		"kind":              discovery.Kind,
-		"context":           discovery.Context,
-		"namespace":         discovery.Namespace,
-		"cluster_name":      discovery.ClusterName,
-		"server_host":       discovery.ServerHost,
-		"service_account":   discovery.ServiceAccount,
-		"blocked_reasons":   discovery.BlockedReasons,
-		"suppressed_fields": discovery.SuppressedFields,
+		"status":             discovery.Status,
+		"kind":               discovery.Kind,
+		"context":            discovery.Context,
+		"namespace":          discovery.Namespace,
+		"cluster_name":       discovery.ClusterName,
+		"server_host":        discovery.ServerHost,
+		"service_account":    discovery.ServiceAccount,
+		"kubeconfig_present": discovery.RemoteKubeconfig != "",
+		"blocked_reasons":    discovery.BlockedReasons,
+		"suppressed_fields":  discovery.SuppressedFields,
 	}
 }
 
@@ -71,7 +75,7 @@ func suggestedKubernetesEnvironment(machine GormSSHMachine, discovery sshKuberne
 		"environment":                 cleanOptionalText(firstNonEmptyString(discovery.Kind, "kubernetes")),
 		"cluster_name":                discovery.ClusterName,
 		"namespace":                   discovery.Namespace,
-		"kubeconfig_secret_ref":       sshMachineKubeconfigSecretRef(machine),
+		"kubeconfig_secret_ref":       importedKubeconfigRef(machine, discovery),
 		"service_account":             discovery.ServiceAccount,
 		"token_subject_review_status": "not_reviewed",
 		"rbac_read_logs_status":       "not_reviewed",
@@ -93,6 +97,51 @@ func sshMachineKubeconfigSecretRef(machine GormSSHMachine) string {
 		metadataString(kubernetes["kubeconfig_secret_ref"]),
 		metadataString(kubernetes["kubeconfig_ref"]),
 	))
+}
+
+func importedKubeconfigRef(machine GormSSHMachine, discovery sshKubernetesDiscovery) string {
+	if ref := sshMachineKubeconfigSecretRef(machine); ref != "" {
+		return ref
+	}
+	parts := []string{machine.ProjectID, machine.Name, discovery.Namespace}
+	for i, part := range parts {
+		part = strings.Trim(unsafeKubeconfigRefCharPattern.ReplaceAllString(strings.ToLower(cleanOptionalText(part)), "-"), "-._/")
+		if part == "" {
+			part = "default"
+		}
+		parts[i] = part
+	}
+	return strings.Join(parts, "/") + ".kubeconfig"
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func rewriteKubeconfigServerHost(content, host string) string {
+	host = cleanOptionalText(host)
+	if host == "" {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		prefix, rawURL, ok := strings.Cut(line, "server:")
+		if !ok {
+			continue
+		}
+		serverURL := strings.TrimSpace(rawURL)
+		parsed, err := url.Parse(serverURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			continue
+		}
+		if port := parsed.Port(); port != "" {
+			parsed.Host = net.JoinHostPort(host, port)
+		} else {
+			parsed.Host = host
+		}
+		lines[i] = prefix + "server: " + parsed.String()
+	}
+	return strings.Join(lines, "\n")
 }
 
 func metadataString(value any) string {

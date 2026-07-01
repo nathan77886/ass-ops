@@ -52,6 +52,7 @@ env:
   providerReviewMutationArmed: "false"
   kubernetesLogsEnabled: "false"
   kubernetesRestartsEnabled: "false"
+  kubernetesSSHKubectlEnabled: "false"
   kubeconfigSecretDir: /etc/assops/kubeconfigs
   kubectlPath: kubectl
 

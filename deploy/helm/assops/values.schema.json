@@ -120,6 +120,10 @@
           "type": "string",
           "enum": ["true", "false"]
         },
+        "kubernetesSSHKubectlEnabled": {
+          "type": "string",
+          "enum": ["true", "false"]
+        },
         "kubeconfigSecretDir": {
           "type": "string",
           "minLength": 1

@@ -16,8 +16,21 @@ NS=$($K config view --minify -o 'jsonpath={..namespace}' 2>/dev/null || true)
 CLUSTER=$($K config view --minify -o 'jsonpath={.contexts[0].context.cluster}' 2>/dev/null || true)
 SERVER=$($K config view --minify -o 'jsonpath={.clusters[0].cluster.server}' 2>/dev/null || true)
 USER=$($K config view --minify -o 'jsonpath={.contexts[0].context.user}' 2>/dev/null || true)
+KUBECONFIG_PATH=""
+if [ -n "${KUBECONFIG:-}" ]; then
+  OLDIFS=$IFS
+  IFS=:
+  for CANDIDATE in $KUBECONFIG; do
+    if [ -r "$CANDIDATE" ]; then KUBECONFIG_PATH=$CANDIDATE; break; fi
+  done
+  IFS=$OLDIFS
+elif [ -r "$HOME/.kube/config" ]; then
+  KUBECONFIG_PATH="$HOME/.kube/config"
+elif [ -r /etc/rancher/k3s/k3s.yaml ]; then
+  KUBECONFIG_PATH=/etc/rancher/k3s/k3s.yaml
+fi
 [ -n "$NS" ] || NS=default
-printf 'ASSOPS_STATUS=ok\nASSOPS_KIND=%s\nASSOPS_CONTEXT=%s\nASSOPS_NAMESPACE=%s\nASSOPS_CLUSTER=%s\nASSOPS_SERVER=%s\nASSOPS_USER=%s\n' "$KIND" "$CTX" "$NS" "$CLUSTER" "$SERVER" "$USER"`
+printf 'ASSOPS_STATUS=ok\nASSOPS_KIND=%s\nASSOPS_CONTEXT=%s\nASSOPS_NAMESPACE=%s\nASSOPS_CLUSTER=%s\nASSOPS_SERVER=%s\nASSOPS_USER=%s\nASSOPS_KUBECONFIG_PATH=%s\n' "$KIND" "$CTX" "$NS" "$CLUSTER" "$SERVER" "$USER" "$KUBECONFIG_PATH"`
 
 type sshKubernetesDiscovery struct {
 	Status           string
@@ -27,6 +40,7 @@ type sshKubernetesDiscovery struct {
 	ClusterName      string
 	ServerHost       string
 	ServiceAccount   string
+	RemoteKubeconfig string
 	BlockedReasons   []string
 	SuppressedFields []string
 }
@@ -247,6 +261,7 @@ func (s *Server) discoverKubernetesFromSSH(ctx context.Context, machine GormSSHM
 	result.ClusterName = cleanOptionalText(fields["ASSOPS_CLUSTER"])
 	result.ServerHost = publicURLHostOnly(fields["ASSOPS_SERVER"])
 	result.ServiceAccount = cleanOptionalText(fields["ASSOPS_USER"])
+	result.RemoteKubeconfig = cleanOptionalText(fields["ASSOPS_KUBECONFIG_PATH"])
 	if result.Context == "" {
 		result.BlockedReasons = append(result.BlockedReasons, "current_context_empty")
 	}
@@ -256,7 +271,10 @@ func (s *Server) discoverKubernetesFromSSH(ctx context.Context, machine GormSSHM
 	if result.Namespace == "" {
 		result.BlockedReasons = append(result.BlockedReasons, "namespace_empty")
 	}
-	if containsSecretLikeMaterial(result.Context) || containsSecretLikeMaterial(result.ClusterName) || containsSecretLikeMaterial(result.Namespace) || containsSecretLikeMaterial(result.ServiceAccount) {
+	if !s.cfg.KubernetesSSHKubectlEnabled && result.RemoteKubeconfig == "" && result.Kind != "k3s" {
+		result.BlockedReasons = append(result.BlockedReasons, "kubeconfig_not_found")
+	}
+	if containsSecretLikeMaterial(result.Context) || containsSecretLikeMaterial(result.ClusterName) || containsSecretLikeMaterial(result.Namespace) || containsSecretLikeMaterial(result.ServiceAccount) || containsSecretLikeMaterial(result.RemoteKubeconfig) {
 		result.Status = "blocked"
 		result.BlockedReasons = append(result.BlockedReasons, "secret_like_material_detected")
 	}
