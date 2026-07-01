@@ -3,6 +3,7 @@ body { margin: 0; background: #f5f7fb; color: #172033; }
 .full { width: 100%; }
 .mono-pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
 .logPreview { margin: 0; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid #d9e2ef; border-radius: 6px; padding: 12px; background: #0f172a; color: #e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; line-height: 1.5; }
+.receiptBlock { margin: 0; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; border-radius: 6px; padding: 12px; background: #0f172a; color: #e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; line-height: 1.5; }
 .appShell { min-height: 100vh; }
 .brand { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 20px; color: #fff; font-weight: 700; font-size: 18px; }
 .topbar { background: #fff; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid #e8edf5; }
