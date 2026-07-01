@@ -56,6 +56,8 @@ services:
       ASSOPS_GATEWAY_URL: https://assops.example.com
       ASSOPS_JWT_SECRET: change-me
       ASSOPS_WEBHOOK_SECRET_KEY: change-me
+    volumes:
+      - /usr/local/bin/codex:/usr/local/bin/codex:ro
 
   node-worker:
     image: ghcr.io/<owner>/assops-node-worker:<tag>
@@ -64,6 +66,65 @@ services:
     environment:
       ASSOPS_GATEWAY_URL: http://gateway:8080
 ```
+
+## Git 连接 Token 和 AI 运行时
+
+Git 连接 Token 指 GitHub / Gitea 等 Git 平台的 API 访问配置，例如 API Base URL、Web URL、Token 环境变量名和默认 owner。它只用于 Git 平台连接和 API 操作，例如创建仓库、查分支、同步 Actions、创建 review；不参与 AI 执行。配置里只保存 Token 环境变量名，不保存 Token 明文。
+
+AI 运行时才是 worker 调用的本地 AI 执行器。当前默认是 Codex CLI：
+
+```text
+runtime_type: codex-cli
+codex_binary: codex
+```
+
+只要 worker 能在容器内通过 `codex_binary` 找到可执行文件，对应 AI 运行时就可以注册和验证。最简单做法是把主机上的 `codex` 二进制映射到容器里的 `PATH` 目录：
+
+```yaml
+services:
+  worker:
+    volumes:
+      - /usr/local/bin/codex:/usr/local/bin/codex:ro
+```
+
+如果主机路径不是 `/usr/local/bin/codex`，先确认路径：
+
+```bash
+command -v codex
+```
+
+然后把输出路径映射到容器内，例如：
+
+```yaml
+services:
+  worker:
+    volumes:
+      - /opt/codex/bin/codex:/usr/local/bin/codex:ro
+```
+
+容器内验证：
+
+```bash
+docker compose exec worker codex --version
+```
+
+Kubernetes / Helm 部署时，用 Secret、ConfigMap、hostPath、CSI 或自定义镜像把 `codex` 放进 worker 容器，并确保 `codex_binary` 指向容器内路径。hostPath 示例：
+
+```yaml
+volumes:
+  - name: codex-cli
+    hostPath:
+      path: /usr/local/bin/codex
+      type: File
+containers:
+  - name: worker
+    volumeMounts:
+      - name: codex-cli
+        mountPath: /usr/local/bin/codex
+        readOnly: true
+```
+
+如果不想依赖 `PATH`，创建 AI 运行时时把 `codex_binary` 写成绝对路径，例如 `/usr/local/bin/codex`。
 
 如 GHCR 包为私有，需要先登录：
 

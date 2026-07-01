@@ -61,7 +61,7 @@ export const zhPart06: Record<string, string> = {
     'menu.dashboard': '仪表盘',
     'menu.assets': '资产',
     'menu.projects': '项目',
-    'menu.providers': '提供方',
+    'menu.providers': 'Git 连接 Token',
     'menu.detail': '项目详情',
     'menu.remotes': 'Git 远端',
     'menu.operations': '操作',

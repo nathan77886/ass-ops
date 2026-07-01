@@ -56,6 +56,8 @@ services:
       ASSOPS_GATEWAY_URL: https://assops.example.com
       ASSOPS_JWT_SECRET: change-me
       ASSOPS_WEBHOOK_SECRET_KEY: change-me
+    volumes:
+      - /usr/local/bin/codex:/usr/local/bin/codex:ro
 
   node-worker:
     image: ghcr.io/<owner>/assops-node-worker:<tag>
@@ -64,6 +66,65 @@ services:
     environment:
       ASSOPS_GATEWAY_URL: http://gateway:8080
 ```
+
+## Git Connection Tokens and AI Runtimes
+
+A Git connection token is the API access configuration for a Git platform such as GitHub or Gitea, including API base URL, web URL, token environment variable name, and default owner. It is used only for Git platform connections and API operations, such as creating repositories, reading branches, syncing Actions, and creating reviews. It is not used for AI execution. Store only the token environment variable name in ASSOPS, never the token value.
+
+An AI runtime is the local AI executor the worker calls. The default runtime is Codex CLI:
+
+```text
+runtime_type: codex-cli
+codex_binary: codex
+```
+
+The worker only needs the `codex_binary` executable to be available inside the container so the runtime can be registered and verified. The simplest setup is to mount the host `codex` binary into a directory on the container `PATH`:
+
+```yaml
+services:
+  worker:
+    volumes:
+      - /usr/local/bin/codex:/usr/local/bin/codex:ro
+```
+
+If the host path is not `/usr/local/bin/codex`, check it first:
+
+```bash
+command -v codex
+```
+
+Then mount that path into the container, for example:
+
+```yaml
+services:
+  worker:
+    volumes:
+      - /opt/codex/bin/codex:/usr/local/bin/codex:ro
+```
+
+Verify from inside the container:
+
+```bash
+docker compose exec worker codex --version
+```
+
+For Kubernetes / Helm deployments, provide `codex` to the worker container with a Secret, ConfigMap, hostPath, CSI volume, or custom image, and make sure `codex_binary` points to the in-container path. hostPath example:
+
+```yaml
+volumes:
+  - name: codex-cli
+    hostPath:
+      path: /usr/local/bin/codex
+      type: File
+containers:
+  - name: worker
+    volumeMounts:
+      - name: codex-cli
+        mountPath: /usr/local/bin/codex
+        readOnly: true
+```
+
+If you do not want to rely on `PATH`, set `codex_binary` to an absolute path when creating the AI runtime, such as `/usr/local/bin/codex`.
 
 For private GHCR packages, log in first:
 

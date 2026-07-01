@@ -61,7 +61,7 @@ export const enPart06: Record<string, string> = {
     'menu.dashboard': 'Dashboard',
     'menu.assets': 'Assets',
     'menu.projects': 'Projects',
-    'menu.providers': 'Providers',
+    'menu.providers': 'Git Connection Tokens',
     'menu.detail': 'Project Detail',
     'menu.remotes': 'Git Remotes',
     'menu.operations': 'Operations',
