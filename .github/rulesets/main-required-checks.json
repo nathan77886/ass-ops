@@ -38,43 +38,13 @@
                 "strict_required_status_checks_policy": true,
                 "required_status_checks": [
                     {
-                        "context": "Workflow Lint"
+                        "context": "Build gateway"
                     },
                     {
-                        "context": "Secret Scan"
+                        "context": "Build worker"
                     },
                     {
-                        "context": "Go"
-                    },
-                    {
-                        "context": "Web"
-                    },
-                    {
-                        "context": "Compose Config"
-                    },
-                    {
-                        "context": "DB Rehearsal"
-                    },
-                    {
-                        "context": "Helm Chart"
-                    },
-                    {
-                        "context": "Helm Smoke"
-                    },
-                    {
-                        "context": "Docker Build (gateway)"
-                    },
-                    {
-                        "context": "Docker Build (worker)"
-                    },
-                    {
-                        "context": "Docker Build (node-worker)"
-                    },
-                    {
-                        "context": "Docker Build (web)"
-                    },
-                    {
-                        "context": "Go Vulnerability Check"
+                        "context": "Build node-worker"
                     }
                 ]
             }
