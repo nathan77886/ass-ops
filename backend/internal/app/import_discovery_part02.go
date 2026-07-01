@@ -20,7 +20,7 @@ func (s *Server) upsertImportedKubernetesEnvironment(ctx context.Context, machin
 }) (GormKubernetesEnvironment, error) {
 	name := cleanOptionalText(firstNonEmptyString(req.Name, machine.Name+" "+discovery.Namespace))
 	environment := cleanOptionalText(firstNonEmptyString(req.Environment, discovery.Kind))
-	kubeconfigRef := cleanOptionalText(req.KubeconfigSecretRef)
+	kubeconfigRef := cleanOptionalText(firstNonEmptyString(req.KubeconfigSecretRef, sshMachineKubeconfigSecretRef(machine)))
 	serviceAccount := cleanOptionalText(firstNonEmptyString(req.ServiceAccount, discovery.ServiceAccount))
 	status := cleanKubernetesEnvironmentStatus(req.Status)
 	if name == "" || environment == "" || discovery.ClusterName == "" || discovery.Namespace == "" {

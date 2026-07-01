@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"net"
 	"net/url"
 	"strings"
@@ -70,13 +71,32 @@ func suggestedKubernetesEnvironment(machine GormSSHMachine, discovery sshKuberne
 		"environment":                 cleanOptionalText(firstNonEmptyString(discovery.Kind, "kubernetes")),
 		"cluster_name":                discovery.ClusterName,
 		"namespace":                   discovery.Namespace,
-		"kubeconfig_secret_ref":       "",
+		"kubeconfig_secret_ref":       sshMachineKubeconfigSecretRef(machine),
 		"service_account":             discovery.ServiceAccount,
 		"token_subject_review_status": "not_reviewed",
 		"rbac_read_logs_status":       "not_reviewed",
 		"rbac_restart_pods_status":    "not_reviewed",
 		"status":                      "metadata_only",
 	}
+}
+
+func sshMachineKubeconfigSecretRef(machine GormSSHMachine) string {
+	metadata := mapFromAny(machine.Metadata.Data)
+	if ref := cleanOptionalText(firstNonEmptyString(
+		metadataString(metadata["kubeconfig_secret_ref"]),
+		metadataString(metadata["kubeconfig_ref"]),
+	)); ref != "" {
+		return ref
+	}
+	kubernetes := mapFromAny(metadata["kubernetes"])
+	return cleanOptionalText(firstNonEmptyString(
+		metadataString(kubernetes["kubeconfig_secret_ref"]),
+		metadataString(kubernetes["kubeconfig_ref"]),
+	))
+}
+
+func metadataString(value any) string {
+	return cleanOptionalText(fmt.Sprint(value))
 }
 
 func looksLikeArgoService(name string, labels map[string]string) bool {
