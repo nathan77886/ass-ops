@@ -230,7 +230,7 @@ func argoPodLogAuditSnapshotPayload(preview map[string]any, assetObserved bool) 
 		"raw_response_included":            false,
 		"secret_included":                  false,
 		"operation_log_written":            false,
-		"disabled_backends":                []string{"kubeconfig_secret_binding", "kubernetes_client_create", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "live_log_stream_open", "log_body_storage", "redacted_log_body_storage"},
+		"disabled_backends":                []string{"kubeconfig_secret_binding", "kubernetes_client_create", "kubernetes_pod_log_api", "kubernetes_client_logs", "argocd_pod_logs", "live_log_stream_open", "log_body_storage", "redacted_log_body_storage"},
 		"suppressed_fields":                []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "log_body", "redacted_log_body", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret", "pod_annotations", "operation_input"},
 	}
 }

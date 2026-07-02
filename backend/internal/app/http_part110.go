@@ -30,7 +30,7 @@ func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]an
 	liveBackendReady := boolOnlyFromAny(liveBackendPlan["ready"])
 	liveBackend := "disabled"
 	if liveBackendEnabled {
-		liveBackend = "kubectl_logs"
+		liveBackend = "kubernetes_client_logs"
 	}
 	kubeconfigBindingPlan := argoPodLogKubeconfigBindingPlan(prerequisiteState, namespaceReady, clusterReady)
 	kubeconfigReadinessPlan := argoPodLogNamespaceKubeconfigReadinessPlan(query, target, prerequisiteState, auditEvidence)
@@ -40,7 +40,7 @@ func argoPodLogExecutionPlan(query, target map[string]any, steps []map[string]an
 	liveLogStreamPlan := argoPodLogLiveLogStreamReviewPlan(query, target, prerequisiteState, auditEvidence, kubeconfigReadinessPlan, podScopePlan, logCapturePlan, resultRecordingPlan, liveBackendPlan)
 	message := "Pod log preview does not call Kubernetes; metadata-ready requests can create an approval-gated audit job with sanitized result only."
 	if liveBackendReady {
-		message = "Pod log backend is ready for approved audit jobs; kubectl logs can be invoked by the worker, while log bodies and kubeconfig data stay suppressed."
+		message = "Pod log backend is ready for approved audit jobs; the Kubernetes API can be invoked by the worker, while log bodies and kubeconfig data stay suppressed."
 	}
 	return map[string]any{
 		"mode":                          "pod_log_execution_plan_preview",
@@ -145,7 +145,7 @@ func argoPodLogLiveLogStreamReviewPlan(query, target map[string]any, prerequisit
 	}
 	disabledBackends := []string{"kubeconfig_secret_binding", "kubernetes_client_create", "kubernetes_pod_log_api", "argocd_pod_logs", "live_log_stream_open", "log_body_storage", "redacted_log_body_storage"}
 	if !liveBackendReady {
-		disabledBackends = append(disabledBackends, "kubectl_logs")
+		disabledBackends = append(disabledBackends, "kubernetes_client_logs")
 	}
 	executionBlockers := []string{"namespace_scoped_kubeconfig_not_bound", "pod_scope_not_verified", "result_redaction_review_not_approved"}
 	if !liveBackendReady {

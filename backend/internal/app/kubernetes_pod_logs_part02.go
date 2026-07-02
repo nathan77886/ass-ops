@@ -1,10 +1,8 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -12,9 +10,9 @@ import (
 func runKubernetesPodLogs(ctx context.Context, cfg Config, req kubernetesPodLogRequest) (map[string]any, error) {
 	started := time.Now().UTC()
 	result := map[string]any{
-		"backend":                       "kubectl_logs",
+		"backend":                       "kubernetes_client_logs",
 		"backend_state":                 "blocked",
-		"live_log_backend":              "kubectl_logs",
+		"live_log_backend":              "kubernetes_client_logs",
 		"result_scope":                  "sanitized_live_log_metadata",
 		"deployment_target_id":          req.DeploymentTargetID,
 		"environment":                   req.Environment,
@@ -31,6 +29,7 @@ func runKubernetesPodLogs(ctx context.Context, cfg Config, req kubernetesPodLogR
 		"kubernetes_api_call":           false,
 		"argocd_api_call":               false,
 		"kubectl_command_invoked":       false,
+		"kubernetes_client_invoked":     false,
 		"log_stream_opened":             false,
 		"log_body_included":             false,
 		"redacted_log_body_included":    false,
@@ -55,32 +54,29 @@ func runKubernetesPodLogs(ctx context.Context, cfg Config, req kubernetesPodLogR
 		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
 		return result, err
 	}
-	kubeconfigPath, err := resolveKubeconfigRef(cfg, req.KubeconfigRef)
-	if err != nil {
+	if strings.TrimSpace(req.KubeconfigSecret) == "" {
 		result["backend_state"] = "blocked"
+		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
+		return result, fmt.Errorf("kubeconfig secret is required")
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	result["kubeconfig_bound"] = true
+	result["kubeconfig_secret_read"] = true
+	result["kubernetes_client_invoked"] = true
+	result["kubernetes_client_created"] = true
+	result["log_stream_opened"] = true
+	result["kubernetes_api_call"] = true
+	output, err := kubernetesPodLogsRun(runCtx, req.KubeconfigSecret, req)
+	if err != nil {
+		result["backend_state"] = "failed"
 		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
 		return result, err
 	}
-	args := kubectlLogsArgs(kubeconfigPath, req)
-	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(runCtx, kubectlBinary(cfg), args...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	result["kubeconfig_bound"] = true
-	result["kubectl_command_invoked"] = true
-	result["log_stream_opened"] = true
-	result["kubernetes_api_call"] = true
-	if err := cmd.Run(); err != nil {
-		result["backend_state"] = "failed"
-		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
-		return result, fmt.Errorf("kubectl logs failed")
-	}
 	result["backend_state"] = "completed"
-	result["line_count"] = countNonEmptyLines(stdout.String())
+	result["line_count"] = countNonEmptyLines(output)
 	if cfg.KubernetesLogPreviewEnabled {
-		preview, truncated := sanitizedKubernetesLogPreview(stdout.String(), kubernetesLogPreviewMaxBytes)
+		preview, truncated := sanitizedKubernetesLogPreview(output, kubernetesLogPreviewMaxBytes)
 		result["redacted_log_preview"] = preview
 		result["redacted_log_body_included"] = preview != ""
 		result["preview_line_count"] = countNonEmptyLines(preview)
@@ -96,14 +92,13 @@ func runKubernetesPodLogs(ctx context.Context, cfg Config, req kubernetesPodLogR
 	if cfg.KubernetesLogPreviewEnabled {
 		result["message"] = "pod log audit completed with a redacted preview; raw log body was not stored"
 	}
-	_ = stderr
 	return result, nil
 }
 
 func runKubernetesPodRestart(ctx context.Context, cfg Config, req kubernetesPodRestartRequest) (map[string]any, error) {
 	started := time.Now().UTC()
 	result := map[string]any{
-		"backend":                       "kubectl_rollout_restart",
+		"backend":                       "kubernetes_client_rollout_restart",
 		"backend_state":                 "blocked",
 		"result_scope":                  "sanitized_rollout_restart_metadata",
 		"deployment_target_id":          req.DeploymentTargetID,
@@ -118,6 +113,7 @@ func runKubernetesPodRestart(ctx context.Context, cfg Config, req kubernetesPodR
 		"kubernetes_api_call":           false,
 		"argocd_api_call":               false,
 		"kubectl_command_invoked":       false,
+		"kubernetes_client_invoked":     false,
 		"rollout_restart_invoked":       false,
 		"rollout_status_checked":        false,
 		"server_dry_run_checked":        false,
@@ -140,96 +136,30 @@ func runKubernetesPodRestart(ctx context.Context, cfg Config, req kubernetesPodR
 		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
 		return result, err
 	}
-	kubeconfigPath, err := resolveKubeconfigRef(cfg, req.KubeconfigRef)
-	if err != nil {
+	if strings.TrimSpace(req.KubeconfigSecret) == "" {
 		result["backend_state"] = "blocked"
 		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
-		return result, err
+		return result, fmt.Errorf("kubeconfig secret is required")
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	args := []string{"--kubeconfig", kubeconfigPath, "-n", req.Namespace, "rollout", "restart", "deployment/" + req.DeploymentName}
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(runCtx, kubectlBinary(cfg), args...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
 	result["kubeconfig_bound"] = true
-	result["kubectl_command_invoked"] = true
+	result["kubeconfig_secret_read"] = true
+	result["kubernetes_client_invoked"] = true
 	result["kubernetes_client_created"] = true
 	result["kubernetes_api_call"] = true
-	canIArgs := []string{"--kubeconfig", kubeconfigPath, "-n", req.Namespace, "auth", "can-i", "patch", "deployment/" + req.DeploymentName}
-	canICmd := exec.CommandContext(runCtx, kubectlBinary(cfg), canIArgs...)
-	canICmd.Stdout = &stdout
-	canICmd.Stderr = &stderr
-	if err := canICmd.Run(); err != nil || !kubectlCanIAllowed(stdout.String()) {
+	if err := kubernetesRestartDeploymentRun(runCtx, req.KubeconfigSecret, req); err != nil {
 		result["backend_state"] = "failed"
 		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
-		_ = stdout
-		_ = stderr
-		return result, fmt.Errorf("kubectl auth can-i patch deployment failed")
+		return result, err
 	}
 	result["rbac_can_i_checked"] = true
-	stdout.Reset()
-	stderr.Reset()
-	dryRunArgs := append(args, "--dry-run=server")
-	dryRunCmd := exec.CommandContext(runCtx, kubectlBinary(cfg), dryRunArgs...)
-	dryRunCmd.Stdout = &stdout
-	dryRunCmd.Stderr = &stderr
-	if err := dryRunCmd.Run(); err != nil {
-		result["backend_state"] = "failed"
-		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
-		_ = stdout
-		_ = stderr
-		return result, fmt.Errorf("kubectl rollout restart dry-run failed")
-	}
 	result["server_dry_run_checked"] = true
-	stdout.Reset()
-	stderr.Reset()
-	cmd = exec.CommandContext(runCtx, kubectlBinary(cfg), args...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
 	result["rollout_restart_invoked"] = true
-	if err := cmd.Run(); err != nil {
-		result["backend_state"] = "failed"
-		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
-		_ = stdout
-		_ = stderr
-		return result, fmt.Errorf("kubectl rollout restart failed")
-	}
 	result["backend_state"] = "completed"
 	result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
-	result["message"] = "deployment rollout restart requested; command output and raw Kubernetes response were not stored"
-	_ = stdout
-	_ = stderr
+	result["message"] = "deployment rollout restart requested; raw Kubernetes response was not stored"
 	return result, nil
-}
-
-func kubectlCanIAllowed(output string) bool {
-	fields := strings.Fields(strings.ToLower(output))
-	return len(fields) > 0 && fields[0] == "yes"
-}
-
-func kubectlLogsArgs(kubeconfigPath string, req kubernetesPodLogRequest) []string {
-	args := []string{"--kubeconfig", kubeconfigPath, "-n", req.Namespace, "logs", req.PodName}
-	if req.ContainerName != "" {
-		args = append(args, "-c", req.ContainerName)
-	}
-	tailLines := req.TailLines
-	if tailLines <= 0 {
-		tailLines = 200
-	}
-	if tailLines > 200 {
-		tailLines = 200
-	}
-	args = append(args, "--tail", fmt.Sprint(tailLines))
-	if req.SinceSeconds > 0 {
-		since := req.SinceSeconds
-		if since > 86400 {
-			since = 86400
-		}
-		args = append(args, "--since", fmt.Sprintf("%ds", since))
-	}
-	return args
 }
 
 func sanitizedKubernetesLogPreview(output string, maxBytes int) (string, bool) {

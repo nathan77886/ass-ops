@@ -25,9 +25,6 @@ env:
   kubernetesLogsEnabled: "true"
   kubernetesLogPreviewEnabled: "false"
   kubernetesRestartsEnabled: "true"
-  kubernetesSSHKubectlEnabled: "false"
-  kubeconfigSecretDir: /etc/assops/kubeconfigs
-  kubectlPath: kubectl
 
 persistence:
   context:
@@ -39,10 +36,6 @@ persistence:
   ssh:
     enabled: true
     size: 1Gi
-  kubeconfigs:
-    enabled: true
-    size: 1Gi
-    existingSecretName: assops-kubeconfigs
   backups:
     enabled: true
     size: 5Gi

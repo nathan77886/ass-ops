@@ -21,10 +21,7 @@ type Config struct {
 	KubernetesPodLogsEnabled        bool
 	KubernetesLogPreviewEnabled     bool
 	KubernetesRestartsEnabled       bool
-	KubernetesSSHKubectlEnabled     bool
 	ConfigGitLocalBareWritesEnabled bool
-	KubeconfigSecretDir             string
-	KubectlPath                     string
 	AdminEmail                      string
 	AdminPassword                   string
 	ContextDir                      string
@@ -48,10 +45,7 @@ func LoadConfig() Config {
 		KubernetesPodLogsEnabled:        envBool("ASSOPS_KUBERNETES_LOGS_ENABLED", false),
 		KubernetesLogPreviewEnabled:     envBool("ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED", false),
 		KubernetesRestartsEnabled:       envBool("ASSOPS_KUBERNETES_RESTARTS_ENABLED", false),
-		KubernetesSSHKubectlEnabled:     envBool("ASSOPS_KUBERNETES_SSH_KUBECTL_ENABLED", false),
 		ConfigGitLocalBareWritesEnabled: envBool("ASSOPS_CONFIG_GIT_LOCAL_BARE_WRITES_ENABLED", false),
-		KubeconfigSecretDir:             env("ASSOPS_KUBECONFIG_SECRET_DIR", "/etc/assops/kubeconfigs"),
-		KubectlPath:                     env("ASSOPS_KUBECTL_PATH", "kubectl"),
 		AdminEmail:                      env("ASSOPS_ADMIN_EMAIL", "admin@assops.local"),
 		AdminPassword:                   env("ASSOPS_ADMIN_PASSWORD", "admin1234"),
 		ContextDir:                      env("ASSOPS_CONTEXT_DIR", ".assops/context"),

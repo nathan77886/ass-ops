@@ -271,7 +271,7 @@ func (s *Server) discoverKubernetesFromSSH(ctx context.Context, machine GormSSHM
 	if result.Namespace == "" {
 		result.BlockedReasons = append(result.BlockedReasons, "namespace_empty")
 	}
-	if !s.cfg.KubernetesSSHKubectlEnabled && result.RemoteKubeconfig == "" && result.Kind != "k3s" {
+	if result.RemoteKubeconfig == "" && result.Kind != "k3s" {
 		result.BlockedReasons = append(result.BlockedReasons, "kubeconfig_not_found")
 	}
 	if containsSecretLikeMaterial(result.Context) || containsSecretLikeMaterial(result.ClusterName) || containsSecretLikeMaterial(result.Namespace) || containsSecretLikeMaterial(result.ServiceAccount) || containsSecretLikeMaterial(result.RemoteKubeconfig) {

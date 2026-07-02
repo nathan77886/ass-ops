@@ -125,7 +125,7 @@ func argoPodLogRetrievalPlan(query, target map[string]any, blockedReasons []stri
 	liveLogStreamMessage := "Kubernetes/Argo pod log backends are not ready for this target"
 	if liveBackendReady {
 		liveLogStreamStatus = "planned"
-		liveLogStreamMessage = "approved audit jobs can invoke kubectl logs and record sanitized metadata without storing log bodies"
+		liveLogStreamMessage = "approved audit jobs can invoke the Kubernetes API and record sanitized metadata without storing log bodies"
 	}
 	steps := []map[string]any{
 		{
@@ -204,19 +204,19 @@ func argoPodLogDisabledBackends(liveBackendReady bool) []string {
 	if liveBackendReady {
 		return []string{"kubernetes_pod_log_api", "argocd_pod_logs"}
 	}
-	return []string{"kubectl_logs", "kubernetes_pod_log_api", "argocd_pod_logs"}
+	return []string{"kubernetes_client_logs", "kubernetes_pod_log_api", "argocd_pod_logs"}
 }
 
 func argoPodLogExecutionDisabledBackends(liveBackendReady bool) []string {
 	if liveBackendReady {
 		return []string{"kubernetes_pod_log_api", "argocd_pod_logs", "raw_log_body_recording"}
 	}
-	return []string{"kubeconfig_binding", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs", "raw_log_body_recording"}
+	return []string{"kubeconfig_binding", "kubernetes_pod_log_api", "kubernetes_client_logs", "argocd_pod_logs", "raw_log_body_recording"}
 }
 
 func argoPodLogNextStep(liveBackendReady bool) string {
 	if liveBackendReady {
-		return "Request an approval-gated pod log audit job; the worker can invoke kubectl logs and will record sanitized metadata without storing log bodies."
+		return "Request an approval-gated pod log audit job; the worker can invoke the Kubernetes API and will record sanitized metadata without storing log bodies."
 	}
 	return "Configure the namespace-scoped Kubernetes environment and enable the opt-in pod log backend, then request an approval-gated audit job."
 }
@@ -230,7 +230,7 @@ func argoPodLogOperatorAction(liveBackendReady bool) string {
 
 func argoPodLogLiveStreamMessage(liveBackendReady bool) string {
 	if liveBackendReady {
-		return "Approved worker jobs can invoke kubectl logs for sanitized metadata only; this preview does not read kubeconfig, open a stream, or return log bodies."
+		return "Approved worker jobs can invoke the Kubernetes API for sanitized metadata only; this preview does not read kubeconfig, open a stream, or return log bodies."
 	}
 	return "Live pod-log stream review is metadata-only until the opt-in backend and reviewed namespace kubeconfig are ready."
 }

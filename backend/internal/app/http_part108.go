@@ -125,7 +125,7 @@ func (s *Server) recordArgoPodLogAuditSnapshot(w http.ResponseWriter, r *http.Re
 
 func argoPodLogOperationInput(projectID string, target, query, executionPlan map[string]any) map[string]any {
 	liveLogBackend := cleanPreviewString(executionPlan["live_log_backend"])
-	if liveLogBackend != "kubectl_logs" {
+	if liveLogBackend != "kubernetes_client_logs" {
 		liveLogBackend = "disabled"
 	}
 	return map[string]any{
@@ -157,7 +157,7 @@ func argoPodRestartOperationInput(projectID string, target map[string]any, deplo
 		"deployment_name":        cleanOptionalText(deploymentName),
 		"result_scope":           "sanitized_rollout_restart_metadata",
 		"execution_mode":         "approval_gated_rollout_restart",
-		"restart_backend":        "kubectl_rollout_restart",
+		"restart_backend":        "kubernetes_client_rollout_restart",
 	}
 }
 

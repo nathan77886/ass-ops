@@ -112,7 +112,6 @@ docker rm -f "${project}-web" >/dev/null 2>&1 || true
 docker volume create "${project}_context" >/dev/null
 docker volume create "${project}_bare_repos" >/dev/null
 docker volume create "${project}_ssh" >/dev/null
-docker volume create "${project}_kubeconfigs" >/dev/null
 
 common_env=(
   -e "DATABASE_URL=${database_url}"
@@ -131,7 +130,6 @@ common_volumes=(
   -v "${project}_context:/var/lib/assops/context"
   -v "${project}_bare_repos:/var/lib/assops/bare-repos"
   -v "${project}_ssh:/etc/assops/ssh:ro"
-  -v "${project}_kubeconfigs:/etc/assops/kubeconfigs:ro"
 )
 
 docker run -d --name "${project}-gateway" --network "$network" --network-alias gateway \

@@ -36,12 +36,19 @@ func (w *ControlWorker) executeArgoPodLogAudit(ctx context.Context, opID string,
 		}
 	}
 	kubeconfigRef := ""
+	kubeconfigSecret := ""
 	if kubernetesEnv != nil {
 		result["kubernetes_environment_id"] = cleanOptionalID(fmt.Sprint(kubernetesEnv["id"]))
 		result["kubernetes_environment_name"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["name"]))
 		result["kubernetes_environment_status"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["status"]))
-		result["kubeconfig_secret_ref_present"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ref"])) != ""
+		result["kubeconfig_secret_ref_present"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ref"])) != "" && cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ciphertext"])) != ""
 		kubeconfigRef = cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ref"]))
+		if ciphertext := cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ciphertext"])); ciphertext != "" {
+			kubeconfigSecret, err = (&Server{cfg: w.cfg}).decryptWebhookSecret(ciphertext)
+			if err != nil {
+				return result, fmt.Errorf("decrypting kubeconfig secret failed")
+			}
+		}
 	}
 	req := kubernetesPodLogRequest{
 		ProjectID:          cleanOptionalID(fmt.Sprint(input["project_id"])),
@@ -54,6 +61,7 @@ func (w *ControlWorker) executeArgoPodLogAudit(ctx context.Context, opID string,
 		TailLines:          intFromAny(input["tail_lines"], 200),
 		SinceSeconds:       intFromAny(input["since_seconds"], 0),
 		KubeconfigRef:      kubeconfigRef,
+		KubeconfigSecret:   kubeconfigSecret,
 	}
 	if w.cfg.KubernetesPodLogsEnabled {
 		if err := validateKubernetesPodLogRequest(req); err != nil {
@@ -62,7 +70,6 @@ func (w *ControlWorker) executeArgoPodLogAudit(ctx context.Context, opID string,
 	}
 	liveResult, err := runKubernetesPodLogs(ctx, w.cfg, req)
 	copySafeArgoPodLogLiveResult(result, liveResult)
-	result["kubernetes_client_created"] = false
 	result["argocd_api_call"] = false
 	result["log_body_included"] = false
 	result["redacted_log_body_included"] = boolOnlyFromAny(liveResult["redacted_log_body_included"])
@@ -87,6 +94,8 @@ func copySafeArgoPodLogLiveResult(result, liveResult map[string]any) {
 		"backend_state",
 		"live_log_backend",
 		"live_backend_ready",
+		"kubernetes_client_created",
+		"kubernetes_client_invoked",
 		"kubernetes_api_call",
 		"kubectl_command_invoked",
 		"log_stream_opened",
@@ -162,14 +171,22 @@ func (w *ControlWorker) executeArgoPodRestart(ctx context.Context, opID string, 
 		return result, err
 	}
 	kubeconfigRef := ""
+	kubeconfigSecret := ""
 	if kubernetesEnv != nil {
 		result["kubernetes_environment_id"] = cleanOptionalID(fmt.Sprint(kubernetesEnv["id"]))
 		result["kubernetes_environment_name"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["name"]))
 		result["kubernetes_environment_status"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["status"]))
-		result["kubeconfig_secret_ref_present"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ref"])) != ""
+		result["kubeconfig_secret_ref_present"] = cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ref"])) != "" && cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ciphertext"])) != ""
 		kubeconfigRef = cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ref"]))
+		if ciphertext := cleanOptionalText(fmt.Sprint(kubernetesEnv["kubeconfig_secret_ciphertext"])); ciphertext != "" {
+			kubeconfigSecret, err = (&Server{cfg: w.cfg}).decryptWebhookSecret(ciphertext)
+			if err != nil {
+				return result, fmt.Errorf("decrypting kubeconfig secret failed")
+			}
+		}
 	}
 	req.KubeconfigRef = kubeconfigRef
+	req.KubeconfigSecret = kubeconfigSecret
 	if err := validateKubernetesPodRestartRequest(req); err != nil {
 		return result, err
 	}

@@ -60,18 +60,17 @@ func TestReleaseHelmTestReadinessPlanForTestExample(t *testing.T) {
 		"Built-in PostgreSQL is disabled",
 		"ServiceAccount token automount is disabled",
 		"pod-log metadata audits are enabled",
-		"assops-kubeconfigs",
-		"/etc/assops/kubeconfigs",
+		"encrypted kubeconfig secrets stored in the database",
 		"`DATABASE_URL`",
 		"`ASSOPS_JWT_SECRET`",
 		"`ASSOPS_ARGO_READ_TOKEN`",
 		"`kubeconfig_secret_ref`",
+		"`kubeconfig_secret`",
 		"does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs",
 		"does not render manifests, bind kubeconfigs, read external Secret values, fetch pod logs, or write deployment records",
 		"helm lint deploy/helm/assops",
 		"helm template assops deploy/helm/assops -n assops-test",
 		"kubectl -n assops-test get secret \"assops-test-secret\"",
-		"kubectl -n assops-test get secret \"assops-kubeconfigs\"",
 	} {
 		if !strings.Contains(plan, want) {
 			t.Fatalf("helm test readiness plan missing %q in:\n%s", want, plan)
@@ -118,18 +117,6 @@ func TestReleaseHelmTestReadinessPlanRejectsUnsafeFields(t *testing.T) {
 			oldText: "  kubernetesLogsEnabled: \"true\"",
 			newText: "  kubernetesLogsEnabled: \"false\"",
 			want:    "env.kubernetesLogsEnabled=true",
-		},
-		{
-			name:    "kubeconfig secret required",
-			oldText: "    existingSecretName: assops-kubeconfigs",
-			newText: "    existingSecretName: \"\"",
-			want:    "persistence.kubeconfigs.existingSecretName",
-		},
-		{
-			name:    "pod path must be absolute",
-			oldText: "  kubeconfigSecretDir: /etc/assops/kubeconfigs",
-			newText: "  kubeconfigSecretDir: etc/assops/kubeconfigs",
-			want:    "env.kubeconfigSecretDir",
 		},
 	}
 	for _, tc := range cases {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/go-chi/chi/v5"
 	"net/http"
+	"strings"
 )
 
 func (s *Server) listDeploymentTargets(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +63,7 @@ func (s *Server) listDeploymentTargetPods(w http.ResponseWriter, r *http.Request
 	if !boolOnlyFromAny(plan["ready"]) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"mode":                  "deployment_target_pod_metadata",
-			"backend":               "kubectl_get_pods",
+			"backend":               "kubernetes_client_get_pods",
 			"backend_state":         "blocked",
 			"result_scope":          "sanitized_pod_metadata",
 			"deployment_target":     sanitizedDeploymentTargetForPodMetadata(target),
@@ -77,17 +78,46 @@ func (s *Server) listDeploymentTargetPods(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
+	kubeconfigSecret := ""
+	var kube GormKubernetesEnvironment
+	if err := s.store.Gorm.WithContext(r.Context()).Where(&GormKubernetesEnvironment{
+		ProjectID:   projectID,
+		Environment: cleanOptionalText(fmt.Sprint(target["environment"])),
+		ClusterName: cleanOptionalText(fmt.Sprint(target["cluster_name"])),
+		Namespace:   cleanOptionalText(fmt.Sprint(target["namespace"])),
+	}).First(&kube).Error; err == nil && strings.TrimSpace(kube.KubeconfigSecretCiphertext) != "" {
+		kubeconfigSecret, err = s.decryptWebhookSecret(kube.KubeconfigSecretCiphertext)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"mode":                  "deployment_target_pod_metadata",
+				"backend":               "kubernetes_client_get_pods",
+				"backend_state":         "blocked",
+				"result_scope":          "sanitized_pod_metadata",
+				"deployment_target":     sanitizedDeploymentTargetForPodMetadata(target),
+				"backend_plan":          plan,
+				"items":                 []map[string]any{},
+				"item_count":            0,
+				"kubernetes_api_call":   false,
+				"raw_response_included": false,
+				"secret_included":       false,
+				"log_body_included":     false,
+				"message":               "decrypting kubeconfig secret failed",
+			})
+			return
+		}
+	}
 	result, err := runKubernetesPodList(r.Context(), s.cfg, kubernetesPodListRequest{
 		DeploymentTargetID: targetID,
 		Environment:        cleanOptionalText(fmt.Sprint(target["environment"])),
 		ClusterName:        cleanOptionalText(fmt.Sprint(target["cluster_name"])),
 		Namespace:          cleanOptionalText(fmt.Sprint(target["namespace"])),
 		KubeconfigRef:      cleanOptionalText(fmt.Sprint(target["kubeconfig_secret_ref"])),
+		KubeconfigSecret:   kubeconfigSecret,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"mode":                  "deployment_target_pod_metadata",
-			"backend":               "kubectl_get_pods",
+			"backend":               "kubernetes_client_get_pods",
 			"backend_state":         cleanPreviewString(result["backend_state"]),
 			"result_scope":          "sanitized_pod_metadata",
 			"deployment_target":     sanitizedDeploymentTargetForPodMetadata(target),

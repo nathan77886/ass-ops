@@ -1,11 +1,9 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -32,6 +30,7 @@ type kubernetesPodLogRequest struct {
 	TailLines          int
 	SinceSeconds       int
 	KubeconfigRef      string
+	KubeconfigSecret   string
 }
 
 type kubernetesPodListRequest struct {
@@ -40,6 +39,7 @@ type kubernetesPodListRequest struct {
 	ClusterName        string
 	Namespace          string
 	KubeconfigRef      string
+	KubeconfigSecret   string
 }
 
 type kubernetesPodRestartRequest struct {
@@ -50,12 +50,12 @@ type kubernetesPodRestartRequest struct {
 	Namespace          string
 	DeploymentName     string
 	KubeconfigRef      string
+	KubeconfigSecret   string
 }
 
 func kubernetesPodLogBackendPlan(cfg Config, target map[string]any) map[string]any {
 	enabled := cfg.KubernetesPodLogsEnabled
 	refPresent := boolOnlyFromAny(target["kubeconfig_secret_ref_present"])
-	ref := cleanOptionalText(fmt.Sprint(target["kubeconfig_secret_ref"]))
 	tokenReviewed := cleanPreviewString(target["token_subject_review_status"]) == "reviewed"
 	rbacReviewed := cleanPreviewString(target["rbac_read_logs_status"]) == "reviewed"
 	kubeEnvBound := cleanOptionalID(fmt.Sprint(target["kubernetes_environment_id"])) != ""
@@ -79,49 +79,34 @@ func kubernetesPodLogBackendPlan(cfg Config, target map[string]any) map[string]a
 	if !kubeEnvReady {
 		blockers = append(blockers, "kubernetes_environment_not_ready")
 	}
-	kubeconfigResolved := false
-	if enabled && ref != "" {
-		if _, err := resolveKubeconfigRefMetadata(cfg, ref, false); err == nil {
-			kubeconfigResolved = true
-		} else {
-			blockers = append(blockers, "kubeconfig_secret_ref_not_resolvable")
-		}
-	}
-	kubectlAvailable := false
-	if enabled {
-		if _, err := exec.LookPath(kubectlBinary(cfg)); err == nil {
-			kubectlAvailable = true
-		} else {
-			blockers = append(blockers, "kubectl_binary_not_available")
-		}
-	}
-	ready := enabled && kubeEnvBound && refPresent && tokenReviewed && rbacReviewed && kubeEnvReady && kubeconfigResolved && kubectlAvailable
+	kubeconfigConfigured := refPresent
+	ready := enabled && kubeEnvBound && refPresent && tokenReviewed && rbacReviewed && kubeEnvReady && kubeconfigConfigured
 	return map[string]any{
-		"mode":                           "kubernetes_pod_log_backend_readiness",
-		"backend":                        "kubectl_logs",
-		"enabled":                        enabled,
-		"ready":                          ready,
-		"result_scope":                   "sanitized_live_log_metadata",
-		"kubernetes_environment_bound":   kubeEnvBound,
-		"kubernetes_environment_ready":   kubeEnvReady,
-		"kubeconfig_secret_ref_present":  refPresent,
-		"kubeconfig_secret_ref_resolved": kubeconfigResolved,
-		"kubectl_binary_available":       kubectlAvailable,
-		"token_subject_reviewed":         tokenReviewed,
-		"rbac_read_logs_reviewed":        rbacReviewed,
-		"kubeconfig_secret_read":         false,
-		"kubeconfig_included":            false,
-		"log_body_included":              false,
-		"raw_response_included":          false,
-		"blocked_reasons":                blockers,
-		"suppressed_fields":              []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "log_body", "redacted_log_body", "raw_kubernetes_response"},
+		"mode":                          "kubernetes_pod_log_backend_readiness",
+		"backend":                       "kubernetes_client_logs",
+		"enabled":                       enabled,
+		"ready":                         ready,
+		"result_scope":                  "sanitized_live_log_metadata",
+		"kubernetes_environment_bound":  kubeEnvBound,
+		"kubernetes_environment_ready":  kubeEnvReady,
+		"kubeconfig_secret_ref_present": refPresent,
+		"kubeconfig_secret_configured":  kubeconfigConfigured,
+		"kubernetes_client_available":   true,
+		"token_subject_reviewed":        tokenReviewed,
+		"rbac_read_logs_reviewed":       rbacReviewed,
+		"kubeconfig_secret_read":        false,
+		"kubeconfig_included":           false,
+		"log_body_included":             false,
+		"raw_response_included":         false,
+		"blocked_reasons":               blockers,
+		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "log_body", "redacted_log_body", "raw_kubernetes_response"},
 	}
 }
 
 func runKubernetesPodList(ctx context.Context, cfg Config, req kubernetesPodListRequest) (map[string]any, error) {
 	started := time.Now().UTC()
 	result := map[string]any{
-		"backend":                       "kubectl_get_pods",
+		"backend":                       "kubernetes_client_get_pods",
 		"backend_state":                 "blocked",
 		"result_scope":                  "sanitized_pod_metadata",
 		"deployment_target_id":          req.DeploymentTargetID,
@@ -134,6 +119,7 @@ func runKubernetesPodList(ctx context.Context, cfg Config, req kubernetesPodList
 		"kubernetes_client_created":     false,
 		"kubernetes_api_call":           false,
 		"kubectl_command_invoked":       false,
+		"kubernetes_client_invoked":     false,
 		"raw_response_included":         false,
 		"secret_included":               false,
 		"log_body_included":             false,
@@ -158,30 +144,19 @@ func runKubernetesPodList(ctx context.Context, cfg Config, req kubernetesPodList
 		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
 		return result, fmt.Errorf("kubeconfig secret ref is required")
 	}
-	kubeconfigPath, err := resolveKubeconfigRef(cfg, req.KubeconfigRef)
-	if err != nil {
+	if strings.TrimSpace(req.KubeconfigSecret) == "" {
 		result["backend_state"] = "blocked"
 		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
-		return result, err
+		return result, fmt.Errorf("kubeconfig secret is required")
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	args := []string{"--kubeconfig", kubeconfigPath, "-n", req.Namespace, "get", "pods", "-o", "json"}
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(runCtx, kubectlBinary(cfg), args...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
 	result["kubeconfig_bound"] = true
-	result["kubectl_command_invoked"] = true
+	result["kubeconfig_secret_read"] = true
+	result["kubernetes_client_invoked"] = true
 	result["kubernetes_client_created"] = true
 	result["kubernetes_api_call"] = true
-	if err := cmd.Run(); err != nil {
-		result["backend_state"] = "failed"
-		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)
-		_ = stderr
-		return result, fmt.Errorf("kubectl get pods failed")
-	}
-	items, err := sanitizeKubernetesPodList(stdout.Bytes())
+	items, err := kubernetesListPodsRun(runCtx, req.KubeconfigSecret, req.Namespace)
 	if err != nil {
 		result["backend_state"] = "failed"
 		result["finished_at"] = time.Now().UTC().Format(time.RFC3339)

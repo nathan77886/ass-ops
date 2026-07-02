@@ -3,51 +3,10 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
-
-func TestResolveKubeconfigRefRejectsUnsafeRefsAndModes(t *testing.T) {
-	dir := t.TempDir()
-	cfg := Config{KubeconfigSecretDir: dir, KubectlPath: "kubectl"}
-	writeKubeconfig(t, filepath.Join(dir, "valid"), 0o600)
-	if _, err := resolveKubeconfigRef(cfg, "valid"); err != nil {
-		t.Fatalf("valid kubeconfig ref rejected: %v", err)
-	}
-	for _, ref := range []string{"../secret", "/tmp/secret", "bad\\path", "apiVersion: v1", ""} {
-		if _, err := resolveKubeconfigRef(cfg, ref); err == nil {
-			t.Fatalf("unsafe kubeconfig ref %q was accepted", ref)
-		}
-	}
-	writeKubeconfig(t, filepath.Join(dir, "wide"), 0o622)
-	if _, err := resolveKubeconfigRef(cfg, "wide"); err == nil {
-		t.Fatalf("group/world writable kubeconfig was accepted")
-	}
-	if err := os.WriteFile(filepath.Join(dir, "not-kubeconfig"), []byte("hello"), 0o600); err != nil {
-		t.Fatalf("write invalid kubeconfig: %v", err)
-	}
-	if _, err := resolveKubeconfigRef(cfg, "not-kubeconfig"); err == nil {
-		t.Fatalf("invalid kubeconfig shape was accepted")
-	}
-	if err := os.WriteFile(filepath.Join(dir, "empty"), nil, 0o600); err != nil {
-		t.Fatalf("write empty kubeconfig: %v", err)
-	}
-	if _, err := resolveKubeconfigRef(cfg, "empty"); err == nil {
-		t.Fatalf("empty kubeconfig was accepted")
-	}
-	outsideDir := t.TempDir()
-	outsidePath := filepath.Join(outsideDir, "outside")
-	writeKubeconfig(t, outsidePath, 0o600)
-	if err := os.Symlink(outsidePath, filepath.Join(dir, "link-outside")); err != nil {
-		t.Fatalf("create symlink: %v", err)
-	}
-	if _, err := resolveKubeconfigRef(cfg, "link-outside"); err == nil {
-		t.Fatalf("symlink escaping kubeconfig dir was accepted")
-	}
-}
 
 func TestRunKubernetesPodLogsDisabledDoesNotInvokeKubectl(t *testing.T) {
 	result, err := runKubernetesPodLogs(context.Background(), Config{}, kubernetesPodLogRequest{
@@ -66,17 +25,13 @@ func TestRunKubernetesPodLogsDisabledDoesNotInvokeKubectl(t *testing.T) {
 }
 
 func TestRunKubernetesPodLogsRecordsMetadataOnly(t *testing.T) {
-	dir := t.TempDir()
-	kubeconfigPath := filepath.Join(dir, "billing-reader")
-	writeKubeconfig(t, kubeconfigPath, 0o600)
-	kubectlPath := filepath.Join(dir, "kubectl")
-	if err := os.WriteFile(kubectlPath, []byte("#!/bin/sh\nprintf 'secret log line 1\\nsecret log line 2\\n'\n"), 0o700); err != nil {
-		t.Fatalf("write fake kubectl: %v", err)
+	oldRun := kubernetesPodLogsRun
+	t.Cleanup(func() { kubernetesPodLogsRun = oldRun })
+	kubernetesPodLogsRun = func(_ context.Context, _ string, _ kubernetesPodLogRequest) (string, error) {
+		return "secret log line 1\nsecret log line 2\n", nil
 	}
 	result, err := runKubernetesPodLogs(context.Background(), Config{
 		KubernetesPodLogsEnabled: true,
-		KubeconfigSecretDir:      dir,
-		KubectlPath:              kubectlPath,
 	}, kubernetesPodLogRequest{
 		DeploymentTargetID: "target-1",
 		Environment:        "test",
@@ -87,13 +42,15 @@ func TestRunKubernetesPodLogsRecordsMetadataOnly(t *testing.T) {
 		TailLines:          50,
 		SinceSeconds:       60,
 		KubeconfigRef:      "billing-reader",
+		KubeconfigSecret:   "apiVersion: v1\nclusters:\n- name: test\ncontexts:\n- name: test\nusers:\n- name: test\n",
 	})
 	if err != nil {
 		t.Fatalf("runKubernetesPodLogs: %v", err)
 	}
 	if result["backend_state"] != "completed" ||
 		result["kubeconfig_bound"] != true ||
-		result["kubectl_command_invoked"] != true ||
+		result["kubectl_command_invoked"] != false ||
+		result["kubernetes_client_invoked"] != true ||
 		result["kubernetes_api_call"] != true ||
 		result["log_stream_opened"] != true ||
 		result["log_body_included"] != false ||
@@ -102,7 +59,7 @@ func TestRunKubernetesPodLogsRecordsMetadataOnly(t *testing.T) {
 		t.Fatalf("live pod log metadata result = %#v", result)
 	}
 	encoded, _ := json.Marshal(result)
-	for _, forbidden := range []string{"secret log line", kubeconfigPath, "apiVersion:", "clusters:"} {
+	for _, forbidden := range []string{"secret log line", "apiVersion:", "clusters:"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("pod log metadata leaked %q: %s", forbidden, encoded)
 		}
@@ -173,19 +130,17 @@ func TestSanitizedKubernetesLogPreviewTruncatesAtUTF8Boundary(t *testing.T) {
 }
 
 func TestRunKubernetesPodLogsReturnsRedactedPreviewWhenEnabled(t *testing.T) {
-	dir := t.TempDir()
-	kubeconfigPath := filepath.Join(dir, "billing-reader")
-	writeKubeconfig(t, kubeconfigPath, 0o600)
-	kubectlPath := filepath.Join(dir, "kubectl")
-	argsPath := filepath.Join(dir, "args.txt")
-	if err := os.WriteFile(kubectlPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" > '"+argsPath+"'\nprintf 'hello\\npassword=secret123\\nAuthorization: Bearer abc123\\n'\n"), 0o700); err != nil {
-		t.Fatalf("write fake kubectl: %v", err)
+	oldRun := kubernetesPodLogsRun
+	t.Cleanup(func() { kubernetesPodLogsRun = oldRun })
+	kubernetesPodLogsRun = func(_ context.Context, _ string, req kubernetesPodLogRequest) (string, error) {
+		if req.TailLines != 500 {
+			t.Fatalf("tail lines = %d, want request value", req.TailLines)
+		}
+		return "hello\npassword=secret123\nAuthorization: Bearer abc123\n", nil
 	}
 	result, err := runKubernetesPodLogs(context.Background(), Config{
 		KubernetesPodLogsEnabled:    true,
 		KubernetesLogPreviewEnabled: true,
-		KubeconfigSecretDir:         dir,
-		KubectlPath:                 kubectlPath,
 	}, kubernetesPodLogRequest{
 		DeploymentTargetID: "target-1",
 		Environment:        "test",
@@ -196,6 +151,7 @@ func TestRunKubernetesPodLogsReturnsRedactedPreviewWhenEnabled(t *testing.T) {
 		TailLines:          500,
 		SinceSeconds:       60,
 		KubeconfigRef:      "billing-reader",
+		KubeconfigSecret:   "apiVersion: v1\nclusters:\n- name: test\ncontexts:\n- name: test\nusers:\n- name: test\n",
 	})
 	if err != nil {
 		t.Fatalf("runKubernetesPodLogs: %v", err)
@@ -211,16 +167,8 @@ func TestRunKubernetesPodLogsReturnsRedactedPreviewWhenEnabled(t *testing.T) {
 		!strings.Contains(preview, "password=<redacted>") {
 		t.Fatalf("live pod log preview result = %#v", result)
 	}
-	argsBytes, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("read kubectl args: %v", err)
-	}
-	joinedArgs := string(argsBytes)
-	if strings.Contains(joinedArgs, "--tail 500") || !strings.Contains(joinedArgs, "--tail 200") {
-		t.Fatalf("kubectl args should cap tail at 200, got %q", joinedArgs)
-	}
 	encoded, _ := json.Marshal(result)
-	for _, forbidden := range []string{"secret123", "abc123", kubeconfigPath, "billing-reader", "apiVersion:", "clusters:"} {
+	for _, forbidden := range []string{"secret123", "abc123", "billing-reader", "apiVersion:", "clusters:"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("pod log preview leaked %q: %s", forbidden, encoded)
 		}

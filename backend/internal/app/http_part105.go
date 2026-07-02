@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gorm.io/gorm/clause"
 	"net/http"
+	"strings"
 )
 
 func (s *Server) deploymentTargetMapsGorm(ctx context.Context, projectID string, limit int) ([]map[string]any, error) {
@@ -43,7 +44,8 @@ func deploymentTargetMap(target GormDeploymentTarget) map[string]any {
 }
 
 func kubernetesEnvironmentTargetFields(env GormKubernetesEnvironment) map[string]any {
-	return map[string]any{"kubernetes_environment_id": env.ID, "kubernetes_environment_name": env.Name, "kubeconfig_secret_ref_present": env.KubeconfigSecretRef != "", "kubeconfig_secret_ref": env.KubeconfigSecretRef, "service_account_present": env.ServiceAccount != "", "token_subject_review_status": env.TokenSubjectReviewStatus, "rbac_read_logs_status": env.RBACReadLogsStatus, "rbac_restart_pods_status": env.PodRestartStatus, "kubernetes_environment_status": env.Status}
+	kubeconfigConfigured := env.KubeconfigSecretRef != "" && env.KubeconfigSecretCiphertext != ""
+	return map[string]any{"kubernetes_environment_id": env.ID, "kubernetes_environment_name": env.Name, "kubeconfig_secret_ref_present": kubeconfigConfigured, "kubeconfig_secret_configured": kubeconfigConfigured, "kubeconfig_secret_ref": env.KubeconfigSecretRef, "service_account_present": env.ServiceAccount != "", "token_subject_review_status": env.TokenSubjectReviewStatus, "rbac_read_logs_status": env.RBACReadLogsStatus, "rbac_restart_pods_status": env.PodRestartStatus, "kubernetes_environment_status": env.Status}
 }
 
 func (s *Server) argoConnectionNamesByIDGorm(ctx context.Context, targets []GormDeploymentTarget) (map[string]string, error) {
@@ -221,6 +223,7 @@ func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Requ
 		ClusterName              string         `json:"cluster_name"`
 		Namespace                string         `json:"namespace"`
 		KubeconfigSecretRef      string         `json:"kubeconfig_secret_ref"`
+		KubeconfigSecret         string         `json:"kubeconfig_secret"`
 		ServiceAccount           string         `json:"service_account"`
 		TokenSubjectReviewStatus string         `json:"token_subject_review_status"`
 		RBACReadLogsStatus       string         `json:"rbac_read_logs_status"`
@@ -236,6 +239,7 @@ func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Requ
 	req.ClusterName = cleanOptionalText(req.ClusterName)
 	req.Namespace = cleanOptionalText(req.Namespace)
 	req.KubeconfigSecretRef = cleanOptionalText(req.KubeconfigSecretRef)
+	req.KubeconfigSecret = strings.TrimSpace(req.KubeconfigSecret)
 	req.ServiceAccount = cleanOptionalText(req.ServiceAccount)
 	req.TokenSubjectReviewStatus = cleanKubernetesReviewStatus(req.TokenSubjectReviewStatus)
 	req.RBACReadLogsStatus = cleanKubernetesReviewStatus(req.RBACReadLogsStatus)
@@ -245,7 +249,7 @@ func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "name, environment, cluster_name, and namespace are required")
 		return
 	}
-	if len(req.Name) > 253 || len(req.Environment) > 63 || len(req.ClusterName) > 253 || len(req.Namespace) > 63 || len(req.KubeconfigSecretRef) > 253 || len(req.ServiceAccount) > 253 {
+	if len(req.Name) > 253 || len(req.Environment) > 63 || len(req.ClusterName) > 253 || len(req.Namespace) > 63 || len(req.KubeconfigSecretRef) > 253 || len(req.KubeconfigSecret) > importedKubeconfigMaxBytes || len(req.ServiceAccount) > 253 {
 		writeError(w, http.StatusBadRequest, "kubernetes environment fields exceed allowed length")
 		return
 	}
@@ -253,10 +257,31 @@ func (s *Server) createKubernetesEnvironment(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "kubernetes environment metadata must reference names only, not credential material")
 		return
 	}
-	model := GormKubernetesEnvironment{ProjectID: projectID, Name: req.Name, Environment: req.Environment, ClusterName: req.ClusterName, Namespace: req.Namespace, KubeconfigSecretRef: req.KubeconfigSecretRef, ServiceAccount: req.ServiceAccount, TokenSubjectReviewStatus: req.TokenSubjectReviewStatus, RBACReadLogsStatus: req.RBACReadLogsStatus, PodRestartStatus: req.RBACRestartPodsStatus, Status: req.Status, Metadata: JSONValue{Data: req.Metadata}}
+	kubeconfigCiphertext := ""
+	if req.KubeconfigSecret != "" {
+		if !looksLikeKubeconfig([]byte(req.KubeconfigSecret), 0) {
+			writeError(w, http.StatusBadRequest, "kubeconfig_secret is invalid")
+			return
+		}
+		if err := validateImportedKubeconfigContent([]byte(req.KubeconfigSecret)); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		ciphertext, err := s.encryptWebhookSecret(req.KubeconfigSecret)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not encrypt kubeconfig secret")
+			return
+		}
+		kubeconfigCiphertext = ciphertext
+	}
+	model := GormKubernetesEnvironment{ProjectID: projectID, Name: req.Name, Environment: req.Environment, ClusterName: req.ClusterName, Namespace: req.Namespace, KubeconfigSecretRef: req.KubeconfigSecretRef, KubeconfigSecretCiphertext: kubeconfigCiphertext, ServiceAccount: req.ServiceAccount, TokenSubjectReviewStatus: req.TokenSubjectReviewStatus, RBACReadLogsStatus: req.RBACReadLogsStatus, PodRestartStatus: req.RBACRestartPodsStatus, Status: req.Status, Metadata: JSONValue{Data: req.Metadata}}
+	assignments := map[string]any{"name": model.Name, "kubeconfig_secret_ref": model.KubeconfigSecretRef, "service_account": model.ServiceAccount, "token_subject_review_status": model.TokenSubjectReviewStatus, "rbac_read_logs_status": model.RBACReadLogsStatus, "pod_restart_status": model.PodRestartStatus, "status": model.Status, "metadata": model.Metadata}
+	if kubeconfigCiphertext != "" {
+		assignments["kubeconfig_secret_ciphertext"] = kubeconfigCiphertext
+	}
 	if err := s.store.Gorm.WithContext(r.Context()).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "project_id"}, {Name: "environment"}, {Name: "cluster_name"}, {Name: "namespace"}},
-		DoUpdates: clause.Assignments(map[string]any{"name": model.Name, "kubeconfig_secret_ref": model.KubeconfigSecretRef, "service_account": model.ServiceAccount, "token_subject_review_status": model.TokenSubjectReviewStatus, "rbac_read_logs_status": model.RBACReadLogsStatus, "pod_restart_status": model.PodRestartStatus, "status": model.Status, "metadata": model.Metadata}),
+		DoUpdates: clause.Assignments(assignments),
 	}).Create(&model).Error; err != nil {
 		writeCreatedOne(w, nil, err)
 		return

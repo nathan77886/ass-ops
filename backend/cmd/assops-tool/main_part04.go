@@ -153,9 +153,6 @@ func releaseHelmTestReadinessPlan(valuesPath string) (string, error) {
 		"env.version",
 		"env.commit",
 		"env.buildTime",
-		"env.kubeconfigSecretDir",
-		"env.kubectlPath",
-		"persistence.kubeconfigs.existingSecretName",
 	} {
 		if strings.TrimSpace(values[key]) == "" {
 			return "", fmt.Errorf("Helm test readiness requires %s", key)
@@ -163,9 +160,6 @@ func releaseHelmTestReadinessPlan(valuesPath string) (string, error) {
 	}
 	if strings.Contains(values["gatewayURL"], "@") {
 		return "", fmt.Errorf("Helm test readiness requires gatewayURL without embedded credentials")
-	}
-	if !strings.HasPrefix(values["env.kubeconfigSecretDir"], "/") {
-		return "", fmt.Errorf("Helm test readiness requires env.kubeconfigSecretDir to be an absolute pod path")
 	}
 	sum, err := sha256File(valuesPath)
 	if err != nil {
@@ -179,18 +173,16 @@ func releaseHelmTestReadinessPlan(valuesPath string) (string, error) {
 	fmt.Fprintf(&b, "- External application Secret is required via `%s`; chart-managed test secrets are disabled.\n", values["secret.name"])
 	fmt.Fprintf(&b, "- Built-in PostgreSQL is disabled; `DATABASE_URL` must point at the reviewed test database from the external Secret.\n")
 	fmt.Fprintf(&b, "- Application ServiceAccount token automount is disabled.\n")
-	fmt.Fprintf(&b, "- Kubernetes pod-log metadata audits are enabled and use kubeconfig files mounted from Secret `%s` at `%s`.\n", values["persistence.kubeconfigs.existingSecretName"], values["env.kubeconfigSecretDir"])
+	fmt.Fprintf(&b, "- Kubernetes pod-log metadata audits are enabled and use encrypted kubeconfig secrets stored in the database.\n")
 	fmt.Fprintf(&b, "- Web stays internal as `ClusterIP`; verify access through port-forward, ingress, or another reviewed test entrypoint.\n")
 	fmt.Fprintf(&b, "- Health metadata should report version `%s`, commit `%s`, and build time `%s` unless a private release overlay overrides them.\n\n", values["env.version"], values["env.commit"], values["env.buildTime"])
 	fmt.Fprintf(&b, "## Required External Secret Keys\n\n")
 	for _, key := range requiredExternalSecretKeys() {
 		fmt.Fprintf(&b, "- `%s`\n", key)
 	}
-	fmt.Fprintf(&b, "\n## Required Kubeconfig Secret\n\n")
-	fmt.Fprintf(&b, "- Secret: `%s`\n", values["persistence.kubeconfigs.existingSecretName"])
-	fmt.Fprintf(&b, "- Mount path: `%s`\n", values["env.kubeconfigSecretDir"])
-	fmt.Fprintf(&b, "- UI `kubeconfig_secret_ref` should be a Secret key or safe relative path below that mount.\n")
-	fmt.Fprintf(&b, "- Store only reviewed namespace-scoped kubeconfig files; do not paste kubeconfig content into ASSOPS.\n\n")
+	fmt.Fprintf(&b, "\n## Required Kubeconfig Storage\n\n")
+	fmt.Fprintf(&b, "- UI `kubeconfig_secret_ref` is a non-sensitive name/reference.\n")
+	fmt.Fprintf(&b, "- UI `kubeconfig_secret` should contain reviewed namespace-scoped kubeconfig content; ASSOPS encrypts it and stores it in the database.\n\n")
 	fmt.Fprintf(&b, "## No-Call Boundary\n\n")
 	fmt.Fprintf(&b, "- This plan reads only the local values file; it does not call Kubernetes, Helm, Argo, GitHub, or cloud APIs.\n")
 	fmt.Fprintf(&b, "- It does not render manifests, bind kubeconfigs, read external Secret values, fetch pod logs, or write deployment records.\n\n")
@@ -198,7 +190,6 @@ func releaseHelmTestReadinessPlan(valuesPath string) (string, error) {
 	fmt.Fprintf(&b, "helm lint deploy/helm/assops -f %q\n", valuesPath)
 	fmt.Fprintf(&b, "helm template assops deploy/helm/assops -n assops-test -f deploy/helm/assops/values.yaml -f %q >/tmp/assops-test-rendered.yaml\n", valuesPath)
 	fmt.Fprintf(&b, "kubectl -n assops-test get secret %q\n", values["secret.name"])
-	fmt.Fprintf(&b, "kubectl -n assops-test get secret %q\n", values["persistence.kubeconfigs.existingSecretName"])
 	fmt.Fprintf(&b, "```\n\n")
 	fmt.Fprintf(&b, "Run the `kubectl` checks only after confirming the test cluster, namespace, and kubeconfig out of band. After install, verify gateway, worker, node-worker, web rollouts, then query `/healthz` through the web Service.\n")
 	return b.String(), nil

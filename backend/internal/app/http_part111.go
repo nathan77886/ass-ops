@@ -54,7 +54,7 @@ func argoPodLogCapturePlan(prerequisiteState string, liveBackendReady bool) map[
 	}
 	disabledBackends := []string{"kubernetes_pod_log_api", "argocd_pod_logs", "log_stream_result_write"}
 	if !liveBackendReady {
-		disabledBackends = append(disabledBackends, "kubectl_logs")
+		disabledBackends = append(disabledBackends, "kubernetes_client_logs")
 	}
 	executionBlockers := []string{"log_stream_result_write_disabled"}
 	if !liveBackendReady {
@@ -62,7 +62,7 @@ func argoPodLogCapturePlan(prerequisiteState string, liveBackendReady bool) map[
 	}
 	message := "Pod log capture is planned only; no log stream, raw body, redacted body, Kubernetes response, or result row is produced."
 	if liveBackendReady {
-		message = "Pod log capture is planned for approved worker jobs; kubectl logs may be invoked for sanitized metadata only, with no raw body, redacted body, Kubernetes response, or result row produced by this preview."
+		message = "Pod log capture is planned for approved worker jobs; the Kubernetes API may be invoked for sanitized metadata only, with no raw body, redacted body, Kubernetes response, or result row produced by this preview."
 	}
 	return map[string]any{
 		"mode":                       "pod_log_capture_plan",

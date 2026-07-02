@@ -20,13 +20,14 @@ func loadKubernetesEnvironmentForPodLogs(ctx context.Context, db *gorm.DB, opRes
 		return nil, fmt.Errorf("loading Kubernetes environment for pod logs: %w", err)
 	}
 	env := map[string]any{
-		"id":                          kube.ID,
-		"name":                        kube.Name,
-		"kubeconfig_secret_ref":       kube.KubeconfigSecretRef,
-		"service_account":             kube.ServiceAccount,
-		"token_subject_review_status": kube.TokenSubjectReviewStatus,
-		"rbac_read_logs_status":       kube.RBACReadLogsStatus,
-		"status":                      kube.Status,
+		"id":                           kube.ID,
+		"name":                         kube.Name,
+		"kubeconfig_secret_ref":        kube.KubeconfigSecretRef,
+		"kubeconfig_secret_ciphertext": kube.KubeconfigSecretCiphertext,
+		"service_account":              kube.ServiceAccount,
+		"token_subject_review_status":  kube.TokenSubjectReviewStatus,
+		"rbac_read_logs_status":        kube.RBACReadLogsStatus,
+		"status":                       kube.Status,
 	}
 	if cleanPreviewString(env["status"]) != "ready" {
 		return nil, fmt.Errorf("Kubernetes environment is not ready")
@@ -53,13 +54,14 @@ func loadKubernetesEnvironmentForPodRestart(ctx context.Context, db *gorm.DB, op
 		return nil, fmt.Errorf("loading Kubernetes environment for pod restart: %w", err)
 	}
 	env := map[string]any{
-		"id":                          kube.ID,
-		"name":                        kube.Name,
-		"kubeconfig_secret_ref":       kube.KubeconfigSecretRef,
-		"service_account":             kube.ServiceAccount,
-		"token_subject_review_status": kube.TokenSubjectReviewStatus,
-		"rbac_restart_pods_status":    kube.PodRestartStatus,
-		"status":                      kube.Status,
+		"id":                           kube.ID,
+		"name":                         kube.Name,
+		"kubeconfig_secret_ref":        kube.KubeconfigSecretRef,
+		"kubeconfig_secret_ciphertext": kube.KubeconfigSecretCiphertext,
+		"service_account":              kube.ServiceAccount,
+		"token_subject_review_status":  kube.TokenSubjectReviewStatus,
+		"rbac_restart_pods_status":     kube.PodRestartStatus,
+		"status":                       kube.Status,
 	}
 	if cleanPreviewString(env["status"]) != "ready" {
 		return nil, fmt.Errorf("Kubernetes environment is not ready")

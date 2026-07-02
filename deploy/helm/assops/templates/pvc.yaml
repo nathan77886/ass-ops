@@ -49,23 +49,6 @@ spec:
       storage: {{ .Values.persistence.ssh.size }}
 ---
 {{- end }}
-{{- if and .Values.persistence.kubeconfigs.enabled (not .Values.persistence.kubeconfigs.existingSecretName) }}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ include "assops.fullname" . }}-kubeconfigs
-  labels:
-    {{- include "assops.labels" . | nindent 4 }}
-spec:
-  accessModes: ["ReadWriteOnce"]
-  {{- if .Values.persistence.kubeconfigs.storageClassName }}
-  storageClassName: {{ .Values.persistence.kubeconfigs.storageClassName | quote }}
-  {{- end }}
-  resources:
-    requests:
-      storage: {{ .Values.persistence.kubeconfigs.size }}
----
-{{- end }}
 {{- if .Values.persistence.backups.enabled }}
 apiVersion: v1
 kind: PersistentVolumeClaim

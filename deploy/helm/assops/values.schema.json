@@ -119,18 +119,6 @@
         "kubernetesRestartsEnabled": {
           "type": "string",
           "enum": ["true", "false"]
-        },
-        "kubernetesSSHKubectlEnabled": {
-          "type": "string",
-          "enum": ["true", "false"]
-        },
-        "kubeconfigSecretDir": {
-          "type": "string",
-          "minLength": 1
-        },
-        "kubectlPath": {
-          "type": "string",
-          "minLength": 1
         }
       }
     },
@@ -140,7 +128,6 @@
         "context": { "$ref": "#/definitions/persistenceVolume" },
         "bareRepos": { "$ref": "#/definitions/persistenceVolume" },
         "ssh": { "$ref": "#/definitions/persistenceVolume" },
-        "kubeconfigs": { "$ref": "#/definitions/persistenceVolume" },
         "backups": { "$ref": "#/definitions/persistenceVolume" }
       }
     },

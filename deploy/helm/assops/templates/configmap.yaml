@@ -24,9 +24,6 @@ data:
   ASSOPS_KUBERNETES_LOGS_ENABLED: {{ .Values.env.kubernetesLogsEnabled | quote }}
   ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED: {{ .Values.env.kubernetesLogPreviewEnabled | quote }}
   ASSOPS_KUBERNETES_RESTARTS_ENABLED: {{ .Values.env.kubernetesRestartsEnabled | quote }}
-  ASSOPS_KUBERNETES_SSH_KUBECTL_ENABLED: {{ .Values.env.kubernetesSSHKubectlEnabled | quote }}
-  ASSOPS_KUBECONFIG_SECRET_DIR: {{ .Values.env.kubeconfigSecretDir | quote }}
-  ASSOPS_KUBECTL_PATH: {{ .Values.env.kubectlPath | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap

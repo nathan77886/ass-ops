@@ -85,18 +85,19 @@ func (m *GormGitHubActionArtifact) BeforeCreate(*gorm.DB) error {
 
 type GormKubernetesEnvironment struct {
 	GormBase
-	ProjectID                string    `gorm:"type:uuid;not null;index:kubernetes_environments_scope_key,unique" json:"project_id"`
-	Name                     string    `gorm:"not null" json:"name"`
-	Environment              string    `gorm:"not null;default:'';index:kubernetes_environments_scope_key,unique" json:"environment"`
-	ClusterName              string    `gorm:"not null;default:'';index:kubernetes_environments_scope_key,unique" json:"cluster_name"`
-	Namespace                string    `gorm:"not null;default:'';index:kubernetes_environments_scope_key,unique" json:"namespace"`
-	KubeconfigSecretRef      string    `gorm:"not null;default:''" json:"kubeconfig_secret_ref"`
-	ServiceAccount           string    `gorm:"not null;default:''" json:"service_account"`
-	TokenSubjectReviewStatus string    `gorm:"not null;default:'not_reviewed'" json:"token_subject_review_status"`
-	RBACReadLogsStatus       string    `gorm:"not null;default:'not_reviewed'" json:"rbac_read_logs_status"`
-	PodRestartStatus         string    `gorm:"not null;default:'not_reviewed'" json:"pod_restart_status"`
-	Status                   string    `gorm:"not null;default:'metadata_only';index" json:"status"`
-	Metadata                 JSONValue `gorm:"type:jsonb;not null" json:"metadata"`
+	ProjectID                  string    `gorm:"type:uuid;not null;index:kubernetes_environments_scope_key,unique" json:"project_id"`
+	Name                       string    `gorm:"not null" json:"name"`
+	Environment                string    `gorm:"not null;default:'';index:kubernetes_environments_scope_key,unique" json:"environment"`
+	ClusterName                string    `gorm:"not null;default:'';index:kubernetes_environments_scope_key,unique" json:"cluster_name"`
+	Namespace                  string    `gorm:"not null;default:'';index:kubernetes_environments_scope_key,unique" json:"namespace"`
+	KubeconfigSecretRef        string    `gorm:"not null;default:''" json:"kubeconfig_secret_ref"`
+	KubeconfigSecretCiphertext string    `gorm:"not null;default:''" json:"-"`
+	ServiceAccount             string    `gorm:"not null;default:''" json:"service_account"`
+	TokenSubjectReviewStatus   string    `gorm:"not null;default:'not_reviewed'" json:"token_subject_review_status"`
+	RBACReadLogsStatus         string    `gorm:"not null;default:'not_reviewed'" json:"rbac_read_logs_status"`
+	PodRestartStatus           string    `gorm:"not null;default:'not_reviewed'" json:"pod_restart_status"`
+	Status                     string    `gorm:"not null;default:'metadata_only';index" json:"status"`
+	Metadata                   JSONValue `gorm:"type:jsonb;not null" json:"metadata"`
 }
 
 func (GormKubernetesEnvironment) TableName() string { return "kubernetes_environments" }

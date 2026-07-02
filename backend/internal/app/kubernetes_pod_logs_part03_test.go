@@ -2,23 +2,13 @@ package app
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestArgoPodLogPreviewReportsReadyKubectlBackend(t *testing.T) {
-	dir := t.TempDir()
-	writeKubeconfig(t, filepath.Join(dir, "billing-reader"), 0o600)
-	kubectlPath := filepath.Join(dir, "kubectl")
-	if err := os.WriteFile(kubectlPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatalf("write fake kubectl: %v", err)
-	}
+func TestArgoPodLogPreviewReportsReadyKubernetesClientBackend(t *testing.T) {
 	preview := argoPodLogQueryPreviewWithConfig(Config{
 		KubernetesPodLogsEnabled: true,
-		KubeconfigSecretDir:      dir,
-		KubectlPath:              kubectlPath,
 	}, "api-7d9f", "web", 50, 60, map[string]any{
 		"id":                            "target-1",
 		"name":                          "billing",
@@ -40,7 +30,7 @@ func TestArgoPodLogPreviewReportsReadyKubectlBackend(t *testing.T) {
 	if liveBackendPlan["ready"] != true ||
 		executionPlan["live_backend_ready"] != true ||
 		!stringListContains(stringSliceFromAny(executionPlan["disabled_backends"]), "raw_log_body_recording") ||
-		stringListContains(stringSliceFromAny(executionPlan["disabled_backends"]), "kubectl_logs") ||
+		stringListContains(stringSliceFromAny(executionPlan["disabled_backends"]), "kubernetes_client_logs") ||
 		stringListContains(stringSliceFromAny(preview["blocked_reasons"]), "pod_log_backend_disabled") {
 		t.Fatalf("ready pod log preview = %#v", preview)
 	}
@@ -58,7 +48,7 @@ func TestArgoPodLogPreviewReportsReadyKubectlBackend(t *testing.T) {
 		t.Fatalf("live log stream step missing: %#v", steps)
 	}
 	encoded, _ := json.Marshal(preview)
-	for _, forbidden := range []string{"billing-reader", filepath.Join(dir, "billing-reader"), "apiVersion:", "clusters:"} {
+	for _, forbidden := range []string{"billing-reader", "apiVersion:", "clusters:"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("pod log preview leaked %q: %s", forbidden, encoded)
 		}
@@ -66,12 +56,8 @@ func TestArgoPodLogPreviewReportsReadyKubectlBackend(t *testing.T) {
 }
 
 func TestArgoPodLogPreviewBlockedBackendDoesNotLeakKubeconfigRef(t *testing.T) {
-	dir := t.TempDir()
-	writeKubeconfig(t, filepath.Join(dir, "billing-reader"), 0o600)
 	preview := argoPodLogQueryPreviewWithConfig(Config{
 		KubernetesPodLogsEnabled: false,
-		KubeconfigSecretDir:      dir,
-		KubectlPath:              "kubectl",
 	}, "api-7d9f", "web", 50, 60, map[string]any{
 		"id":                            "target-1",
 		"name":                          "billing",
@@ -92,25 +78,14 @@ func TestArgoPodLogPreviewBlockedBackendDoesNotLeakKubeconfigRef(t *testing.T) {
 	liveBackendPlan := mapFromAny(executionPlan["live_backend_plan"])
 	if liveBackendPlan["ready"] != false ||
 		executionPlan["live_backend_ready"] != false ||
-		!stringListContains(stringSliceFromAny(executionPlan["disabled_backends"]), "kubectl_logs") ||
+		!stringListContains(stringSliceFromAny(executionPlan["disabled_backends"]), "kubernetes_client_logs") ||
 		!stringListContains(stringSliceFromAny(preview["blocked_reasons"]), "pod_log_backend_disabled") {
 		t.Fatalf("blocked pod log preview = %#v", preview)
 	}
 	encoded, _ := json.Marshal(preview)
-	for _, forbidden := range []string{"billing-reader", filepath.Join(dir, "billing-reader"), "apiVersion:", "clusters:"} {
+	for _, forbidden := range []string{"billing-reader", "apiVersion:", "clusters:"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("blocked pod log preview leaked %q: %s", forbidden, encoded)
 		}
-	}
-}
-
-func writeKubeconfig(t *testing.T, path string, mode os.FileMode) {
-	t.Helper()
-	content := []byte("apiVersion: v1\nclusters:\n- name: test\ncontexts:\n- name: test\nusers:\n- name: test\n")
-	if err := os.WriteFile(path, content, mode); err != nil {
-		t.Fatalf("write kubeconfig: %v", err)
-	}
-	if err := os.Chmod(path, mode); err != nil {
-		t.Fatalf("chmod kubeconfig: %v", err)
 	}
 }

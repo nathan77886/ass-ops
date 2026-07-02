@@ -152,7 +152,7 @@ func argoPodLogNamespaceKubeconfigReadinessPlan(query, target map[string]any, pr
 		"contains_log_body":                 false,
 		"contains_raw_kubernetes_response":  false,
 		"required_controls":                 []string{"operator_approval", "namespace_scoped_kubeconfig_secret", "token_subject_review", "rbac_read_logs_review", "namespace_confirmation", "pod_identity_confirmation", "result_redaction_review"},
-		"disabled_backends":                 []string{"kubeconfig_secret_binding", "kubernetes_client_create", "token_subject_review", "rbac_review", "kubernetes_pod_log_api", "kubectl_logs", "argocd_pod_logs"},
+		"disabled_backends":                 []string{"kubeconfig_secret_binding", "kubernetes_client_create", "token_subject_review", "rbac_review", "kubernetes_pod_log_api", "kubernetes_client_logs", "argocd_pod_logs"},
 		"binding_blockers":                  bindingBlockers,
 		"readiness_sequence":                []string{"review_deployment_target_namespace", "approve_pod_log_audit_request", "bind_namespace_scoped_kubeconfig_secret", "review_token_subject", "review_rbac_logs_permission", "create_kubernetes_client", "open_live_log_stream", "record_redacted_log_result"},
 		"suppressed_fields":                 []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "log_body", "redacted_log_body", "raw_kubernetes_response", "pod_env", "secret_env", "volume_secret"},

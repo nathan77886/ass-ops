@@ -3,31 +3,26 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
+	"fmt"
 	"strings"
 	"testing"
 )
 
 func TestRunKubernetesPodListRecordsMetadataOnly(t *testing.T) {
-	dir := t.TempDir()
-	kubeconfigPath := filepath.Join(dir, "billing-reader")
-	writeKubeconfig(t, kubeconfigPath, 0o600)
-	kubectlPath := filepath.Join(dir, "kubectl")
-	podsJSON := `{"items":[{"metadata":{"name":"api-7d9f","creationTimestamp":"2026-06-26T05:00:00Z","labels":{"secret":"do-not-return"}},"spec":{"containers":[{"name":"web"},{"name":"sidecar"}]},"status":{"phase":"Running","containerStatuses":[{"name":"web","ready":true,"restartCount":1},{"name":"sidecar","ready":false,"restartCount":2}]}}]}`
-	if err := os.WriteFile(kubectlPath, []byte("#!/bin/sh\ncat <<'JSON'\n"+podsJSON+"\nJSON\n"), 0o700); err != nil {
-		t.Fatalf("write fake kubectl: %v", err)
+	oldRun := kubernetesListPodsRun
+	t.Cleanup(func() { kubernetesListPodsRun = oldRun })
+	kubernetesListPodsRun = func(_ context.Context, _, _ string) ([]map[string]any, error) {
+		return []map[string]any{{"name": "api-7d9f", "phase": "Running", "containers": []string{"web", "sidecar"}, "container_count": 2, "ready_containers": 1, "restart_count": 3, "created_at": "2026-06-26T05:00:00Z"}}, nil
 	}
 	result, err := runKubernetesPodList(context.Background(), Config{
 		KubernetesPodLogsEnabled: true,
-		KubeconfigSecretDir:      dir,
-		KubectlPath:              kubectlPath,
 	}, kubernetesPodListRequest{
 		DeploymentTargetID: "target-1",
 		Environment:        "test",
 		ClusterName:        "test-cluster",
 		Namespace:          "billing",
 		KubeconfigRef:      "billing-reader",
+		KubeconfigSecret:   "apiVersion: v1\nclusters:\n- name: test\ncontexts:\n- name: test\nusers:\n- name: test\n",
 	})
 	if err != nil {
 		t.Fatalf("runKubernetesPodList: %v", err)
@@ -35,7 +30,8 @@ func TestRunKubernetesPodListRecordsMetadataOnly(t *testing.T) {
 	if result["backend_state"] != "completed" ||
 		result["result_scope"] != "sanitized_pod_metadata" ||
 		result["kubeconfig_bound"] != true ||
-		result["kubectl_command_invoked"] != true ||
+		result["kubectl_command_invoked"] != false ||
+		result["kubernetes_client_invoked"] != true ||
 		result["kubernetes_api_call"] != true ||
 		result["log_body_included"] != false ||
 		result["raw_response_included"] != false ||
@@ -56,7 +52,7 @@ func TestRunKubernetesPodListRecordsMetadataOnly(t *testing.T) {
 		t.Fatalf("containers = %#v", containers)
 	}
 	encoded, _ := json.Marshal(result)
-	for _, forbidden := range []string{"do-not-return", kubeconfigPath, "billing-reader", "apiVersion:", "clusters:"} {
+	for _, forbidden := range []string{"do-not-return", "billing-reader", "apiVersion:", "clusters:"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("pod list metadata leaked %q: %s", forbidden, encoded)
 		}
@@ -98,25 +94,13 @@ func TestRunKubernetesPodRestartDisabledDoesNotInvokeKubectl(t *testing.T) {
 }
 
 func TestRunKubernetesPodRestartRecordsMetadataOnly(t *testing.T) {
-	dir := t.TempDir()
-	kubeconfigPath := filepath.Join(dir, "billing-restarter")
-	writeKubeconfig(t, kubeconfigPath, 0o600)
-	kubectlPath := filepath.Join(dir, "kubectl")
-	script := `#!/bin/sh
-case "$*" in
-  *"auth can-i patch deployment/api"*) printf 'yes\n'; exit 0 ;;
-  *"--dry-run=server"*) printf 'dry-run-secret-output\n'; exit 0 ;;
-  *"rollout restart deployment/api"*) printf 'restart-secret-output\n'; exit 0 ;;
-esac
-exit 1
-`
-	if err := os.WriteFile(kubectlPath, []byte(script), 0o700); err != nil {
-		t.Fatalf("write fake kubectl: %v", err)
+	oldRun := kubernetesRestartDeploymentRun
+	t.Cleanup(func() { kubernetesRestartDeploymentRun = oldRun })
+	kubernetesRestartDeploymentRun = func(_ context.Context, _ string, _ kubernetesPodRestartRequest) error {
+		return nil
 	}
 	result, err := runKubernetesPodRestart(context.Background(), Config{
 		KubernetesRestartsEnabled: true,
-		KubeconfigSecretDir:       dir,
-		KubectlPath:               kubectlPath,
 	}, kubernetesPodRestartRequest{
 		DeploymentTargetID: "target-1",
 		Environment:        "test",
@@ -124,6 +108,7 @@ exit 1
 		Namespace:          "billing",
 		DeploymentName:     "api",
 		KubeconfigRef:      "billing-restarter",
+		KubeconfigSecret:   "apiVersion: v1\nclusters:\n- name: test\ncontexts:\n- name: test\nusers:\n- name: test\n",
 	})
 	if err != nil {
 		t.Fatalf("runKubernetesPodRestart: %v", err)
@@ -131,7 +116,8 @@ exit 1
 	if result["backend_state"] != "completed" ||
 		result["result_scope"] != "sanitized_rollout_restart_metadata" ||
 		result["kubeconfig_bound"] != true ||
-		result["kubectl_command_invoked"] != true ||
+		result["kubectl_command_invoked"] != false ||
+		result["kubernetes_client_invoked"] != true ||
 		result["kubernetes_api_call"] != true ||
 		result["rbac_can_i_checked"] != true ||
 		result["server_dry_run_checked"] != true ||
@@ -143,7 +129,7 @@ exit 1
 		t.Fatalf("pod restart metadata result = %#v", result)
 	}
 	encoded, _ := json.Marshal(result)
-	for _, forbidden := range []string{"secret-output", kubeconfigPath, "billing-restarter", "apiVersion:", "clusters:"} {
+	for _, forbidden := range []string{"secret-output", "billing-restarter", "apiVersion:", "clusters:"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("pod restart metadata leaked %q: %s", forbidden, encoded)
 		}
@@ -151,18 +137,13 @@ exit 1
 }
 
 func TestRunKubernetesPodRestartRejectsAuthCanIDeniedWithoutLeakingOutput(t *testing.T) {
-	dir := t.TempDir()
-	kubeconfigPath := filepath.Join(dir, "billing-restarter")
-	writeKubeconfig(t, kubeconfigPath, 0o600)
-	kubectlPath := filepath.Join(dir, "kubectl")
-	script := "#!/bin/sh\nprintf 'no secret-denied-output\\n'\nexit 0\n"
-	if err := os.WriteFile(kubectlPath, []byte(script), 0o700); err != nil {
-		t.Fatalf("write fake kubectl: %v", err)
+	oldRun := kubernetesRestartDeploymentRun
+	t.Cleanup(func() { kubernetesRestartDeploymentRun = oldRun })
+	kubernetesRestartDeploymentRun = func(_ context.Context, _ string, _ kubernetesPodRestartRequest) error {
+		return fmt.Errorf("Kubernetes deployment patch access denied")
 	}
 	result, err := runKubernetesPodRestart(context.Background(), Config{
 		KubernetesRestartsEnabled: true,
-		KubeconfigSecretDir:       dir,
-		KubectlPath:               kubectlPath,
 	}, kubernetesPodRestartRequest{
 		DeploymentTargetID: "target-1",
 		Environment:        "test",
@@ -170,6 +151,7 @@ func TestRunKubernetesPodRestartRejectsAuthCanIDeniedWithoutLeakingOutput(t *tes
 		Namespace:          "billing",
 		DeploymentName:     "api",
 		KubeconfigRef:      "billing-restarter",
+		KubeconfigSecret:   "apiVersion: v1\nclusters:\n- name: test\ncontexts:\n- name: test\nusers:\n- name: test\n",
 	})
 	if err == nil {
 		t.Fatalf("auth denied pod restart should fail")
@@ -182,7 +164,7 @@ func TestRunKubernetesPodRestartRejectsAuthCanIDeniedWithoutLeakingOutput(t *tes
 		t.Fatalf("auth denied pod restart result = %#v", result)
 	}
 	encoded, _ := json.Marshal(result)
-	for _, forbidden := range []string{"secret-denied-output", kubeconfigPath, "billing-restarter"} {
+	for _, forbidden := range []string{"secret-denied-output", "billing-restarter"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("auth denied pod restart leaked %q: %s", forbidden, encoded)
 		}
@@ -201,28 +183,9 @@ func TestValidateKubernetesPodRestartRequestRejectsInvalidNames(t *testing.T) {
 	}
 }
 
-func TestKubectlCanIAllowedAcceptsYesWithWhitespaceOnly(t *testing.T) {
-	if !kubectlCanIAllowed(" yes\r\n") {
-		t.Fatalf("expected yes output to be allowed")
-	}
-	for _, output := range []string{"no", "yesterday", ""} {
-		if kubectlCanIAllowed(output) {
-			t.Fatalf("unexpected auth can-i allow for %q", output)
-		}
-	}
-}
-
 func TestKubernetesPodLogBackendPlanReportsReadyWithoutReadingLogs(t *testing.T) {
-	dir := t.TempDir()
-	writeKubeconfig(t, filepath.Join(dir, "billing-reader"), 0o600)
-	kubectlPath := filepath.Join(dir, "kubectl")
-	if err := os.WriteFile(kubectlPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatalf("write fake kubectl: %v", err)
-	}
 	plan := kubernetesPodLogBackendPlan(Config{
 		KubernetesPodLogsEnabled: true,
-		KubeconfigSecretDir:      dir,
-		KubectlPath:              kubectlPath,
 	}, map[string]any{
 		"kubernetes_environment_id":     "kube-env-1",
 		"kubernetes_environment_status": "ready",
@@ -232,8 +195,8 @@ func TestKubernetesPodLogBackendPlanReportsReadyWithoutReadingLogs(t *testing.T)
 		"rbac_read_logs_status":         "reviewed",
 	})
 	if plan["ready"] != true ||
-		plan["kubeconfig_secret_ref_resolved"] != true ||
-		plan["kubectl_binary_available"] != true ||
+		plan["kubeconfig_secret_configured"] != true ||
+		plan["kubernetes_client_available"] != true ||
 		plan["kubeconfig_secret_read"] != false ||
 		plan["log_body_included"] != false {
 		t.Fatalf("backend plan = %#v", plan)

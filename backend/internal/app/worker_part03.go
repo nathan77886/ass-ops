@@ -97,7 +97,7 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db *gorm.DB, job
 	case "argo.pod_logs":
 		backend := "disabled"
 		if w.cfg.KubernetesPodLogsEnabled {
-			backend = "kubectl_logs"
+			backend = "kubernetes_client_logs"
 		}
 		fields := map[string]any{"live_log_backend": backend, "kubeconfig_bound": false, "log_body_included": false}
 		if err := db.WithContext(ctx).Create(&GormOperationLog{OperationRunID: validNullString(opID), WorkerJobID: validNullString(fmt.Sprint(job["id"])), Level: "info", Message: "pod log audit worker started", Fields: JSONValue{Data: fields}}).Error; err != nil {
@@ -110,7 +110,7 @@ func (w *ControlWorker) markAdapterRunning(ctx context.Context, db *gorm.DB, job
 	case "argo.pod_restart":
 		backend := "disabled"
 		if w.cfg.KubernetesRestartsEnabled {
-			backend = "kubectl_rollout_restart"
+			backend = "kubernetes_client_rollout_restart"
 		}
 		fields := map[string]any{"restart_backend": backend, "kubeconfig_bound": false, "raw_response_included": false, "stdout_included": false, "stderr_included": false}
 		if err := db.WithContext(ctx).Create(&GormOperationLog{OperationRunID: validNullString(opID), WorkerJobID: validNullString(fmt.Sprint(job["id"])), Level: "info", Message: "pod restart worker started", Fields: JSONValue{Data: fields}}).Error; err != nil {

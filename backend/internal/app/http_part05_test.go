@@ -166,7 +166,7 @@ func TestArgoPodLogQueryPreviewIsReadOnlyAndRedacted(t *testing.T) {
 		t.Fatalf("pod log target = %#v", target)
 	}
 	disabledBackends := stringSliceFromAny(preview["disabled_backends"])
-	if len(disabledBackends) != 3 || disabledBackends[0] != "kubectl_logs" || disabledBackends[2] != "argocd_pod_logs" {
+	if len(disabledBackends) != 3 || disabledBackends[0] != "kubernetes_client_logs" || disabledBackends[2] != "argocd_pod_logs" {
 		t.Fatalf("pod log disabled backends = %#v", disabledBackends)
 	}
 	suppressed := stringSliceFromAny(preview["suppressed_fields"])

@@ -43,8 +43,3 @@ env:
   kubernetesLogsEnabled: "true"
   kubernetesLogPreviewEnabled: "false"
   kubernetesRestartsEnabled: "true"
-  kubernetesSSHKubectlEnabled: "false"
-
-persistence:
-  kubeconfigs:
-    existingSecretName: assops-kubeconfigs
