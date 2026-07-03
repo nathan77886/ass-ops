@@ -366,15 +366,17 @@ func discoverArgoTokenFromKubernetesPod(ctx context.Context, kubeconfig, namespa
 		return "", argoCredentialPodCandidate{}, fmt.Errorf("argocd_pod_not_found")
 	}
 	var lastErr error
+	var lastCandidate argoCredentialPodCandidate
 	for _, candidate := range candidates {
 		token, err := kubernetesArgoPodTokenRun(ctx, kubeconfig, candidate)
 		if err == nil {
 			return token, candidate, nil
 		}
 		lastErr = err
+		lastCandidate = candidate
 	}
 	if lastErr != nil {
-		return "", argoCredentialPodCandidate{}, fmt.Errorf("argocd_token_exec_failed")
+		return "", argoCredentialPodCandidate{}, fmt.Errorf("argocd_token_exec_failed namespace=%s pod=%s container=%s: %w", lastCandidate.Namespace, lastCandidate.Name, lastCandidate.Container, lastErr)
 	}
 	return "", argoCredentialPodCandidate{}, fmt.Errorf("argocd_token_not_found")
 }

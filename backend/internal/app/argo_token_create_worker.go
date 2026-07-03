@@ -34,6 +34,9 @@ func (w *ControlWorker) executeArgoTokenCreate(ctx context.Context, opID string,
 	}
 	credential, err := server.argoCredentialFromKubernetesPod(ctx, env, stringFromMap(input, "connection_name"))
 	if err != nil {
+		if w.log != nil {
+			w.log.Error("Argo token pod exec failed", "operation_id", op.ID, "kubernetes_environment_id", env.ID, "kubernetes_environment_name", env.Name, "namespace", env.Namespace, "error", err)
+		}
 		return result, err
 	}
 	if err := w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
