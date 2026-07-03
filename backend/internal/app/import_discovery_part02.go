@@ -322,6 +322,27 @@ func (s *Server) existingAutoArgoCredential(ctx context.Context, env GormKuberne
 	return &credential, nil
 }
 
+func (s *Server) existingAutoArgoCredentialForEnvironment(ctx context.Context, env GormKubernetesEnvironment) (*GormConnectionCredential, error) {
+	var credentials []GormConnectionCredential
+	err := s.store.Gorm.WithContext(ctx).
+		Where(&GormConnectionCredential{Kind: "argo_token"}).
+		Where("project_id = ?", env.ProjectID).
+		Find(&credentials).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, credential := range credentials {
+		metadata := mapFromAny(credential.Metadata.Data)
+		if credential.SecretCiphertext == "" ||
+			metadataString(metadata["source"]) != "kubernetes_argocd_pod_exec" ||
+			cleanOptionalID(metadataString(metadata["source_kubernetes_environment_id"])) != env.ID {
+			continue
+		}
+		return &credential, nil
+	}
+	return nil, nil
+}
+
 func discoverArgoTokenFromKubernetesPod(ctx context.Context, kubeconfig, namespace string) (string, argoCredentialPodCandidate, error) {
 	client, err := kubernetesClientFromSecret(kubeconfig)
 	if err != nil {

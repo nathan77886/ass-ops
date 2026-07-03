@@ -216,6 +216,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/projects/{id}/kubernetes/environments", s.createKubernetesEnvironment)
 		r.Get("/api/projects/{id}/kubernetes/environments", s.listKubernetesEnvironments)
 		r.Post("/api/kubernetes/environments/{id}/argo/import-preview", s.previewArgoImportFromKubernetesEnvironment)
+		r.Post("/api/kubernetes/environments/{id}/argo/token-create", s.createArgoTokenFromKubernetesEnvironment)
 		r.Post("/api/kubernetes/environments/{id}/argo/import", s.importArgoFromKubernetesEnvironment)
 		r.Get("/api/projects/{id}/deployment-targets", s.listDeploymentTargets)
 		r.Post("/api/deployment-targets/{id}/execution-gate", s.deploymentTargetExecutionGate)

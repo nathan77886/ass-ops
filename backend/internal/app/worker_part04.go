@@ -235,6 +235,8 @@ func (w *ControlWorker) executeAdapterRun(ctx context.Context, job map[string]an
 		syncResult, err := NewArgoSyncer().SyncApps(ctx, w.store.Gorm, opID)
 		mergeArgoSyncResult(result, syncResult)
 		return result, err
+	case "argo.token_create":
+		return w.executeArgoTokenCreate(ctx, opID, result)
 	case "argo.pod_logs":
 		return w.executeArgoPodLogAudit(ctx, opID, result)
 	case "argo.pod_restart":
