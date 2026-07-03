@@ -176,3 +176,17 @@ func uniqueArgoCandidates(items []argoServiceCandidate) []argoServiceCandidate {
 	}
 	return out
 }
+
+func uniqueArgoCredentialPodCandidates(items []argoCredentialPodCandidate) []argoCredentialPodCandidate {
+	out := []argoCredentialPodCandidate{}
+	seen := map[string]bool{}
+	for _, item := range items {
+		key := item.Namespace + "\x00" + item.Name + "\x00" + item.Container
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, item)
+	}
+	return out
+}

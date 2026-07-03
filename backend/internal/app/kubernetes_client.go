@@ -1,10 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -14,7 +16,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/remotecommand"
 )
 
 var (
@@ -23,7 +28,21 @@ var (
 	kubernetesRestartDeploymentRun = kubernetesRestartDeployment
 )
 
+const kubernetesPodExecMaxBytes = 128 * 1024
+
 func kubernetesClientFromSecret(kubeconfig string) (*kubernetes.Clientset, error) {
+	cfg, err := kubernetesRESTConfigFromSecret(kubeconfig)
+	if err != nil {
+		return nil, err
+	}
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating Kubernetes client: %w", err)
+	}
+	return client, nil
+}
+
+func kubernetesRESTConfigFromSecret(kubeconfig string) (*rest.Config, error) {
 	kubeconfig = strings.TrimSpace(kubeconfig)
 	if kubeconfig == "" {
 		return nil, fmt.Errorf("kubeconfig secret is required")
@@ -36,11 +55,90 @@ func kubernetesClientFromSecret(kubeconfig string) (*kubernetes.Clientset, error
 	if err != nil {
 		return nil, fmt.Errorf("parsing kubeconfig secret: %w", err)
 	}
+	return cfg, nil
+}
+
+type kubernetesPodExecRequest struct {
+	Namespace     string
+	PodName       string
+	ContainerName string
+	Command       []string
+}
+
+func kubernetesPodExec(ctx context.Context, kubeconfig string, req kubernetesPodExecRequest) (string, string, error) {
+	cfg, err := kubernetesRESTConfigFromSecret(kubeconfig)
+	if err != nil {
+		return "", "", err
+	}
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("creating Kubernetes client: %w", err)
+		return "", "", fmt.Errorf("creating Kubernetes client: %w", err)
 	}
-	return client, nil
+	allowed, err := kubernetesCanCreatePodExec(ctx, client, req.Namespace, req.PodName)
+	if err != nil {
+		return "", "", err
+	}
+	if !allowed {
+		return "", "", fmt.Errorf("Kubernetes pod exec access denied")
+	}
+	request := client.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(req.PodName).
+		Namespace(req.Namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: req.ContainerName,
+			Command:   req.Command,
+			Stdout:    true,
+			Stderr:    true,
+		}, scheme.ParameterCodec)
+	executor, err := remotecommand.NewSPDYExecutor(cfg, http.MethodPost, request.URL())
+	if err != nil {
+		return "", "", fmt.Errorf("creating Kubernetes pod exec: %w", err)
+	}
+	stdout := &cappedBuffer{limit: kubernetesPodExecMaxBytes}
+	stderr := &cappedBuffer{limit: kubernetesPodExecMaxBytes}
+	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: stdout, Stderr: stderr}); err != nil {
+		return "", "", fmt.Errorf("running Kubernetes pod exec: %w", err)
+	}
+	return stdout.String(), stderr.String(), nil
+}
+
+type cappedBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		return 0, fmt.Errorf("Kubernetes pod exec output exceeded limit")
+	}
+	remaining := b.limit - b.Len()
+	if len(p) > remaining {
+		if remaining > 0 {
+			_, _ = b.Buffer.Write(p[:remaining])
+		}
+		return 0, fmt.Errorf("Kubernetes pod exec output exceeded limit")
+	}
+	return b.Buffer.Write(p)
+}
+
+func kubernetesCanCreatePodExec(ctx context.Context, client *kubernetes.Clientset, namespace, podName string) (bool, error) {
+	review := &authorizationv1.SelfSubjectAccessReview{
+		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Namespace: namespace,
+				Verb:      "create",
+				Resource:  "pods/exec",
+				Name:      podName,
+			},
+		},
+	}
+	access, err := client.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, review, metav1.CreateOptions{})
+	if err != nil {
+		return false, fmt.Errorf("checking Kubernetes pod exec access: %w", err)
+	}
+	return access.Status.Allowed, nil
 }
 
 func kubernetesListPods(ctx context.Context, kubeconfig, namespace string) ([]map[string]any, error) {
@@ -235,4 +333,62 @@ func kubernetesIngressCandidates(ctx context.Context, client *kubernetes.Clients
 		}
 	}
 	return candidates, nil
+}
+
+func kubernetesArgoPodCandidates(ctx context.Context, client *kubernetes.Clientset, namespace string) ([]argoCredentialPodCandidate, error) {
+	list, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing Kubernetes pods: %w", err)
+	}
+	candidates := []argoCredentialPodCandidate{}
+	argoPodCount := 0
+	execDenied := false
+	for _, pod := range list.Items {
+		name := cleanOptionalText(pod.Name)
+		if pod.Status.Phase != corev1.PodRunning || !looksLikeArgoService(name, pod.Labels) {
+			continue
+		}
+		argoPodCount++
+		allowed, err := kubernetesCanCreatePodExec(ctx, client, firstNonEmptyString(pod.Namespace, namespace), name)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			execDenied = true
+			continue
+		}
+		container := argoPodTokenContainer(pod.Spec.Containers)
+		if container == "" {
+			continue
+		}
+		candidates = append(candidates, argoCredentialPodCandidate{
+			Name:      name,
+			Namespace: firstNonEmptyString(pod.Namespace, namespace),
+			Container: container,
+			Reason:    "argocd_pod_exec_available",
+		})
+	}
+	if len(candidates) == 0 && argoPodCount > 0 && execDenied {
+		return nil, fmt.Errorf("argocd_pod_exec_forbidden")
+	}
+	return candidates, nil
+}
+
+func argoPodTokenContainer(containers []corev1.Container) string {
+	fallback := ""
+	for _, container := range containers {
+		name := cleanOptionalText(container.Name)
+		if name == "" || !kubernetesContainerPattern.MatchString(name) || len(name) > 63 {
+			continue
+		}
+		lowerName := strings.ToLower(name)
+		lowerImage := strings.ToLower(container.Image)
+		if strings.Contains(lowerName, "argocd-server") || strings.Contains(lowerName, "server") {
+			return name
+		}
+		if fallback == "" && (strings.Contains(lowerName, "argocd") || strings.Contains(lowerImage, "argocd")) {
+			fallback = name
+		}
+	}
+	return fallback
 }

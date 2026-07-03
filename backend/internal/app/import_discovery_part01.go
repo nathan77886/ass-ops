@@ -53,6 +53,13 @@ type argoServiceCandidate struct {
 	Reason    string `json:"reason"`
 }
 
+type argoCredentialPodCandidate struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Container string `json:"container"`
+	Reason    string `json:"reason"`
+}
+
 func (s *Server) previewKubernetesImportFromSSHMachine(w http.ResponseWriter, r *http.Request) {
 	machine, ok := s.sshMachineForImport(w, r, "read")
 	if !ok {
@@ -150,11 +157,6 @@ func (s *Server) importArgoFromKubernetesEnvironment(w http.ResponseWriter, r *h
 		writeError(w, http.StatusForbidden, "sensitive Argo connection config requires an owner role")
 		return
 	}
-	credential, err := s.connectionCredentialForProjectOrGlobal(r.Context(), env.ProjectID, req.CredentialID, "argo_token")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "credential_id must reference an Argo token credential in this project")
-		return
-	}
 	config := map[string]any{
 		"insecure_skip_verify": boolConfig(req.Config, "insecure_skip_verify"),
 		"use_env_token":        boolConfig(req.Config, "use_env_token"),
@@ -162,15 +164,60 @@ func (s *Server) importArgoFromKubernetesEnvironment(w http.ResponseWriter, r *h
 	config["source"] = "kubernetes_environment_import"
 	config["source_kubernetes_environment_id"] = env.ID
 	config["source_kubernetes_environment_name"] = env.Name
+	var credential *GormConnectionCredential
+	var autoCredential *GormConnectionCredential
+	if req.CredentialID != "" {
+		var err error
+		credential, err = s.connectionCredentialForProjectOrGlobal(r.Context(), env.ProjectID, req.CredentialID, "argo_token")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "credential_id must reference an Argo token credential in this project")
+			return
+		}
+	} else {
+		existingCredential, err := s.existingAutoArgoCredential(r.Context(), env, req.ServerURL)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "could not inspect existing Argo credential")
+			return
+		}
+		if existingCredential != nil {
+			credential = existingCredential
+		} else if !canUseSensitiveArgoConfig(currentUser(r)) {
+			writeError(w, http.StatusForbidden, "automatic Argo token creation requires an owner role")
+			return
+		} else {
+			next, err := s.argoCredentialFromKubernetesPod(r.Context(), env, req.Name)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			autoCredential = &next
+		}
+	}
+	credentialID := req.CredentialID
+	if credential != nil {
+		credentialID = credential.ID
+	}
+	if credentialID == "" && autoCredential == nil {
+		writeError(w, http.StatusBadRequest, "credential_id or automatic Argo token discovery is required")
+		return
+	}
 	connection := GormArgoConnection{
 		ProjectID:    env.ProjectID,
 		Name:         req.Name,
 		ServerURL:    req.ServerURL,
 		AuthType:     "token",
-		CredentialID: validNullString(req.CredentialID),
+		CredentialID: validNullString(credentialID),
 		Config:       JSONValue{Data: config},
 	}
 	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
+		if autoCredential != nil {
+			if err := tx.Create(autoCredential).Error; err != nil {
+				return err
+			}
+			credential = autoCredential
+			credentialID = autoCredential.ID
+			connection.CredentialID = validNullString(credentialID)
+		}
 		var existing GormArgoConnection
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where(&GormArgoConnection{ProjectID: env.ProjectID, ServerURL: req.ServerURL}).First(&existing).Error
 		if err == nil {
@@ -194,6 +241,7 @@ func (s *Server) importArgoFromKubernetesEnvironment(w http.ResponseWriter, r *h
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"imported":                  true,
+		"credential_auto_created":   autoCredential != nil,
 		"kubernetes_environment_id": env.ID,
 		"argo_connection":           argoConnectionMap(connection, credential),
 	})

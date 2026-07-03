@@ -13,9 +13,16 @@ var (
 	importedKubeconfigSSHRun = func(ctx context.Context, request sshRunRequest) (string, string, int, error) {
 		return nativeSSHRunner{}.Run(ctx, request)
 	}
+	kubernetesArgoPodTokenRun             = kubernetesArgoPodToken
+	discoverArgoTokenFromKubernetesPodRun = discoverArgoTokenFromKubernetesPod
 )
 
 const importedKubeconfigMaxBytes = 1024 * 1024
+const argoPodTokenCommand = `set -eu
+if ! command -v argocd >/dev/null 2>&1; then exit 21; fi
+TOKEN="$(argocd account generate-token --account admin 2>/dev/null || true)"
+[ -n "$TOKEN" ] || exit 22
+printf 'ASSOPS_ARGO_TOKEN=%s\n' "$TOKEN"`
 
 func (s *Server) upsertImportedKubernetesEnvironment(ctx context.Context, machine GormSSHMachine, discovery sshKubernetesDiscovery, req struct {
 	Name                string `json:"name"`
@@ -150,21 +157,24 @@ func validateImportedKubeconfigContent(content []byte) error {
 
 func (s *Server) discoverArgoFromKubernetesEnvironment(ctx context.Context, env GormKubernetesEnvironment) map[string]any {
 	result := map[string]any{
-		"status":                        "blocked",
-		"kubernetes_environment_id":     env.ID,
-		"kubernetes_environment_name":   env.Name,
-		"namespace":                     env.Namespace,
-		"cluster_name":                  env.ClusterName,
-		"kubeconfig_secret_ref_present": env.KubeconfigSecretRef != "",
-		"kubeconfig_secret_read":        false,
-		"kubernetes_api_call":           false,
-		"kubectl_command_invoked":       false,
-		"kubernetes_client_invoked":     false,
-		"raw_response_included":         false,
-		"secret_included":               false,
-		"candidates":                    []argoServiceCandidate{},
-		"blocked_reasons":               []string{},
-		"suppressed_fields":             []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "raw_kubernetes_response"},
+		"status":                           "blocked",
+		"kubernetes_environment_id":        env.ID,
+		"kubernetes_environment_name":      env.Name,
+		"namespace":                        env.Namespace,
+		"cluster_name":                     env.ClusterName,
+		"kubeconfig_secret_ref_present":    env.KubeconfigSecretRef != "",
+		"kubeconfig_secret_read":           false,
+		"kubernetes_api_call":              false,
+		"kubectl_command_invoked":          false,
+		"kubernetes_client_invoked":        false,
+		"raw_response_included":            false,
+		"secret_included":                  false,
+		"candidates":                       []argoServiceCandidate{},
+		"credential_candidates":            []argoCredentialPodCandidate{},
+		"credential_auto_create_available": false,
+		"pod_exec_token_command_invoked":   false,
+		"blocked_reasons":                  []string{},
+		"suppressed_fields":                []string{"kubeconfig", "cluster_token", "authorization_header", "client_certificate", "client_key", "raw_kubernetes_response", "argo_token", "pod_exec_stdout", "pod_exec_stderr"},
 	}
 	if env.KubeconfigSecretRef == "" || strings.TrimSpace(env.KubeconfigSecretCiphertext) == "" {
 		result["blocked_reasons"] = []string{"kubeconfig_secret_ref_missing"}
@@ -176,7 +186,7 @@ func (s *Server) discoverArgoFromKubernetesEnvironment(ctx context.Context, env 
 		return result
 	}
 	result["kubeconfig_secret_read"] = true
-	candidates, warnings, err := discoverArgoCandidates(ctx, kubeconfig, env.Namespace)
+	candidates, credentialCandidates, warnings, err := discoverArgoCandidates(ctx, kubeconfig, env.Namespace)
 	result["kubernetes_api_call"] = true
 	result["kubernetes_client_invoked"] = true
 	result["warnings"] = warnings
@@ -186,7 +196,10 @@ func (s *Server) discoverArgoFromKubernetesEnvironment(ctx context.Context, env 
 		return result
 	}
 	result["candidates"] = candidates
+	result["credential_candidates"] = credentialCandidates
 	result["candidate_count"] = len(candidates)
+	result["credential_candidate_count"] = len(credentialCandidates)
+	result["credential_auto_create_available"] = len(credentialCandidates) > 0
 	if len(candidates) == 0 {
 		result["blocked_reasons"] = []string{"argocd_service_not_found"}
 		return result
@@ -196,14 +209,15 @@ func (s *Server) discoverArgoFromKubernetesEnvironment(ctx context.Context, env 
 	return result
 }
 
-func discoverArgoCandidates(ctx context.Context, kubeconfig, namespace string) ([]argoServiceCandidate, []string, error) {
+func discoverArgoCandidates(ctx context.Context, kubeconfig, namespace string) ([]argoServiceCandidate, []argoCredentialPodCandidate, []string, error) {
 	client, err := kubernetesClientFromSecret(kubeconfig)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	namespaces := []string{cleanOptionalText(namespace), "argocd"}
 	seenNS := map[string]bool{}
 	var candidates []argoServiceCandidate
+	var credentialCandidates []argoCredentialPodCandidate
 	warnings := []string{}
 	for _, ns := range namespaces {
 		if ns == "" || seenNS[ns] {
@@ -212,7 +226,7 @@ func discoverArgoCandidates(ctx context.Context, kubeconfig, namespace string) (
 		seenNS[ns] = true
 		items, err := kubernetesServiceCandidates(ctx, client, ns)
 		if err != nil && ns == namespace {
-			return nil, warnings, err
+			return nil, nil, warnings, err
 		}
 		if err != nil {
 			warnings = append(warnings, "service_scan_failed:"+ns)
@@ -224,6 +238,142 @@ func discoverArgoCandidates(ctx context.Context, kubeconfig, namespace string) (
 		} else {
 			warnings = append(warnings, "ingress_scan_failed:"+ns)
 		}
+		podItems, err := kubernetesArgoPodCandidates(ctx, client, ns)
+		if err == nil {
+			credentialCandidates = append(credentialCandidates, podItems...)
+		} else {
+			warnings = append(warnings, "pod_scan_failed:"+ns)
+		}
 	}
-	return uniqueArgoCandidates(candidates), warnings, nil
+	return uniqueArgoCandidates(candidates), uniqueArgoCredentialPodCandidates(credentialCandidates), warnings, nil
+}
+
+func (s *Server) argoCredentialFromKubernetesPod(ctx context.Context, env GormKubernetesEnvironment, connectionName string) (GormConnectionCredential, error) {
+	if env.KubeconfigSecretRef == "" || strings.TrimSpace(env.KubeconfigSecretCiphertext) == "" {
+		return GormConnectionCredential{}, fmt.Errorf("kubeconfig_secret_ref_missing")
+	}
+	kubeconfig, err := s.decryptWebhookSecret(env.KubeconfigSecretCiphertext)
+	if err != nil {
+		return GormConnectionCredential{}, fmt.Errorf("decrypting kubeconfig secret failed")
+	}
+	token, source, err := discoverArgoTokenFromKubernetesPodRun(ctx, kubeconfig, env.Namespace)
+	if err != nil {
+		return GormConnectionCredential{}, err
+	}
+	ciphertext, err := s.encryptWebhookSecret(token)
+	if err != nil {
+		return GormConnectionCredential{}, fmt.Errorf("could not encrypt Argo token credential")
+	}
+	name := cleanOptionalText(connectionName)
+	if name == "" {
+		name = env.Name
+	}
+	return GormConnectionCredential{
+		ProjectID:        validNullString(env.ProjectID),
+		Name:             name + " auto Argo token",
+		Kind:             "argo_token",
+		SecretCiphertext: ciphertext,
+		Metadata: JSONValue{Data: map[string]any{
+			"source":                             "kubernetes_argocd_pod_exec",
+			"source_kubernetes_environment_id":   env.ID,
+			"source_kubernetes_environment_name": env.Name,
+			"namespace":                          source.Namespace,
+			"pod_name":                           source.Name,
+			"container_name":                     source.Container,
+			"token_command":                      "argocd account generate-token",
+			"secret_included":                    false,
+			"stdout_included":                    false,
+			"stderr_included":                    false,
+		}},
+	}, nil
+}
+
+func (s *Server) existingAutoArgoCredential(ctx context.Context, env GormKubernetesEnvironment, serverURL string) (*GormConnectionCredential, error) {
+	var connection GormArgoConnection
+	err := s.store.Gorm.WithContext(ctx).
+		Where(&GormArgoConnection{ProjectID: env.ProjectID, ServerURL: serverURL}).
+		First(&connection).Error
+	if errorsIsRecordNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !connection.CredentialID.Valid {
+		return nil, nil
+	}
+	var credential GormConnectionCredential
+	err = s.store.Gorm.WithContext(ctx).
+		Where(&GormConnectionCredential{Kind: "argo_token"}).
+		Where("id = ? AND project_id = ?", connection.CredentialID.String, env.ProjectID).
+		First(&credential).Error
+	if errorsIsRecordNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	metadata := mapFromAny(credential.Metadata.Data)
+	if credential.SecretCiphertext == "" ||
+		metadataString(metadata["source"]) != "kubernetes_argocd_pod_exec" ||
+		cleanOptionalID(metadataString(metadata["source_kubernetes_environment_id"])) != env.ID {
+		return nil, nil
+	}
+	return &credential, nil
+}
+
+func discoverArgoTokenFromKubernetesPod(ctx context.Context, kubeconfig, namespace string) (string, argoCredentialPodCandidate, error) {
+	client, err := kubernetesClientFromSecret(kubeconfig)
+	if err != nil {
+		return "", argoCredentialPodCandidate{}, err
+	}
+	namespaces := []string{cleanOptionalText(namespace), "argocd"}
+	seenNS := map[string]bool{}
+	var candidates []argoCredentialPodCandidate
+	for _, ns := range namespaces {
+		if ns == "" || seenNS[ns] {
+			continue
+		}
+		seenNS[ns] = true
+		items, err := kubernetesArgoPodCandidates(ctx, client, ns)
+		if err == nil {
+			candidates = append(candidates, items...)
+		}
+	}
+	candidates = uniqueArgoCredentialPodCandidates(candidates)
+	if len(candidates) == 0 {
+		return "", argoCredentialPodCandidate{}, fmt.Errorf("argocd_pod_not_found")
+	}
+	var lastErr error
+	for _, candidate := range candidates {
+		token, err := kubernetesArgoPodTokenRun(ctx, kubeconfig, candidate)
+		if err == nil {
+			return token, candidate, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return "", argoCredentialPodCandidate{}, fmt.Errorf("argocd_token_exec_failed")
+	}
+	return "", argoCredentialPodCandidate{}, fmt.Errorf("argocd_token_not_found")
+}
+
+func kubernetesArgoPodToken(ctx context.Context, kubeconfig string, candidate argoCredentialPodCandidate) (string, error) {
+	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	stdout, _, err := kubernetesPodExec(runCtx, kubeconfig, kubernetesPodExecRequest{
+		Namespace:     candidate.Namespace,
+		PodName:       candidate.Name,
+		ContainerName: candidate.Container,
+		Command:       []string{"sh", "-c", argoPodTokenCommand},
+	})
+	if err != nil {
+		return "", err
+	}
+	fields := parseAssopsKeyValueLines(stdout)
+	token := strings.TrimSpace(fields["ASSOPS_ARGO_TOKEN"])
+	if token == "" || len(token) > 128*1024 || len(strings.Fields(token)) != 1 {
+		return "", fmt.Errorf("argocd_token_invalid")
+	}
+	return token, nil
 }
