@@ -63,27 +63,35 @@ func TestCloudflareQueuesClientPullAndAck(t *testing.T) {
 	}
 }
 
-func TestCloudflareQueuesClientPublishTaskUsesProducerBridge(t *testing.T) {
+func TestCloudflareQueuesClientPublishTaskUsesQueuePushAPI(t *testing.T) {
 	var auth string
-	var event CloudflareQueueTaskEvent
+	var body struct {
+		Body        CloudflareQueueTaskEvent `json:"body"`
+		ContentType string                   `json:"content_type"`
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth = r.Header.Get("Authorization")
-		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+		if r.URL.Path != "/accounts/acct/queues/task-queue/messages" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode event: %v", err)
 		}
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"success":true}`))
 	}))
 	defer server.Close()
 
 	client := NewCloudflareQueuesClient(Config{
-		CloudflareQueuesEnabled:     true,
-		CloudflareTaskProducerURL:   server.URL,
-		CloudflareTaskProducerToken: "producer-token",
+		CloudflareQueuesEnabled:  true,
+		CloudflareAccountID:      "acct",
+		CloudflareQueuesAPIToken: "queue-token",
+		CloudflareQueuesAPIBase:  server.URL,
+		CloudflareTaskQueueID:    "task-queue",
 	}, server.Client())
 	if err := client.PublishTask(t.Context(), CloudflareQueueTaskEvent{EventID: "evt-1", JobID: "job-1"}); err != nil {
 		t.Fatalf("PublishTask: %v", err)
 	}
-	if auth != "Bearer producer-token" || event.EventID != "evt-1" || event.JobID != "job-1" {
-		t.Fatalf("auth=%q event=%#v", auth, event)
+	if auth != "Bearer queue-token" || body.ContentType != "json" || body.Body.EventID != "evt-1" || body.Body.JobID != "job-1" {
+		t.Fatalf("auth=%q body=%#v", auth, body)
 	}
 }

@@ -31,7 +31,6 @@ secret:
   adminPassword: change-me-admin
   approvalWebhookToken: ""
   cloudflareQueuesAPIToken: ""
-  cloudflareTaskProducerToken: ""
   githubActionsReadToken: ""
   argoReadToken: ""
   githubTemplateToken: ""
@@ -49,7 +48,6 @@ env:
   cloudflareQueuesAPIBase: https://api.cloudflare.com/client/v4
   cloudflareWorkerEventsQueueID: ""
   cloudflareTaskQueueID: ""
-  cloudflareTaskProducerURL: ""
   cloudflareQueuePullBatchSize: "10"
   cloudflareQueueVisibilityTimeoutMS: "300000"
   localBareBaseDirs: /var/lib/assops/bare-repos

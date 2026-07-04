@@ -32,8 +32,6 @@ func TestLoadConfigIncludesWorkerHealthAddresses(t *testing.T) {
 	t.Setenv("ASSOPS_CLOUDFLARE_QUEUES_API_TOKEN", "queue-token")
 	t.Setenv("ASSOPS_CLOUDFLARE_WORKER_EVENTS_QUEUE_ID", "events-queue")
 	t.Setenv("ASSOPS_CLOUDFLARE_TASK_QUEUE_ID", "task-queue")
-	t.Setenv("ASSOPS_CLOUDFLARE_TASK_PRODUCER_URL", "https://queue-producer.example.test")
-	t.Setenv("ASSOPS_CLOUDFLARE_TASK_PRODUCER_TOKEN", "producer-token")
 	t.Setenv("ASSOPS_CLOUDFLARE_QUEUE_PULL_BATCH_SIZE", "9")
 	t.Setenv("ASSOPS_CLOUDFLARE_QUEUE_VISIBILITY_TIMEOUT_MS", "12000")
 
@@ -52,8 +50,6 @@ func TestLoadConfigIncludesWorkerHealthAddresses(t *testing.T) {
 		cfg.CloudflareQueuesAPIToken != "queue-token" ||
 		cfg.CloudflareWorkerEventsQueueID != "events-queue" ||
 		cfg.CloudflareTaskQueueID != "task-queue" ||
-		cfg.CloudflareTaskProducerURL != "https://queue-producer.example.test" ||
-		cfg.CloudflareTaskProducerToken != "producer-token" ||
 		cfg.CloudflareQueuePullBatchSize != 9 ||
 		cfg.CloudflareQueueVisibilityMS != 12000 {
 		t.Fatalf("cloudflare queue config not loaded: %#v", cfg)

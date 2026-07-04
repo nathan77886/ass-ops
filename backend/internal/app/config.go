@@ -29,8 +29,6 @@ type Config struct {
 	CloudflareQueuesAPIBase         string
 	CloudflareWorkerEventsQueueID   string
 	CloudflareTaskQueueID           string
-	CloudflareTaskProducerURL       string
-	CloudflareTaskProducerToken     string
 	CloudflareQueuePullBatchSize    int
 	CloudflareQueueVisibilityMS     int
 	AdminEmail                      string
@@ -64,8 +62,6 @@ func LoadConfig() Config {
 		CloudflareQueuesAPIBase:         env("ASSOPS_CLOUDFLARE_QUEUES_API_BASE", "https://api.cloudflare.com/client/v4"),
 		CloudflareWorkerEventsQueueID:   env("ASSOPS_CLOUDFLARE_WORKER_EVENTS_QUEUE_ID", ""),
 		CloudflareTaskQueueID:           env("ASSOPS_CLOUDFLARE_TASK_QUEUE_ID", ""),
-		CloudflareTaskProducerURL:       env("ASSOPS_CLOUDFLARE_TASK_PRODUCER_URL", ""),
-		CloudflareTaskProducerToken:     env("ASSOPS_CLOUDFLARE_TASK_PRODUCER_TOKEN", ""),
 		CloudflareQueuePullBatchSize:    envInt("ASSOPS_CLOUDFLARE_QUEUE_PULL_BATCH_SIZE", 10),
 		CloudflareQueueVisibilityMS:     envInt("ASSOPS_CLOUDFLARE_QUEUE_VISIBILITY_TIMEOUT_MS", 300000),
 		AdminEmail:                      env("ASSOPS_ADMIN_EMAIL", "admin@assops.local"),

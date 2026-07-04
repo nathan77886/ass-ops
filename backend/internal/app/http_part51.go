@@ -54,7 +54,7 @@ func (s *Server) dispatchRemoteOperation(ctx context.Context, op map[string]any,
 		return
 	}
 	client := NewCloudflareQueuesClient(s.cfg, nil)
-	if !client.TaskProducerConfigured() {
+	if !client.TaskPublishConfigured() {
 		return
 	}
 	event := CloudflareQueueTaskEvent{

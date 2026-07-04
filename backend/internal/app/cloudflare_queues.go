@@ -61,36 +61,26 @@ func (c *CloudflareQueuesClient) TaskPullConfigured() bool {
 	return c.PullConfigured(c.cfg.CloudflareTaskQueueID)
 }
 
-func (c *CloudflareQueuesClient) TaskProducerConfigured() bool {
-	return c != nil &&
-		c.cfg.CloudflareQueuesEnabled &&
-		strings.TrimSpace(c.cfg.CloudflareTaskProducerURL) != ""
+func (c *CloudflareQueuesClient) TaskPublishConfigured() bool {
+	return c.PullConfigured(c.cfg.CloudflareTaskQueueID)
 }
 
 func (c *CloudflareQueuesClient) PublishTask(ctx context.Context, event CloudflareQueueTaskEvent) error {
-	if !c.TaskProducerConfigured() {
+	if !c.TaskPublishConfigured() {
 		return nil
 	}
-	body, err := json.Marshal(event)
-	if err != nil {
+	reqBody := map[string]any{
+		"body":         event,
+		"content_type": "json",
+	}
+	var resp struct {
+		Success bool `json:"success"`
+	}
+	if err := c.queuePost(ctx, c.cfg.CloudflareTaskQueueID, "", reqBody, &resp); err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.CloudflareTaskProducerURL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if token := strings.TrimSpace(c.cfg.CloudflareTaskProducerToken); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	res, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1024))
-		return fmt.Errorf("cloudflare task producer returned %s", res.Status)
+	if !resp.Success {
+		return fmt.Errorf("cloudflare queue task publish failed")
 	}
 	return nil
 }
@@ -167,7 +157,11 @@ func (c *CloudflareQueuesClient) queueMessagesURL(queueID, action string) string
 	accountID := url.PathEscape(strings.TrimSpace(c.cfg.CloudflareAccountID))
 	queueID = url.PathEscape(strings.TrimSpace(queueID))
 	action = url.PathEscape(strings.TrimSpace(action))
-	return base + "/accounts/" + accountID + "/queues/" + queueID + "/messages/" + action
+	path := base + "/accounts/" + accountID + "/queues/" + queueID + "/messages"
+	if action != "" {
+		path += "/" + action
+	}
+	return path
 }
 
 func queueLeaseItems(leases []string) []map[string]string {

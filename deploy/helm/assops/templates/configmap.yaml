@@ -23,7 +23,6 @@ data:
   ASSOPS_CLOUDFLARE_QUEUES_API_BASE: {{ .Values.env.cloudflareQueuesAPIBase | quote }}
   ASSOPS_CLOUDFLARE_WORKER_EVENTS_QUEUE_ID: {{ .Values.env.cloudflareWorkerEventsQueueID | quote }}
   ASSOPS_CLOUDFLARE_TASK_QUEUE_ID: {{ .Values.env.cloudflareTaskQueueID | quote }}
-  ASSOPS_CLOUDFLARE_TASK_PRODUCER_URL: {{ .Values.env.cloudflareTaskProducerURL | quote }}
   ASSOPS_CLOUDFLARE_QUEUE_PULL_BATCH_SIZE: {{ .Values.env.cloudflareQueuePullBatchSize | quote }}
   ASSOPS_CLOUDFLARE_QUEUE_VISIBILITY_TIMEOUT_MS: {{ .Values.env.cloudflareQueueVisibilityTimeoutMS | quote }}
   ASSOPS_WORKER_HEALTH_ADDR: ":8081"

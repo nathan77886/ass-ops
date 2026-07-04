@@ -51,7 +51,6 @@
         "adminPassword": { "type": "string", "minLength": 1 },
         "approvalWebhookToken": { "type": "string" },
         "cloudflareQueuesAPIToken": { "type": "string" },
-        "cloudflareTaskProducerToken": { "type": "string" },
         "githubActionsReadToken": { "type": "string" },
         "argoReadToken": { "type": "string" },
         "githubTemplateToken": { "type": "string" },
@@ -106,7 +105,6 @@
         "cloudflareQueuesAPIBase": { "type": "string", "minLength": 1 },
         "cloudflareWorkerEventsQueueID": { "type": "string" },
         "cloudflareTaskQueueID": { "type": "string" },
-        "cloudflareTaskProducerURL": { "type": "string" },
         "cloudflareQueuePullBatchSize": {
           "type": "string",
           "pattern": "^[0-9]+$"
