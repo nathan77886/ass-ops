@@ -43,6 +43,7 @@ env:
   buildTime: unknown
   workerIntervalSeconds: "3"
   workerMetricsPath: ""
+  nodeWorkerDownloadBaseURL: https://github.com/nathan77886/ass-ops/releases/latest/download
   localWorkerEnabled: "true"
   cloudflareQueuesEnabled: "false"
   cloudflareAccountID: ""

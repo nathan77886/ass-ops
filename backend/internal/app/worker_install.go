@@ -48,11 +48,12 @@ func (s *Server) installWorkerOnSSHMachine(w http.ResponseWriter, r *http.Reques
 		req.NodeWorkerPath = "/usr/local/bin/node-worker"
 	}
 	command, err := buildWorkerInstallCommand(workerInstallRequest{
-		NodeName:       req.NodeName,
-		Kind:           req.Kind,
-		Capabilities:   req.Capabilities,
-		GatewayURL:     req.GatewayURL,
-		NodeWorkerPath: req.NodeWorkerPath,
+		NodeName:        req.NodeName,
+		Kind:            req.Kind,
+		Capabilities:    req.Capabilities,
+		GatewayURL:      req.GatewayURL,
+		DownloadBaseURL: s.cfg.NodeWorkerDownloadBaseURL,
+		NodeWorkerPath:  req.NodeWorkerPath,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -82,11 +83,12 @@ func (s *Server) installWorkerOnSSHMachine(w http.ResponseWriter, r *http.Reques
 }
 
 type workerInstallRequest struct {
-	NodeName       string
-	Kind           string
-	Capabilities   []string
-	GatewayURL     string
-	NodeWorkerPath string
+	NodeName        string
+	Kind            string
+	Capabilities    []string
+	GatewayURL      string
+	DownloadBaseURL string
+	NodeWorkerPath  string
 }
 
 func buildWorkerInstallCommand(req workerInstallRequest) (string, error) {
@@ -101,6 +103,9 @@ func buildWorkerInstallCommand(req workerInstallRequest) (string, error) {
 		return "", fmt.Errorf("capabilities are required")
 	}
 	if err := validateWorkerGatewayURL(req.GatewayURL); err != nil {
+		return "", err
+	}
+	if err := validateWorkerDownloadBaseURL(req.DownloadBaseURL); err != nil {
 		return "", err
 	}
 	if err := validateWorkerBinaryPath(req.NodeWorkerPath); err != nil {
@@ -124,10 +129,23 @@ RestartSec=5
 WantedBy=multi-user.target
 `, req.GatewayURL, req.NodeWorkerPath, req.NodeName, req.Kind, caps)
 	unitBase64 := base64.StdEncoding.EncodeToString([]byte(unit))
+	downloadBase := strings.TrimRight(req.DownloadBaseURL, "/")
 	return strings.Join([]string{
 		"set -eu",
 		"command -v systemctl >/dev/null",
-		"test -x " + shellQuote(req.NodeWorkerPath),
+		"arch=$(uname -m)",
+		"case \"$arch\" in x86_64|amd64) assops_arch=amd64 ;; aarch64|arm64) assops_arch=arm64 ;; *) echo \"unsupported architecture: $arch\" >&2; exit 1 ;; esac",
+		"binary_url=" + shellQuote(downloadBase) + "/node-worker-linux-${assops_arch}",
+		"checksum_url=\"${binary_url}.sha256\"",
+		"bin_tmp=$(mktemp)",
+		"checksum_tmp=$(mktemp)",
+		"cleanup_tmp=\"$(dirname \"$bin_tmp\")/node-worker-linux-${assops_arch}\"",
+		"trap 'rm -f \"$bin_tmp\" \"$checksum_tmp\" \"$cleanup_tmp\"' EXIT",
+		"if command -v curl >/dev/null; then curl -fsSL \"$binary_url\" -o \"$bin_tmp\"; elif command -v wget >/dev/null; then wget -qO \"$bin_tmp\" \"$binary_url\"; else echo \"curl or wget is required\" >&2; exit 1; fi",
+		"if command -v curl >/dev/null; then curl -fsSL \"$checksum_url\" -o \"$checksum_tmp\"; else wget -qO \"$checksum_tmp\" \"$checksum_url\"; fi",
+		"cp \"$bin_tmp\" \"$cleanup_tmp\"",
+		"(cd \"$(dirname \"$bin_tmp\")\" && sha256sum -c \"$checksum_tmp\")",
+		"sudo install -m 0755 \"$bin_tmp\" " + shellQuote(req.NodeWorkerPath),
 		"tmp=$(mktemp)",
 		"printf '%s' " + shellQuote(unitBase64) + " | base64 -d > \"$tmp\"",
 		"sudo install -m 0644 \"$tmp\" /etc/systemd/system/assops-node-worker.service",
@@ -161,6 +179,20 @@ func validateWorkerGatewayURL(value string) error {
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("gateway_url must be http or https")
+	}
+	return nil
+}
+
+func validateWorkerDownloadBaseURL(value string) error {
+	u, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("download_base_url must be an absolute URL")
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("download_base_url must be https")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("download_base_url must not include query or fragment")
 	}
 	return nil
 }

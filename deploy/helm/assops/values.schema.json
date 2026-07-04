@@ -94,6 +94,10 @@
           "pattern": "^[0-9]+$"
         },
         "workerMetricsPath": { "type": "string" },
+        "nodeWorkerDownloadBaseURL": {
+          "type": "string",
+          "pattern": "^https://[^?#]+$"
+        },
         "localWorkerEnabled": {
           "type": "string",
           "enum": ["true", "false"]

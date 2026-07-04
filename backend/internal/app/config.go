@@ -36,6 +36,7 @@ type Config struct {
 	ContextDir                      string
 	WorkerMetricsPath               string
 	GatewayURL                      string
+	NodeWorkerDownloadBaseURL       string
 	LocalBareBaseDirs               []string
 	WorkerInterval                  time.Duration
 }
@@ -70,6 +71,7 @@ func LoadConfig() Config {
 		ContextDir:                      env("ASSOPS_CONTEXT_DIR", ".assops/context"),
 		WorkerMetricsPath:               env("ASSOPS_WORKER_METRICS_PATH", ""),
 		GatewayURL:                      env("ASSOPS_GATEWAY_URL", "http://localhost:8080"),
+		NodeWorkerDownloadBaseURL:       env("ASSOPS_NODE_WORKER_DOWNLOAD_BASE_URL", "https://github.com/nathan77886/ass-ops/releases/latest/download"),
 		LocalBareBaseDirs:               envList("ASSOPS_LOCAL_BARE_BASE_DIRS", ""),
 		WorkerInterval:                  time.Duration(envInt("ASSOPS_WORKER_INTERVAL_SECONDS", 3)) * time.Second,
 	}
