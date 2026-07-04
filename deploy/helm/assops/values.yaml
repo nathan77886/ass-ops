@@ -42,6 +42,7 @@ env:
   commit: local
   buildTime: unknown
   workerIntervalSeconds: "3"
+  workerMetricsPath: ""
   localWorkerEnabled: "true"
   cloudflareQueuesEnabled: "false"
   cloudflareAccountID: ""

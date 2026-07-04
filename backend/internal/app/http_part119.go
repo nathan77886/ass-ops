@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/go-chi/chi/v5"
@@ -9,6 +10,7 @@ import (
 	"github.com/lib/pq"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -123,6 +125,13 @@ func (s *Server) nodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	var req struct {
+		Metrics map[string]any `json:"metrics"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
 	var item map[string]any
 	if err := s.store.Gorm.WithContext(r.Context()).Transaction(func(tx *gorm.DB) error {
 		var model GormWorkerNode
@@ -144,6 +153,9 @@ func (s *Server) nodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "could not sync worker node canonical asset")
 		return
+	}
+	if len(req.Metrics) > 0 {
+		_ = writeWorkerNodeMetrics(s.cfg.WorkerMetricsPath, cleanOptionalID(fmt.Sprint(node["id"])), sanitizeWorkerNodeMetrics(req.Metrics))
 	}
 	writeJSON(w, http.StatusOK, item)
 }

@@ -17,6 +17,7 @@ data:
   ASSOPS_COMMIT: {{ .Values.env.commit | quote }}
   ASSOPS_BUILD_TIME: {{ .Values.env.buildTime | quote }}
   ASSOPS_WORKER_INTERVAL_SECONDS: {{ .Values.env.workerIntervalSeconds | quote }}
+  ASSOPS_WORKER_METRICS_PATH: {{ .Values.env.workerMetricsPath | quote }}
   ASSOPS_LOCAL_WORKER_ENABLED: {{ .Values.env.localWorkerEnabled | quote }}
   ASSOPS_CLOUDFLARE_QUEUES_ENABLED: {{ .Values.env.cloudflareQueuesEnabled | quote }}
   ASSOPS_CLOUDFLARE_ACCOUNT_ID: {{ .Values.env.cloudflareAccountID | quote }}

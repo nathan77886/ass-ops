@@ -180,6 +180,7 @@ func (s *Server) workerQueueSummaryGorm(ctx context.Context, user *User) (map[st
 	if err := s.store.Gorm.WithContext(ctx).Find(&nodes).Error; err != nil {
 		return nil, err
 	}
+	metrics := readWorkerNodeMetrics(s.cfg.WorkerMetricsPath)
 	now := time.Now()
 	jobsByStatus := map[string]int{}
 	queueByToolCount := map[string]int{}
@@ -206,6 +207,13 @@ func (s *Server) workerQueueSummaryGorm(ctx context.Context, user *User) (map[st
 		}
 	}
 	nodesByKind := workerNodeKindCounts(nodes)
+	nodeItems := workerNodeSummaryItems(nodes, metrics)
+	if s.cfg.LocalWorkerEnabled {
+		summary["total_nodes"] = intFromAny(summary["total_nodes"], 0) + 1
+		summary["online_nodes"] = intFromAny(summary["online_nodes"], 0) + 1
+		nodesByKind = incrementWorkerNodeKind(nodesByKind, "local")
+		nodeItems = append([]map[string]any{localGatewayWorkerNodeItem()}, nodeItems...)
+	}
 	for _, job := range jobs {
 		jobsByStatus[job.Status]++
 		switch job.Status {
@@ -239,6 +247,7 @@ func (s *Server) workerQueueSummaryGorm(ctx context.Context, user *User) (map[st
 		recentFailures = recentFailures[:5]
 	}
 	summary["jobs_by_status"] = jobsByStatus
+	summary["nodes"] = nodeItems
 	summary["nodes_by_kind"] = nodesByKind
 	summary["queue_by_tool"] = queueByTool(queueByToolCount)
 	summary["recent_failures"] = recentFailures

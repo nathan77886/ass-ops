@@ -93,6 +93,7 @@
           "type": "string",
           "pattern": "^[0-9]+$"
         },
+        "workerMetricsPath": { "type": "string" },
         "localWorkerEnabled": {
           "type": "string",
           "enum": ["true", "false"]

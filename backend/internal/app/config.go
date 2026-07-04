@@ -34,6 +34,7 @@ type Config struct {
 	AdminEmail                      string
 	AdminPassword                   string
 	ContextDir                      string
+	WorkerMetricsPath               string
 	GatewayURL                      string
 	LocalBareBaseDirs               []string
 	WorkerInterval                  time.Duration
@@ -67,6 +68,7 @@ func LoadConfig() Config {
 		AdminEmail:                      env("ASSOPS_ADMIN_EMAIL", "admin@assops.local"),
 		AdminPassword:                   env("ASSOPS_ADMIN_PASSWORD", "admin1234"),
 		ContextDir:                      env("ASSOPS_CONTEXT_DIR", ".assops/context"),
+		WorkerMetricsPath:               env("ASSOPS_WORKER_METRICS_PATH", ""),
 		GatewayURL:                      env("ASSOPS_GATEWAY_URL", "http://localhost:8080"),
 		LocalBareBaseDirs:               envList("ASSOPS_LOCAL_BARE_BASE_DIRS", ""),
 		WorkerInterval:                  time.Duration(envInt("ASSOPS_WORKER_INTERVAL_SECONDS", 3)) * time.Second,

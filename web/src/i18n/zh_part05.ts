@@ -53,6 +53,8 @@ export const zhPart05: Record<string, string> = {
     'config.approvalRequested': '已请求审批',
     'config.sshCommandQueued': 'SSH 命令已入队',
     'config.sshVerifyQueued': 'SSH 验证已入队',
+    'config.installWorker': '安装 Worker',
+    'config.workerInstallQueued': 'Worker 安装已入队',
     'config.sshMachineSaved': 'SSH 主机已保存',
     'config.sshMachineDeleted': 'SSH 主机已删除',
     'config.deleteSSHMachineConfirm': '确认删除这个 SSH 主机？',

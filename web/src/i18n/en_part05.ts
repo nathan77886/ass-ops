@@ -53,6 +53,8 @@ export const enPart05: Record<string, string> = {
     'config.approvalRequested': 'Approval requested',
     'config.sshCommandQueued': 'SSH command queued',
     'config.sshVerifyQueued': 'SSH verify queued',
+    'config.installWorker': 'Install Worker',
+    'config.workerInstallQueued': 'Worker install queued',
     'config.sshMachineSaved': 'SSH machine saved',
     'config.sshMachineDeleted': 'SSH machine deleted',
     'config.deleteSSHMachineConfirm': 'Delete this SSH machine?',

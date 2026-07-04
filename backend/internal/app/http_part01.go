@@ -247,6 +247,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/api/ssh-machines/{id}/rehearsal-snapshot", s.recordSSHMachineRehearsalSnapshot)
 		r.Post("/api/ssh-machines/{id}/verify", s.verifySSHMachine)
 		r.Post("/api/ssh-machines/{id}/commands", s.createSSHCommand)
+		r.Post("/api/ssh-machines/{id}/worker/install", s.installWorkerOnSSHMachine)
 		r.Get("/api/ssh-command-runs", s.listSSHCommandRuns)
 		r.Post("/api/projects/{id}/context/generate", s.generateContext)
 	})
