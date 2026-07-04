@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
 project="${ASSOPS_DOCKER_RUNTIME_PROJECT:-assops-live-pg18}"
 network="${ASSOPS_DOCKER_RUNTIME_NETWORK:-dev_network}"
 runtime_base="${ASSOPS_DOCKER_RUNTIME_BASE_IMAGE:-assops-smoke-artifacts-gateway:latest}"
@@ -14,6 +21,8 @@ db_password="${ASSOPS_DB_PASSWORD:-assops}"
 admin_email="${ASSOPS_ADMIN_EMAIL:-admin@assops.local}"
 admin_password="${ASSOPS_ADMIN_PASSWORD:-admin1234}"
 public_url="${ASSOPS_PUBLIC_URL:-https://ass-ops-api.4nathan.com}"
+legacy_worker_enabled="${ASSOPS_DOCKER_RUNTIME_LEGACY_WORKER_ENABLED:-false}"
+node_worker_enabled="${ASSOPS_DOCKER_RUNTIME_NODE_WORKER_ENABLED:-false}"
 
 need() {
   command -v "$1" >/dev/null || {
@@ -124,6 +133,15 @@ common_env=(
   -e "ASSOPS_ADMIN_EMAIL=${admin_email}"
   -e "ASSOPS_ADMIN_PASSWORD=${admin_password}"
   -e "ASSOPS_WORKER_INTERVAL_SECONDS=3"
+  -e "ASSOPS_LOCAL_WORKER_ENABLED=${ASSOPS_LOCAL_WORKER_ENABLED:-true}"
+  -e "ASSOPS_CLOUDFLARE_QUEUES_ENABLED=${ASSOPS_CLOUDFLARE_QUEUES_ENABLED:-false}"
+  -e "ASSOPS_CLOUDFLARE_ACCOUNT_ID=${ASSOPS_CLOUDFLARE_ACCOUNT_ID:-}"
+  -e "ASSOPS_CLOUDFLARE_QUEUES_API_TOKEN=${ASSOPS_CLOUDFLARE_QUEUES_API_TOKEN:-}"
+  -e "ASSOPS_CLOUDFLARE_QUEUES_API_BASE=${ASSOPS_CLOUDFLARE_QUEUES_API_BASE:-https://api.cloudflare.com/client/v4}"
+  -e "ASSOPS_CLOUDFLARE_TASK_QUEUE_ID=${ASSOPS_CLOUDFLARE_TASK_QUEUE_ID:-}"
+  -e "ASSOPS_CLOUDFLARE_WORKER_EVENTS_QUEUE_ID=${ASSOPS_CLOUDFLARE_WORKER_EVENTS_QUEUE_ID:-}"
+  -e "ASSOPS_CLOUDFLARE_QUEUE_PULL_BATCH_SIZE=${ASSOPS_CLOUDFLARE_QUEUE_PULL_BATCH_SIZE:-10}"
+  -e "ASSOPS_CLOUDFLARE_QUEUE_VISIBILITY_TIMEOUT_MS=${ASSOPS_CLOUDFLARE_QUEUE_VISIBILITY_TIMEOUT_MS:-300000}"
 )
 
 common_volumes=(
@@ -150,17 +168,21 @@ if ! docker exec "${project}-gateway" wget -qO- http://localhost:8080/healthz >/
   exit 1
 fi
 
-docker run -d --name "${project}-worker" --network "$network" \
-  "${common_env[@]}" -e "ASSOPS_WORKER_HEALTH_ADDR=:8081" "${common_volumes[@]}" \
-  --entrypoint worker "${project}-runtime:local" >/dev/null
+if [[ "$legacy_worker_enabled" == "true" ]]; then
+  docker run -d --name "${project}-worker" --network "$network" \
+    "${common_env[@]}" -e "ASSOPS_WORKER_HEALTH_ADDR=:8081" "${common_volumes[@]}" \
+    --entrypoint worker "${project}-runtime:local" >/dev/null
+fi
 
-docker run -d --name "${project}-node-worker" --network "$network" \
-  -e "DATABASE_URL=${database_url}" \
-  -e "ASSOPS_GATEWAY_URL=http://gateway:8080" \
-  -e "ASSOPS_NODE_WORKER_HEALTH_ADDR=:8082" \
-  -v "${project}_ssh:/etc/assops/ssh:ro" \
-  --entrypoint node-worker "${project}-runtime:local" \
-  -name live-pg18-node -kind local -capabilities echo,git,ssh,ai >/dev/null
+if [[ "$node_worker_enabled" == "true" ]]; then
+  docker run -d --name "${project}-node-worker" --network "$network" \
+    -e "DATABASE_URL=${database_url}" \
+    -e "ASSOPS_GATEWAY_URL=http://gateway:8080" \
+    -e "ASSOPS_NODE_WORKER_HEALTH_ADDR=:8082" \
+    -v "${project}_ssh:/etc/assops/ssh:ro" \
+    --entrypoint node-worker "${project}-runtime:local" \
+    -name live-pg18-node -kind local -capabilities echo,git,ssh,ai >/dev/null
+fi
 
 sleep 3
 
