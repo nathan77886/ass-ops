@@ -3,10 +3,13 @@ set -euo pipefail
 
 base_url="${ASSOPS_DOCKER_RUNTIME_BASE_URL:-http://127.0.0.1:28082}"
 cloudflare_url="${ASSOPS_CLOUDFLARE_URL:-https://ass-ops-api.4nathan.com}"
+project="${ASSOPS_DOCKER_RUNTIME_PROJECT:-assops-live-pg18}"
 pg_container="${ASSOPS_PG18_CONTAINER:-pg1}"
 pg_user="${ASSOPS_PG18_ADMIN_USER:-nas}"
 pg_database="${ASSOPS_PG18_DATABASE:-assops}"
 require_cloudflare_api_json="${ASSOPS_REQUIRE_CLOUDFLARE_API_JSON:-false}"
+legacy_worker_enabled="${ASSOPS_DOCKER_RUNTIME_LEGACY_WORKER_ENABLED:-false}"
+node_worker_enabled="${ASSOPS_DOCKER_RUNTIME_NODE_WORKER_ENABLED:-false}"
 
 need() {
   command -v "$1" >/dev/null || {
@@ -19,10 +22,15 @@ need curl
 need docker
 need python3
 
-for container in \
-  assops-live-pg18-gateway \
-  assops-live-pg18-worker \
-  assops-live-pg18-node-worker; do
+containers=("${project}-gateway")
+if [[ "$legacy_worker_enabled" == "true" ]]; then
+  containers+=("${project}-worker")
+fi
+if [[ "$node_worker_enabled" == "true" ]]; then
+  containers+=("${project}-node-worker")
+fi
+
+for container in "${containers[@]}"; do
   state="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)"
   if [[ "$state" != "running" ]]; then
     echo "runtime container is not running: $container" >&2
