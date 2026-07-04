@@ -54,7 +54,7 @@ func (w *ControlWorker) processOne(ctx context.Context) error {
 	err := w.store.Gorm.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var jobModel GormWorkerJob
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
-			Where("status = ? AND preferred_node_kind IN ?", "queued", []string{"", "control-worker"}).
+			Where("status = ? AND preferred_node_kind IN ?", "queued", localWorkerPreferredKinds()).
 			Order("created_at ASC").
 			First(&jobModel).Error; err != nil {
 			if errorsIsRecordNotFound(err) {

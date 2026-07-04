@@ -87,6 +87,7 @@ spec:
           emptyDir: {}
           {{- end }}
 ---
+{{- if .Values.legacyWorker.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -177,6 +178,7 @@ spec:
           emptyDir: {}
           {{- end }}
 ---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

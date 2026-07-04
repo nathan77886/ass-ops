@@ -34,9 +34,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	server := app.NewServer(cfg, store, log)
+	if cfg.LocalWorkerEnabled {
+		worker := app.NewControlWorker(store, cfg, log)
+		go func() {
+			log.Info("local control worker started")
+			if err := worker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error("local control worker stopped", "error", err)
+				stop()
+			}
+		}()
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           app.NewServer(cfg, store, log).Handler(),
+		Handler:           server.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

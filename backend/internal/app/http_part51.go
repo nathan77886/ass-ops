@@ -45,7 +45,32 @@ func (s *Server) enqueueOperation(ctx context.Context, projectID, remoteID, tool
 	}); err != nil {
 		return nil, err
 	}
+	s.dispatchRemoteOperation(ctx, op, tool, input, capabilities, preferredKind)
 	return op, nil
+}
+
+func (s *Server) dispatchRemoteOperation(ctx context.Context, op map[string]any, tool string, input map[string]any, capabilities []string, preferredKind string) {
+	if s == nil || !isRemoteWorkerPreferredKind(preferredKind) {
+		return
+	}
+	client := NewCloudflareQueuesClient(s.cfg, nil)
+	if !client.TaskProducerConfigured() {
+		return
+	}
+	event := CloudflareQueueTaskEvent{
+		EventID:              newToken(),
+		EventType:            "TaskRequested",
+		OperationID:          cleanOptionalID(fmt.Sprint(op["id"])),
+		JobID:                cleanOptionalID(fmt.Sprint(op["worker_job_id"])),
+		ToolName:             tool,
+		TargetWorkerKind:     preferredKind,
+		RequiredCapabilities: capabilities,
+		Payload:              input,
+		CreatedAt:            time.Now().UTC(),
+	}
+	if err := client.PublishTask(ctx, event); err != nil && s.log != nil {
+		s.log.Warn("cloudflare queue task publish failed", "operation_id", event.OperationID, "job_id", event.JobID, "worker_kind", preferredKind, "error", err)
+	}
 }
 
 func (s *Server) listOperations(w http.ResponseWriter, r *http.Request) {
@@ -116,15 +141,15 @@ func (s *Server) getWorkerQueueSummary(w http.ResponseWriter, r *http.Request) {
 
 func workerQueueBackendSummary() map[string]any {
 	return map[string]any{
-		"backend":           "postgres",
+		"backend":           "postgres_local_direct",
 		"claiming":          "select_for_update_skip_locked",
-		"pubsub":            "disabled",
-		"pubsub_enabled":    false,
+		"pubsub":            "cloudflare_queues",
+		"pubsub_enabled":    true,
 		"log_fanout":        "sse_polling",
 		"websocket_fanout":  "deferred",
-		"active_components": []string{"postgres_polling", "row_lock_claiming", "sse_polling_log_fanout"},
+		"active_components": []string{"gateway_local_worker", "postgres_row_lock_claiming", "cloudflare_queues_remote_workers", "sse_polling_log_fanout"},
 		"deferred_backends": []string{"websocket_fanout"},
-		"message":           "Worker jobs use PostgreSQL polling and row locks; log fanout uses SSE polling.",
+		"message":           "Gateway runs local-node jobs directly; remote workers use Cloudflare Queues when configured.",
 	}
 }
 

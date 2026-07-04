@@ -30,6 +30,8 @@ secret:
   adminEmail: admin@example.com
   adminPassword: change-me-admin
   approvalWebhookToken: ""
+  cloudflareQueuesAPIToken: ""
+  cloudflareTaskProducerToken: ""
   githubActionsReadToken: ""
   argoReadToken: ""
   githubTemplateToken: ""
@@ -41,6 +43,15 @@ env:
   commit: local
   buildTime: unknown
   workerIntervalSeconds: "3"
+  localWorkerEnabled: "true"
+  cloudflareQueuesEnabled: "false"
+  cloudflareAccountID: ""
+  cloudflareQueuesAPIBase: https://api.cloudflare.com/client/v4
+  cloudflareWorkerEventsQueueID: ""
+  cloudflareTaskQueueID: ""
+  cloudflareTaskProducerURL: ""
+  cloudflareQueuePullBatchSize: "10"
+  cloudflareQueueVisibilityTimeoutMS: "300000"
   localBareBaseDirs: /var/lib/assops/bare-repos
   configGitLocalBareWritesEnabled: "false"
   providerReviewExecutionEnabled: "false"
@@ -120,8 +131,10 @@ networkPolicy:
   postgres:
     allowedComponents:
       - gateway
-      - worker
       - migrate
+
+legacyWorker:
+  enabled: false
 
 podDisruptionBudget:
   enabled: false

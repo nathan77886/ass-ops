@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "assops-task-producer-worker",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-04",
+  "observability": {
+    "enabled": true
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "TASK_QUEUE",
+        "queue": "assops-worker-tasks"
+      }
+    ]
+  }
+}

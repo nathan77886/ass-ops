@@ -1,5 +1,9 @@
 {{- if .Values.podDisruptionBudget.enabled }}
-{{- range $component := list "gateway" "worker" "node-worker" "web" }}
+{{- $components := list "gateway" "node-worker" "web" }}
+{{- if .Values.legacyWorker.enabled }}
+{{- $components = append $components "worker" }}
+{{- end }}
+{{- range $component := $components }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

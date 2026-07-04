@@ -47,12 +47,12 @@ func TestWorkerQueueSummarySQLIncludesVisibilityAndRiskMetrics(t *testing.T) {
 	t.Skip("worker queue summary now uses GORM models and Go aggregation; replace SQL-shape assertion with GORM fixture coverage")
 }
 
-func TestWorkerQueueBackendSummaryDocumentsPostgresOnlyMode(t *testing.T) {
+func TestWorkerQueueBackendSummaryDocumentsLocalDirectMode(t *testing.T) {
 	summary := workerQueueBackendSummary()
 	for key, want := range map[string]string{
-		"backend":          "postgres",
+		"backend":          "postgres_local_direct",
 		"claiming":         "select_for_update_skip_locked",
-		"pubsub":           "disabled",
+		"pubsub":           "cloudflare_queues",
 		"log_fanout":       "sse_polling",
 		"websocket_fanout": "deferred",
 	} {
@@ -60,14 +60,14 @@ func TestWorkerQueueBackendSummaryDocumentsPostgresOnlyMode(t *testing.T) {
 			t.Fatalf("workerQueueBackendSummary[%s] = %q, want %q", key, got, want)
 		}
 	}
-	if summary["pubsub_enabled"] != false {
-		t.Fatalf("workerQueueBackendSummary should keep pubsub disabled: %#v", summary)
+	if summary["pubsub_enabled"] != true {
+		t.Fatalf("workerQueueBackendSummary should enable pubsub: %#v", summary)
 	}
 	activeComponents := stringSliceFromAny(summary["active_components"])
-	if len(activeComponents) != 3 {
+	if len(activeComponents) != 4 {
 		t.Fatalf("workerQueueBackendSummary active_components length = %d: %#v", len(activeComponents), activeComponents)
 	}
-	for _, component := range []string{"postgres_polling", "row_lock_claiming", "sse_polling_log_fanout"} {
+	for _, component := range []string{"gateway_local_worker", "postgres_row_lock_claiming", "cloudflare_queues_remote_workers", "sse_polling_log_fanout"} {
 		if !containsString(activeComponents, component) {
 			t.Fatalf("workerQueueBackendSummary active_components missing %q: %#v", component, activeComponents)
 		}
@@ -82,8 +82,8 @@ func TestWorkerQueueBackendSummaryDocumentsPostgresOnlyMode(t *testing.T) {
 		}
 	}
 	message, _ := summary["message"].(string)
-	if !strings.Contains(message, "PostgreSQL") || !strings.Contains(message, "SSE") {
-		t.Fatalf("workerQueueBackendSummary message should document PostgreSQL/SSE mode: %q", message)
+	if !strings.Contains(message, "Gateway") || !strings.Contains(message, "Cloudflare Queues") {
+		t.Fatalf("workerQueueBackendSummary message should document local/queue mode: %q", message)
 	}
 }
 

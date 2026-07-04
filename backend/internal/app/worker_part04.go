@@ -191,7 +191,9 @@ func enqueueOperationGorm(ctx context.Context, tx *gorm.DB, projectID, remoteID,
 	if err := tx.WithContext(ctx).Create(&job).Error; err != nil {
 		return nil, err
 	}
-	return operationRunGormMap(op), nil
+	out := operationRunGormMap(op)
+	out["worker_job_id"] = job.ID
+	return out, nil
 }
 
 func operationRunGormMap(op GormOperationRun) map[string]any {

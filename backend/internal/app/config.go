@@ -22,6 +22,17 @@ type Config struct {
 	KubernetesLogPreviewEnabled     bool
 	KubernetesRestartsEnabled       bool
 	ConfigGitLocalBareWritesEnabled bool
+	LocalWorkerEnabled              bool
+	CloudflareQueuesEnabled         bool
+	CloudflareAccountID             string
+	CloudflareQueuesAPIToken        string
+	CloudflareQueuesAPIBase         string
+	CloudflareWorkerEventsQueueID   string
+	CloudflareTaskQueueID           string
+	CloudflareTaskProducerURL       string
+	CloudflareTaskProducerToken     string
+	CloudflareQueuePullBatchSize    int
+	CloudflareQueueVisibilityMS     int
 	AdminEmail                      string
 	AdminPassword                   string
 	ContextDir                      string
@@ -46,6 +57,17 @@ func LoadConfig() Config {
 		KubernetesLogPreviewEnabled:     envBool("ASSOPS_KUBERNETES_LOG_PREVIEW_ENABLED", false),
 		KubernetesRestartsEnabled:       envBool("ASSOPS_KUBERNETES_RESTARTS_ENABLED", false),
 		ConfigGitLocalBareWritesEnabled: envBool("ASSOPS_CONFIG_GIT_LOCAL_BARE_WRITES_ENABLED", false),
+		LocalWorkerEnabled:              envBool("ASSOPS_LOCAL_WORKER_ENABLED", true),
+		CloudflareQueuesEnabled:         envBool("ASSOPS_CLOUDFLARE_QUEUES_ENABLED", false),
+		CloudflareAccountID:             env("ASSOPS_CLOUDFLARE_ACCOUNT_ID", ""),
+		CloudflareQueuesAPIToken:        env("ASSOPS_CLOUDFLARE_QUEUES_API_TOKEN", ""),
+		CloudflareQueuesAPIBase:         env("ASSOPS_CLOUDFLARE_QUEUES_API_BASE", "https://api.cloudflare.com/client/v4"),
+		CloudflareWorkerEventsQueueID:   env("ASSOPS_CLOUDFLARE_WORKER_EVENTS_QUEUE_ID", ""),
+		CloudflareTaskQueueID:           env("ASSOPS_CLOUDFLARE_TASK_QUEUE_ID", ""),
+		CloudflareTaskProducerURL:       env("ASSOPS_CLOUDFLARE_TASK_PRODUCER_URL", ""),
+		CloudflareTaskProducerToken:     env("ASSOPS_CLOUDFLARE_TASK_PRODUCER_TOKEN", ""),
+		CloudflareQueuePullBatchSize:    envInt("ASSOPS_CLOUDFLARE_QUEUE_PULL_BATCH_SIZE", 10),
+		CloudflareQueueVisibilityMS:     envInt("ASSOPS_CLOUDFLARE_QUEUE_VISIBILITY_TIMEOUT_MS", 300000),
 		AdminEmail:                      env("ASSOPS_ADMIN_EMAIL", "admin@assops.local"),
 		AdminPassword:                   env("ASSOPS_ADMIN_PASSWORD", "admin1234"),
 		ContextDir:                      env("ASSOPS_CONTEXT_DIR", ".assops/context"),

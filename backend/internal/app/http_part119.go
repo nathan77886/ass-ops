@@ -163,10 +163,10 @@ func (s *Server) claimJob(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		nodeKind := strings.TrimSpace(fmt.Sprint(node["kind"]))
+		nodeCapabilities := stringSliceFromAny(node["capabilities"])
 		selected := -1
 		for i, job := range jobs {
-			preferred := strings.TrimSpace(job.PreferredNodeKind)
-			if preferred == "" || preferred == nodeKind {
+			if workerJobMatchesRemoteNode(job, nodeKind, nodeCapabilities) {
 				selected = i
 				break
 			}
@@ -203,6 +203,49 @@ func (s *Server) claimJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"job": item})
+}
+
+func localWorkerPreferredKinds() []string {
+	return []string{"", "control-worker", "local"}
+}
+
+func isRemoteWorkerPreferredKind(preferred string) bool {
+	preferred = strings.TrimSpace(preferred)
+	if preferred == "" || preferred == "control-worker" || preferred == "local" {
+		return false
+	}
+	return true
+}
+
+func workerJobMatchesRemoteNode(job GormWorkerJob, nodeKind string, nodeCapabilities []string) bool {
+	preferred := strings.TrimSpace(job.PreferredNodeKind)
+	if !isRemoteWorkerPreferredKind(preferred) {
+		return false
+	}
+	if preferred != strings.TrimSpace(nodeKind) {
+		return false
+	}
+	return workerHasCapabilities(nodeCapabilities, []string(job.RequiredCapabilities))
+}
+
+func workerHasCapabilities(workerCapabilities, requiredCapabilities []string) bool {
+	if len(requiredCapabilities) == 0 {
+		return true
+	}
+	available := make(map[string]bool, len(workerCapabilities))
+	for _, capability := range workerCapabilities {
+		capability = strings.TrimSpace(capability)
+		if capability != "" {
+			available[capability] = true
+		}
+	}
+	for _, required := range requiredCapabilities {
+		required = strings.TrimSpace(required)
+		if required != "" && !available[required] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) nodeJobLog(w http.ResponseWriter, r *http.Request) {

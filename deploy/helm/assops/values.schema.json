@@ -50,6 +50,8 @@
         "adminEmail": { "type": "string", "minLength": 1 },
         "adminPassword": { "type": "string", "minLength": 1 },
         "approvalWebhookToken": { "type": "string" },
+        "cloudflareQueuesAPIToken": { "type": "string" },
+        "cloudflareTaskProducerToken": { "type": "string" },
         "githubActionsReadToken": { "type": "string" },
         "argoReadToken": { "type": "string" },
         "githubTemplateToken": { "type": "string" },
@@ -89,6 +91,27 @@
           "minLength": 1
         },
         "workerIntervalSeconds": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "localWorkerEnabled": {
+          "type": "string",
+          "enum": ["true", "false"]
+        },
+        "cloudflareQueuesEnabled": {
+          "type": "string",
+          "enum": ["true", "false"]
+        },
+        "cloudflareAccountID": { "type": "string" },
+        "cloudflareQueuesAPIBase": { "type": "string", "minLength": 1 },
+        "cloudflareWorkerEventsQueueID": { "type": "string" },
+        "cloudflareTaskQueueID": { "type": "string" },
+        "cloudflareTaskProducerURL": { "type": "string" },
+        "cloudflareQueuePullBatchSize": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "cloudflareQueueVisibilityTimeoutMS": {
           "type": "string",
           "pattern": "^[0-9]+$"
         },
@@ -183,6 +206,12 @@
         "name": { "type": "string", "minLength": 1 },
         "kind": { "type": "string", "minLength": 1 },
         "capabilities": { "type": "string" }
+      }
+    },
+    "legacyWorker": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" }
       }
     },
     "resources": {
