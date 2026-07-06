@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 
 const source = [
   '../src/main.tsx',
-  '../src/main.bundle.js'
+  '../src/app/App.jsx'
 ].map((path) => readFileSync(new URL(path, import.meta.url), 'utf8')).join('\n');
 
 function fail(message) {
