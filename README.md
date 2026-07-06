@@ -46,6 +46,7 @@ ghcr.io/<owner>/assops-node-worker:<tag>
 - `node-worker` 可从 GHCR 镜像部署，也可直接运行二进制或本地进程。
 - Docker / Kubernetes 部署时使用当前仓库发布的 GHCR 镜像。
 - Web 不在当前 GitHub Actions 中构建镜像。
+- Web 如部署到 Cloudflare Worker，在 `web/` 目录运行 `pnpm run deploy` 发布。
 
 ## 必填配置
 
