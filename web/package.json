@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "i18n:check": "node scripts/check-i18n.mjs",
-    "build": "pnpm run i18n:check && tsc -b && vite build",
+    "function-names:check": "node scripts/check-function-names.mjs",
+    "build": "pnpm run i18n:check && pnpm run function-names:check && tsc -b && vite build",
     "preview": "pnpm run build && wrangler dev",
     "deploy": "pnpm run build && wrangler deploy"
   },
