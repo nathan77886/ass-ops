@@ -73,5 +73,5 @@ jobs:
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           case "$TAG" in v*) ;; *) echo "release_tag must start with v" >&2; exit 1 ;; esac
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes ""
-          gh release upload "$TAG" release-assets/* --clobber
+          gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1 || gh release create "$TAG" --repo "$GH_REPO" --title "$TAG" --notes ""
+          gh release upload "$TAG" release-assets/* --repo "$GH_REPO" --clobber
