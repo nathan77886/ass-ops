@@ -184,3 +184,54 @@ func TestSyncCanonicalAssetsUsesGormModels(t *testing.T) {
 		t.Fatalf("load repo sync relation: %v", err)
 	}
 }
+
+func TestInsertStatusSnapshotIfChangedUsesLatestSnapshot(t *testing.T) {
+	store := newGormFixtureStore(t)
+	migrateGormFixture(t, store, &GormAsset{}, &sqliteAssetStatusSnapshotFixture{})
+
+	now := time.Now().UTC()
+	asset := GormAsset{
+		AssetType:   "node_agent",
+		SourceTable: "worker_nodes",
+		SourceID:    validNullString("00000000-0000-0000-0000-000000000001"),
+		Name:        "live-pg18-node",
+		Status:      "active",
+		RiskLevel:   "normal",
+		Metadata:    JSONValue{Data: map[string]any{}},
+	}
+	if err := store.Gorm.Create(&asset).Error; err != nil {
+		t.Fatalf("create asset: %v", err)
+	}
+	spec := canonicalAssetSpec{
+		AssetType:   asset.AssetType,
+		SourceTable: asset.SourceTable,
+		SourceID:    asset.SourceID.String,
+		Name:        asset.Name,
+		Status:      asset.Status,
+		RiskLevel:   asset.RiskLevel,
+		Metadata:    map[string]any{},
+	}
+	oldRaw := map[string]any{"asset_type": spec.AssetType, "source_table": spec.SourceTable, "source_id": spec.SourceID, "name": "old-name", "metadata": map[string]any{}}
+	latestRaw := map[string]any{"asset_type": spec.AssetType, "source_table": spec.SourceTable, "source_id": spec.SourceID, "name": spec.Name, "metadata": map[string]any{}}
+	if err := store.Gorm.Create(&GormAssetStatusSnapshot{AssetID: asset.ID, Status: "stale", Health: "normal", Raw: JSONValue{Data: oldRaw}, CollectedAt: now.Add(-time.Hour)}).Error; err != nil {
+		t.Fatalf("create old snapshot: %v", err)
+	}
+	if err := store.Gorm.Create(&GormAssetStatusSnapshot{AssetID: asset.ID, Status: asset.Status, Health: asset.RiskLevel, Raw: JSONValue{Data: latestRaw}, CollectedAt: now}).Error; err != nil {
+		t.Fatalf("create latest snapshot: %v", err)
+	}
+
+	inserted, err := insertStatusSnapshotIfChanged(t.Context(), store.Gorm, asset, spec)
+	if err != nil {
+		t.Fatalf("insertStatusSnapshotIfChanged: %v", err)
+	}
+	if inserted {
+		t.Fatalf("inserted = true, want false")
+	}
+	var count int64
+	if err := store.Gorm.Model(&GormAssetStatusSnapshot{}).Where(&GormAssetStatusSnapshot{AssetID: asset.ID}).Count(&count).Error; err != nil {
+		t.Fatalf("count snapshots: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("snapshot count = %d, want 2", count)
+	}
+}

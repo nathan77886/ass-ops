@@ -262,17 +262,15 @@ func upsertCanonicalAsset(ctx context.Context, db *gorm.DB, spec canonicalAssetS
 
 func insertStatusSnapshotIfChanged(ctx context.Context, db *gorm.DB, asset GormAsset, spec canonicalAssetSpec) (bool, error) {
 	raw := map[string]any{"asset_type": spec.AssetType, "source_table": spec.SourceTable, "source_id": spec.SourceID, "name": spec.Name, "metadata": spec.Metadata}
-	var snapshots []GormAssetStatusSnapshot
-	if err := db.WithContext(ctx).Where(&GormAssetStatusSnapshot{AssetID: asset.ID}).Find(&snapshots).Error; err != nil {
-		return false, fmt.Errorf("loading asset status snapshots: %w", err)
+	var latest GormAssetStatusSnapshot
+	if err := db.WithContext(ctx).
+		Where(&GormAssetStatusSnapshot{AssetID: asset.ID}).
+		Order("collected_at DESC, id DESC").
+		Limit(1).
+		First(&latest).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, fmt.Errorf("loading latest asset status snapshot: %w", err)
 	}
-	var latest *GormAssetStatusSnapshot
-	for i := range snapshots {
-		if latest == nil || snapshots[i].CollectedAt.After(latest.CollectedAt) {
-			latest = &snapshots[i]
-		}
-	}
-	if latest != nil && latest.Status == asset.Status && latest.Health == asset.RiskLevel && jsonValuesEqual(latest.Raw.Data, raw) {
+	if latest.ID != "" && latest.Status == asset.Status && latest.Health == asset.RiskLevel && jsonValuesEqual(latest.Raw.Data, raw) {
 		return false, nil
 	}
 	snapshot := GormAssetStatusSnapshot{AssetID: asset.ID, Status: asset.Status, Health: asset.RiskLevel, Summary: fmt.Sprintf("%s %s is %s", asset.AssetType, asset.Name, asset.Status), Raw: JSONValue{Data: raw}, CollectedAt: time.Now().UTC()}
