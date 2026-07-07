@@ -43,6 +43,12 @@ env:
   buildTime: unknown
   workerIntervalSeconds: "3"
   workerMetricsPath: ""
+  scheduleConfigPath: ""
+  schedulerSnapshotCleanupEnabled: "true"
+  schedulerSnapshotCleanupRunAt: "03:30"
+  schedulerSnapshotCleanupRetentionDays: "30"
+  schedulerSnapshotCleanupBatchSize: "1000"
+  schedulerSnapshotCleanupKeepLatestPerAsset: "true"
   nodeWorkerDownloadBaseURL: https://github.com/nathan77886/ass-ops/releases/latest/download
   localWorkerEnabled: "true"
   cloudflareQueuesEnabled: "false"

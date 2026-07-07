@@ -26,6 +26,7 @@ func TestLoadConfigIncludesApprovalWebhook(t *testing.T) {
 func TestLoadConfigIncludesWorkerHealthAddresses(t *testing.T) {
 	t.Setenv("ASSOPS_WORKER_HEALTH_ADDR", ":18081")
 	t.Setenv("ASSOPS_NODE_WORKER_HEALTH_ADDR", ":18082")
+	t.Setenv("ASSOPS_SCHEDULE_CONFIG_PATH", "/etc/assops/schedule.yaml")
 	t.Setenv("ASSOPS_LOCAL_WORKER_ENABLED", "false")
 	t.Setenv("ASSOPS_CLOUDFLARE_QUEUES_ENABLED", "true")
 	t.Setenv("ASSOPS_CLOUDFLARE_ACCOUNT_ID", "account-1")
@@ -41,6 +42,9 @@ func TestLoadConfigIncludesWorkerHealthAddresses(t *testing.T) {
 	}
 	if cfg.NodeWorkerHealthAddr != ":18082" {
 		t.Fatalf("NodeWorkerHealthAddr = %q", cfg.NodeWorkerHealthAddr)
+	}
+	if cfg.ScheduleConfigPath != "/etc/assops/schedule.yaml" {
+		t.Fatalf("ScheduleConfigPath = %q", cfg.ScheduleConfigPath)
 	}
 	if cfg.LocalWorkerEnabled {
 		t.Fatal("LocalWorkerEnabled should be false")

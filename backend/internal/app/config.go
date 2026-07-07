@@ -35,6 +35,7 @@ type Config struct {
 	AdminPassword                   string
 	ContextDir                      string
 	WorkerMetricsPath               string
+	ScheduleConfigPath              string
 	GatewayURL                      string
 	NodeWorkerDownloadBaseURL       string
 	LocalBareBaseDirs               []string
@@ -70,6 +71,7 @@ func LoadConfig() Config {
 		AdminPassword:                   env("ASSOPS_ADMIN_PASSWORD", "admin1234"),
 		ContextDir:                      env("ASSOPS_CONTEXT_DIR", ".assops/context"),
 		WorkerMetricsPath:               env("ASSOPS_WORKER_METRICS_PATH", ""),
+		ScheduleConfigPath:              env("ASSOPS_SCHEDULE_CONFIG_PATH", ""),
 		GatewayURL:                      env("ASSOPS_GATEWAY_URL", "http://localhost:8080"),
 		NodeWorkerDownloadBaseURL:       env("ASSOPS_NODE_WORKER_DOWNLOAD_BASE_URL", "https://github.com/nathan77886/ass-ops/releases/latest/download"),
 		LocalBareBaseDirs:               envList("ASSOPS_LOCAL_BARE_BASE_DIRS", ""),

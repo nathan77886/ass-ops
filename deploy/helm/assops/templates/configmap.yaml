@@ -18,6 +18,12 @@ data:
   ASSOPS_BUILD_TIME: {{ .Values.env.buildTime | quote }}
   ASSOPS_WORKER_INTERVAL_SECONDS: {{ .Values.env.workerIntervalSeconds | quote }}
   ASSOPS_WORKER_METRICS_PATH: {{ .Values.env.workerMetricsPath | quote }}
+  ASSOPS_SCHEDULE_CONFIG_PATH: {{ .Values.env.scheduleConfigPath | quote }}
+  ASSOPS_SCHEDULER_SNAPSHOT_CLEANUP_ENABLED: {{ .Values.env.schedulerSnapshotCleanupEnabled | quote }}
+  ASSOPS_SCHEDULER_SNAPSHOT_CLEANUP_RUN_AT: {{ .Values.env.schedulerSnapshotCleanupRunAt | quote }}
+  ASSOPS_SCHEDULER_SNAPSHOT_CLEANUP_RETENTION_DAYS: {{ .Values.env.schedulerSnapshotCleanupRetentionDays | quote }}
+  ASSOPS_SCHEDULER_SNAPSHOT_CLEANUP_BATCH_SIZE: {{ .Values.env.schedulerSnapshotCleanupBatchSize | quote }}
+  ASSOPS_SCHEDULER_SNAPSHOT_CLEANUP_KEEP_LATEST_PER_ASSET: {{ .Values.env.schedulerSnapshotCleanupKeepLatestPerAsset | quote }}
   ASSOPS_NODE_WORKER_DOWNLOAD_BASE_URL: {{ .Values.env.nodeWorkerDownloadBaseURL | quote }}
   ASSOPS_LOCAL_WORKER_ENABLED: {{ .Values.env.localWorkerEnabled | quote }}
   ASSOPS_CLOUDFLARE_QUEUES_ENABLED: {{ .Values.env.cloudflareQueuesEnabled | quote }}

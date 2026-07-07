@@ -1,0 +1,7 @@
+scheduler:
+  snapshot_cleanup:
+    enabled: true
+    run_at: "03:30"
+    retention_days: 30
+    batch_size: 1000
+    keep_latest_per_asset: true

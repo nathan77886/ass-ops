@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +17,11 @@ import (
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	cfg := app.LoadConfig()
+	schedulerCfg, err := app.LoadSchedulerConfig(cfg.ScheduleConfigPath)
+	if err != nil {
+		log.Error("load scheduler config failed", "error", err)
+		os.Exit(1)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -34,10 +40,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	var wg sync.WaitGroup
 	server := app.NewServer(cfg, store, log)
 	if cfg.LocalWorkerEnabled {
 		worker := app.NewControlWorker(store, cfg, log)
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			log.Info("local control worker started")
 			if err := worker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Error("local control worker stopped", "error", err)
@@ -45,6 +54,16 @@ func main() {
 			}
 		}()
 	}
+	scheduler := app.NewScheduler(store, schedulerCfg, log)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Info("scheduler started")
+		if err := scheduler.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Error("scheduler stopped", "error", err)
+			stop()
+		}
+	}()
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
@@ -62,4 +81,5 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	wg.Wait()
 }

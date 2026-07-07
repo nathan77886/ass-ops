@@ -18,6 +18,12 @@ env:
   commit: local
   buildTime: unknown
   workerIntervalSeconds: "3"
+  scheduleConfigPath: ""
+  schedulerSnapshotCleanupEnabled: "true"
+  schedulerSnapshotCleanupRunAt: "03:30"
+  schedulerSnapshotCleanupRetentionDays: "30"
+  schedulerSnapshotCleanupBatchSize: "1000"
+  schedulerSnapshotCleanupKeepLatestPerAsset: "true"
   localBareBaseDirs: /var/lib/assops/bare-repos
   configGitLocalBareWritesEnabled: "false"
   providerReviewExecutionEnabled: "false"
